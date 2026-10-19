@@ -58,6 +58,7 @@ function fileBody(record: FileRecord) {
   return {
     id: record.id,
     purpose: record.purpose,
+    projectId: record.projectId,
     name: record.displayName,
     extension: record.extension,
     mime: record.mime,
