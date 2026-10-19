@@ -1,4 +1,4 @@
-# Yibiao Bid Toolkit (易标投标工具箱)
+# ZhiBiaoTools (智标投标工具箱)
 
 <p align="center">
   <a href="./README.md">简体中文</a> | <strong>English</strong>

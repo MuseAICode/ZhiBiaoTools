@@ -2,7 +2,7 @@
   "name": "yibiao-client",
   "version": "0.1.0",
   "private": true,
-  "description": "易标投标工具箱独立桌面客户端",
+  "description": "智标投标工具箱独立桌面客户端",
   "license": "UNLICENSED",
   "main": "electron/main.cjs",
   "type": "module",

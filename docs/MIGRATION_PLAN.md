@@ -17,7 +17,7 @@
 | 6 | 任务队列与 worker | 未开始 | — |
 | 7 | OpenXmlHelper 容器化与离屏渲染 | 未开始 | — |
 | 8 | Agent 沙箱 | 未开始 | — |
-| 9 | 收尾与上线 | 未开始 | — |
+| 9 | 收尾与上线 | 进行中 | #1（品牌改名第一部分：用户可见文字和文档） |
 
 状态取值：未开始 / 进行中 / 已完成。一步由多个 PR 完成时，在“PR”列依次列出编号。
 
@@ -445,6 +445,20 @@ AI 网关加固，做法见 `docs/SERVER_DESIGN.md` 第 10.9 节。`client/` 未
 - 同一张表被 pdf-parse 和 pdfjs 同时识别、结果又不一样时（比如有合并单元格），`hasSimilarPdfTable` 不会去重，两份都会输出。
 
 
+### 第 9 步说明
+
+#### 品牌改名第一部分：用户可见文字和文档（#1）
+
+产品名改为中文“智标”（全称“智标投标工具箱”）、英文“ZhiBiaoTools”。偏离路线图：第 1 步前决定第 3 项把品牌名替换推迟到第 9 步，本 PR 按需求提前做其中不涉及代码标识符和数据路径的部分，不改变运行行为。
+
+- **已改**：README（中英文标题）、`SECURITY.md`、`client/开发说明.md` 和 `openxmlhelper/开发说明.md` 中的产品名；侧栏品牌文字、`index.html` 标题、主窗口标题、preload 的 `appName`；智能体任务默认标题、Pi 自检步骤文案和诊断提示词、Agent 工作区说明（`agent-workspace.md`）、生图测试提示词中的产品名、Pi 内部 provider 的显示名；开发者测试页的示例项目名和报错文案；导出模板默认名称前缀（`yibiao-` 改为 `ZhiBiaoTools-`，已保存的模板名称不变）；`package.json` 的 `description`。
+- **未改，留到第二部分**（随第 9 步上线检查处理）：
+  - 代码标识符：`window.yibiao`、`YibiaoBridge`、Pi provider id `yibiao`、C# 命名空间 `Yibiao.OpenXmlHelper`、`YIBIAO_*` 环境变量、`YibiaoRmHelper`、日志前缀 `[yibiao-client]`、npm 包名 `yibiao-client`、`appId` `com.yibiao.client`、`.claude/launch.json` 的配置名、`prepare-agent-tools.cjs` 的 User-Agent；
+  - 数据与协议：`yibiao.sqlite`、`yibiao-asset://`、正文分块标记 `<!-- yibiao:block -->`（AI 提示词和解析代码共用）、Word 内容控件标签 `yibiao:body:`、OpenXmlHelper 的 `YIBIAO*` 段落标记、Pi 自检令牌 `YIBIAO_PI_*`、查重与废标的分隔符和令牌前缀、临时目录前缀、`yibiao:plugins-changed` 事件、GPU 试用启动参数、`#yibiao-capture-root`；
+  - 打包：`build.productName` 仍为“易标投标工具箱”（Electron 的 `userData` 目录由它决定，改了会换数据目录），`artifactName` 和 `updateService.cjs` 的安装包文件名匹配 `Yibiao-*`、图标文件名 `yibiao_256.ico`；`client/assets/macos-dmg/macOS使用说明.txt` 中的 `.app` 名称必须与 `productName` 一致，随之一起改；
+  - 代码注释：`restrictedHtml.ts` 的“易标受限 HTML”、`docx-editor` 补丁中的 `// yibiao:` 注释等；
+  - 不改：`docs/` 和 `client/开发说明.md` 中的“易标官方”指原作者的服务（`v3.yibiao.pro`），属于历史记录；`CLAUDE.md` 命名规则中的“易标 / yibiao”是禁用词本身。
+
 ## 1. 现状概览
 
 - 调用链：Renderer（React/Vite）→ `window.yibiao`（`electron/preload.cjs`，约 208 个方法，其中 172 个 `invoke`、19 个事件订阅）→ `electron/ipc/*.cjs`（21 个文件）→ `electron/services/*.cjs`（78 个服务，约 4.6 万行）。
@@ -573,7 +587,7 @@ AI 网关加固，做法见 `docs/SERVER_DESIGN.md` 第 10.9 节。`client/` 未
 8. **Agent 沙箱**：Pi Runtime 迁到隔离沙箱，最后迁正文生成、原方案还原、格式自检这类最复杂的长任务。
 9. **收尾**：插件下线或重做、开发者工具改管理员页面；不自建 analytics Worker（0.18 决定；客户端埋点、内容服务代码和 `analytics/` 目录已在 0.19 删除）；压测、安全评审，再上线。
    上线检查（对外提供服务前逐项完成）：
-   - 品牌名替换：产品名“易标”、`window.yibiao`、`yibiao-asset://`、`yibiao.sqlite` 等已有命名统一改为本项目名称（第 1 步前决定第 3 项推迟到此）；
+   - 品牌名替换：产品名“易标”、`window.yibiao`、`yibiao-asset://`、`yibiao.sqlite` 等已有命名统一改为本项目名称“智标” / ZhiBiaoTools（第 1 步前决定第 3 项推迟到此）。第一部分（用户可见文字和文档）已在 #1 提前完成，剩余部分见“第 9 步说明”；
    - 把 `SECURITY.md`、`CODE_OF_CONDUCT.md`、`.github/ISSUE_TEMPLATE/问题反馈.md` 中的 `{{CONTACT_EMAIL}}` 占位符（0.20）替换为本项目的联系方式；
    - 重写 Web 版隐私声明：现有设置页隐私声明按桌面版“数据保存在本机”编写，Web 版需说明服务端存储的数据、API Key 的保管方式、日志与保留期限、删除方式；按 旧仓库 PR #26 决定还要写明服务器位于境外（香港）、调用的第三方模型服务商、用量记录的保留期，以及项目删除后 7 天恢复期、注销后 30 天内删除；
    - 完成 `docs/SERVER_DESIGN.md` 第 11 节“合规待确认事项”（旧仓库 PR #26），每项都有律师确认的结论并已落实到设计和界面，未完成不得对外提供服务：
