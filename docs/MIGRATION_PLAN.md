@@ -604,6 +604,7 @@ AI 网关加固，做法见 `docs/SERVER_DESIGN.md` 第 10.9 节。`client/` 未
    上线检查（对外提供服务前逐项完成）：
    - ~~品牌名替换：旧产品名、旧 bridge 全局名、旧资源协议和数据库文件名等已有命名统一改为本项目名称“智标” / ZhiBiaoTools（第 1 步前决定第 3 项推迟到此）~~ 已完成：第一部分（用户可见文字和文档）见 #1，第二部分（其余全部）见“第 9 步说明”；
    - `yb` 缩写改为中性前缀 `app`，完成后把 `yb-`、`yb_` 加入 CI 禁用词检查（品牌改名第三部分，单独 PR，见“第 9 步说明”）；
+   - 升级 GitHub 计划，使分支保护在私有仓库上强制生效：`main` 要求 PR 合并，CI 的 `Banned words`、`Client build / syntax / audit`、`Server typecheck / test / audit` 设为必须通过；当前免费版私有仓库的分支保护不生效，`#3`（临时草稿 PR，已关闭）验证时 `Banned words` 失败但 PR 仍显示为可合并（`mergeable_state: unstable`）；升级后用同样方法复测，确认显示为无法合并（`blocked`）；
    - 把 `SECURITY.md`、`CODE_OF_CONDUCT.md`、`.github/ISSUE_TEMPLATE/问题反馈.md` 中的 `{{CONTACT_EMAIL}}` 占位符（0.20）替换为本项目的联系方式；
    - 重写 Web 版隐私声明：现有设置页隐私声明按桌面版“数据保存在本机”编写，Web 版需说明服务端存储的数据、API Key 的保管方式、日志与保留期限、删除方式；按 旧仓库 PR #26 决定还要写明服务器位于境外（香港）、调用的第三方模型服务商、用量记录的保留期，以及项目删除后 7 天恢复期、注销后 30 天内删除；
    - 完成 `docs/SERVER_DESIGN.md` 第 11 节“合规待确认事项”（旧仓库 PR #26），每项都有律师确认的结论并已落实到设计和界面，未完成不得对外提供服务：
