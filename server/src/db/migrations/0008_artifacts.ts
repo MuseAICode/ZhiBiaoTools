@@ -10,14 +10,19 @@
 //   与上传文件共用同一个 advisory lock，二者并发也不会一起越过配额；完成后内容不能再改（AR003）；
 //   应用角色只能物理删除仍在写入中的行。
 //
-// 另外把项目软删除与其下的文件、产物联动起来（5.1 留下）：
-// - 不复制删除状态，而是在读取时判断：文件所属的项目已删除时文件不可访问；产物所属的项目已删除、
-//   或来源文件不可访问（自身已删除，或所在项目已删除）时产物不可访问。恢复项目即一起恢复，
-//   项目删除前就单独删除的文件仍留在回收站中，按自己的恢复期处理；
-// - 配额函数 files_org_usage_bytes 改为统计文件和产物：项目或来源文件仍在恢复期内的照常计入，
-//   超过恢复期的不再计入（与单独删除的文件相同），之后由清理任务（第 6 步）与项目一起物理删除。
+// 另外把项目软删除与其下的文件、产物联动起来（5.1 留下），由 RLS 强制，不依赖应用代码：
+// - 应用角色的 files 策略：所属项目已删除的行查不到、改不了、删不掉，也不能新挂到已删除的项目下；
+// - 应用角色的 artifacts 策略：所属项目已删除、或来源文件不可访问（未上传完成、已删除，或所在项目已删除，
+//   后者由 files 自身的策略在子查询中生效）的行同样不可见；
+// - 删除状态不复制到文件和产物上：恢复项目即一起恢复；项目删除前就单独删除的文件仍留在回收站，按自己的恢复期处理；
+// - 项目条件写成“不存在同 id 的已删除项目”：项目由复合外键保证属于本组织，跨组织的 project_id 仍由外键报错。
+//
+// 配额函数 files_org_usage_bytes 要统计应用角色看不到的行（已删除项目下的文件在恢复期内仍占配额，
+// 否则“删除项目 → 继续上传 → 恢复项目”可以越过配额），所以改为 SECURITY DEFINER，属主是新角色 bidtools_storage
+// （NOLOGIN、无 BYPASSRLS，只有为它单独建的只读策略和列级 SELECT 授权），并且只允许统计当前上下文的组织（AR004）。
+// 统计范围：文件和产物合计；所属项目或来源文件仍在恢复期内的照常计入，超过恢复期的不再计入，之后由清理任务（第 6 步）物理删除。
 import { sql, type Kysely, type RawBuilder } from 'kysely';
-import { APP_ROLE } from '../roles.ts';
+import { APP_ROLE, STORAGE_ROLE } from '../roles.ts';
 import { FILE_RESTORE_DAYS, MAX_FILE_BYTES, ORG_STORAGE_QUOTA_BYTES } from './0006_files.ts';
 import { PROJECT_RESTORE_DAYS } from './0007_projects.ts';
 
@@ -26,6 +31,8 @@ async function run(db: Kysely<unknown>, statements: readonly RawBuilder<unknown>
 }
 
 const app = sql.id(APP_ROLE);
+const storage = sql.id(STORAGE_ROLE);
+const SECURE = sql.raw('SECURITY DEFINER SET search_path = pg_catalog, pg_temp');
 
 /** 产物种类与允许的 MIME：只有 Markdown 和位图，不存 HTML / SVG 等能在浏览器中执行脚本的类型。 */
 export const ARTIFACT_MIMES = {
@@ -41,6 +48,24 @@ export const MAX_ARTIFACT_BYTES = MAX_FILE_BYTES;
 const FILE_WINDOW = sql.raw(`interval '${FILE_RESTORE_DAYS} days'`);
 const PROJECT_WINDOW = sql.raw(`interval '${PROJECT_RESTORE_DAYS} days'`);
 const QUOTA = sql.lit(ORG_STORAGE_QUOTA_BYTES.toString());
+
+// 行不属于项目，或同 id 的项目未删除（在应用角色的 RLS 下求值，只看得到本组织的项目）。
+const fileProjectLive = sql`(files.project_id IS NULL OR NOT EXISTS (
+  SELECT 1 FROM projects p WHERE p.id = files.project_id AND p.deleted_at IS NOT NULL))`;
+const artifactProjectLive = sql`(artifacts.project_id IS NULL OR NOT EXISTS (
+  SELECT 1 FROM projects p WHERE p.id = artifacts.project_id AND p.deleted_at IS NOT NULL))`;
+// 来源文件已上传、未删除；files 的策略在子查询中同样生效，所以来源文件所在项目已删除时也不成立。
+const artifactSourceLive = sql`(artifacts.source_file_id IS NULL OR EXISTS (
+  SELECT 1 FROM files f WHERE f.id = artifacts.source_file_id AND f.status = 'uploaded' AND f.deleted_at IS NULL))`;
+
+// 0006 / 0007 的配额函数（down 时恢复）。
+const LEGACY_USAGE_FUNCTION = sql`CREATE FUNCTION files_org_usage_bytes(p_org_id uuid) RETURNS bigint
+      LANGUAGE sql STABLE
+      AS $$
+        SELECT coalesce(sum(f.size_bytes), 0)::bigint FROM public.files f
+        WHERE f.org_id = p_org_id AND f.status = 'uploaded'
+          AND (f.deleted_at IS NULL OR f.deleted_at > now() - ${FILE_WINDOW})
+      $$`;
 
 const KIND_MIME_CHECK = sql.join(
   ARTIFACT_KINDS.map(
@@ -79,11 +104,45 @@ export async function up(db: Kysely<unknown>): Promise<void> {
     sql`CREATE INDEX artifacts_org_id_project_id_idx ON artifacts (org_id, project_id, created_at) WHERE project_id IS NOT NULL`,
     sql`CREATE INDEX artifacts_org_id_source_file_id_idx ON artifacts (org_id, source_file_id, created_at) WHERE source_file_id IS NOT NULL`,
 
-    // 配额：文件和产物合计。文件计入的条件不变（已上传，未删除或仍在恢复期内），另要求所属项目未删除或仍在恢复期内；
-    // 产物要求已完成、所属项目同上、来源文件仍计入配额。以调用者身份执行，RLS 下只看得到当前组织。
-    sql`CREATE OR REPLACE FUNCTION files_org_usage_bytes(p_org_id uuid) RETURNS bigint
-          LANGUAGE sql STABLE
+    // 项目软删除联动：重建应用角色的 files 策略，加上所属项目未删除的条件（其余条件与 0006 相同）。
+    sql`DROP POLICY files_select_tenant ON files`,
+    sql`DROP POLICY files_insert_tenant ON files`,
+    sql`DROP POLICY files_update_tenant ON files`,
+    sql`DROP POLICY files_delete_uploading ON files`,
+    sql`CREATE POLICY files_select_tenant ON files FOR SELECT TO ${app}
+          USING (org_id = app_current_org_id() AND ${fileProjectLive})`,
+    sql`CREATE POLICY files_insert_tenant ON files FOR INSERT TO ${app}
+          WITH CHECK (org_id = app_current_org_id() AND created_by = app_current_user_id() AND status = 'uploading' AND ${fileProjectLive})`,
+    sql`CREATE POLICY files_update_tenant ON files FOR UPDATE TO ${app}
+          USING (org_id = app_current_org_id() AND ${fileProjectLive})
+          WITH CHECK (org_id = app_current_org_id() AND (deleted_by IS NULL OR deleted_by = app_current_user_id()) AND ${fileProjectLive})`,
+    sql`CREATE POLICY files_delete_uploading ON files FOR DELETE TO ${app}
+          USING (org_id = app_current_org_id() AND status = 'uploading' AND ${fileProjectLive})`,
+
+    // 配额函数的属主 bidtools_storage：只读，只授函数用到的列；策略只对它生效，应用角色不受影响。
+    sql`GRANT USAGE ON SCHEMA public TO ${storage}`,
+    sql`GRANT SELECT (id, org_id, project_id, status, size_bytes, deleted_at) ON files TO ${storage}`,
+    sql`GRANT SELECT (org_id, project_id, source_file_id, status, size_bytes) ON artifacts TO ${storage}`,
+    sql`GRANT SELECT (id, deleted_at) ON projects TO ${storage}`,
+    sql`CREATE POLICY files_storage_usage ON files FOR SELECT TO ${storage} USING (true)`,
+    sql`CREATE POLICY artifacts_storage_usage ON artifacts FOR SELECT TO ${storage} USING (true)`,
+    sql`CREATE POLICY projects_storage_usage ON projects FOR SELECT TO ${storage} USING (true)`,
+
+    // 以 bidtools_storage 的身份重建配额函数，使其成为属主；建完即收回它在 public 的 CREATE 权限。
+    // files_guard 按名称调用它，签名不变。
+    sql`DROP FUNCTION files_org_usage_bytes(uuid)`,
+    sql`GRANT CREATE ON SCHEMA public TO ${storage}`,
+    sql`SET ROLE ${storage}`,
+    sql`CREATE FUNCTION files_org_usage_bytes(p_org_id uuid) RETURNS bigint
+          LANGUAGE plpgsql STABLE ${SECURE}
           AS $$
+          DECLARE
+            v_used bigint;
+          BEGIN
+            -- 只统计调用者当前上下文的组织：应用角色不能借它探测别的组织的用量。
+            IF p_org_id IS NULL OR p_org_id IS DISTINCT FROM public.app_current_org_id() THEN
+              RAISE EXCEPTION 'usage of another organization' USING ERRCODE = 'AR004';
+            END IF;
             WITH counted_files AS (
               SELECT f.id, f.size_bytes FROM public.files f
               LEFT JOIN public.projects p ON p.id = f.project_id
@@ -97,7 +156,14 @@ export async function up(db: Kysely<unknown>): Promise<void> {
                  WHERE a.org_id = p_org_id AND a.status = 'ready'
                    AND (p.deleted_at IS NULL OR p.deleted_at > now() - ${PROJECT_WINDOW})
                    AND (a.source_file_id IS NULL OR a.source_file_id IN (SELECT id FROM counted_files)))::bigint
+            INTO v_used;
+            RETURN v_used;
+          END
           $$`,
+    sql`REVOKE ALL ON FUNCTION files_org_usage_bytes(uuid) FROM PUBLIC`,
+    sql`GRANT EXECUTE ON FUNCTION files_org_usage_bytes(uuid) TO ${app}`,
+    sql`RESET ROLE`,
+    sql`REVOKE CREATE ON SCHEMA public FROM ${storage}`,
 
     // 状态转换的守卫。普通函数（SECURITY INVOKER）：配额统计受 RLS 约束，只统计当前组织。
     sql`CREATE FUNCTION artifacts_guard() RETURNS trigger
@@ -124,14 +190,15 @@ export async function up(db: Kysely<unknown>): Promise<void> {
     sql`ALTER TABLE artifacts ENABLE ROW LEVEL SECURITY`,
     sql`ALTER TABLE artifacts FORCE ROW LEVEL SECURITY`,
     sql`CREATE POLICY artifacts_select_tenant ON artifacts FOR SELECT TO ${app}
-          USING (org_id = app_current_org_id())`,
+          USING (org_id = app_current_org_id() AND ${artifactProjectLive} AND ${artifactSourceLive})`,
     sql`CREATE POLICY artifacts_insert_tenant ON artifacts FOR INSERT TO ${app}
-          WITH CHECK (org_id = app_current_org_id() AND created_by = app_current_user_id() AND status = 'writing')`,
+          WITH CHECK (org_id = app_current_org_id() AND created_by = app_current_user_id() AND status = 'writing'
+            AND ${artifactProjectLive} AND ${artifactSourceLive})`,
     sql`CREATE POLICY artifacts_update_tenant ON artifacts FOR UPDATE TO ${app}
-          USING (org_id = app_current_org_id())
+          USING (org_id = app_current_org_id() AND ${artifactProjectLive} AND ${artifactSourceLive})
           WITH CHECK (org_id = app_current_org_id())`,
     sql`CREATE POLICY artifacts_delete_writing ON artifacts FOR DELETE TO ${app}
-          USING (org_id = app_current_org_id() AND status = 'writing')`,
+          USING (org_id = app_current_org_id() AND status = 'writing' AND ${artifactProjectLive} AND ${artifactSourceLive})`,
     sql`GRANT SELECT, DELETE ON artifacts TO ${app}`,
     sql`GRANT INSERT (org_id, project_id, source_file_id, kind, name, mime, created_by) ON artifacts TO ${app}`,
     sql`GRANT UPDATE (status, size_bytes, sha256) ON artifacts TO ${app}`,
@@ -140,15 +207,36 @@ export async function up(db: Kysely<unknown>): Promise<void> {
 
 export async function down(db: Kysely<unknown>): Promise<void> {
   await run(db, [
-    // 先恢复 0006 的配额函数（不再引用 artifacts、projects），再删表。
-    sql`CREATE OR REPLACE FUNCTION files_org_usage_bytes(p_org_id uuid) RETURNS bigint
-          LANGUAGE sql STABLE
-          AS $$
-            SELECT coalesce(sum(f.size_bytes), 0)::bigint FROM public.files f
-            WHERE f.org_id = p_org_id AND f.status = 'uploaded'
-              AND (f.deleted_at IS NULL OR f.deleted_at > now() - ${FILE_WINDOW})
-          $$`,
+    // 先恢复 0006 的配额函数（属主为迁移角色、不引用 artifacts、projects），再删表和 bidtools_storage 的授权。
+    sql`SET ROLE ${storage}`,
+    sql`DROP FUNCTION files_org_usage_bytes(uuid)`,
+    sql`RESET ROLE`,
+    LEGACY_USAGE_FUNCTION,
+    sql`REVOKE ALL ON FUNCTION files_org_usage_bytes(uuid) FROM PUBLIC`,
+    sql`GRANT EXECUTE ON FUNCTION files_org_usage_bytes(uuid) TO ${app}`,
     sql`DROP TABLE artifacts`,
     sql`DROP FUNCTION artifacts_guard()`,
+
+    sql`DROP POLICY files_storage_usage ON files`,
+    sql`DROP POLICY projects_storage_usage ON projects`,
+    // 列级授权不随表级 REVOKE 收回，逐一收回。
+    sql`REVOKE SELECT (id, org_id, project_id, status, size_bytes, deleted_at) ON files FROM ${storage}`,
+    sql`REVOKE SELECT (id, deleted_at) ON projects FROM ${storage}`,
+    sql`REVOKE USAGE ON SCHEMA public FROM ${storage}`,
+
+    // 恢复 0006 的 files 策略。
+    sql`DROP POLICY files_select_tenant ON files`,
+    sql`DROP POLICY files_insert_tenant ON files`,
+    sql`DROP POLICY files_update_tenant ON files`,
+    sql`DROP POLICY files_delete_uploading ON files`,
+    sql`CREATE POLICY files_select_tenant ON files FOR SELECT TO ${app}
+          USING (org_id = app_current_org_id())`,
+    sql`CREATE POLICY files_insert_tenant ON files FOR INSERT TO ${app}
+          WITH CHECK (org_id = app_current_org_id() AND created_by = app_current_user_id() AND status = 'uploading')`,
+    sql`CREATE POLICY files_update_tenant ON files FOR UPDATE TO ${app}
+          USING (org_id = app_current_org_id())
+          WITH CHECK (org_id = app_current_org_id() AND (deleted_by IS NULL OR deleted_by = app_current_user_id()))`,
+    sql`CREATE POLICY files_delete_uploading ON files FOR DELETE TO ${app}
+          USING (org_id = app_current_org_id() AND status = 'uploading')`,
   ]);
 }

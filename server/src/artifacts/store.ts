@@ -2,7 +2,7 @@
 // 由 RLS 保证只能看到、修改本组织的产物；跨组织的 artifactId 与不存在的一样返回 null。
 //
 // 写入方是第 6 步的解析任务：writeArtifact 一次完成“登记 → 写对象 → 完成（检查配额）”，失败时删除对象和登记行。
-// 读取时按项目和来源文件的删除状态过滤（src/projects/visibility.ts）：项目或来源文件已删除时产物不可访问。
+// 项目或来源文件已删除时产物不可访问，由 RLS 保证（迁移 0008_artifacts），这里不再重复判断。
 import { createHash } from 'node:crypto';
 import { Readable } from 'node:stream';
 import type { Kysely, Selectable } from 'kysely';
@@ -11,7 +11,6 @@ import type { ArtifactsTable, Database } from '../db/schema.ts';
 import { withTenant, type TenantContext } from '../db/tenant.ts';
 import { AppError } from '../errors.ts';
 import type { ObjectStore } from '../files/objectStore.ts';
-import { projectIsLive, sourceFileIsLive } from '../projects/visibility.ts';
 
 export { ARTIFACT_KINDS, ARTIFACT_MIMES, MAX_ARTIFACT_BYTES };
 export type ArtifactKind = keyof typeof ARTIFACT_MIMES;
@@ -169,8 +168,6 @@ export async function findArtifact(db: Kysely<Database>, context: TenantContext,
       .selectAll()
       .where('id', '=', artifactId)
       .where('status', '=', 'ready')
-      .where(projectIsLive('artifacts.project_id'))
-      .where(sourceFileIsLive())
       .executeTakeFirst(),
   );
   return row ? toRecord(row) : null;
@@ -187,9 +184,7 @@ export async function listArtifacts(db: Kysely<Database>, context: TenantContext
     let query = trx
       .selectFrom('artifacts')
       .selectAll()
-      .where('status', '=', 'ready')
-      .where(projectIsLive('artifacts.project_id'))
-      .where(sourceFileIsLive());
+      .where('status', '=', 'ready');
     query = options.projectId !== undefined
       ? query.where('project_id', '=', options.projectId)
       : query.where('source_file_id', '=', options.sourceFileId!);

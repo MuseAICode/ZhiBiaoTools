@@ -11,6 +11,7 @@ import { beginArtifact, completeArtifact, findArtifact, writeArtifact, type NewA
 import { DEFAULT_AUTH_RATE_LIMITS, type AuthRateLimitSettings } from '../../src/auth/rateLimit.ts';
 import { createDatabase, type DatabaseHandle } from '../../src/db/database.ts';
 import { migrateToLatest } from '../../src/db/migrator.ts';
+import { STORAGE_ROLE } from '../../src/db/roles.ts';
 import type { Database } from '../../src/db/schema.ts';
 import { withTenant, type TenantContext } from '../../src/db/tenant.ts';
 import type { ObjectStore } from '../../src/files/objectStore.ts';
@@ -206,6 +207,7 @@ describe('artifacts 表', () => {
       update: { status: 'ready', size_bytes: 1, sha256: Buffer.alloc(32) },
       onProjectDelete: 'restrict',
       projectIdNullable: true,
+      definerRoles: [STORAGE_ROLE],
     },
     { admin: () => superuser, app: () => appDb },
   );
@@ -252,11 +254,17 @@ describe('artifacts 表', () => {
     expect(await superuser.selectFrom('artifacts').select('id').where('org_id', '=', member.orgId).execute()).toEqual([]);
   });
 
-  it('复合外键：来源文件不能是别的组织的文件', async () => {
+  it('来源文件不能是别的组织的文件（RLS 下看不到该文件，复合外键另外兜底）', async () => {
     const a = await newMember();
     const b = await newMember();
     const fileB = await insertUploadedFile(b);
-    await expect(beginArtifact(appDb, a.context, markdown({ sourceFileId: fileB }))).rejects.toThrow(/foreign key constraint/);
+    await expect(beginArtifact(appDb, a.context, markdown({ sourceFileId: fileB }))).rejects.toThrow(/row-level security/);
+    // 绕过 RLS（超级用户）同样挂不上：复合外键 (org_id, source_file_id)。
+    await expect(
+      superuser.insertInto('artifacts').values({
+        org_id: a.orgId, source_file_id: fileB, kind: 'markdown', name: 'a.md', mime: MARKDOWN, created_by: a.userId,
+      }).execute(),
+    ).rejects.toThrow(/foreign key constraint/);
   });
 
   it('守卫：完成后内容不能再改，应用角色不能物理删除已完成的产物，也不能改挂项目或来源文件', async () => {
@@ -545,19 +553,114 @@ describe('项目软删除与文件、产物的联动', () => {
     expect((await storageUsage(appDb, member.context)).used).toBe(inProject.size);
   });
 
-  it('项目删除后完成的产物（解析任务晚于删除结束）同样不可访问，随项目恢复', async () => {
+  it('项目删除后解析任务不能再写入产物；删除前已登记的产物也不能完成，对象被删除', async () => {
     const member = await newMember();
     const projectId = await createProject(member);
+    const pending = await beginArtifact(appDb, member.context, markdown({ projectId }));
     expect((await call(member, 'DELETE', `/api/projects/${projectId}`)).statusCode).toBe(200);
-    const late = await writeArtifact(appDb, member.context, store, markdown({ projectId }), Buffer.from('x'));
-    expect((await call(member, 'GET', `/api/artifacts/${late.id}`)).statusCode).toBe(404);
-    expect((await call(member, 'POST', `/api/projects/${projectId}/restore`)).statusCode).toBe(200);
-    expect((await call(member, 'GET', `/api/artifacts/${late.id}`)).statusCode).toBe(200);
+
+    await expect(writeArtifact(appDb, member.context, store, markdown({ projectId }), Buffer.from('x'))).rejects.toThrow(/row-level security/);
+    await expect(completeArtifact(appDb, member.context, pending.id, { size: 1, sha256: Buffer.alloc(32) })).rejects.toThrow(/not pending/);
+    expect([...store.objects.keys()].filter((key) => key.startsWith(`org/${member.orgId}/`))).toEqual([]);
+    // 遗留的 writing 行不计入配额，由清理任务（第 6 步）删除。
+    expect((await storageUsage(appDb, member.context)).used).toBe(0);
   });
 
   it('项目还有文件或产物时不能物理删除（先由清理任务删除对象和元数据）', async () => {
     const { projectId, fileId } = await setup();
     await expect(superuser.deleteFrom('projects').where('id', '=', projectId).execute()).rejects.toThrow(/foreign key constraint/);
     await expect(superuser.deleteFrom('files').where('id', '=', fileId).execute()).rejects.toThrow(/artifacts_source_file_fkey/);
+  });
+});
+
+describe('数据库层强制：直接查询 files / artifacts 表', () => {
+  async function setup() {
+    const member = await newMember();
+    const projectId = await createProject(member);
+    const fileId = await insertUploadedFile(member, { projectId, size: 100 });
+    const fromFile = await writeArtifact(appDb, member.context, store, markdown({ sourceFileId: fileId }), Buffer.from('a'.repeat(10)));
+    const inProject = await writeArtifact(appDb, member.context, store, markdown({ projectId }, 'outline.md'), Buffer.from('b'.repeat(20)));
+    return { member, projectId, fileId, artifactIds: [fromFile.id, inProject.id].sort() };
+  }
+
+  /** 不经 Store，直接在租户上下文中查表。 */
+  async function visibleRows(member: Member, fileId: string, artifactIds: string[]) {
+    return withTenant(appDb, member.context, async (trx) => ({
+      files: (await trx.selectFrom('files').select('id').where('id', '=', fileId).execute()).map((row) => row.id),
+      artifacts: (await trx.selectFrom('artifacts').select('id').where('id', 'in', artifactIds).orderBy('id').execute()).map((row) => row.id),
+    }));
+  }
+
+  it('已删除项目下的文件和产物：直接查询查不到，更新、删除影响 0 行；恢复项目后又能查到', async () => {
+    const { member, projectId, fileId, artifactIds } = await setup();
+    expect(await visibleRows(member, fileId, artifactIds)).toEqual({ files: [fileId], artifacts: artifactIds });
+
+    expect((await call(member, 'DELETE', `/api/projects/${projectId}`)).statusCode).toBe(200);
+    expect(await visibleRows(member, fileId, artifactIds)).toEqual({ files: [], artifacts: [] });
+    await withTenant(appDb, member.context, async (trx) => {
+      // 不带任何条件的全表查询同样看不到。
+      expect(await trx.selectFrom('files').select('id').execute()).toEqual([]);
+      expect(await trx.selectFrom('artifacts').select('id').execute()).toEqual([]);
+      const updated = await trx.updateTable('files').set({ deleted_at: new Date(), deleted_by: member.userId }).executeTakeFirst();
+      expect(updated.numUpdatedRows).toBe(0n);
+      const updatedArtifacts = await trx.updateTable('artifacts').set({ status: 'ready' }).executeTakeFirst();
+      expect(updatedArtifacts.numUpdatedRows).toBe(0n);
+    });
+    // 超级用户看得到：行原样保留，删除状态没有复制到文件和产物上。
+    expect(await superuser.selectFrom('files').select('deleted_at').where('id', '=', fileId).executeTakeFirstOrThrow()).toEqual({ deleted_at: null });
+    expect(await superuser.selectFrom('artifacts').select('id').where('id', 'in', artifactIds).execute()).toHaveLength(2);
+
+    expect((await call(member, 'POST', `/api/projects/${projectId}/restore`)).statusCode).toBe(200);
+    expect(await visibleRows(member, fileId, artifactIds)).toEqual({ files: [fileId], artifacts: artifactIds });
+  });
+
+  it('来源文件已删除：直接查询查不到其产物，挂在项目上的产物不受影响', async () => {
+    const { member, fileId, artifactIds } = await setup();
+    await withTenant(appDb, member.context, (trx) =>
+      trx.updateTable('files').set({ deleted_at: sql<Date>`now()`, deleted_by: member.userId }).where('id', '=', fileId).execute(),
+    );
+    const rows = await visibleRows(member, fileId, artifactIds);
+    expect(rows.files).toEqual([fileId]);
+    expect(rows.artifacts).toHaveLength(1);
+    expect(await superuser.selectFrom('artifacts').select('source_file_id').where('id', '=', rows.artifacts[0]!).executeTakeFirstOrThrow())
+      .toEqual({ source_file_id: null });
+  });
+
+  it('不能把文件或产物写到已删除的项目或已删除的来源文件下', async () => {
+    const { member, projectId, fileId } = await setup();
+    const looseFile = await insertUploadedFile(member);
+    await withTenant(appDb, member.context, (trx) =>
+      trx.updateTable('files').set({ deleted_at: sql<Date>`now()`, deleted_by: member.userId }).where('id', '=', looseFile).execute(),
+    );
+    expect((await call(member, 'DELETE', `/api/projects/${projectId}`)).statusCode).toBe(200);
+    for (const write of [
+      (trx: Kysely<Database>) => trx.insertInto('files').values({ org_id: member.orgId, project_id: projectId, purpose: 'tender', display_name: 'a.pdf', extension: 'pdf', created_by: member.userId }).execute(),
+      (trx: Kysely<Database>) => trx.insertInto('artifacts').values({ org_id: member.orgId, project_id: projectId, kind: 'markdown', name: 'a.md', mime: MARKDOWN, created_by: member.userId }).execute(),
+      (trx: Kysely<Database>) => trx.insertInto('artifacts').values({ org_id: member.orgId, source_file_id: fileId, kind: 'markdown', name: 'a.md', mime: MARKDOWN, created_by: member.userId }).execute(),
+      (trx: Kysely<Database>) => trx.insertInto('artifacts').values({ org_id: member.orgId, source_file_id: looseFile, kind: 'markdown', name: 'a.md', mime: MARKDOWN, created_by: member.userId }).execute(),
+    ]) {
+      await expect(withTenant(appDb, member.context, write)).rejects.toThrow(/row-level security/);
+    }
+    // 已有的文件也不能改挂到已删除的项目下。
+    const other = await insertUploadedFile(member);
+    await expect(
+      withTenant(appDb, member.context, (trx) => trx.updateTable('files').set({ project_id: projectId }).where('id', '=', other).execute()),
+    ).rejects.toThrow(/row-level security/);
+  });
+
+  it('配额函数统计 RLS 下看不到的行（删除项目不能绕过配额），但只能统计当前上下文的组织', async () => {
+    const { member, projectId } = await setup();
+    expect((await call(member, 'DELETE', `/api/projects/${projectId}`)).statusCode).toBe(200);
+    expect((await storageUsage(appDb, member.context)).used).toBe(130);
+
+    const other = await newMember();
+    await expect(
+      withTenant(appDb, other.context, (trx) => sql`SELECT files_org_usage_bytes(${member.orgId}::uuid)`.execute(trx)),
+    ).rejects.toMatchObject({ code: 'AR004' });
+    await expect(sql`SELECT files_org_usage_bytes(${member.orgId}::uuid)`.execute(appDb)).rejects.toMatchObject({ code: 'AR004' });
+
+    const owner = await sql<{ owner: string; secdef: boolean }>`
+      SELECT pg_get_userbyid(proowner) AS owner, prosecdef AS secdef FROM pg_proc WHERE proname = 'files_org_usage_bytes'`.execute(superuser);
+    expect(owner.rows).toEqual([{ owner: STORAGE_ROLE, secdef: true }]);
   });
 });

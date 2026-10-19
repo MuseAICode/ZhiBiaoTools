@@ -33,6 +33,11 @@ export interface ProjectTableSpec {
   onProjectDelete: 'cascade' | 'restrict';
   /** project_id 可空（只有 files：不属于项目的文件）。项目级表一律不可空。 */
   projectIdNullable?: boolean;
+  /**
+   * 除应用角色外另有策略的 SECURITY DEFINER 函数属主（例如配额函数的 bidtools_storage）。
+   * 必须显式列出；模板另外检查这些角色不能登录、没有 BYPASSRLS，且对本表只有 SELECT 策略。
+   */
+  definerRoles?: readonly string[];
 }
 
 export interface ProjectTableEnv {
@@ -92,12 +97,22 @@ export function describeProjectTable(spec: ProjectTableSpec, env: ProjectTableEn
       rowB = await withTenantAny(env.app(), b.context, (trx) => spec.insert(trx, scopeOf(b)));
     });
 
-    it('启用并强制 RLS，策略只授予应用角色', async () => {
+    it(spec.definerRoles ? '启用并强制 RLS，策略只授予应用角色和声明的函数属主' : '启用并强制 RLS，策略只授予应用角色', async () => {
       const result = await sql<{ relrowsecurity: boolean; relforcerowsecurity: boolean; roles: string[] }>`
         SELECT c.relrowsecurity, c.relforcerowsecurity,
-               array(SELECT DISTINCT pg_get_userbyid(r)::text FROM pg_policy p, unnest(p.polroles) r WHERE p.polrelid = c.oid) AS roles
+               array(SELECT DISTINCT pg_get_userbyid(r)::text FROM pg_policy p, unnest(p.polroles) r WHERE p.polrelid = c.oid ORDER BY 1) AS roles
         FROM pg_class c WHERE c.oid = ${table}::regclass`.execute(env.admin());
-      expect(result.rows).toEqual([{ relrowsecurity: true, relforcerowsecurity: true, roles: [APP_ROLE] }]);
+      expect(result.rows).toEqual([
+        { relrowsecurity: true, relforcerowsecurity: true, roles: [APP_ROLE, ...(spec.definerRoles ?? [])].sort() },
+      ]);
+      for (const role of spec.definerRoles ?? []) {
+        const attributes = await sql<{ rolcanlogin: boolean; rolbypassrls: boolean; rolsuper: boolean }>`
+          SELECT rolcanlogin, rolbypassrls, rolsuper FROM pg_roles WHERE rolname = ${role}`.execute(env.admin());
+        expect(attributes.rows, role).toEqual([{ rolcanlogin: false, rolbypassrls: false, rolsuper: false }]);
+        const commands = await sql<{ polcmd: string }>`
+          SELECT DISTINCT p.polcmd FROM pg_policy p WHERE p.polrelid = ${table}::regclass AND ${role}::regrole = ANY (p.polroles)`.execute(env.admin());
+        expect(commands.rows, role).toEqual([{ polcmd: 'r' }]);
+      }
     });
 
     it(spec.projectIdNullable ? 'org_id 不可空，project_id 可空' : '有 org_id、project_id 两列且都不可空', async () => {
