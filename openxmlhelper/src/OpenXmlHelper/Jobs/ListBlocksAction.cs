@@ -1,7 +1,7 @@
 using System.Text;
 using System.Text.Json;
 
-namespace Yibiao.OpenXmlHelper.Jobs;
+namespace ZhiBiao.OpenXmlHelper.Jobs;
 
 sealed class ListBlocksRequest
 {

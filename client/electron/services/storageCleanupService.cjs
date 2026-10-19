@@ -58,7 +58,7 @@ function collectGeneratedImageReferences(db) {
   const references = new Set();
   const collect = (value) => {
     const source = String(value || '');
-    const pattern = /yibiao-asset:\/\/generated-images\/([^/?#\s"'<>\)]+)/g;
+    const pattern = /app-asset:\/\/generated-images\/([^/?#\s"'<>\)]+)/g;
     for (const match of source.matchAll(pattern)) {
       try {
         references.add(decodeURIComponent(match[1]));
@@ -71,7 +71,7 @@ function collectGeneratedImageReferences(db) {
   db.prepare(`
     SELECT content AS value
     FROM technical_plan_outline_nodes
-    WHERE content LIKE '%yibiao-asset://generated-images/%'
+    WHERE content LIKE '%app-asset://generated-images/%'
   `).all().forEach((row) => collect(row.value));
   return references;
 }

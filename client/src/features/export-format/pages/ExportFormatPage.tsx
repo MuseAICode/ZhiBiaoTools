@@ -344,7 +344,7 @@ function ExportFormatPage({
     let cancelled = false;
     (async () => {
       try {
-        const fonts = await window.yibiao?.systemFonts?.list?.();
+        const fonts = await window.appBridge?.systemFonts?.list?.();
         if (!cancelled && Array.isArray(fonts)) {
           setSystemFonts(fonts);
         }
@@ -366,7 +366,7 @@ function ExportFormatPage({
           if (!templateId) {
             throw new Error('缺少要打开的模板');
           }
-          const template = await window.yibiao?.templates.get(templateId);
+          const template = await window.appBridge?.templates.get(templateId);
           if (!template) {
             throw new Error('模板不存在或已被删除');
           }
@@ -507,8 +507,8 @@ function ExportFormatPage({
       const nextConfig = templateName === config.template_name ? config : { ...config, template_name: templateName };
       const configAtSaveStart = JSON.stringify(config);
       const template = currentTemplateId
-        ? await window.yibiao?.templates.update(currentTemplateId, nextConfig)
-        : await window.yibiao?.templates.create(nextConfig);
+        ? await window.appBridge?.templates.update(currentTemplateId, nextConfig)
+        : await window.appBridge?.templates.create(nextConfig);
       if (!template) {
         throw new Error('模板保存失败');
       }
@@ -602,7 +602,7 @@ function ExportFormatPage({
     let unsubscribe: (() => void) | undefined;
 
     try {
-      const technicalPlan = source === 'bid' ? await window.yibiao?.technicalPlan.loadState() : undefined;
+      const technicalPlan = source === 'bid' ? await window.appBridge?.technicalPlan.loadState() : undefined;
       const outlineData = technicalPlan?.outlineData;
       const outline = outlineData?.outline || [];
       if (source === 'bid' && !hasGeneratedContent(outline, technicalPlan?.contentGenerationSections || {})) {
@@ -619,7 +619,7 @@ function ExportFormatPage({
         warnings: [],
       });
 
-      unsubscribe = window.yibiao?.export.onWordExportProgress((event: WordExportProgressEvent) => {
+      unsubscribe = window.appBridge?.export.onWordExportProgress((event: WordExportProgressEvent) => {
         if (event.requestId && event.requestId !== requestId) {
           return;
         }
@@ -635,7 +635,7 @@ function ExportFormatPage({
         }));
       });
 
-      const result = await window.yibiao?.export.exportWord(source === 'template'
+      const result = await window.appBridge?.export.exportWord(source === 'template'
         ? {
           requestId,
           project_name: config.template_name || '模板样张',
@@ -690,7 +690,7 @@ function ExportFormatPage({
     if (!exportProgress.filePath) return;
 
     try {
-      await window.yibiao?.export.openFile(exportProgress.filePath);
+      await window.appBridge?.export.openFile(exportProgress.filePath);
     } catch (error) {
       const message = error instanceof Error ? error.message : '打开文件失败';
       showToast(message, 'error');
@@ -1811,7 +1811,7 @@ function useTemplatePreview(config: ExportFormatConfig, enabled = true): Templat
       setLoading(true);
       void (async () => {
         try {
-          const result = await window.yibiao.templates.renderPreview(
+          const result = await window.appBridge.templates.renderPreview(
             DOCUMENT_DISPLAY_TEMPLATE_HTML,
             { ...target, template_name: '' },
           );

@@ -42,9 +42,9 @@ function UpdateNotifier() {
                 persistent: true,
               });
               try {
-                const result = await window.yibiao?.plugins.updateAll();
+                const result = await window.appBridge?.plugins.updateAll();
                 dismissToast(progressToastId);
-                window.dispatchEvent(new Event('yibiao:plugins-changed'));
+                window.dispatchEvent(new Event('app:plugins-changed'));
                 if (!result || result.results.length === 0) {
                   showToast('插件已是最新版本', 'success');
                   return;
@@ -63,7 +63,7 @@ function UpdateNotifier() {
                 });
               } catch (error) {
                 dismissToast(progressToastId);
-                window.dispatchEvent(new Event('yibiao:plugins-changed'));
+                window.dispatchEvent(new Event('app:plugins-changed'));
                 showToast(error instanceof Error ? error.message : '批量升级插件失败', 'error');
               } finally {
                 pluginUpdateRunningRef.current = false;
@@ -76,7 +76,7 @@ function UpdateNotifier() {
     };
 
     const unsubscribePluginUpdates = PLUGIN_SYSTEM_ENABLED
-      ? window.yibiao?.onPluginUpdatesAvailable(promptPluginUpdates)
+      ? window.appBridge?.onPluginUpdatesAvailable(promptPluginUpdates)
       : undefined;
 
     const checkUpdate = async () => {
@@ -85,7 +85,7 @@ function UpdateNotifier() {
       }
       updateCheckingRef.current = true;
       try {
-        const result = await window.yibiao?.checkUpdate();
+        const result = await window.appBridge?.checkUpdate();
         if (!result?.enabled) {
           return;
         }

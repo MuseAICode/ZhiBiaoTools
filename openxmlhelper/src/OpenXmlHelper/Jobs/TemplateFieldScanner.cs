@@ -5,7 +5,7 @@ using DocumentFormat.OpenXml;
 using DocumentFormat.OpenXml.Packaging;
 using Wp = DocumentFormat.OpenXml.Wordprocessing;
 
-namespace Yibiao.OpenXmlHelper.Jobs;
+namespace ZhiBiao.OpenXmlHelper.Jobs;
 
 /// <summary>扫描投标模板正文中的明确占位和简单空单元格，输出供 Agent 分类的稳定候选。</summary>
 static class TemplateFieldScanner

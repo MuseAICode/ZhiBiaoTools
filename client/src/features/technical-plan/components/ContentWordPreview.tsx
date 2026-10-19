@@ -44,7 +44,7 @@ export default function ContentWordPreview({ sectionId, requestVersion, contentC
     setLoaded(undefined);
     setLoading(true);
     setError('');
-    window.yibiao.technicalPlan.previewContentWord(sectionId).then((bytes) => {
+    window.appBridge.technicalPlan.previewContentWord(sectionId).then((bytes) => {
       if (active) setLoaded({ document: bytes ? new Uint8Array(bytes) : undefined, context: contentContext });
     }).catch((reason: unknown) => {
       if (active) setError(reason instanceof Error ? reason.message : String(reason));

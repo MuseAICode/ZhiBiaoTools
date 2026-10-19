@@ -1,7 +1,7 @@
 using System.Text.Encodings.Web;
 using System.Text.Json;
 
-namespace Yibiao.OpenXmlHelper;
+namespace ZhiBiao.OpenXmlHelper;
 
 /// <summary>统一 JSON 序列化：信号紧凑，任务文件可读。</summary>
 static class JsonOptions

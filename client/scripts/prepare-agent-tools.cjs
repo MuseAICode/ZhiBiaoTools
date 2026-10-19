@@ -56,7 +56,7 @@ function readArg(name, fallback = '') {
 
 function requestJson(url) {
   return new Promise((resolve, reject) => {
-    const headers = { 'User-Agent': 'yibiao-agent-tools-preparer', Accept: 'application/vnd.github+json' };
+    const headers = { 'User-Agent': 'zhibiao-agent-tools-preparer', Accept: 'application/vnd.github+json' };
     https.get(url, { headers }, (res) => {
       let body = '';
       res.setEncoding('utf8');
@@ -77,7 +77,7 @@ function downloadFile(url, targetPath) {
     fs.mkdirSync(path.dirname(targetPath), { recursive: true });
     const file = fs.createWriteStream(targetPath);
     const request = (currentUrl, redirectCount = 0) => {
-      https.get(currentUrl, { headers: { 'User-Agent': 'yibiao-agent-tools-preparer' } }, (res) => {
+      https.get(currentUrl, { headers: { 'User-Agent': 'zhibiao-agent-tools-preparer' } }, (res) => {
         if ([301, 302, 303, 307, 308].includes(res.statusCode) && res.headers.location) {
           if (redirectCount > 5) return reject(new Error('下载智能体命令工具重定向过多'));
           request(new URL(res.headers.location, currentUrl).toString(), redirectCount + 1);

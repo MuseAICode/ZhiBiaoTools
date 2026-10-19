@@ -282,7 +282,7 @@ function OutlineEditPage({
   const staleText = generating && Number.isFinite(updatedAt) ? `最近更新 ${Math.floor(Math.max(0, nowTick - updatedAt) / 1000)} 秒前` : '';
   useEffect(() => {
     let cancelled = false;
-    window.yibiao?.config.load().then((cfg) => {
+    window.appBridge?.config.load().then((cfg) => {
       if (cancelled) return;
       if (cfg?.export_format) {
         setExportFormat(cfg.export_format);
@@ -368,7 +368,7 @@ function OutlineEditPage({
       setLocalStartAt(startedNow);
       setNowTick(startedNow);
       const nextOutlineExpansionMode = hasOriginalPlan ? outlineExpansionMode : 'ai-complement';
-      await window.yibiao?.tasks.startOutlineGeneration({
+      await window.appBridge?.tasks.startOutlineGeneration({
         reference_knowledge_document_ids: referenceKnowledgeDocumentIds,
         outline_mode: outlineMode,
         outline_expansion_mode: nextOutlineExpansionMode,
@@ -400,7 +400,7 @@ function OutlineEditPage({
   // 用户修改一级目录选择时停止当前弹窗的自动确认计时。
   const suppressOutlineSelectionAutoConfirmation = () => {
     if (!task?.task_id) return;
-    void window.yibiao.tasks.suppressOutlineSelectionAutoConfirmation({ taskId: task.task_id }).catch(() => undefined);
+    void window.appBridge.tasks.suppressOutlineSelectionAutoConfirmation({ taskId: task.task_id }).catch(() => undefined);
   };
 
   const getMutationLockMessage = () => {

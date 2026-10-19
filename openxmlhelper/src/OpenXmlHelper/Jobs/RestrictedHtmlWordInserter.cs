@@ -11,7 +11,7 @@ using DW = DocumentFormat.OpenXml.Drawing.Wordprocessing;
 using PIC = DocumentFormat.OpenXml.Drawing.Pictures;
 using Wp = DocumentFormat.OpenXml.Wordprocessing;
 
-namespace Yibiao.OpenXmlHelper.Jobs;
+namespace ZhiBiao.OpenXmlHelper.Jobs;
 
 /// <summary>未能导出、已在原位改为文字提示的配图及原因，随任务结果返回 Main。</summary>
 sealed record ImageWarning(string AssetRef, string Reason);
@@ -26,13 +26,13 @@ sealed class FigureAssets(IReadOnlyDictionary<string, string>? declaredTypes = n
 /// <summary>把受限 HTML 转为 Open XML 块，写入文档正文或指定块级内容控件。</summary>
 static partial class RestrictedHtmlWordInserter
 {
-    public const string TagPrefix = "yibiao:body:";
+    public const string TagPrefix = "app:body:";
     const long EmusPerTwip = 635L;
     const long EmusPerPoint = 12_700L;
     const long DefaultPageWidthTwips = 11_906L;
     const long DefaultPageMarginTwips = 1_134L;
     const long DefaultColumnSpacingTwips = 720L;
-    const string FigureTokenPrefix = "YIBIAOFIGURE";
+    const string FigureTokenPrefix = "APPMARKFIGURE";
 
     const long AssetCacheLimitBytes = 32L * 1024 * 1024;
 

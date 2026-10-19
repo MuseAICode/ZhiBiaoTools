@@ -91,7 +91,7 @@ function ContentExpansionReplaceTestPage() {
   const loadTechnicalPlanState = async () => {
     setLoadingState(true);
     try {
-      const bridge = window.yibiao;
+      const bridge = window.appBridge;
       if (!bridge?.technicalPlan?.loadState) {
         throw new Error('当前 preload 未暴露 technicalPlan.loadState。');
       }
@@ -155,7 +155,7 @@ function ContentExpansionReplaceTestPage() {
     setRunning(true);
     setResult(null);
     try {
-      const bridge = window.yibiao;
+      const bridge = window.appBridge;
       if (!bridge?.developerExpansionReplaceTest?.run) {
         throw new Error('当前 preload 未暴露 developerExpansionReplaceTest.run。');
       }
@@ -233,7 +233,7 @@ function ContentExpansionReplaceTestPage() {
 
           <div className="developer-expansion-replace-source-note">
             <strong>数据来源</strong>
-            <span>只读取 window.yibiao.technicalPlan.loadState() 返回的 outlineData.outline[*].content。</span>
+            <span>只读取 window.appBridge.technicalPlan.loadState() 返回的 outlineData.outline[*].content。</span>
           </div>
         </section>
 

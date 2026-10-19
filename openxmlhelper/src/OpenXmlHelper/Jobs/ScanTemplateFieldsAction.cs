@@ -2,7 +2,7 @@ using System.Text;
 using System.Text.Json;
 using DocumentFormat.OpenXml.Packaging;
 
-namespace Yibiao.OpenXmlHelper.Jobs;
+namespace ZhiBiao.OpenXmlHelper.Jobs;
 
 /// <summary>扫描内部投标模板并把待填候选写入任务目录，供模板 Agent 分类。</summary>
 static class ScanTemplateFieldsAction

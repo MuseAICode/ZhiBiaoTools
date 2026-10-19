@@ -106,7 +106,7 @@ function collectFiles(targetPath, limit) {
 const windowsRestartManagerSource = `
 using System;
 using System.Runtime.InteropServices;
-public static class YibiaoRmHelper {
+public static class AppRmHelper {
   [StructLayout(LayoutKind.Sequential)]
   public struct RM_UNIQUE_PROCESS { public int dwProcessId; public System.Runtime.InteropServices.ComTypes.FILETIME ProcessStartTime; }
   [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
@@ -153,8 +153,8 @@ const windowsHolderQueryScript = [
   `Add-Type -TypeDefinition @'
 ${windowsRestartManagerSource}
 '@ -Language CSharp`,
-  "$files = $env:YIBIAO_LOCKED_FILES -split '\\|' | Where-Object { $_ }",
-  'if ($files.Count -gt 0) { [YibiaoRmHelper]::GetLockingPids([string[]]$files) | ForEach-Object { Write-Output $_ } }',
+  "$files = $env:ZHIBIAO_LOCKED_FILES -split '\\|' | Where-Object { $_ }",
+  'if ($files.Count -gt 0) { [AppRmHelper]::GetLockingPids([string[]]$files) | ForEach-Object { Write-Output $_ } }',
 ].join('\n');
 
 function parsePidOutput(output) {
@@ -173,7 +173,7 @@ function findHolderPidsWindows(files) {
       encoding: 'utf8',
       windowsHide: true,
       timeout: holderQueryTimeoutMs,
-      env: { ...process.env, YIBIAO_LOCKED_FILES: files.join('|') },
+      env: { ...process.env, ZHIBIAO_LOCKED_FILES: files.join('|') },
     },
   );
   return parsePidOutput(output);

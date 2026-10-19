@@ -59,7 +59,7 @@ async function createPiSession({ workspaceDir, sessionsDir, sessionFile, environ
     modelsPath: null,
     allowModelNetwork: false,
   });
-  modelRuntime.registerProvider('yibiao', {
+  modelRuntime.registerProvider('app', {
     name: 'ZhiBiaoTools AI',
     baseUrl: `${proxyInfo.baseUrl}/v1`,
     api: 'openai-completions',
@@ -79,13 +79,13 @@ async function createPiSession({ workspaceDir, sessionsDir, sessionFile, environ
       },
     }],
   });
-  await modelRuntime.setRuntimeApiKey('yibiao', proxyInfo.token);
-  const model = modelRuntime.getModel('yibiao', 'default');
+  await modelRuntime.setRuntimeApiKey('app', proxyInfo.token);
+  const model = modelRuntime.getModel('app', 'default');
   if (!model) throw new Error('Pi Agent 模型注册失败');
   const jsonValidator = createPiJsonValidator({ workspaceDir, validationSchemas: jsonValidationSchemas });
 
   const settingsManager = codingAgent.SettingsManager.inMemory({
-    defaultProvider: 'yibiao',
+    defaultProvider: 'app',
     defaultModel: 'default',
     defaultThinkingLevel: 'off',
     defaultProjectTrust: 'never',
@@ -108,7 +108,7 @@ async function createPiSession({ workspaceDir, sessionsDir, sessionFile, environ
     noPromptTemplates: true,
     noThemes: true,
     agentsFilesOverride: () => ({
-      agentsFiles: [{ path: '<yibiao-agent-workspace>', content: environment.instructions }],
+      agentsFiles: [{ path: '<app-agent-workspace>', content: environment.instructions }],
     }),
     systemPromptOverride: () => undefined,
     appendSystemPromptOverride: () => [

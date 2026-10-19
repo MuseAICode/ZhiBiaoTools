@@ -30,7 +30,7 @@ export function AiHttpErrorDialogProvider({ children }: { children: ReactNode })
   const htmlPayload = useMemo(() => isHtmlPayload(currentError), [currentError]);
 
   useEffect(() => {
-    const unsubscribe = window.yibiao?.ai?.onHttpError?.((event) => {
+    const unsubscribe = window.appBridge?.ai?.onHttpError?.((event) => {
       setErrors((prev) => [...prev, { ...event, body: String(event.body || '') }]);
     });
 

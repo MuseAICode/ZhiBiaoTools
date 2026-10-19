@@ -24,7 +24,7 @@ export function useTextModelSetupRedirect(requestSectionChange: (section: Sectio
   useEffect(() => {
     let disposed = false;
 
-    void window.yibiao.config.load()
+    void window.appBridge.config.load()
       .then((config) => {
         if (disposed) return;
         if (!config.credential_status?.text[config.text_model_provider]?.configured || !config.model_name || !config.base_url) {

@@ -474,7 +474,7 @@ async function runTextModelProbe(config, options) {
     }
     if (options.requireToolCall && (
       !responseSummary.tool_names.includes('diagnostic_echo')
-      || !responseSummary.tool_arguments_preview.some((item) => item.includes('YIBIAO_PI_TOOL_OK'))
+      || !responseSummary.tool_arguments_preview.some((item) => item.includes('APP_PI_TOOL_OK'))
     )) {
       result.message = '模型未返回符合要求的 diagnostic_echo 工具调用';
       result.error = { message: result.message, response_excerpt: clipText(rawText, 3000) };
@@ -521,7 +521,7 @@ async function runPiTextModelSelfCheck(config, onProbe) {
     label: toolsLabel,
     stream: configuredStream,
     requireToolCall: true,
-    prompt: '必须调用 diagnostic_echo 工具，参数 value 必须为 YIBIAO_PI_TOOL_OK，不要直接回答。',
+    prompt: '必须调用 diagnostic_echo 工具，参数 value 必须为 APP_PI_TOOL_OK，不要直接回答。',
   });
   reportProbe(tools, tools.success ? 'success' : 'error');
   const configuredMode = configuredStream ? stream : normal;
@@ -830,7 +830,7 @@ function validatePiSessionSnapshot(snapshot = {}) {
   const activeTools = Array.isArray(snapshot.active_tools) ? snapshot.active_tools : [];
   const extensions = Array.isArray(snapshot.extensions) ? snapshot.extensions : [];
   const resourcesValid = snapshot.context_files?.length === 1
-    && snapshot.context_files[0] === '<yibiao-agent-workspace>'
+    && snapshot.context_files[0] === '<app-agent-workspace>'
     && !snapshot.skills?.length
     && !snapshot.prompts?.length
     && extensions.length === 1

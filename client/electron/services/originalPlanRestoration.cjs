@@ -9,7 +9,7 @@ const NUMBERED_VIEW_PART_PREFIX = 'original-plan-numbered-part-';
 // 提取导入图片引用，保留出现顺序和次数，兼容正文及 HTML 表格内图片。
 function originalImageReferences(content) {
   const references = [];
-  const pattern = /!\[[^\]]*\]\(<?(yibiao-asset:\/\/imported-images\/[^\s<>)]*)>?(?:\s+"[^"]*")?\)|<img\b[^>]*\bsrc=["'](yibiao-asset:\/\/imported-images\/[^"']+)["'][^>]*>/gi;
+  const pattern = /!\[[^\]]*\]\(<?(app-asset:\/\/imported-images\/[^\s<>)]*)>?(?:\s+"[^"]*")?\)|<img\b[^>]*\bsrc=["'](app-asset:\/\/imported-images\/[^"']+)["'][^>]*>/gi;
   for (const match of String(content || '').matchAll(pattern)) references.push(match[1] || match[2]);
   return references;
 }

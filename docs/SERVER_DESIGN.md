@@ -170,7 +170,7 @@ organizations（组织，数据隔离的边界）
 
 ### 2.7 桌面数据导入
 
-0.19 记录“本版本无存量用户”，所以**第一版不做** `yibiao.sqlite` 导入工具（第 9 节第 18 项）。如果以后需要，做成“上传整个工作区压缩包 → 在沙箱中解析 → 导入成当前组织下的新项目”，按不可信输入处理。
+0.19 记录“本版本无存量用户”，所以**第一版不做** `app.sqlite` 导入工具（第 9 节第 18 项）。如果以后需要，做成“上传整个工作区压缩包 → 在沙箱中解析 → 导入成当前组织下的新项目”，按不可信输入处理。
 
 ## 3. 注册、登录与会话
 
@@ -386,19 +386,19 @@ Markdown 中远程图片的下载（`docs/EXTERNAL_SERVICES.md` §2.9）URL 来�
 
 ### 6.4 下载与资源访问
 
-取代 `yibiao-asset://` 协议、`export.openFile`、`shell.openPath` 和保存对话框：
+取代 `app-asset://` 协议、`export.openFile`、`shell.openPath` 和保存对话框：
 
 - 统一入口 `GET /api/files/:fileId/content`，按 `TenantContext` 校验归属后：
   - 小文件和图片由 api 直接流式返回；
   - 大文件生成 S3 预签名 URL（有效期 5 分钟，绑定 `response-content-disposition`）并 302 跳转。预签名 URL 不能撤销，所以有效期必须短；
 - 响应头：`Content-Disposition: attachment; filename*=UTF-8''<编码后的显示名>`（图片预览用 `inline`），`X-Content-Type-Options: nosniff`，`Content-Type` 用服务端记录的值而非扩展名推断；
 - 图片以外的文件一律 `attachment`，防止上传的 HTML / SVG 在本站同源下被执行；**SVG 不允许作为上传图片**（现有白名单中本来就没有）；
-- 前端中原来的 `yibiao-asset://imported-images/...` 链接在服务端返回时改写为 `/api/files/:id/content`，`MarkdownRenderer` 的图片协议白名单相应改成只允许同源相对路径和 `http(s)`；
+- 前端中原来的 `app-asset://imported-images/...` 链接在服务端返回时改写为 `/api/files/:id/content`，`MarkdownRenderer` 的图片协议白名单相应改成只允许同源相对路径和 `http(s)`；
 - 全站 CSP：`default-src 'self'; img-src 'self' blob: data:; object-src 'none'; frame-ancestors 'none'; base-uri 'self'`，配合 `MarkdownRenderer` 的白名单清洗，作为 XSS 的第二道防线。
 
 ### 6.5 实现（旧仓库 PR #34）：文件存储
 
-第 4 步的第一个 PR，只做服务端的上传、下载、删除，不改 `client/`，不替换 `getPathForFile`、`yibiao-asset://`、`openFile` 等调用（后续 PR）。
+第 4 步的第一个 PR，只做服务端的上传、下载、删除，不改 `client/`，不替换 `getPathForFile`、`app-asset://`、`openFile` 等调用（后续 PR）。
 
 - **对象存储**：只依赖 S3 API（`@aws-sdk/client-s3` + `@aws-sdk/lib-storage`，3.1145.0），云厂商待定（香港节点）。配置 `S3_ENDPOINT`、`S3_REGION`、`S3_BUCKET`、`S3_FORCE_PATH_STYLE`、`S3_ACCESS_KEY_ID`、`S3_SECRET_ACCESS_KEY`（或 `_FILE`）；未设置 `S3_BUCKET` 时文件接口返回 503。生产环境 endpoint 必须是 https。SDK 的校验和设为“仅接口要求时”（多家 S3 兼容服务不支持 aws-chunked 尾部校验和），内容完整性由上传时计算的 SHA-256 保证。
 - **本地 S3 兼容服务**：MinIO 社区版已进入维护状态、不再提供官方镜像（第 1 节待核实的事项），选用 **SeaweedFS 4.48**（Apache-2.0，`weed mini` 单进程模式，按 digest 固定）。`docker-compose.yml` 的 `s3` 服务只把 S3 端口映射到 `127.0.0.1:8333`；必须设置访问密钥（不设置时 SeaweedFS 接受任意密钥），并关闭默认开启的遥测、管理界面、WebDAV 和 Iceberg / Lance 接口。CI 中以 `docker run` 启动同一镜像（服务容器不能指定启动命令）。
@@ -590,7 +590,7 @@ AI 网关（worker 内）── 解密 Key ──> 模型服务商
 | 15 | 上传限制与配额 | 单文件大小、每组织存储总量、每日 Agent 时长 | 文档 100 MB、图片 10 MB、每组织 20 GB、每日 Agent 8 小时 | **采用建议** | 4、6 |
 | 16 | 病毒扫描 | a. 接入 ClamAV；b. 不接 | **b** 起步，面向企业客户时再加 | **采用建议（b）** | 4 |
 | 17 | 数据保留与删除 | 恢复期、注销后删除时限、备份保留期 | 恢复期 7 天、注销后 30 天内删除、备份按第 8.4 节；写进隐私声明 | **采用建议** | 9 |
-| 18 | 桌面数据导入 | a. 不做；b. 做 `yibiao.sqlite` 工作区导入 | **a**（目前无存量用户） | **采用建议（a）** | 5 |
+| 18 | 桌面数据导入 | a. 不做；b. 做 `app.sqlite` 工作区导入 | **a**（目前无存量用户） | **采用建议（a）** | 5 |
 
 ## 10. AI 用量计量与计费
 

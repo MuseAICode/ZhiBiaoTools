@@ -1,12 +1,12 @@
 using DocumentFormat.OpenXml;
 using Wp = DocumentFormat.OpenXml.Wordprocessing;
 
-namespace Yibiao.OpenXmlHelper.Jobs;
+namespace ZhiBiao.OpenXmlHelper.Jobs;
 
 /// <summary>将已确认候选确定性转换为带业务标识的 Word 内容控件。</summary>
 static class TemplateFieldSdtWriter
 {
-    public const string TagPrefix = "yibiao:field:";
+    public const string TagPrefix = "app:field:";
     public const string PlaceholderFill = "FCE8E6";
     public const string PlaceholderTextColor = "000000";
 

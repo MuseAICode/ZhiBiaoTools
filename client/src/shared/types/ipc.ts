@@ -493,7 +493,7 @@ export interface DeveloperLayoutFigureResult {
   elapsedMs: number;
 }
 
-export interface YibiaoBridge {
+export interface PreloadBridge {
   appName: string;
   platform: string;
   getVersion: () => Promise<string>;

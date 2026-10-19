@@ -1,4 +1,4 @@
-namespace Yibiao.OpenXmlHelper.Jobs;
+namespace ZhiBiao.OpenXmlHelper.Jobs;
 
 /// <summary>按任务目录执行一个 action，一次只跑一个任务。</summary>
 sealed class JobRunner

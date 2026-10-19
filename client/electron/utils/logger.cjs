@@ -1,9 +1,9 @@
 function logInfo(...args) {
-  console.log('[yibiao-client]', ...args);
+  console.log('[zhibiao-client]', ...args);
 }
 
 function logError(...args) {
-  console.error('[yibiao-client]', ...args);
+  console.error('[zhibiao-client]', ...args);
 }
 
 module.exports = {

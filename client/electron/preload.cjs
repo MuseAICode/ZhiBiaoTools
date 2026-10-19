@@ -287,9 +287,9 @@ const bridge = {
   },
 };
 
-contextBridge.exposeInMainWorld('yibiao', bridge);
+contextBridge.exposeInMainWorld('appBridge', bridge);
 
-contextBridge.exposeInMainWorld('yibiaoClient', {
+contextBridge.exposeInMainWorld('appClient', {
   appName: bridge.appName,
   platform: bridge.platform,
 });

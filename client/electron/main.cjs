@@ -9,7 +9,7 @@ const { getConfigFilePath, getCredentialLibraryDir, getGeneratedImagesDir, getGp
 const rendererUrl = process.env.ELECTRON_RENDERER_URL;
 const iconPath = path.join(__dirname, '../assets/icon.ico');
 const packagedIndexUrl = pathToFileURL(path.join(__dirname, '../dist/index.html')).toString();
-const GPU_HARDWARE_ACCELERATION_TRIAL_ARG = '--yibiao-trial-hardware-acceleration';
+const GPU_HARDWARE_ACCELERATION_TRIAL_ARG = '--app-trial-hardware-acceleration';
 const FORCE_DISABLE_GPU_ARGS = ['--disable-gpu', '--disable-hardware-acceleration'];
 let appQuitting = false;
 let gpuRecoveryRelaunchStarted = false;
@@ -235,12 +235,12 @@ async function relaunchWithGpuDisabled() {
 const gpuStartupState = configureGpuHardwareAcceleration();
 
 protocol.registerSchemesAsPrivileged([{
-  scheme: 'yibiao-asset',
+  scheme: 'app-asset',
   privileges: { standard: true, secure: true, supportFetchAPI: true },
 }]);
 
 function registerAssetProtocol() {
-  protocol.handle('yibiao-asset', (request) => {
+  protocol.handle('app-asset', (request) => {
     try {
       const url = new URL(request.url);
       const assetRoots = {

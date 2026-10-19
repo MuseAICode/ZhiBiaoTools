@@ -131,7 +131,7 @@ describe('MarkdownRenderer：开启原始 HTML 后仍按白名单清洗', () => 
   it('图片只允许列出的协议，其余显示为替代文本', () => {
     const container = render([
       '<img src="https://img.example.com/a.png" alt="https">',
-      '<img src="yibiao-asset://workspace/a.png" alt="asset">',
+      '<img src="app-asset://workspace/a.png" alt="asset">',
       '<img src="data:image/png;base64,AAAA" alt="png">',
       '<img src="data:image/svg+xml;base64,PHN2Zz4=" alt="svg">',
       '<img src="javascript:alert(1)" alt="js">',

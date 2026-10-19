@@ -10,16 +10,16 @@ using PIC = DocumentFormat.OpenXml.Drawing.Pictures;
 using Wps = DocumentFormat.OpenXml.Office2010.Word.DrawingShape;
 using Wp = DocumentFormat.OpenXml.Wordprocessing;
 
-namespace Yibiao.OpenXmlHelper.Jobs;
+namespace ZhiBiao.OpenXmlHelper.Jobs;
 
 /// <summary>用受限 HTML 和导出格式配置生成可直接预览的 Word 文档。</summary>
 static class RestrictedHtmlDocumentRenderer
 {
-    const string HeadingMarker = "YIBIAOHEADING";
-    const string TableCaptionMarker = "YIBIAOTABLECAPTION:";
-    const string FigureCaptionMarker = "YIBIAOFIGURECAPTION:";
-    const string UnorderedListMarker = "YIBIAOLISTU:";
-    const string OrderedListMarker = "YIBIAOLISTO:";
+    const string HeadingMarker = "APPMARKHEADING";
+    const string TableCaptionMarker = "APPMARKTABLECAPTION:";
+    const string FigureCaptionMarker = "APPMARKFIGURECAPTION:";
+    const string UnorderedListMarker = "APPMARKLISTU:";
+    const string OrderedListMarker = "APPMARKLISTO:";
 
     static readonly IReadOnlyDictionary<string, (double Width, double Height)> PaperSizes =
         new Dictionary<string, (double Width, double Height)>(StringComparer.OrdinalIgnoreCase)
@@ -181,14 +181,14 @@ static class RestrictedHtmlDocumentRenderer
     /// <summary>自检副本的定位段落转为零宽书签，不进入可见正文或改变分页。</summary>
     static void ApplyLayoutBookmarks(Wp.Body body, int bookmarkId)
     {
-        const string prefix = "YIBIAOLAYOUT:yb_layout_";
+        const string prefix = "APPMARKLAYOUT:yb_layout_";
         foreach (var marker in body.Elements<Wp.Paragraph>().Where(p => p.InnerText.StartsWith(prefix, StringComparison.Ordinal)).ToList())
         {
             var next = marker.NextSibling();
             var target = next as Wp.Paragraph ?? next?.Descendants<Wp.Paragraph>().FirstOrDefault();
             if (target is null) throw new InvalidOperationException("格式自检书签缺少对应正文块");
             var id = (bookmarkId++).ToString(CultureInfo.InvariantCulture);
-            var start = new Wp.BookmarkStart { Id = id, Name = marker.InnerText["YIBIAOLAYOUT:".Length..] };
+            var start = new Wp.BookmarkStart { Id = id, Name = marker.InnerText["APPMARKLAYOUT:".Length..] };
             if (target.ParagraphProperties is { } properties) target.InsertAfter(start, properties);
             else target.PrependChild(start);
             target.InsertAfter(new Wp.BookmarkEnd { Id = id }, start);
@@ -231,7 +231,7 @@ static class RestrictedHtmlDocumentRenderer
             var clone = (Wp.AbstractNum)source.CloneNode(true);
             clone.AbstractNumberId = nextAbstract++;
             // HtmlToOpenXml 用名称索引内置列表；副本不能继续占用 disc/decimal 名称。
-            clone.AbstractNumDefinitionName = new Wp.AbstractNumDefinitionName { Val = $"yibiao-range-{clone.AbstractNumberId}" };
+            clone.AbstractNumDefinitionName = new Wp.AbstractNumDefinitionName { Val = $"app-range-{clone.AbstractNumberId}" };
             numbering.InsertBefore(clone, numbering.Elements<Wp.NumberingInstance>().First());
             var number = (Wp.NumberingInstance)instance.CloneNode(true);
             number.NumberID = nextNumber++;

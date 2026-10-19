@@ -1,6 +1,6 @@
-export const RESTRICTED_HTML_BLOCK_MARKER = '<!-- yibiao:block -->';
+export const RESTRICTED_HTML_BLOCK_MARKER = '<!-- app:block -->';
 
-const BLOCK_MARKER_PATTERN = /<!--\s*yibiao:block\s*-->/gi;
+const BLOCK_MARKER_PATTERN = /<!--\s*app:block\s*-->/gi;
 const ID_PATTERN = /^[A-Za-z][A-Za-z0-9_-]{0,63}$/;
 const ROOT_TAGS = new Set(['h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'p', 'ol', 'ul', 'figure', 'table']);
 const INLINE_TAGS = new Set(['strong', 'em', 'u', 'sup', 'sub', 'br']);
@@ -435,13 +435,13 @@ function parseFragment(fragment: string, index: number, ids: Map<string, number>
   };
 }
 
-/** 解析、清洗并校验一段易标受限 HTML。 */
+/** 解析、清洗并校验一段智标受限 HTML。 */
 export function parseRestrictedHtml(source: string, options: RestrictedHtmlParseOptions = {}): RestrictedHtmlParseResult {
   const raw = String(source || '');
   const markerMatches = raw.match(BLOCK_MARKER_PATTERN) || [];
   const pieces = raw.split(BLOCK_MARKER_PATTERN);
   const globalIssues: RestrictedHtmlIssue[] = [];
-  if (pieces[0]?.trim()) globalIssues.push({ blockIndex: 0, level: 'error', message: '首个正文块前缺少 yibiao:block 分隔注释' });
+  if (pieces[0]?.trim()) globalIssues.push({ blockIndex: 0, level: 'error', message: '首个正文块前缺少 app:block 分隔注释' });
   const fragments = pieces.slice(markerMatches.length ? 1 : 0).filter((piece) => piece.trim());
   if (!markerMatches.length && raw.trim()) {
     fragments.splice(0, fragments.length, raw);

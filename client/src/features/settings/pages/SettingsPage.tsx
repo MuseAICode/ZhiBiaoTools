@@ -682,17 +682,17 @@ function SettingsPage({ onDeveloperModeChange, request, onRequestHandled, regist
 
   useEffect(() => {
     void loadTextConfig();
-    void window.yibiao?.getVersion().then(setAppVersion);
+    void window.appBridge?.getVersion().then(setAppVersion);
 
     const unsubs: Array<() => void> = [];
     unsubs.push(
-      window.yibiao?.onUpdateProgress(({ percent }) => {
+      window.appBridge?.onUpdateProgress(({ percent }) => {
         setUpdateStatus('downloading');
         setUpdatePercent(Math.round(percent));
       }) ?? (() => {})
     );
     unsubs.push(
-      window.yibiao?.onUpdateDownloaded(({ version }) => {
+      window.appBridge?.onUpdateDownloaded(({ version }) => {
         if (version) {
           setUpdateVersion(version);
         }
@@ -700,7 +700,7 @@ function SettingsPage({ onDeveloperModeChange, request, onRequestHandled, regist
       }) ?? (() => {})
     );
     unsubs.push(
-      window.yibiao?.onUpdateError(({ message }) => {
+      window.appBridge?.onUpdateError(({ message }) => {
         setUpdateStatus('error');
         setUpdateError(message);
       }) ?? (() => {})
@@ -726,7 +726,7 @@ function SettingsPage({ onDeveloperModeChange, request, onRequestHandled, regist
 
   const loadTextConfig = async () => {
     try {
-      const config = await window.yibiao?.config.load();
+      const config = await window.appBridge?.config.load();
       if (!config) {
         return;
       }
@@ -813,11 +813,11 @@ function SettingsPage({ onDeveloperModeChange, request, onRequestHandled, regist
 
   // 保存成功后从主进程重新读取凭据状态，已执行的清除标记随之失效。
   const persistConfig = async (config: ClientConfig) => {
-    const result = await window.yibiao.config.save(config);
+    const result = await window.appBridge.config.save(config);
     if (result?.success) {
       setCredentialClears(emptyCredentialClears);
       try {
-        const latest = await window.yibiao.config.load();
+        const latest = await window.appBridge.config.load();
         setCredentialStatus(latest.credential_status ?? null);
       } catch (error) {
         console.warn('刷新 API Key 状态失败', error);
@@ -835,7 +835,7 @@ function SettingsPage({ onDeveloperModeChange, request, onRequestHandled, regist
       setUpdateStatus('checking');
       setUpdatePercent(0);
       setUpdateError('');
-      const result = await window.yibiao?.checkUpdate();
+      const result = await window.appBridge?.checkUpdate();
       if (!result?.enabled) {
         const message = result?.message || '开发调试模式不执行自动更新';
         setUpdateStatus('disabled');
@@ -876,7 +876,7 @@ function SettingsPage({ onDeveloperModeChange, request, onRequestHandled, regist
 
   const installDownloadedUpdate = async () => {
     try {
-      const result = await window.yibiao?.quitAndInstall();
+      const result = await window.appBridge?.quitAndInstall();
       if (result && !result.success) {
         showToast(result.message || '安装更新失败', 'error');
       }
@@ -1032,7 +1032,7 @@ function SettingsPage({ onDeveloperModeChange, request, onRequestHandled, regist
     }
 
     try {
-      const result = await window.yibiao?.openExternal(url);
+      const result = await window.appBridge?.openExternal(url);
       if (result && !result.success) {
         showToast(result.message || '打开 API Key 获取页面失败', 'error');
       }
@@ -1049,7 +1049,7 @@ function SettingsPage({ onDeveloperModeChange, request, onRequestHandled, regist
     }
 
     try {
-      const result = await window.yibiao?.openExternal(url);
+      const result = await window.appBridge?.openExternal(url);
       if (result && !result.success) {
         showToast(result.message || '打开生图服务 API Key 获取页面失败', 'error');
       }
@@ -1066,7 +1066,7 @@ function SettingsPage({ onDeveloperModeChange, request, onRequestHandled, regist
       if (result?.success) {
         setSavedConfig(config);
       }
-      const content = await window.yibiao?.ai.chat({
+      const content = await window.appBridge?.ai.chat({
         messages: [{ role: 'user', content: 'hi' }],
         timeout_ms: 30000,
         timeout_message: '文本模型测试超时，请检查 Base URL、API Key 或模型名称',
@@ -1091,7 +1091,7 @@ function SettingsPage({ onDeveloperModeChange, request, onRequestHandled, regist
       setAgentSelfCheckStatus('checking');
       setAgentSelfCheckResult(null);
 
-      const result = await window.yibiao?.agent.selfCheck();
+      const result = await window.appBridge?.agent.selfCheck();
       if (!result) {
         throw new Error('智能体自检未返回结果');
       }
@@ -1136,7 +1136,7 @@ function SettingsPage({ onDeveloperModeChange, request, onRequestHandled, regist
 
     try {
       setExportingAgentSelfCheckReport(true);
-      const result = await window.yibiao?.agent.exportSelfCheckReport(agentSelfCheckResult);
+      const result = await window.appBridge?.agent.exportSelfCheckReport(agentSelfCheckResult);
       if (!result) {
         throw new Error('导出智能体自检报告失败');
       }
@@ -1163,7 +1163,7 @@ function SettingsPage({ onDeveloperModeChange, request, onRequestHandled, regist
     try {
       setTestingImageModel(true);
       const config = createClientConfig();
-      const result = await window.yibiao?.ai.testImageModel(config);
+      const result = await window.appBridge?.ai.testImageModel(config);
       if (!result?.success) {
         throw new Error(result?.message || '生图模型测试失败');
       }
@@ -1237,7 +1237,7 @@ function SettingsPage({ onDeveloperModeChange, request, onRequestHandled, regist
 
   const openConfigFolder = async () => {
     try {
-      await window.yibiao?.config.openConfigFolder();
+      await window.appBridge?.config.openConfigFolder();
       showToast('已打开配置文件夹', 'success');
     } catch (error) {
       showToast(error instanceof Error ? error.message : '打开配置文件夹失败', 'error');
@@ -1247,7 +1247,7 @@ function SettingsPage({ onDeveloperModeChange, request, onRequestHandled, regist
   const fetchTextModels = async () => {
     try {
       setLoadingModels('text');
-      const result = await window.yibiao?.config.listModels(createClientConfig());
+      const result = await window.appBridge?.config.listModels(createClientConfig());
       const models = result?.models || [];
       setTextModels(models);
       if (result?.success && models.length > 0) {
@@ -1297,7 +1297,7 @@ function SettingsPage({ onDeveloperModeChange, request, onRequestHandled, regist
         }
 
         const config = createClientConfig();
-        const result = await window.yibiao?.config.listModels({
+        const result = await window.appBridge?.config.listModels({
           ...config,
           api_key: state.imageModel.api_key,
           base_url: baseUrl,
@@ -1429,7 +1429,7 @@ function SettingsPage({ onDeveloperModeChange, request, onRequestHandled, regist
     }
 
     try {
-      const result = await window.yibiao?.developerTokenStats.openWindow();
+      const result = await window.appBridge?.developerTokenStats.openWindow();
       showToast(result?.success ? '已打开 Token 统计小窗' : '打开 Token 统计小窗失败', result?.success ? 'success' : 'error');
     } catch (error) {
       showToast(error instanceof Error ? error.message : '打开 Token 统计小窗失败', 'error');
@@ -1452,7 +1452,7 @@ function SettingsPage({ onDeveloperModeChange, request, onRequestHandled, regist
     }
 
     try {
-      const result = await window.yibiao?.developerAgentMonitor.openWindow();
+      const result = await window.appBridge?.developerAgentMonitor.openWindow();
       showToast(result?.success ? '已打开 Pi Agent 执行监视器' : '打开 Pi Agent 执行监视器失败', result?.success ? 'success' : 'error');
     } catch (error) {
       showToast(error instanceof Error ? error.message : '打开 Pi Agent 执行监视器失败', 'error');
@@ -1473,7 +1473,7 @@ function SettingsPage({ onDeveloperModeChange, request, onRequestHandled, regist
         });
         if (saved) {
           try {
-            const result = await window.yibiao?.startGpuHardwareAccelerationTrial();
+            const result = await window.appBridge?.startGpuHardwareAccelerationTrial();
             if (!result?.success) {
               throw new Error('GPU 硬件加速试启用失败');
             }

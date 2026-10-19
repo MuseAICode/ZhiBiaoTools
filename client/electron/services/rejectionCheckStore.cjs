@@ -128,12 +128,12 @@ function createDocumentSignature(document) {
     content.length,
     content.slice(0, 800),
     content.slice(-800),
-  ].join('\n---yibiao-rejection-signature---\n');
+  ].join('\n---app-rejection-signature---\n');
 }
 
 function createRejectionCheckInputSignature(bidDocuments, invalidBidAndRejectionItems, customCheckItems) {
   const documents = Array.isArray(bidDocuments) ? bidDocuments : [bidDocuments].filter(Boolean);
-  const bidSignature = documents.map(createDocumentSignature).filter(Boolean).join('\n---yibiao-rejection-bid-document---\n');
+  const bidSignature = documents.map(createDocumentSignature).filter(Boolean).join('\n---app-rejection-bid-document---\n');
   const analysis = String(invalidBidAndRejectionItems || '').trim();
   if (!bidSignature || !analysis) return '';
   const custom = String(customCheckItems || '').trim();
@@ -145,7 +145,7 @@ function createRejectionCheckInputSignature(bidDocuments, invalidBidAndRejection
     custom.length,
     custom.slice(0, 800),
     custom.slice(-800),
-  ].join('\n---yibiao-rejection-check-input---\n');
+  ].join('\n---app-rejection-check-input---\n');
 }
 
 function getTechnicalPlanDiscardedBids(technicalPlan) {

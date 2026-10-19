@@ -26,8 +26,8 @@ export function useNoticeToast() {
 }
 
 async function openExternalUrl(url: string) {
-  if (window.yibiao?.openExternal) {
-    await window.yibiao.openExternal(url);
+  if (window.appBridge?.openExternal) {
+    await window.appBridge.openExternal(url);
     return;
   }
 

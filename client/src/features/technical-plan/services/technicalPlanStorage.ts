@@ -16,7 +16,7 @@ function isTechnicalPlanState(state: TechnicalPlanState | null): state is Techni
 
 export const technicalPlanStorage = {
   async load(): Promise<TechnicalPlanState | null> {
-    const state = await window.yibiao?.technicalPlan.loadState();
+    const state = await window.appBridge?.technicalPlan.loadState();
 
     if (!isTechnicalPlanState(state || null)) {
       return null;

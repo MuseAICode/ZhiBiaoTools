@@ -227,14 +227,14 @@ async function captureFullContent(webContents, width, height, options = {}) {
 }
 
 // 轮询页面资源与布局状态（单次不阻塞，便于主进程响应暂停）。
-// contentOnly：只量 #yibiao-capture-root 内容包围盒，避免 body 固定宽导致右侧留白。
+// contentOnly：只量 #app-capture-root 内容包围盒，避免 body 固定宽导致右侧留白。
 async function probeLayoutMetrics(webContents, minWidth, contentOnly = false) {
   const floorWidth = Math.max(1, Math.round(Number(minWidth) || 1));
   return webContents.executeJavaScript(`(() => {
     const contentOnly = ${contentOnly ? 'true' : 'false'};
     const root = document.documentElement;
     const body = document.body;
-    const target = document.getElementById('yibiao-capture-root') || body || root;
+    const target = document.getElementById('app-capture-root') || body || root;
     if (!target) return { ready: false, width: 0, height: 0 };
     const images = Array.from(document.images || []);
     const imagesReady = images.every((img) => img.complete);
@@ -423,7 +423,7 @@ async function waitForLayoutReady(webContents, timeoutMs, minWidth = 1, options 
 // body 本身作为固定画布，保留生成源码的 Flex/Grid 父子关系。
 function buildHtmlDocument(html, height) {
   const source = String(html || '').trim();
-  const styleTag = `<style id="yibiao-capture-style">
+  const styleTag = `<style id="app-capture-style">
 html, body {
   margin: 0 !important;
   width: ${HTML_DESIGN_WIDTH}px !important;
@@ -464,7 +464,7 @@ function buildExactHtmlDocument(html, width, height) {
       overflow: hidden !important;
       background: #ffffff !important;
     }
-    #yibiao-capture-root {
+    #app-capture-root {
       width: ${safeWidth}px;
       height: ${safeHeight}px;
       overflow: hidden;
@@ -473,7 +473,7 @@ function buildExactHtmlDocument(html, width, height) {
   </style>
 </head>
 <body>
-  <div id="yibiao-capture-root">${source}</div>
+  <div id="app-capture-root">${source}</div>
 </body>
 </html>`;
 }
@@ -495,7 +495,7 @@ function buildMermaidDocument(code, mermaidScriptUrl) {
       height: fit-content;
       overflow: hidden;
     }
-    #yibiao-capture-root {
+    #app-capture-root {
       display: inline-block;
       margin: 0;
       padding: 8px;
@@ -506,25 +506,25 @@ function buildMermaidDocument(code, mermaidScriptUrl) {
       min-height: 1px;
       line-height: 0;
     }
-    #yibiao-capture-root svg {
+    #app-capture-root svg {
       display: block;
     }
   </style>
   <script src="${mermaidScriptUrl}"></script>
 </head>
 <body>
-  <div id="yibiao-capture-root"></div>
+  <div id="app-capture-root"></div>
   <script>
     (async () => {
       try {
         const code = ${escaped};
         const maxW = ${maxContentWidth};
-        window.__yibiaoMermaidReady = false;
-        window.__yibiaoMermaidError = '';
+        window.__appMermaidReady = false;
+        window.__appMermaidError = '';
         mermaid.initialize({ startOnLoad: false, theme: 'default', securityLevel: 'strict' });
         const id = 'mermaid-' + Date.now();
         const { svg } = await mermaid.render(id, code);
-        const root = document.getElementById('yibiao-capture-root');
+        const root = document.getElementById('app-capture-root');
         root.innerHTML = svg;
         const svgEl = root.querySelector('svg');
         if (svgEl) {
@@ -562,10 +562,10 @@ function buildMermaidDocument(code, mermaidScriptUrl) {
             svgEl.style.maxWidth = 'none';
           }
         }
-        window.__yibiaoMermaidReady = true;
+        window.__appMermaidReady = true;
       } catch (error) {
-        window.__yibiaoMermaidError = error && error.message ? error.message : String(error || 'Mermaid 渲染失败');
-        window.__yibiaoMermaidReady = true;
+        window.__appMermaidError = error && error.message ? error.message : String(error || 'Mermaid 渲染失败');
+        window.__appMermaidReady = true;
       }
     })();
   </script>
@@ -576,7 +576,7 @@ function buildMermaidDocument(code, mermaidScriptUrl) {
 // 写入临时 HTML 文件并加载，便于引用本地 mermaid 脚本；加载期间响应暂停。
 async function loadHtmlDocument(win, html, timeoutMs, options = {}) {
   throwIfPaused(options);
-  const tempDir = path.join(os.tmpdir(), 'yibiao-local-image-render');
+  const tempDir = path.join(os.tmpdir(), 'app-local-image-render');
   fs.mkdirSync(tempDir, { recursive: true });
   const tempFile = path.join(tempDir, `render-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}.html`);
   fs.writeFileSync(tempFile, html, 'utf-8');
@@ -702,8 +702,8 @@ function createLocalImageRenderService({ configStore } = {}) {
           while (Date.now() - started < MERMAID_RENDER_TIMEOUT_MS) {
             throwIfPaused(options, 'Mermaid 转图已暂停');
             const state = await win.webContents.executeJavaScript(`({
-              ready: Boolean(window.__yibiaoMermaidReady),
-              error: String(window.__yibiaoMermaidError || ''),
+              ready: Boolean(window.__appMermaidReady),
+              error: String(window.__appMermaidError || ''),
             })`, true);
             if (state.ready) return state;
             await delay(PAUSE_POLL_MS);

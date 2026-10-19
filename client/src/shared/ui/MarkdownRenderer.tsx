@@ -27,8 +27,8 @@ function isExternalHttpUrl(value: string) {
 }
 
 function openExternal(url: string) {
-  if (window.yibiao?.openExternal) {
-    void window.yibiao.openExternal(url);
+  if (window.appBridge?.openExternal) {
+    void window.appBridge.openExternal(url);
     return;
   }
 
@@ -38,7 +38,7 @@ function openExternal(url: string) {
 // 以下白名单对 Markdown 生成的结构和原始 HTML 一律生效：只重建列出的标签和属性，
 // 不保留 style、事件属性和任意 class，链接和图片地址只允许列出的协议。
 const SAFE_LINK_URL = /^(?:https?:\/\/|mailto:|#)/i;
-const SAFE_IMAGE_URL = /^(?:https?:\/\/|yibiao-asset:\/\/|blob:|data:image\/(?:png|jpe?g|gif|webp|bmp);)/i;
+const SAFE_IMAGE_URL = /^(?:https?:\/\/|app-asset:\/\/|blob:|data:image\/(?:png|jpe?g|gif|webp|bmp);)/i;
 const SAFE_CLASS_NAME = /^(?:task-list-item(?:-checkbox|-label)?|enabled|contains-task-list|language-[\w+-]{1,40})$/;
 const SAFE_CHECKBOX_ID = /^task-item--?\d+$/;
 const SAFE_DIMENSION = /^\d{1,4}(?:px|%)?$/;

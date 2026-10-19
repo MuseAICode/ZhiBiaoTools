@@ -4,8 +4,8 @@
 
 结论先行：
 
-1. 原作者服务（`analytics.agnet.top`、`v3.yibiao.pro`、`wiki.agnet.top`、`oss.agnet.top` 及另一个 `agnet.top` 子域的原作者 OSS）在**默认配置、用户什么都不操作**时就会被调用。其中三条链路会把**用户文档内容**发到原作者服务器：
-   - ~~默认文本模型是“易标官方”（`text_model_provider: 'official'`），所有 Prompt（含招标文件、知识库、生成的正文）都发到 `v3.yibiao.pro`~~（旧仓库 PR #11 已改为未配置；旧仓库 PR #12 把已选中官方的旧配置一次性迁移为未配置；旧仓库 PR #17 整体移除官方服务商和官方账户，见 §2.2）；
+1. 原作者服务（`analytics.agnet.top`、内测版服务、`wiki.agnet.top`、`oss.agnet.top` 及另一个 `agnet.top` 子域的原作者 OSS）在**默认配置、用户什么都不操作**时就会被调用。其中三条链路会把**用户文档内容**发到原作者服务器：
+   - ~~默认文本模型是“内测版”（`text_model_provider: 'official'`），所有 Prompt（含招标文件、知识库、生成的正文）都发到内测版服务~~（旧仓库 PR #11 已改为未配置；旧仓库 PR #12 把已选中官方的旧配置一次性迁移为未配置；旧仓库 PR #17 整体移除官方服务商和官方账户，见 §2.2）；
    - ~~Agent 失败诊断（`/agent-errors`）会把**整个 Agent 工作区目录的全部文件**、完整 Prompt 和任务状态打包上传，界面上没有开关~~（旧仓库 PR #10 已移除）；
    - ~~远程公告用 `allowRawHtml` 渲染，原作者可以向 Renderer 注入 HTML（见 §2.1.5）~~（旧仓库 PR #14 已改为禁用原始 HTML，`config.load` 也不再返回明文 Key）。
 2. ~~两条链路能远程控制本地客户端：`/ip-blocks` 命中就 `process.exit(0)`；`/license/activate` 下发的配置可以把授权弹窗设成不可关闭~~（旧仓库 PR #15 已移除 IP 封禁和授权链路，并停用了原作者的更新渠道）。
@@ -27,7 +27,7 @@
 | 8 | `analytics.agnet.top/system-settings`（群二维码） | ~~是~~ 否（旧仓库 PR #16） | 否 | 否 | 否 | **已删除（旧仓库 PR #18）**：“加群”按钮、内置二维码和远程查询一并删除 |
 | 9 | `analytics.agnet.top/model-info`（模型参数查询） | ~~用户点击时~~ 否（旧仓库 PR #16，按钮隐藏） | 否（只发模型名） | 否 | 否 | **已停用（旧仓库 PR #16）**，同上 |
 | 10 | `analytics.agnet.top/plugins`（插件市场与下载） | ~~是（启动检查更新）~~ 否（旧仓库 PR #13 停用插件系统） | 否 | 否 | 否 | **已停用（旧仓库 PR #13）**，代码保留，Web 版计划下线；旧仓库 PR #20 起地址置空，代码中不再有该地址 |
-| 11 | `v3.yibiao.pro`（官方账户 + 官方模型 API） | ~~是（启动自动注册，且是默认文本模型）~~ 否（旧仓库 PR #11；旧仓库 PR #17 起客户端代码中不再有该地址） | ~~是（选用官方时，所有 Prompt）~~ 否 | ~~是（官方 Key）~~ 否 | ~~随机安装标识~~ 否 | **已移除（旧仓库 PR #17）**：官方服务商、官方账户服务及其 IPC、preload API、设置页账户面板一并删除 |
+| 11 | 内测版服务（官方账户 + 官方模型 API） | ~~是（启动自动注册，且是默认文本模型）~~ 否（旧仓库 PR #11；旧仓库 PR #17 起客户端代码中不再有该地址） | ~~是（选用官方时，所有 Prompt）~~ 否 | ~~是（官方 Key）~~ 否 | ~~随机安装标识~~ 否 | **已移除（旧仓库 PR #17）**：官方服务商、官方账户服务及其 IPC、preload API、设置页账户面板一并删除 |
 | 12 | `wiki.agnet.top`（使用说明 + 打赏支付） | ~~打赏：导出 Word 达到次数时弹出~~ 否（旧仓库 PR #16） | 否 | 否 | 否 | **已停用（旧仓库 PR #16）**：文档入口未配置时隐藏；打赏功能已删除（旧仓库 PR #20） |
 | 13 | 更新渠道：~~`api.atomgit.com` / `atomgit.com`（默认）、`api.github.com` / `github.com`、原作者 OSS 域名（`agnet.top` 子域）~~ | ~~是（每 30 分钟）~~ 否（旧仓库 PR #15：更新源默认为空，不发请求） | 否 | 否 | 否 | **已停用（旧仓库 PR #15）**，更新源改为随包配置；接入自建更新服务器前须实现验签（第 9 步 Web 化时删除） |
 | 14 | `oss.agnet.top`（启动广告图）+ `s.markup.com.cn/jl`（广告跳转） | ~~是（每次启动强制 8 秒）~~ **否**：组件从未被挂载（旧仓库 PR #16 核对） | 否 | 否 | 否 | **已删除（旧仓库 PR #16）**；设置页金龙“获取 Key”中的同一推广链接也已删除（旧仓库 PR #18） |
@@ -78,7 +78,7 @@
   - **任务 Prompt 全文**（`task.prompt`），通常内嵌文档内容；
   - `userTaskContext`：当前受管任务的 `payload`、任务状态，技术方案还有生成设置；
   - 错误详情，包括模型原始响应体（`raw_response_body`、`raw_sse_data` 等）；
-  - **完整 `user_config.json`**（经脱敏）、授权 envelope（请求头 `X-Yibiao-License`，含 client_id 和机器指纹哈希）、构建证明；
+  - **完整 `user_config.json`**（经脱敏）、授权 envelope（授权请求头，含 client_id 和机器指纹哈希）、构建证明；
   - 本机路径：`userData`、可执行文件路径、`cwd`，Windows 下通常包含**系统用户名**；还有进程 PID、`process.versions`；
   - client_id。
 - 脱敏：按键名匹配 `api_key|authorization|token|password|secret|cookie…`，收集 config 里的这些值，在所有文本和二进制里替换。API Key 和 MinerU Token 会被抹掉，**文档内容不做任何处理**。
@@ -124,7 +124,7 @@
 - 代码：`src/shared/remoteNotice.ts`、`src/app/UpdateNotifier.tsx`（启动时和每 30 分钟各拉一次）、`features/notice/`。
 - 发送：`projectName`。
 - 接收：公告标题和 Markdown 正文。
-- **安全问题**：`UpdateNotifier.tsx:235` 用 `<MarkdownRenderer allowRawHtml …>` 渲染远程公告，违反 `AGENTS.md`、`开发说明.md` 中“远程公告必须 `allowRawHtml={false}`”的规定（`NoticeBoardDialog` 用的是 `false`，这里没有）。Renderer 能调用 `window.yibiao.config.load()`，读到**明文 API Key**；所以只要公告服务被攻破或被滥用，就能读取用户 Key 和文档。
+- **安全问题**：`UpdateNotifier.tsx:235` 用 `<MarkdownRenderer allowRawHtml …>` 渲染远程公告，违反 `AGENTS.md`、`开发说明.md` 中“远程公告必须 `allowRawHtml={false}`”的规定（`NoticeBoardDialog` 用的是 `false`，这里没有）。Renderer 能调用 `window.appBridge.config.load()`，读到**明文 API Key**；所以只要公告服务被攻破或被滥用，就能读取用户 Key 和文档。
 - 依赖它的功能：公告弹窗、公告板和未读角标。
 - 移除后：没有公告。
 - 建议：**替换为自建**，并**单独开一个 PR，立即把这里改成 `allowRawHtml={false}`**。这一项不受独立运营决策影响，属于安全缺陷。
@@ -172,12 +172,12 @@
 - 建议：**移除**。路线图第 4 节已经定为 Web 版下线插件；桌面版在独立运营期间也不应该自动从第三方源拉取并执行代码。
 - **已停用（旧仓库 PR #13）**：比上面的建议更进一步，连已安装插件也不再加载（已装插件同样是无签名校验、在 Main 进程执行的代码）。Main 不注册插件 IPC、不加载插件、不请求 `/plugins`；Renderer 隐藏插件管理菜单、插件更新提示和依赖桌宠插件的“AI 调整”入口。开关为 `electron/ipc/index.cjs` 与 `src/features/plugins/pluginSystem.ts` 中的 `PLUGIN_SYSTEM_ENABLED`。`pluginService.cjs`、`pluginContext.cjs`、`pluginConfigWindow.cjs`、`pluginIpc.cjs`、`PluginsPage.tsx` 和 preload 中的 `plugins.*` 暂时保留，**Web 版计划下线**（路线图第 9 步删除或重做为前端沙箱）。`analytics/` 中的 `/plugins` 服务端不动。
 
-### 2.2 `v3.yibiao.pro`（易标官方账户与模型 API）
+### 2.2 内测版账户与模型 API（已移除）
 
 > **状态：已移除（旧仓库 PR #17）。** 按本项目决定不与原作者合作使用官方服务，整体删除，不再保留开关：
 > - 删除 `officialAccountService.cjs`、`officialInvoiceStore.cjs`、`officialAccountIpc.cjs`，`ipc/index.cjs` 不再创建、启动或注册官方账户服务，`preload.cjs` 删除 `officialAccount.*` 和 `ai.onBalanceInsufficient`，`aiHttpError.cjs` 不再识别官方余额不足（`ai:balance-insufficient`）；
-> - 文本模型服务商删除 `official`（`configStore.cjs`、`SettingsPage.tsx`、`types/config.ts`），连同默认 Base URL、`yibiao-text` / `yibiao-reasoning` 模型名、`official_api_model_type`、`X-Yibiao-Client-Type` 请求头（`aiService.cjs`、`piSelfCheckService.cjs`）；设置页删除官方账户面板（登录、余额、充值、兑换、订单、流水、开票）及样式；
-> - 删除 旧仓库 PR #11 的隐藏开关 `OFFICIAL_TEXT_PROVIDER_ENABLED` 和 旧仓库 PR #12 的迁移标记 `official_text_provider_migrated`、`official_text_provider_paused_notice_pending` 及“易标官方服务暂停提供”提示。迁移改为：旧配置仍选中 `official` 的，读取时直接切到“自定义”，顶层镜像的官方 Base URL 和 Key 不带入自定义档案；自定义档案为空即为未配置，由启动检查按普通“文本模型尚未配置”引导，不再单独提示；
+> - 文本模型服务商删除 `official`（`configStore.cjs`、`SettingsPage.tsx`、`types/config.ts`），连同默认 Base URL、内测版的文本 / 推理模型名、`official_api_model_type`、客户端类型请求头（`aiService.cjs`、`piSelfCheckService.cjs`）；设置页删除官方账户面板（登录、余额、充值、兑换、订单、流水、开票）及样式；
+> - 删除 旧仓库 PR #11 的隐藏开关 `OFFICIAL_TEXT_PROVIDER_ENABLED` 和 旧仓库 PR #12 的迁移标记 `official_text_provider_migrated`、`official_text_provider_paused_notice_pending` 及“内测版服务暂停提供”提示。迁移改为：旧配置仍选中 `official` 的，读取时直接切到“自定义”，顶层镜像的官方 Base URL 和 Key 不带入自定义档案；自定义档案为空即为未配置，由启动检查按普通“文本模型尚未配置”引导，不再单独提示；
 > - 用户本地数据不删除，但程序不再读取：`userData/official_api_session.json`、`official_recharge_qr_cache.json` 原样留在磁盘上；`user_config.json` 中的 `text_model_profiles.official`（含官方 Key）在写回配置时原样照抄，不解析、不返回给 Renderer 或 Main 其他代码；工作区数据库的 `official_invoice_info` 表保留（属于已发布的数据库版本迁移），不再读写。
 >
 > 以下为 旧仓库 PR #11、旧仓库 PR #12 时的处理记录，保留备查。
@@ -185,40 +185,40 @@
 > **状态：部分处理（旧仓库 PR #11）。**
 > - 默认文本提供方改为“未配置”（默认选中“自定义”，Base URL、模型名称、API Key 为空），启动时由 `useTextModelSetupRedirect` 提示并跳到设置-文本模型；
 > - `officialAccountService` 删除了启动时的 `POST /clients/register` 匿名注册，以及 `syncApiKey`（`GET/POST /api-keys` 并把 Key 写入 `user_config.json`）；邮箱登录和绑定也不再写入 Key。启动时只恢复用户此前主动邮箱登录的会话；
-> - 设置页隐藏“易标官方API”选项（`OFFICIAL_TEXT_PROVIDER_ENABLED = false`），相关代码、账户面板、请求头保留，等商业授权确认后再决定启用或移除。已保存为官方的旧配置仍显示该选项；
-> - 设置页“选用后文档内容会发往 `v3.yibiao.pro`”的提示未加：选项已对新用户隐藏，等决定启用时再加。
+> - 设置页隐藏“内测版 API”选项（`OFFICIAL_TEXT_PROVIDER_ENABLED = false`），相关代码、账户面板、请求头保留，等商业授权确认后再决定启用或移除。已保存为官方的旧配置仍显示该选项；
+> - 设置页“选用后文档内容会发往内测版服务”的提示未加：选项已对新用户隐藏，等决定启用时再加。
 >
 > **已处理：已有用户本地配置中的官方 Key（旧仓库 PR #12，采用下面的方案 2）。**
 > - `configStore.cjs` 读取配置时，`text_model_provider` 为 `official` 且没有 `official_text_provider_migrated` 标记的旧配置一次性改为“自定义”（沿用用户已有的自定义档案，没有则为空，即未配置）；官方 Key 和其余官方档案字段写回 `text_model_profiles.official` 保留，不再使用；`official_api_session.json` 不删除；
 > - 迁移后写入 `official_text_provider_migrated: true`，之后不再检查；新配置默认即为 `true`。授权确认后重新开放选项时，用户切回官方不会被再次迁移；
-> - 迁移同时置位 `official_text_provider_paused_notice_pending`。下次启动时 `useTextModelSetupRedirect` 常驻提示“易标官方服务暂停提供，文本模型已切换为‘自定义’，请配置其他服务商。官方账户余额不受影响”，跳到设置-文本模型并清除标记。标记只由迁移置位，`config:save` 只能清除，带旧快照的整份配置保存不会把提示写回；
+> - 迁移同时置位 `official_text_provider_paused_notice_pending`。下次启动时 `useTextModelSetupRedirect` 常驻提示“内测版服务暂停提供，文本模型已切换为‘自定义’，请配置其他服务商。官方账户余额不受影响”，跳到设置-文本模型并清除标记。标记只由迁移置位，`config:save` 只能清除，带旧快照的整份配置保存不会把提示写回；
 > - 迁移后设置页不再选中官方，按 旧仓库 PR #11 的规则隐藏该选项；账户面板仍可查看余额。
 >
 > 处理前的现状与可选方案（保留备查）：
 >
-> 现状：`text_model_provider: 'official'` 和 `text_model_profiles.official.api_key` 原样保留，这些用户的文本请求仍发往 `v3.yibiao.pro`，直到 Key 失效或余额不足（402 时跳到设置页）。可选方案：
+> 现状：`text_model_provider: 'official'` 和 `text_model_profiles.official.api_key` 原样保留，这些用户的文本请求仍发往内测版服务，直到 Key 失效或余额不足（402 时跳到设置页）。可选方案：
 > 1. **保持现状**：不迁移。改动最小，但这部分用户的文档内容继续发往原作者服务器，与本节“拿到书面授权前”的建议不一致。
-> 2. **切换但保留 Key（推荐）**：`configStore` 读取时做一次性迁移，provider 为 `official` 的配置改为未配置（空的“自定义”），官方 Key 留在 `text_model_profiles.official` 里但不再使用；首次启动时提示“易标官方服务暂停提供，请配置其他服务商，官方账户余额不受影响”。默认停止外发，可逆：授权确认后重新开放选项，用户切回即可继续用原 Key 和余额。
+> 2. **切换但保留 Key（推荐）**：`configStore` 读取时做一次性迁移，provider 为 `official` 的配置改为未配置（空的“自定义”），官方 Key 留在 `text_model_profiles.official` 里但不再使用；首次启动时提示“内测版服务暂停提供，请配置其他服务商，官方账户余额不受影响”。默认停止外发，可逆：授权确认后重新开放选项，用户切回即可继续用原 Key 和余额。
 > 3. **切换并清除**：同 2，另外清空官方 Key 并删除 `official_api_session.json`。最彻底，但授权确认后用户需要重新登录；匿名账户（未绑邮箱）的余额与 client_id 绑定，在不恢复匿名注册的前提下无法找回，需要另行说明或补偿。
 >
 > 以下为处理前的分析，保留备查。
 
-- 代码：`electron/services/officialAccountService.cjs`（账户），`configStore.cjs` 和 `SettingsPage.tsx` 的 `official` 文本模型配置（模型 API：`/qhp-yibiao/anonymous/yibiao/openai/v1`），`aiService.cjs` 给官方请求加上 `X-Yibiao-Client-Type: open-source` 请求头。
+- 代码：`electron/services/officialAccountService.cjs`（账户），`configStore.cjs` 和 `SettingsPage.tsx` 的 `official` 文本模型配置（模型 API：内测版模型 API 路径），`aiService.cjs` 给官方请求加上客户端类型请求头。
 - 启动时自动执行（`ipc/index.cjs:465` `officialAccountService.start()`），不需要用户操作：
   1. `POST /clients/register {clientId}`，**用 client_id 匿名注册**，拿到 token；
   2. `GET /account`；
-  3. `GET /api-keys`，没有就 `POST /api-keys {name: '易标开源版'}`，然后把服务端返回的 **API Key 写进本地 `user_config.json`**（`text_model_profiles.official.api_key`）。
+  3. `GET /api-keys`，没有就 `POST /api-keys {name: '开源版'}`，然后把服务端返回的 **API Key 写进本地 `user_config.json`**（`text_model_profiles.official.api_key`）。
 - 用户主动操作时还会发送：邮箱、验证码（登录和绑定），兑换码，充值订单，**发票信息**（抬头类型、发票抬头、**纳税人识别号**、收票邮箱、备注），查询消费流水。
-- 模型 API：默认 `text_model_provider` 是 `official`，所以**没有改过设置的用户，全部文本请求都发往 `v3.yibiao.pro`**。请求内容是完整 Prompt，包括招标文件、原方案、知识库摘录、资信库和已生成的正文；请求头带官方 API Key。
+- 模型 API：默认 `text_model_provider` 是 `official`，所以**没有改过设置的用户，全部文本请求都发往内测版服务**。请求内容是完整 Prompt，包括招标文件、原方案、知识库摘录、资信库和已生成的正文；请求头带官方 API Key。
 - 接收：账户状态、余额、订单、二维码、发票；模型响应；余额不足时返回 HTTP 402（触发 `ai.onBalanceInsufficient`）。
-- 依赖它的功能：设置页“易标官方”模型（默认选项）、官方账户面板（登录、充值、发票、流水）、余额不足提示。
+- 依赖它的功能：设置页“内测版”模型（默认选项）、官方账户面板（登录、充值、发票、流水）、余额不足提示。
 - 移除后：
   - 默认文本模型不可用，用户必须配置其他提供方。默认值要改成“未配置”，并在首次使用时引导用户填写；
   - 账户、充值和发票相关界面全部失效。
 - 建议：**保留的前提是与原作者书面确认授权范围**。需要确认：分发版本能否继续调用官方 API，计费和发票主体是谁，用户数据怎样处理，`open-source` 客户端标识是否需要更换。**在拿到书面授权前**：
   - 把默认文本提供方改成“未配置”；
   - 去掉启动时的自动匿名注册和自动写入 Key，改成用户在设置页主动登录后才连接；
-  - 在设置页明确提示：选用后文档内容会发往 `v3.yibiao.pro`。
+  - 在设置页明确提示：选用后文档内容会发往内测版服务。
 
   如果不打算与原作者合作，就整体**移除**，或者在 Web 化第 3 步换成自建 AI 网关。
 
@@ -242,7 +242,7 @@
   - `github`：GitHub API 上原作者仓库的 latest release 接口，Windows 用 electron-updater；
   - `cloudflare`：原作者 OSS 域名（`agnet.top` 子域）下的 `/release/latest.json`，electron-updater generic feed。
   - `package.json` `build.publish` 同样指向原作者的 GitHub 仓库。
-- 发送：GET 请求（`User-Agent: yibiao-client`），不带设备标识。
+- 发送：GET 请求（`User-Agent: zhibiao-client`），不带设备标识。
 - 接收：原作者仓库的最新版本号和安装包。macOS 和 atomgit 渠道的手动下载**只校验文件大小，不校验哈希或签名**（`isDownloadedFileReady`）。
 - 依赖它的功能：更新提示、下载和安装。
 - 移除后：不再检查更新。
@@ -316,7 +316,7 @@
 |---|---|---|
 | P0 | 远程公告改 `allowRawHtml={false}`（安全缺陷，与独立运营无关）（**已完成，旧仓库 PR #14**：同时排查全部远程内容和 AI 输出的渲染位置、加白名单清洗，`config:load` 打码 API Key） | `src/app/UpdateNotifier.tsx`、`MarkdownRenderer.tsx`、`configIpc.cjs` |
 | P0 | 移除 Agent 失败诊断上传（**已完成，旧仓库 PR #10**） | `services/agent/agentErrorReporter.cjs`、`agentErrorReportProcess.cjs` 及调用点 |
-| P0 | 默认文本模型改成“未配置”；移除启动匿名注册和自动写入官方 Key；隐藏“易标官方”选项（**已完成，旧仓库 PR #11**；旧配置中的官方 Key 按 §2.2 方案 2 迁移，**旧仓库 PR #12**；官方服务商与官方账户整体移除，**旧仓库 PR #17**） | `configStore.cjs`、`SettingsPage.tsx`、`officialAccountService.cjs`、`useTextModelSetupRedirect.ts` |
+| P0 | 默认文本模型改成“未配置”；移除启动匿名注册和自动写入官方 Key；隐藏“内测版”选项（**已完成，旧仓库 PR #11**；旧配置中的官方 Key 按 §2.2 方案 2 迁移，**旧仓库 PR #12**；官方服务商与官方账户整体移除，**旧仓库 PR #17**） | `configStore.cjs`、`SettingsPage.tsx`、`officialAccountService.cjs`、`useTextModelSetupRedirect.ts` |
 | P0 | 默认生图模型改成“未配置”（**已完成，旧仓库 PR #12**） | `configStore.cjs`、`SettingsPage.tsx` |
 | P0 | 移除 IP 封禁检查（**已完成，旧仓库 PR #15**） | `electron/main.cjs` |
 | P0 | 移除授权链路（否则自建构建会一直弹“来源不可信”）（**已完成，旧仓库 PR #15**：含离线授权、公钥、构建证明、设置页授权区、埋点授权字段和“购买离线包”文案） | `licenseService.cjs`、`LicenseStatusPrompt.tsx`、`electron/resources/` 公钥和构建证明、设置页授权区、埋点中的授权字段 |
@@ -330,7 +330,7 @@
 
 改代码前，需要原作者决定的事项：
 
-1. ~~能否继续使用 `v3.yibiao.pro` 官方模型 API 和账户体系。如果能：计费和开票主体是谁，用户数据怎样处理，是否需要更换客户端标识请求头。~~ 已决定不使用，整体移除（旧仓库 PR #17）。
+1. ~~能否继续使用内测版服务的官方模型 API 和账户体系。如果能：计费和开票主体是谁，用户数据怎样处理，是否需要更换客户端标识请求头。~~ 已决定不使用，整体移除（旧仓库 PR #17）。
 2. ~~能否在自建 Worker 上继续运营原作者的公告、资源和模型信息内容。~~ 已决定不自建 Worker（旧仓库 PR #18），不再运营这些内容。
 3. 已有用户的授权、打赏记录是否需要迁移或说明。
 4. ~~已有用户本地配置中的官方 Key 如何处理（§2.2 的三个方案）~~：已按方案 2 处理（旧仓库 PR #12）；旧仓库 PR #17 移除官方服务后，官方 Key 和会话文件仍留在本地、程序不再读取。
@@ -341,20 +341,20 @@
 - 网络调用点：`grep -rnE "\bfetch\(|https\.get\(|net\.fetch\(" client/electron client/src`。本文列出的服务之外，只剩 `piSelfCheckService.cjs` 的本地回环探测和 `exportService.cjs` 的图片下载（§2.9）。
 - 未覆盖：第三方 npm 依赖（如 `@earendil-works/pi-coding-agent`、electron-updater）自身是否另有网络请求，本文没有做抓包验证。建议在第 9 步上线前，用代理抓一次完整流程的出站流量做最终确认。
 
-## 6. 剩余引用（旧仓库 PR #16 后全局搜索 `agnet.top`、`yibiao.pro`）
+## 6. 剩余引用（旧仓库 PR #16 后全局搜索 `agnet.top`、内测版域名）
 
-搜索范围是整个仓库（不含 `node_modules`、`.git`）；`docs/` 下本文和路线图中的引用都是分析记录，不再列出。旧仓库 PR #17 删除第 1、2 行后，`client/` 下已没有 `yibiao.pro`；旧仓库 PR #18 删除金龙推广链接后，`client/` 下也没有 `s.markup.com.cn`（README 中的赞助商推广链接暂不修改）。
+搜索范围是整个仓库（不含 `node_modules`、`.git`）；`docs/` 下本文和路线图中的引用都是分析记录，不再列出。旧仓库 PR #17 删除第 1、2 行后，`client/` 下已没有内测版域名；旧仓库 PR #18 删除金龙推广链接后，`client/` 下也没有 `s.markup.com.cn`（README 中的赞助商推广链接暂不修改）。
 
 | # | 位置 | 引用 | 用途 | 运行时是否会请求 | 后续处理 |
 |---|---|---|---|---|---|
-| 1 | ~~`client/electron/services/configStore.cjs:23`、`client/src/features/settings/pages/SettingsPage.tsx:82`~~ | `v3.yibiao.pro/qhp-yibiao/anonymous/yibiao/openai/v1` | “易标官方”文本模型的默认 Base URL | 否 | **已删除（旧仓库 PR #17）** |
-| 2 | ~~`client/electron/services/officialAccountService.cjs:6`~~ | `v3.yibiao.pro/qhp-yibiao` | 官方账户（登录、余额、充值、发票） | 否 | **已删除（旧仓库 PR #17）** |
+| 1 | ~~`client/electron/services/configStore.cjs:23`、`client/src/features/settings/pages/SettingsPage.tsx:82`~~ | 内测版模型 API 地址 | “内测版”文本模型的默认 Base URL | 否 | **已删除（旧仓库 PR #17）** |
+| 2 | ~~`client/electron/services/officialAccountService.cjs:6`~~ | 内测版账户 API 地址 | 官方账户（登录、余额、充值、发票） | 否 | **已删除（旧仓库 PR #17）** |
 | 3 | ~~`client/electron/services/pluginService.cjs:7`~~ | `analytics.agnet.top/plugins` | 插件市场 | 否：插件系统已停用（旧仓库 PR #13） | **已置空（旧仓库 PR #20）**：地址为空时不请求插件列表、不上报下载；插件代码仍在第 9 步处理 |
 | 4 | ~~`client/doc/html图片.md:49`~~ | `mt.agnet.top/image/url2png` | 早期设计稿 | 否：代码中不调用 | **已删除（旧仓库 PR #20）** |
 | 5 | ~~`analytics/worker/wrangler.jsonc`、`analytics/dashboard/…`~~ | `analytics.agnet.top`、`static.analytics.agnet.top` | 原作者 Cloudflare 部署的自定义域和 Dashboard 默认 API 地址 | 不属于客户端 | **已删除（旧仓库 PR #19）**：整个 `analytics/` 目录移出仓库 |
 | 6 | ~~`analytics/worker/src/services/pluginStore.js:18`~~ | 原作者 OSS 域名（`agnet.top` 子域） | 插件包 R2 公网地址（服务端） | 不属于客户端 | **已删除（旧仓库 PR #19）** |
 | 7 | ~~`analytics/README.md`~~ | `analytics.agnet.top` 等 | 部署说明和示例命令 | 否 | **已删除（旧仓库 PR #19）** |
-| 8 | ~~`README.md`、`README.en.md`（`yibiao.pro` 官网、`support@yibiao.pro`、`oss.agnet.top` 截图）~~ | 原作者官网、邮箱、图床 | 项目介绍与截图 | 否 | **已改写（旧仓库 PR #19）**：README 改为中性说明，删除赞助商、官网、邮箱和推广内容，当时保留许可证和归属声明（迁移到新仓库时已删除） |
+| 8 | ~~`README.md`、`README.en.md`（内测版官网、内测版邮箱、`oss.agnet.top` 截图）~~ | 原作者官网、邮箱、图床 | 项目介绍与截图 | 否 | **已改写（旧仓库 PR #19）**：README 改为中性说明，删除赞助商、官网、邮箱和推广内容，当时保留许可证和归属声明（迁移到新仓库时已删除） |
 | 9 | ~~`文章/*.md`（5 个文件、约 12 张图）~~ | `oss.agnet.top` 图床 | 原作者技术文章的插图 | 否 | **已删除（旧仓库 PR #18）**：整个 `文章/` 目录移出仓库 |
 
 同类但不含这两个域名的原作者 / 推广依赖：~~设置页金龙“获取 Key”链接 `https://s.markup.com.cn/jl`、侧边栏内置的原作者用户群二维码（`client/assets/group-chat-qr.png`）~~（旧仓库 PR #18 已删除）、“开发中”提示里的原仓库 star 引导（`useNoticeToast.ts`；旧仓库 PR #20 改为中性的“功能开发中”，不再附链接）。

@@ -70,7 +70,7 @@ const tableKey = (sectionId, table) => `${sectionId}:${table.id || crypto.create
 // 全轮相同的转换规则放在 system，便于并发请求复用前缀缓存。
 const CONVERT_SYSTEM = `你负责把投标正文中的一个数据表格转换为受限 HTML 段落或列表，用于“不要表格”的成稿要求。
 转换要求：写清原表各项数据与行、列表头的对应关系；保留表题含义、全部数值、单位、条件、备注及承诺，数值保持阿拉伯数字原样；只改变表达形式，不增删信息，不作无关改写。
-格式要求：顶层只使用 p、ul、ol，可使用 strong、em、sup、sub 等行内标签；不使用表格、图片、标题、Markdown、代码围栏或 LaTeX；不需要写 id 和 <!-- yibiao:block --> 分隔注释；除空元素外每个元素都写出结束标签。
+格式要求：顶层只使用 p、ul、ol，可使用 strong、em、sup、sub 等行内标签；不使用表格、图片、标题、Markdown、代码围栏或 LaTeX；不需要写 id 和 <!-- app:block --> 分隔注释；除空元素外每个元素都写出结束标签。
 只输出转换后的 HTML。`;
 
 // 校验转换结果并返回可直接拼回的顶层块；结构不符或缺少原表数值时说明原因。
@@ -147,7 +147,7 @@ async function removeDataTables({ aiService, workspaceDir, signal, onActivity, s
         const element = $(block);
         element.attr('id', uniqueId(`${base}_c${index + 1}`, used));
         return $.html(element);
-      }).join('\n\n<!-- yibiao:block -->\n');
+      }).join('\n\n<!-- app:block -->\n');
       writeHtml(file, spliceHtml(html, [{ start, end: start + job.table.source.length, text }]));
       settle(job, 'success');
     },

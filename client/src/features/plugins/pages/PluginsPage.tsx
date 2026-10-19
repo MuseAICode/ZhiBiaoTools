@@ -32,18 +32,18 @@ function PluginsPage() {
     };
 
     document.addEventListener('visibilitychange', handleVisibilityChange);
-    window.addEventListener('yibiao:plugins-changed', loadPlugins);
+    window.addEventListener('app:plugins-changed', loadPlugins);
 
     return () => {
       document.removeEventListener('visibilitychange', handleVisibilityChange);
-      window.removeEventListener('yibiao:plugins-changed', loadPlugins);
+      window.removeEventListener('app:plugins-changed', loadPlugins);
     };
   }, []);
 
   const loadPlugins = async () => {
     try {
       setLoading(true);
-      const availablePlugins = await window.yibiao?.plugins?.getAvailablePlugins();
+      const availablePlugins = await window.appBridge?.plugins?.getAvailablePlugins();
       setPlugins(availablePlugins || []);
     } catch (error) {
       showToast(error instanceof Error ? error.message : '加载插件列表失败', 'error');
@@ -56,7 +56,7 @@ function PluginsPage() {
     setOperatingPluginId(pluginId);
     try {
       showToast('正在安装插件...', 'info');
-      await window.yibiao?.plugins?.install(pluginId);
+      await window.appBridge?.plugins?.install(pluginId);
       showToast('插件安装成功', 'success');
       await loadPlugins();
     } catch (error) {
@@ -70,7 +70,7 @@ function PluginsPage() {
   const handleUninstall = async (pluginId: string) => {
     setOperatingPluginId(pluginId);
     try {
-      await window.yibiao?.plugins?.uninstall(pluginId);
+      await window.appBridge?.plugins?.uninstall(pluginId);
       showToast('插件已卸载', 'success');
       await loadPlugins();
     } catch (error) {
@@ -84,7 +84,7 @@ function PluginsPage() {
   const handleEnable = async (pluginId: string) => {
     setOperatingPluginId(pluginId);
     try {
-      await window.yibiao?.plugins?.enable(pluginId);
+      await window.appBridge?.plugins?.enable(pluginId);
       showToast('插件已启用', 'success');
       await loadPlugins();
     } catch (error) {
@@ -97,7 +97,7 @@ function PluginsPage() {
   const handleDisable = async (pluginId: string) => {
     setOperatingPluginId(pluginId);
     try {
-      await window.yibiao?.plugins?.disable(pluginId);
+      await window.appBridge?.plugins?.disable(pluginId);
       showToast('插件已禁用', 'success');
       await loadPlugins();
     } catch (error) {
@@ -112,7 +112,7 @@ function PluginsPage() {
     const toastId = showToast('正在更新插件...', 'info', { persistent: true });
 
     try {
-      await window.yibiao?.plugins?.update(pluginId);
+      await window.appBridge?.plugins?.update(pluginId);
       dismissToast(toastId);
       showToast('插件更新成功', 'success');
       await loadPlugins();
@@ -127,7 +127,7 @@ function PluginsPage() {
 
   const handleOpenConfig = async (pluginId: string) => {
     try {
-      await window.yibiao?.plugins?.openConfig(pluginId);
+      await window.appBridge?.plugins?.openConfig(pluginId);
     } catch (error) {
       showToast(error instanceof Error ? error.message : '打开配置失败', 'error');
     }
@@ -135,7 +135,7 @@ function PluginsPage() {
 
   const clearUpdateFailedState = async (pluginId: string) => {
     try {
-      await window.yibiao?.plugins?.clearUpdateFailedState(pluginId);
+      await window.appBridge?.plugins?.clearUpdateFailedState(pluginId);
       await loadPlugins();
     } catch (error) {
       showToast(error instanceof Error ? error.message : '清除失败', 'error');
@@ -146,7 +146,7 @@ function PluginsPage() {
   const handleOfflineInstall = async () => {
     setLoading(true);
     try {
-      const result = await window.yibiao?.plugins?.installOffline();
+      const result = await window.appBridge?.plugins?.installOffline();
       if (!result || result.canceled) return;
 
       await loadPlugins();
@@ -165,7 +165,7 @@ function PluginsPage() {
   const handleRefresh = async () => {
     setLoading(true);
     try {
-      await window.yibiao?.plugins?.refreshMarket();
+      await window.appBridge?.plugins?.refreshMarket();
       await loadPlugins();
       showToast('插件市场已刷新', 'success');
     } catch (error) {

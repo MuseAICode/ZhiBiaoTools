@@ -144,7 +144,7 @@ function CredentialLibraryPage({ developerMode }: { developerMode: boolean }) {
   /** 首次进入时读取资信库快照。 */
   useEffect(() => {
     let mounted = true;
-    void window.yibiao.credentialLibrary.load()
+    void window.appBridge.credentialLibrary.load()
       .then((data) => {
         if (!mounted) return;
         setSnapshot(data);
@@ -180,7 +180,7 @@ function CredentialLibraryPage({ developerMode }: { developerMode: boolean }) {
     if (!changed) return;
     setProfileStatus('正在保存...');
     try {
-      const data = await window.yibiao.credentialLibrary.saveProfile(partial);
+      const data = await window.appBridge.credentialLibrary.saveProfile(partial);
       setSnapshot(data);
       setProfile((current) => ({ ...data.profile, ...current }));
       setProfileStatus('已保存');
@@ -201,7 +201,7 @@ function CredentialLibraryPage({ developerMode }: { developerMode: boolean }) {
     setImportConfirmOpen(false);
     setBusy('import-test-data');
     try {
-      const result = await window.yibiao.credentialLibrary.importTestData();
+      const result = await window.appBridge.credentialLibrary.importTestData();
       if (!result) return;
       setSnapshot(result.snapshot);
       setProfile(result.snapshot.profile);
@@ -244,14 +244,14 @@ function CredentialLibraryPage({ developerMode }: { developerMode: boolean }) {
 
   /** 上传企业单例栏目图片。 */
   const addProfileImages = async (fieldKey: CredentialImageFieldKey, files: File[]) => {
-    const filePaths = files.map((file) => window.yibiao.file.getPathForFile(file)).filter(Boolean);
+    const filePaths = files.map((file) => window.appBridge.file.getPathForFile(file)).filter(Boolean);
     if (!filePaths.length) {
       showToast('未能读取所选图片路径', 'error');
       return;
     }
     setBusy(`profile-image-${fieldKey}`);
     try {
-      const data = await window.yibiao.credentialLibrary.addProfileImages(fieldKey, filePaths);
+      const data = await window.appBridge.credentialLibrary.addProfileImages(fieldKey, filePaths);
       setSnapshot(data);
       showToast(`已添加 ${filePaths.length} 张图片`, 'success');
     } catch (error) {
@@ -390,7 +390,7 @@ function CredentialLibraryPage({ developerMode }: { developerMode: boolean }) {
     if (!editor) return;
     const newImages = editor.newImages.map((image) => ({
       fieldKey: image.fieldKey,
-      filePath: window.yibiao.file.getPathForFile(image.file),
+      filePath: window.appBridge.file.getPathForFile(image.file),
       customName: image.customName,
     }));
     if (newImages.some((image) => !image.filePath)) {
@@ -410,13 +410,13 @@ function CredentialLibraryPage({ developerMode }: { developerMode: boolean }) {
     try {
       let result: CredentialLibraryMutationResult;
       if (editor.type === 'certificate') {
-        result = await window.yibiao.credentialLibrary.saveCertificate(payload as CredentialRecordSavePayload<CredentialCertificate>);
+        result = await window.appBridge.credentialLibrary.saveCertificate(payload as CredentialRecordSavePayload<CredentialCertificate>);
       } else if (editor.type === 'employee') {
-        result = await window.yibiao.credentialLibrary.saveEmployee(payload as CredentialRecordSavePayload<CredentialEmployee>);
+        result = await window.appBridge.credentialLibrary.saveEmployee(payload as CredentialRecordSavePayload<CredentialEmployee>);
       } else if (editor.type === 'project') {
-        result = await window.yibiao.credentialLibrary.saveProject(payload as CredentialRecordSavePayload<CredentialProject>);
+        result = await window.appBridge.credentialLibrary.saveProject(payload as CredentialRecordSavePayload<CredentialProject>);
       } else {
-        result = await window.yibiao.credentialLibrary.saveOtherMaterial(payload as CredentialRecordSavePayload<CredentialOtherMaterial>);
+        result = await window.appBridge.credentialLibrary.saveOtherMaterial(payload as CredentialRecordSavePayload<CredentialOtherMaterial>);
       }
       setSnapshot(result.snapshot);
       if (result.fileDeleteFailures.length) {
@@ -438,11 +438,11 @@ function CredentialLibraryPage({ developerMode }: { developerMode: boolean }) {
     setBusy(`delete-${pendingDelete.kind}`);
     try {
       let result: CredentialLibraryMutationResult;
-      if (pendingDelete.kind === 'image') result = await window.yibiao.credentialLibrary.deleteImage(pendingDelete.id);
-      else if (pendingDelete.kind === 'certificate') result = await window.yibiao.credentialLibrary.deleteCertificate(pendingDelete.id);
-      else if (pendingDelete.kind === 'employee') result = await window.yibiao.credentialLibrary.deleteEmployee(pendingDelete.id);
-      else if (pendingDelete.kind === 'project') result = await window.yibiao.credentialLibrary.deleteProject(pendingDelete.id);
-      else result = await window.yibiao.credentialLibrary.deleteOtherMaterial(pendingDelete.id);
+      if (pendingDelete.kind === 'image') result = await window.appBridge.credentialLibrary.deleteImage(pendingDelete.id);
+      else if (pendingDelete.kind === 'certificate') result = await window.appBridge.credentialLibrary.deleteCertificate(pendingDelete.id);
+      else if (pendingDelete.kind === 'employee') result = await window.appBridge.credentialLibrary.deleteEmployee(pendingDelete.id);
+      else if (pendingDelete.kind === 'project') result = await window.appBridge.credentialLibrary.deleteProject(pendingDelete.id);
+      else result = await window.appBridge.credentialLibrary.deleteOtherMaterial(pendingDelete.id);
       setSnapshot(result.snapshot);
       setPendingDelete(null);
       if (result.fileDeleteFailures.length) {

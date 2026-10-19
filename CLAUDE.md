@@ -15,8 +15,8 @@
 
 ## 命名规则
 
-- 新增的代码、文件、目录、接口、全局对象、数据库表与字段、环境变量、npm 脚本等，不得使用“易标 / yibiao”（不区分大小写）命名，改用中性名称（例如 bridge 用 `AppBridge` / `getBridge()`）。
-- 已有命名（如 `window.yibiao`、`yibiao.sqlite`、`yibiao-asset://`）暂不修改，统一在第 9 步上线检查中替换。
+- 代码、文件名、文档、接口、全局对象、数据库表与字段、环境变量、npm 脚本等一律不得使用原产品名称（含中英文和缩写拼写），改用本项目名称“智标” / ZhiBiaoTools（`zhibiao`）或中性名称（例如 bridge 用 `window.appBridge`、`AppBridge` / `getBridge()`）。
+- 禁用词清单只维护在 `scripts/check-banned-words.sh` 中，由 CI 的 `naming-check` 检查所有跟踪文件的内容和文件名（检查脚本自身除外），出现即失败；提交前可在仓库根目录运行 `bash scripts/check-banned-words.sh` 自查。
 
 ## PR 规则
 

@@ -39,13 +39,13 @@ function AgentRuntimeStatusBar() {
 
   useEffect(() => {
     let disposed = false;
-    void window.yibiao?.agent.getStatus()
+    void window.appBridge?.agent.getStatus()
       .then((nextStatus) => {
         if (!disposed) setStatus(nextStatus);
       })
       .catch(() => undefined);
 
-    const unsubscribe = window.yibiao?.agent.onStatus((nextStatus) => {
+    const unsubscribe = window.appBridge?.agent.onStatus((nextStatus) => {
       setStatus(nextStatus);
     });
 

@@ -339,7 +339,7 @@ function GenerationSettingsPage({
 
   useEffect(() => {
     let cancelled = false;
-    window.yibiao?.config.load().then((config) => {
+    window.appBridge?.config.load().then((config) => {
       if (!cancelled) setImageModelStatus(config.image_model?.status || 'untested');
     }).catch((error) => console.warn('读取生图模型状态失败', error));
     return () => { cancelled = true; };
@@ -367,7 +367,7 @@ function GenerationSettingsPage({
   }, [activeTab, referenceKnowledgeDocumentIds]);
 
   const resolveDroppedFilePaths = (files: FileList) =>
-    Array.from(files).map((file) => window.yibiao?.file.getPathForFile(file) || '').filter(Boolean);
+    Array.from(files).map((file) => window.appBridge?.file.getPathForFile(file) || '').filter(Boolean);
 
   // 支持标准页签键盘导航，并把焦点同步到新页签。
   const handleTabKeyDown = (event: KeyboardEvent<HTMLButtonElement>, index: number) => {
@@ -394,7 +394,7 @@ function GenerationSettingsPage({
     if (generationConfigLocked) return;
     try {
       setOriginalPlanBusy(true);
-      const result = await window.yibiao?.technicalPlan.importOriginalPlanDocument(filePaths);
+      const result = await window.appBridge?.technicalPlan.importOriginalPlanDocument(filePaths);
       if (!result?.success) {
         const message = result?.message || '未导入文件';
         if (isLibreOfficeRequiredMessage(message)) {
@@ -408,7 +408,7 @@ function GenerationSettingsPage({
         showToast('已有方案解析结果为空', 'error');
         return;
       }
-      onOriginalPlanChanged(await window.yibiao!.technicalPlan.loadState());
+      onOriginalPlanChanged(await window.appBridge!.technicalPlan.loadState());
       showToast(result.message || '已有方案已导入', 'success');
     } catch (error) {
       const message = error instanceof Error ? error.message : '已有方案解析失败';
@@ -427,12 +427,12 @@ function GenerationSettingsPage({
     if (generationConfigLocked) return;
     try {
       setOriginalPlanBusy(true);
-      const result = await window.yibiao!.technicalPlan.removeOriginalPlanDocument();
+      const result = await window.appBridge!.technicalPlan.removeOriginalPlanDocument();
       if (!result.success) {
         showToast(result.message || '移除已有方案失败', 'error');
         return;
       }
-      onOriginalPlanChanged(await window.yibiao!.technicalPlan.loadState());
+      onOriginalPlanChanged(await window.appBridge!.technicalPlan.loadState());
       setRemoveDialogOpen(false);
       showToast(result.message || '已移除已有方案', 'success');
     } catch (error) {
@@ -510,7 +510,7 @@ function GenerationSettingsPage({
   const loadKnowledgeIndex = async () => {
     try {
       setLoadingKnowledge(true);
-      const index = await window.yibiao?.knowledgeBase.list();
+      const index = await window.appBridge?.knowledgeBase.list();
       const nextIndex = index || emptyKnowledgeIndex;
       setKnowledgeIndex(nextIndex);
       setExpandedKnowledgeFolderIds(getInitialExpandedKnowledgeFolders(nextIndex));

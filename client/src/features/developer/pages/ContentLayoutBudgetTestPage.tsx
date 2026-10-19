@@ -130,7 +130,7 @@ function ContentLayoutBudgetTestPage() {
   const loadState = useCallback(async () => {
     setLoadingState(true);
     try {
-      const bridge = window.yibiao;
+      const bridge = window.appBridge;
       if (!bridge?.technicalPlan?.loadState) throw new Error('preload 未暴露 technicalPlan.loadState');
       const state = await bridge.technicalPlan.loadState();
 
@@ -252,7 +252,7 @@ function ContentLayoutBudgetTestPage() {
       }
 
       // 配图提示词是模型刚写的，画框比例是版面预算定的，两边在这里汇合。
-      const bridge = window.yibiao.developerLayoutFigure;
+      const bridge = window.appBridge.developerLayoutFigure;
       await bridge.reset();
       const refs: Record<string, string> = {};
       const results: DeveloperLayoutFigureResult[] = [];
@@ -300,7 +300,7 @@ function ContentLayoutBudgetTestPage() {
     setActualPages(null);
     try {
       // 走开发者资源目录：真实生成的配图落在那儿，模板样张目录会被同步清理。
-      const result = await window.yibiao.developerLayoutFigure.renderPreview(assembled, { ...config, template_name: '' });
+      const result = await window.appBridge.developerLayoutFigure.renderPreview(assembled, { ...config, template_name: '' });
       setPreviewBytes(new Uint8Array(result.bytes));
       setPreviewKey(result.key);
       appendEvent('已渲染成 Word 文档，等待排版引擎完成分页。');
