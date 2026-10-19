@@ -464,7 +464,15 @@ AI 网关加固，做法见 `docs/SERVER_DESIGN.md` 第 10.9 节。`client/` 未
 - 数据与协议（中性前缀 `app`）：`app.sqlite`、`app-asset://`、`<!-- app:block -->`、`<!-- app:keep-N -->`、Word 内容控件标签 `app:body:` / `app:field:`、OpenXmlHelper 段落标记 `APPMARK*`、Pi 自检令牌 `APP_PI_*`、表格令牌 `APP_CONTENT_TABLE_`、废标分隔符 `---app-rejection-*---`、`app:plugins-changed` 事件、Pi provider id `app`、临时目录与 DOM id 前缀 `app-`；
 - docs 中原作者服务统一称“内测版（已移除）”，不写原产品名和域名；
 - `CLAUDE.md` 删除“已有命名暂不修改”规则和禁用词原文，改由 CI 的 `scripts/check-banned-words.sh` 检查（检查脚本自身除外）；
-- 未改：`yb` 缩写（CSS 变量 `--yb-*`、受限 HTML 的 `data-yb-*` 属性、`yb_layout_` 等）不在禁用词内，如需替换另开 PR。
+- 未改：`yb` 缩写（CSS 变量 `--yb-*`、受限 HTML 的 `data-yb-*` 属性、`yb_layout_` 等）不在禁用词内，留给下一个单独 PR（见下方“品牌改名第三部分”）。
+
+#### 品牌改名第三部分：`yb` 缩写改为 `app`（未开始）
+
+单独一个 PR，不与其他改动合并：
+
+- 把 `yb` 缩写统一改为中性前缀 `app`：CSS 变量与类名（`--yb-*`、`yb-*`）、受限 HTML 属性（`data-yb-*` 改为 `data-app-*`）、标记与书签名（`yb_layout_` 等）、函数和变量名（`ybTableKeepNext`、`ybKeepHeight` 等）；
+- AI 提示词、解析与清洗代码（`restrictedHtml.ts` 等）和 OpenXmlHelper（C#）必须同步修改，并补测试证明新属性能被正确生成、解析和导出；
+- 完成后把 `yb-`、`yb_` 加入 `scripts/check-banned-words.sh` 的禁用词检查。
 
 ## 1. 现状概览
 
@@ -595,6 +603,7 @@ AI 网关加固，做法见 `docs/SERVER_DESIGN.md` 第 10.9 节。`client/` 未
 9. **收尾**：插件下线或重做、开发者工具改管理员页面；不自建 analytics Worker（0.18 决定；客户端埋点、内容服务代码和 `analytics/` 目录已在 0.19 删除）；压测、安全评审，再上线。
    上线检查（对外提供服务前逐项完成）：
    - ~~品牌名替换：旧产品名、旧 bridge 全局名、旧资源协议和数据库文件名等已有命名统一改为本项目名称“智标” / ZhiBiaoTools（第 1 步前决定第 3 项推迟到此）~~ 已完成：第一部分（用户可见文字和文档）见 #1，第二部分（其余全部）见“第 9 步说明”；
+   - `yb` 缩写改为中性前缀 `app`，完成后把 `yb-`、`yb_` 加入 CI 禁用词检查（品牌改名第三部分，单独 PR，见“第 9 步说明”）；
    - 把 `SECURITY.md`、`CODE_OF_CONDUCT.md`、`.github/ISSUE_TEMPLATE/问题反馈.md` 中的 `{{CONTACT_EMAIL}}` 占位符（0.20）替换为本项目的联系方式；
    - 重写 Web 版隐私声明：现有设置页隐私声明按桌面版“数据保存在本机”编写，Web 版需说明服务端存储的数据、API Key 的保管方式、日志与保留期限、删除方式；按 旧仓库 PR #26 决定还要写明服务器位于境外（香港）、调用的第三方模型服务商、用量记录的保留期，以及项目删除后 7 天恢复期、注销后 30 天内删除；
    - 完成 `docs/SERVER_DESIGN.md` 第 11 节“合规待确认事项”（旧仓库 PR #26），每项都有律师确认的结论并已落实到设计和界面，未完成不得对外提供服务：
