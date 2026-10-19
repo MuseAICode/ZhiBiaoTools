@@ -7,3 +7,6 @@
 
 # Pi Agent 多平台命令工具以原始二进制形式跟踪
 client/vendor/agent-tools/**/bin/* binary
+
+# 上传校验的真实样本按原始字节跟踪（MHT 的 CRLF、RTF 等不得被换行转换改动）
+server/tests/files/samples/* binary
