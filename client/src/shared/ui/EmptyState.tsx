@@ -12,7 +12,7 @@ export interface EmptyStateProps {
 /** 统一空态卡片：虚线边框居中样式，可嵌入引导按钮 */
 export default function EmptyState({ title, hint, children, className }: EmptyStateProps) {
   return (
-    <div className={`yb-empty-state${className ? ` ${className}` : ''}`}>
+    <div className={`app-empty-state${className ? ` ${className}` : ''}`}>
       <strong>{title}</strong>
       {hint != null ? <span>{hint}</span> : null}
       {children}

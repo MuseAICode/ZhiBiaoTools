@@ -85,7 +85,7 @@ function textChars(element: Element) {
 }
 
 function figureSizeOf(figure: Element | null, fallback: FigureSize = 'wide'): FigureSize {
-  const value = (figure?.getAttribute('data-yb-size') || '').trim();
+  const value = (figure?.getAttribute('data-app-size') || '').trim();
   return isFigureSize(value) ? value : fallback;
 }
 
@@ -128,7 +128,7 @@ export function measureAssembledBlocks(html: string, metrics: PageMetrics): Skel
     }
 
     if (tag === 'table') {
-      const preset = element.getAttribute('data-yb-preset') || 'plain';
+      const preset = element.getAttribute('data-app-preset') || 'plain';
       const figures = element.querySelectorAll('figure');
 
       if (preset === 'imageText') {
@@ -259,7 +259,7 @@ function splitImageText(table: Element, metrics: PageMetrics): Element[] {
     const shortest = [...FIGURE_SIZES].sort(
       (left, right) => metrics.figureImageHeightCm[left] - metrics.figureImageHeightCm[right],
     )[0];
-    figure.setAttribute('data-yb-size', shortest);
+    figure.setAttribute('data-app-size', shortest);
     // 表格里的图本来不需要图注，独立出来就得补一个，否则读者不知道这是什么。
     if (caption && !figure.querySelector('figcaption')) {
       const figcaption = document.createElement('figcaption');
@@ -299,7 +299,7 @@ function shrinkGroup(table: Element) {
     row.appendChild(cell);
   }
   tbody.appendChild(row);
-  table.setAttribute('data-yb-preset', 'threeImages');
+  table.setAttribute('data-app-preset', 'threeImages');
   return true;
 }
 
@@ -314,7 +314,7 @@ type Candidate = { label: string; apply: (element: Element) => boolean };
 /** 针对某个块能试的降级手段，按代价从低到高排列。 */
 function candidatesFor(element: Element, metrics: PageMetrics): Candidate[] {
   const tag = element.tagName.toLowerCase();
-  const preset = element.getAttribute('data-yb-preset') || '';
+  const preset = element.getAttribute('data-app-preset') || '';
   const id = element.getAttribute('id') || '';
 
   if (tag === 'figure') {
@@ -323,7 +323,7 @@ function candidatesFor(element: Element, metrics: PageMetrics): Candidate[] {
     return next
       ? [{
         label: `${id} 画框 ${current} → ${next}`,
-        apply: (target) => { target.setAttribute('data-yb-size', next); return true; },
+        apply: (target) => { target.setAttribute('data-app-size', next); return true; },
       }]
       : [];
   }
@@ -338,7 +338,7 @@ function candidatesFor(element: Element, metrics: PageMetrics): Candidate[] {
         label: `图组 ${id} 画框 ${current} → ${next}`,
         apply: (target) => {
           for (const figure of Array.from(target.querySelectorAll('figure'))) {
-            figure.setAttribute('data-yb-size', next);
+            figure.setAttribute('data-app-size', next);
           }
           return true;
         },

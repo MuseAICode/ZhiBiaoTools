@@ -206,7 +206,7 @@ function createDeveloperLayoutFigureService({ app, aiService, localImageRenderSe
     };
   }
 
-  /** 生成一张图并落到测试资源目录，返回可直接写进 data-yb-asset-ref 的相对路径。 */
+  /** 生成一张图并落到测试资源目录，返回可直接写进 data-app-asset-ref 的相对路径。 */
   async function renderFigure(payload = {}) {
     const id = String(payload.id || 'fig').replace(/[^\w-]/g, '') || 'fig';
     const request = {

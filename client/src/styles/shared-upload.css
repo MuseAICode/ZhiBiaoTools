@@ -7,8 +7,8 @@
   padding: 20px 24px 22px;
   background: rgba(255, 255, 255, 0.94);
   border: 1px solid rgba(228, 233, 240, 0.88);
-  border-radius: var(--yb-radius-xl);
-  box-shadow: var(--yb-shadow);
+  border-radius: var(--app-radius-xl);
+  box-shadow: var(--app-shadow);
 }
 
 .upload-page-title {
@@ -21,14 +21,14 @@
 /* 页面级标题与后续步骤 command-bar 的 24px 标题保持同级 */
 .upload-page-title h2 {
   margin: 8px 0 0;
-  color: var(--yb-text);
+  color: var(--app-text);
   font-size: 24px;
   letter-spacing: -0.035em;
 }
 
 .upload-page-title p {
   margin: 6px 0 0;
-  color: var(--yb-text-soft);
+  color: var(--app-text-soft);
 }
 
 .upload-stack {
@@ -44,9 +44,9 @@
   gap: 16px;
   padding: 14px 18px 14px 22px;
   background: linear-gradient(135deg, rgba(248, 250, 253, 0.86), rgba(255, 255, 255, 0.98));
-  border: 1px solid var(--yb-border-soft);
-  border-radius: var(--yb-radius-xl);
-  transition: border-color var(--yb-duration-fast) ease, background var(--yb-duration-fast) ease, box-shadow var(--yb-duration-fast) ease;
+  border: 1px solid var(--app-border-soft);
+  border-radius: var(--app-radius-xl);
+  transition: border-color var(--app-duration-fast) ease, background var(--app-duration-fast) ease, box-shadow var(--app-duration-fast) ease;
 }
 
 /* 拖拽文件悬停时的高亮态 */
@@ -54,7 +54,7 @@
   position: relative;
   background: linear-gradient(135deg, rgba(33, 116, 253, 0.07), rgba(255, 255, 255, 0.98));
   border-color: rgba(33, 116, 253, 0.45);
-  box-shadow: var(--yb-focus-ring);
+  box-shadow: var(--app-focus-ring);
 }
 
 /* 拖入时的“松开导入”提示徽标 */
@@ -67,9 +67,9 @@
   color: #ffffff;
   font-size: 12px;
   font-weight: 700;
-  background: var(--yb-primary);
-  border-radius: var(--yb-radius-pill);
-  box-shadow: var(--yb-shadow-sm);
+  background: var(--app-primary);
+  border-radius: var(--app-radius-pill);
+  box-shadow: var(--app-shadow-sm);
   pointer-events: none;
 }
 
@@ -81,20 +81,20 @@
 .upload-label span {
   width: max-content;
   padding: 4px 8px;
-  color: var(--yb-primary);
+  color: var(--app-primary);
   font-size: 12px;
   font-weight: 800;
   background: #eef4ff;
-  border-radius: var(--yb-radius-pill);
+  border-radius: var(--app-radius-pill);
 }
 
 .upload-label strong {
-  color: var(--yb-text);
+  color: var(--app-text);
   font-size: 19px;
 }
 
 .upload-label small {
-  color: var(--yb-text-soft);
+  color: var(--app-text-soft);
   font-size: 12px;
 }
 
@@ -119,16 +119,16 @@
   padding: 10px 14px;
   background: linear-gradient(90deg, rgba(33, 116, 253, 0.055), rgba(33, 116, 253, 0.012));
   border: 1px solid rgba(33, 116, 253, 0.13);
-  border-radius: var(--yb-radius-lg);
+  border-radius: var(--app-radius-lg);
 }
 
 .upload-empty strong {
-  color: var(--yb-text);
+  color: var(--app-text);
   font-size: 14px;
 }
 
 .upload-empty span {
-  color: var(--yb-text-soft);
+  color: var(--app-text-soft);
   font-size: 13px;
 }
 
@@ -136,7 +136,7 @@
 .upload-empty .text-button {
   padding: 0;
   margin-top: 2px;
-  color: var(--yb-primary);
+  color: var(--app-primary);
   font-size: 13px;
   font-weight: 700;
   background: transparent;
@@ -173,8 +173,8 @@
   gap: 12px;
   padding: 10px 12px;
   background: #ffffff;
-  border: 1px solid var(--yb-border-soft);
-  border-radius: var(--yb-radius-lg);
+  border: 1px solid var(--app-border-soft);
+  border-radius: var(--app-radius-lg);
 }
 
 .upload-file-icon {
@@ -186,8 +186,8 @@
   color: #ffffff;
   font-size: 12px;
   font-weight: 900;
-  background: linear-gradient(135deg, var(--yb-primary), var(--yb-violet));
-  border-radius: var(--yb-radius-md);
+  background: linear-gradient(135deg, var(--app-primary), var(--app-violet));
+  border-radius: var(--app-radius-md);
 }
 
 .upload-file-info {
@@ -199,23 +199,23 @@
 
 .upload-file-info strong {
   overflow: hidden;
-  color: var(--yb-text);
+  color: var(--app-text);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .upload-file-info span {
-  color: var(--yb-text-soft);
+  color: var(--app-text-soft);
   font-size: 13px;
 }
 
 .upload-file-pill button {
   padding: 7px 10px;
-  color: var(--yb-danger);
+  color: var(--app-danger);
   font-weight: 700;
   background: rgba(200, 50, 32, 0.08);
   border: 0;
-  border-radius: var(--yb-radius-pill);
+  border-radius: var(--app-radius-pill);
   cursor: pointer;
 }
 

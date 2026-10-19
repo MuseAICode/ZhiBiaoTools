@@ -549,7 +549,7 @@ function createOpenXmlHelperService({ app, configStore } = {}) {
         fs.mkdirSync(workspace, { recursive: true });
         temporaryAssets = fs.mkdtempSync(path.join(workspace, 'restricted-html-assets-'));
         const $ = require('cheerio').load(html, null, false);
-        const references = new Set($('img').toArray().map(element => $(element).attr('data-yb-asset-ref')));
+        const references = new Set($('img').toArray().map(element => $(element).attr('data-app-asset-ref')));
         for (const reference of references) {
           if (!reference || reference.includes('\\') || path.isAbsolute(reference) || reference.includes(':') || reference.split('/').includes('..')) {
             throw new Error('Word 配图引用必须是图片根目录内的相对路径');

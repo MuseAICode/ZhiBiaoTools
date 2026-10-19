@@ -50,7 +50,7 @@ static partial class RestrictedHtmlWordInserter
     /// 画框适配方式。
     /// cover 把图裁成画框比例，适合实景照片；contain 只把画框当成上界，
     /// 图按自己的真实比例缩放进去，一个像素都不切——流程图、信息图必须走这条。
-    /// 不写 data-yb-fit 时保持 cover，老文档行为不变。
+    /// 不写 data-app-fit 时保持 cover，老文档行为不变。
     /// </summary>
     enum FigureFit
     {
@@ -182,10 +182,10 @@ static partial class RestrictedHtmlWordInserter
         var figures = new List<FigureSpec>();
         foreach (var figure in document.QuerySelectorAll("figure").ToList())
         {
-            var sizeName = (figure.GetAttribute("data-yb-size") ?? "").Trim();
+            var sizeName = (figure.GetAttribute("data-app-size") ?? "").Trim();
             if (!FigureSizes.TryGetValue(sizeName, out var size))
             {
-                throw new InvalidOperationException("figure 缺少合法 data-yb-size");
+                throw new InvalidOperationException("figure 缺少合法 data-app-size");
             }
 
             var images = figure.Children.Where(item => item.LocalName == "img").ToList();
@@ -194,14 +194,14 @@ static partial class RestrictedHtmlWordInserter
                 throw new InvalidOperationException("figure 必须包含一个 img");
             }
             var image = images[0];
-            var assetRef = (image.GetAttribute("data-yb-asset-ref") ?? "").Trim();
+            var assetRef = (image.GetAttribute("data-app-asset-ref") ?? "").Trim();
             if (assetRef.Length == 0)
             {
-                throw new InvalidOperationException("导出 figure 时 img 必须包含 data-yb-asset-ref");
+                throw new InvalidOperationException("导出 figure 时 img 必须包含 data-app-asset-ref");
             }
             if (assetRef.Contains('\\') || Path.IsPathRooted(assetRef) || assetRef.Split('/').Contains("..", StringComparer.Ordinal))
             {
-                throw new InvalidOperationException("data-yb-asset-ref 必须是工作区内的相对路径");
+                throw new InvalidOperationException("data-app-asset-ref 必须是工作区内的相对路径");
             }
 
             var assetPath = WordWorkspace.ResolveWorkspacePath(workspace, assetRef);
@@ -305,7 +305,7 @@ static partial class RestrictedHtmlWordInserter
     /// <summary>计算单层表格中目标单元格的宽度占比和水平内边距。</summary>
     static TableCellPlacement ResolveTableCellPlacement(IElement table, IElement cell)
     {
-        var preset = table.GetAttribute("data-yb-preset") ?? "";
+        var preset = table.GetAttribute("data-app-preset") ?? "";
         var rowCells = cell.ParentElement?.Children
             .Where(item => item.LocalName is "td" or "th")
             .ToList() ?? [];
@@ -825,10 +825,10 @@ static partial class RestrictedHtmlWordInserter
     }
 
     /// <summary>计算 DrawingML 千分之一百分比单位的居中 cover 裁切值。</summary>
-    /// <summary>读取 data-yb-fit；不写或写了不认识的值时按 cover 处理，保持旧行为。</summary>
+    /// <summary>读取 data-app-fit；不写或写了不认识的值时按 cover 处理，保持旧行为。</summary>
     static FigureFit ResolveFigureFit(IElement figure)
     {
-        return (figure.GetAttribute("data-yb-fit") ?? "").Trim() switch
+        return (figure.GetAttribute("data-app-fit") ?? "").Trim() switch
         {
             "contain" => FigureFit.Contain,
             _ => FigureFit.Cover,

@@ -7,7 +7,7 @@ type RunningMode = 'text' | 'json' | null;
 const sampleTenderContent = `# 智标测试项目招标文件
 
 项目名称：智标测试项目。
-项目编号：YB-TEST-001。
+项目编号：ZB-TEST-001。
 项目类型：软件服务。
 项目预算：100 万元。
 项目地址：北京市海淀区。

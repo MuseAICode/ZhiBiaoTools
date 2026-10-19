@@ -26,14 +26,14 @@
 
 新增表格遵守本节编排的 table.needed：为 false 时不新增数据表格；为 true 时围绕 table.purpose 使用表格，仅在编排允许且能改善本节信息表达时新增数据表格，不以增加版式种类为目的插入表格。已还原底稿中的原表格仍须保留其数据和含义，整理为受限 HTML，不受该标记限制；内容冲突以全局事实设定为准。
 
-- table 使用 data-yb-preset：plain、headerRow、headerColumn、headerRowAndColumn。
+- table 使用 data-app-preset：plain、headerRow、headerColumn、headerRowAndColumn。
 - 使用 caption 作为表题，thead/tbody 包含 tr，tr 包含 th/td。
 - 首行表头使用 th scope="col"；首列表头使用 th scope="row"。
 - 单元格允许文字、行内标签、段落或列表，不嵌套数据表格；rowspan/colspan 仅使用正整数。避免在一格内堆砌长文。
 
 ```html
 <!-- app:block -->
-<table id="s_1_2_tbl001" data-yb-preset="headerRow">
+<table id="s_1_2_tbl001" data-app-preset="headerRow">
   <caption>阶段成果</caption>
   <thead><tr><th scope="col">阶段</th><th scope="col">成果</th></tr></thead>
   <tbody><tr><td>实施准备</td><td>计划与责任分工</td></tr></tbody>
@@ -46,7 +46,7 @@
 
 有图模式且 AI 生图开启时，按 image_requirements 提供的本轮 AI 图片目标占比 60% 规划新增配图。主 Agent 在并发写作前优先寻找适合实物、场景、效果、物理结构、工艺、操作等可视化表达的主题，并依次确定布局、表达目的、图片类型和生成方式。需要准确表达流程、逻辑或数据时，继续按对照表使用 HTML/Mermaid，不为比例要求把这些图强行改为 AI 图片。无图或 AI 生图关闭时不应用 AI 占比目标。
 
-占比按本轮实际新增图片张数计算：单张图片和图片表格各 1 张，三列图片 3 张，四宫格 4 张。原方案图片不计入分子或分母，即使 data-yb-generation="aiImage" 也不视为本轮 AI 生图。60% 是主 Agent 统筹的整体规划目标，不是上限，不要求精确命中，也不要求每个小节分别达到该比例；保持既定布局名额，不额外加图凑比例。暂停重试沿用本轮安排，已完成的新图计入本轮统计；局部生成只统计本轮新增图片，单节修改不追补全文比例。
+占比按本轮实际新增图片张数计算：单张图片和图片表格各 1 张，三列图片 3 张，四宫格 4 张。原方案图片不计入分子或分母，即使 data-app-generation="aiImage" 也不视为本轮 AI 生图。60% 是主 Agent 统筹的整体规划目标，不是上限，不要求精确命中，也不要求每个小节分别达到该比例；保持既定布局名额，不额外加图凑比例。暂停重试沿用本轮安排，已完成的新图计入本轮统计；局部生成只统计本轮新增图片，单节修改不追补全文比例。
 
 AI 图片画面差异化：每张新增 AI 图片确定画面类型（对照表中的 AI 类型）、主体、视角景别（特写、中景、全景、鸟瞰、轴测、剖切等）和画面形式（见下方 AI 生图工具的 style）。全文 AI 图片在这四个维度上分散，避免多数图片都表现人员在工位或现场作业；管理、值守、协同类内容可改为表现设备实物、系统构成、空间全貌、作业对象细节或成果状态，相邻小节不重复相同组合。同一图组使用同一画面形式，全文按内容选用多种画面形式。该要求只约束画面内容，不改变 AI 占比和布局名额。
 
@@ -56,23 +56,23 @@ image_needed 表示本节是否进入新增配图范围：为 false 时不新增
 
 并发正文写作阶段只生成分配的新增图片布局和受限 HTML 结构，填写生成类型、用途说明、替代文本及必要图注，暂不填写图片资源引用。主 Agent 在当前会话内生成图片后调用 apply-section-images 批量回填工具返回的 asset_ref；已有原图直接使用提供的资源引用。暂停或失败重试沿用本轮名额，已完成布局计入完成数量，仅补未完成部分。全部并发写作及配图结束后，由主 Agent 核对新增布局名额、图组内容、图片引用及生成方式分布，再进入字数检查；AI 占比是规划目标，不因比例偏差新增失败条件或额外加图。
 
-上述布局名额、类型开关和 image_needed 仅针对新增图片。已还原底稿中的原图按本节 restored_content.images 的对应关系直接复用 asset_ref，保留原图、引用顺序和表格中的图文对应关系，不重新生图，不受无图或类型开关限制，原图及其布局不占新增布局名额。原图使用完整的 figure、template、img 和图注结构，统一填写 data-yb-generation="aiImage"，唯一、非空的 template data-yb-role="prompt" 写“复用原方案图片，不重新生成”并可补充图片说明。原图统一使用 data-yb-generation="aiImage" 作为受限 HTML 格式标记。原图身份及资源路径以 restored_content.images 为准；该标记不构成调用 AI 生图的指令。原表格单元格中的原图可用 figure 保留。
+上述布局名额、类型开关和 image_needed 仅针对新增图片。已还原底稿中的原图按本节 restored_content.images 的对应关系直接复用 asset_ref，保留原图、引用顺序和表格中的图文对应关系，不重新生图，不受无图或类型开关限制，原图及其布局不占新增布局名额。原图使用完整的 figure、template、img 和图注结构，统一填写 data-app-generation="aiImage"，唯一、非空的 template data-app-role="prompt" 写“复用原方案图片，不重新生成”并可补充图片说明。原图统一使用 data-app-generation="aiImage" 作为受限 HTML 格式标记。原图身份及资源路径以 restored_content.images 为准；该标记不构成调用 AI 生图的指令。原表格单元格中的原图可用 figure 保留。
 
-最终正文中的每个 img 必须带 data-yb-asset-ref，值为图片工具返回或本节原图对应关系提供的 asset_ref，即当前 Agent 工作区相对路径（图片/xxx.png、原图/xxx.png 等）。不写 src、绝对路径、远程链接或 base64，不虚构图片文件。所有图组中的图片都须补齐资源引用后才能提交结果清单。
+最终正文中的每个 img 必须带 data-app-asset-ref，值为图片工具返回或本节原图对应关系提供的 asset_ref，即当前 Agent 工作区相对路径（图片/xxx.png、原图/xxx.png 等）。不写 src、绝对路径、远程链接或 base64，不虚构图片文件。所有图组中的图片都须补齐资源引用后才能提交结果清单。
 
-- 所有 figure（包括原图）必须有唯一 id、合法的 data-yb-generation 和 data-yb-size。
+- 所有 figure（包括原图）必须有唯一 id、合法的 data-app-generation 和 data-app-size。
 - 除 img 等空元素外，每个元素都写出对应的结束标签；每个 figure 以 </figure> 结束，img 是 figure 的直接子元素，不包在 strong、a 等元素中，figure 也不放在段落、列表项或行内元素中。结构不完整的正文不会被保存。
-- data-yb-generation 按对照表填写：ai 对应 aiImage，html 对应 htmlImage，mermaid 对应 mermaid；统一调用 generate-section-images，kind 分别填 ai、html、mermaid。新增图片的类型与实际调用的生成工具一致；原图按上述规则使用 aiImage，不触发生图。
-- data-yb-size 表示图片画框比例：square 为 1:1 方形，wide 为 3:2 横向，tall 为 3:4 纵向，panorama 为 16:9 横向；这是正文排版画框，不是生图服务的 size 参数。
-- data-yb-fit="contain" 保持原图比例、完整显示、不裁剪；data-yb-fit="cover" 铺满画框，比例不一致时会裁剪。省略时 Word 转换默认按 cover 处理。流程图、信息图及需要完整保留的原方案图片应明确使用 contain；实景示意图仅在允许裁剪边缘时使用 cover。
-- 每个 figure 必须包含且仅包含一个非空的 template[data-yb-role="prompt"]。新增图片的模板应说明表达目的、主要对象及其关系，必要时说明图中文字或数据；不得嵌入绘图源码。AI 图片模板按主体、可见元素、视角景别与构图、环境光线正向描述画面，写出区分本图的具体视觉元素，并注明画面形式名称；不虚构的范围是数值、型号、品牌、单位名称和可读文字，设备外形、材质、空间、光线等示意性细节应具体描述，不堆叠否定约束。原图模板填写复用说明。所有 figure 包含一个 img，带非空 alt；独立图和图组内的图带 figcaption。
+- data-app-generation 按对照表填写：ai 对应 aiImage，html 对应 htmlImage，mermaid 对应 mermaid；统一调用 generate-section-images，kind 分别填 ai、html、mermaid。新增图片的类型与实际调用的生成工具一致；原图按上述规则使用 aiImage，不触发生图。
+- data-app-size 表示图片画框比例：square 为 1:1 方形，wide 为 3:2 横向，tall 为 3:4 纵向，panorama 为 16:9 横向；这是正文排版画框，不是生图服务的 size 参数。
+- data-app-fit="contain" 保持原图比例、完整显示、不裁剪；data-app-fit="cover" 铺满画框，比例不一致时会裁剪。省略时 Word 转换默认按 cover 处理。流程图、信息图及需要完整保留的原方案图片应明确使用 contain；实景示意图仅在允许裁剪边缘时使用 cover。
+- 每个 figure 必须包含且仅包含一个非空的 template[data-app-role="prompt"]。新增图片的模板应说明表达目的、主要对象及其关系，必要时说明图中文字或数据；不得嵌入绘图源码。AI 图片模板按主体、可见元素、视角景别与构图、环境光线正向描述画面，写出区分本图的具体视觉元素，并注明画面形式名称；不虚构的范围是数值、型号、品牌、单位名称和可读文字，设备外形、材质、空间、光线等示意性细节应具体描述，不堆叠否定约束。原图模板填写复用说明。所有 figure 包含一个 img，带非空 alt；独立图和图组内的图带 figcaption。
 - 配图块之间用正文衔接，不连续堆图。不要照抄模板示例的配图内容。
 
 ```html
 <!-- app:block -->
-<figure id="s_1_2_fig001" data-yb-generation="mermaid" data-yb-size="wide" data-yb-fit="contain">
-  <template data-yb-role="prompt">本项目实施阶段及交接关系。</template>
-  <img alt="实施阶段及交接关系示意图" data-yb-asset-ref="图片/实施阶段.png">
+<figure id="s_1_2_fig001" data-app-generation="mermaid" data-app-size="wide" data-app-fit="contain">
+  <template data-app-role="prompt">本项目实施阶段及交接关系。</template>
+  <img alt="实施阶段及交接关系示意图" data-app-asset-ref="图片/实施阶段.png">
   <figcaption>实施阶段与交接关系</figcaption>
 </figure>
 ```
@@ -83,9 +83,9 @@ image_needed 表示本节是否进入新增配图范围：为 false 时不新增
 
 ```html
 <!-- app:block -->
-<figure id="original_fig_001" data-yb-generation="aiImage" data-yb-size="wide" data-yb-fit="contain">
-  <template data-yb-role="prompt">复用原方案现场图片，不重新生成。</template>
-  <img alt="现场图片" data-yb-asset-ref="原图/xxx.png">
+<figure id="original_fig_001" data-app-generation="aiImage" data-app-size="wide" data-app-fit="contain">
+  <template data-app-role="prompt">复用原方案现场图片，不重新生成。</template>
+  <img alt="现场图片" data-app-asset-ref="原图/xxx.png">
   <figcaption>现场图片</figcaption>
 </figure>
 ```
@@ -94,16 +94,16 @@ image_needed 表示本节是否进入新增配图范围：为 false 时不新增
 
 正文 figure 布局保存后，主 Agent 使用 list-section-images 读取本轮目标的最新图片清单，无须自行编写扫描脚本。清单包含小节、figure 标识、生成方式、画框比例、提示词、图注及当前图片引用，image_id 由小节 ID 和 figure ID 共同确定，原样用于后续图片工具。不同小节可以使用相同 figure ID，同一小节内必须唯一。已有有效图片直接复用；reused_original 标记原方案图片，不因 aiImage 属性触发生图，原图文件缺失时修复引用。发现结构或提示词问题，仍可读取、编辑正文后重新提取；section_ids 可只刷新相关小节。
 
-图片工具返回 status=success 后，将需要回填的项写入 任务/图片回填.json 再调用 apply-section-images 批量回填，每项提供 image_id、图片工具返回的 asset_ref，以及清单原 asset_ref 作为 previous_asset_ref（未填写时传空字符串）。程序重新读取正文，只修改 img 的 data-yb-asset-ref，同一小节合并保存，其余文字、注释、换行及图组布局保持原样。回填不是生图工具，仅提交 status=success 的图片，不提交绘图源码。同一小节有回填错误时该小节整组不写入，其他成功小节保留；按返回结果修复，引用已变化时先刷新清单。相同引用重复提交不会重复修改。暂停后基于最新清单复用成功产物；全文进入图片保护阶段后不再允许回填，单小节修改只处理当前目标。
+图片工具返回 status=success 后，将需要回填的项写入 任务/图片回填.json 再调用 apply-section-images 批量回填，每项提供 image_id、图片工具返回的 asset_ref，以及清单原 asset_ref 作为 previous_asset_ref（未填写时传空字符串）。程序重新读取正文，只修改 img 的 data-app-asset-ref，同一小节合并保存，其余文字、注释、换行及图组布局保持原样。回填不是生图工具，仅提交 status=success 的图片，不提交绘图源码。同一小节有回填错误时该小节整组不写入，其他成功小节保留；按返回结果修复，引用已变化时先刷新清单。相同引用重复提交不会重复修改。暂停后基于最新清单复用成功产物；全文进入图片保护阶段后不再允许回填，单小节修改只处理当前目标。
 
 ## 三类图片工具
 
 本轮待生成的 AI、HTML、Mermaid 图片写入 任务/配图生成.json（格式为 {"images":[…]}），再调用 generate-section-images 提交。任务文件内容较多时可分多次写入：首次用 write，之后用 edit 补充，每次写入后保持完整有效 JSON。每项填写清单 image_id、kind（ai/html/mermaid）和 prompt；已有有效图片的项自动跳过，需要替换已有图片时该项加 "regenerate": true，原方案图片不重新生成。程序读取全部条目，同时向既有生图及文本队列提交任务，超限自动排队；每张源码完成后立即进入对应本地渲染队列，不等待其他源码或 AI 图片。逐项报告进度，提交结束后返回统计和未成功项；按 image_id 对应正文图片，检查 status、stage、error、source_file 和 asset_ref，按工具说明处理未成功项。success 图片直接回填，error/cancelled 表示失败或未完成；不能把已保存源码当成图片生成完成。
 
-- AI 生图：kind=ai，size 必填，逐图读取对应 figure 的 data-yb-size，按 square=1:1、wide=3:2、tall=3:4、panorama=16:9 选择匹配的具体生图尺寸；gpt-image-2-1k 模型的 tall 使用已验证的 768x1024。style 必填，按模板注明的画面形式选择：realistic_photo=写实摄影（现场、作业、环境）、product_shot=设备特写摄影（实物、部件细节）、architectural_render=建筑/场地效果图（效果图、园区、空间全貌）、3d_render=三维模型渲染（设备、系统立体构成）、isometric_illustration=轴测插画（场景布局、系统空间关系）、cutaway_illustration=剖视透视插画（剖视图、物理结构、原理）、exploded_view=爆炸分解图（组件构成、装配关系）、line_drawing=技术线稿（工艺、结构、操作要点）、flat_illustration=扁平矢量插画（概念图、对比示意）；prompt 不写与 style 冲突的风格，品牌、水印和无关文字的限制由程序统一追加。可选 title 填写简短图名。不能把 tall 等画框名称当作尺寸，不得省略 size 或统一沿用默认方图；prompt 同步保留相同的比例与横向/竖向构图要求。尺寸被服务端拒绝时按失败结果修正该项，不通过省略尺寸重试。返回像素可能由服务端调整，不要求与请求像素完全相等。返回的 asset_ref 已指向当前工作区内的图片副本。
+- AI 生图：kind=ai，size 必填，逐图读取对应 figure 的 data-app-size，按 square=1:1、wide=3:2、tall=3:4、panorama=16:9 选择匹配的具体生图尺寸；gpt-image-2-1k 模型的 tall 使用已验证的 768x1024。style 必填，按模板注明的画面形式选择：realistic_photo=写实摄影（现场、作业、环境）、product_shot=设备特写摄影（实物、部件细节）、architectural_render=建筑/场地效果图（效果图、园区、空间全貌）、3d_render=三维模型渲染（设备、系统立体构成）、isometric_illustration=轴测插画（场景布局、系统空间关系）、cutaway_illustration=剖视透视插画（剖视图、物理结构、原理）、exploded_view=爆炸分解图（组件构成、装配关系）、line_drawing=技术线稿（工艺、结构、操作要点）、flat_illustration=扁平矢量插画（概念图、对比示意）；prompt 不写与 style 冲突的风格，品牌、水印和无关文字的限制由程序统一追加。可选 title 填写简短图名。不能把 tall 等画框名称当作尺寸，不得省略 size 或统一沿用默认方图；prompt 同步保留相同的比例与横向/竖向构图要求。尺寸被服务端拒绝时按失败结果修正该项，不通过省略尺寸重试。返回像素可能由服务端调整，不要求与请求像素完全相等。返回的 asset_ref 已指向当前工作区内的图片副本。
 - HTML/Mermaid：kind=html/mermaid，HTML 另填与正文画框一致的 frame_size。prompt 提供图片类型、表达目的、准确内容和数据，不能只给文件路径或要求模型自行检索；并发模型没有主会话上下文。源码独立保存为图片/下的新文件，随后自动转图。有 source_file 的失败或未完成项直接修复、转图，不重新生成源码；无源码的失败项才重新提交生成。
 
-- HTML 图片修复：首次生成已自动转图；需要按工具反馈重试转图时，将待修复 HTML 文件写入 任务/HTML转图.json 的 images，再调用 render-html-image。每项必填 image_id、source_file 和 frame_size；source_file 为源码相对路径，frame_size 与正文对应 figure 的 data-yb-size 一致。源文件可包含 html/head/body、style、div、SVG 等绘图结构，与受限正文分开；不依赖外部资源。生成前按画框比例确定固定设计尺寸：square=1240×1240、wide=1240×827、tall=1240×1653、panorama=1240×698。以 body 为画布，程序统一设置宽高及四周40px内边距，边距包含在上述尺寸内；例如 square 的内容区域为1160×1160。保留 body 的 Flex/Grid 布局，不额外包一层画布或重复添加外层边距。标题区和主体区共同利用内部空间，主体使用 Flex/Grid 分配剩余高度，卡片、节点及图形均衡分布，避免内容集中顶部、底部大面积留白。采用正式简洁的配色、统一字体和线条，模块间距协调；正文和节点文字不小于24px。不通过无意义文字、拉伸图形、单纯撑高空卡片或整体缩小内容填充版面。程序按固定尺寸以2倍像素输出，不按滚动高度扩大截图；内容不得侵入边距或超出画布。按返回结果中的 image_id 对应正文图片，逐项检查 status 和 error，按工具反馈修改源码并重试；成功后使用本次工具返回的图片资源引用。
+- HTML 图片修复：首次生成已自动转图；需要按工具反馈重试转图时，将待修复 HTML 文件写入 任务/HTML转图.json 的 images，再调用 render-html-image。每项必填 image_id、source_file 和 frame_size；source_file 为源码相对路径，frame_size 与正文对应 figure 的 data-app-size 一致。源文件可包含 html/head/body、style、div、SVG 等绘图结构，与受限正文分开；不依赖外部资源。生成前按画框比例确定固定设计尺寸：square=1240×1240、wide=1240×827、tall=1240×1653、panorama=1240×698。以 body 为画布，程序统一设置宽高及四周40px内边距，边距包含在上述尺寸内；例如 square 的内容区域为1160×1160。保留 body 的 Flex/Grid 布局，不额外包一层画布或重复添加外层边距。标题区和主体区共同利用内部空间，主体使用 Flex/Grid 分配剩余高度，卡片、节点及图形均衡分布，避免内容集中顶部、底部大面积留白。采用正式简洁的配色、统一字体和线条，模块间距协调；正文和节点文字不小于24px。不通过无意义文字、拉伸图形、单纯撑高空卡片或整体缩小内容填充版面。程序按固定尺寸以2倍像素输出，不按滚动高度扩大截图；内容不得侵入边距或超出画布。按返回结果中的 image_id 对应正文图片，逐项检查 status 和 error，按工具反馈修改源码并重试；成功后使用本次工具返回的图片资源引用。
 - Mermaid 图片修复：首次生成已保存 .mmd 文件并自动转图；需要修复或重试时，将相关源文件写入 任务/Mermaid转图.json 的 images，再调用 render-mermaid-image。每项必填 image_id 和 source_file，按返回结果中的 image_id 对应正文图片，逐项检查 status 和 error。根据图的类型选择 Mermaid 语法：流程图使用 flowchart，思维导图使用 mindmap，实体关系图使用 erDiagram。按所选语法正确处理中文标签，保持节点和连线清晰，避免过度密集；语法或渲染报错时修改源文件后重试。
 
 两种转图工具均从对应任务文件读取 images，已有有效图片的项自动跳过。它们只负责本地渲染，各自沿用已有组件并发队列，超限自动排队，不另行调用模型编写或修复源码。转图未成功时按工具反馈读取相应源码并修改，将失败或需要修正的项写入任务文件后重新提交转图，保留其他成功结果。源文件保留；图片以工具返回路径为准，成功后，通过 apply-section-images 将 asset_ref 批量回填到对应 img。暂停时工具等待本批请求退出，将已完成图片、已保存源码及未完成状态返回既有会话；恢复先核对会话结果与最新清单，成功图片直接复用，有源码的项继续修复或转图，无源码的剩余任务再提交生成；再次提交任务文件时已完成图片自动跳过。仅补齐缺失或需要修改的部分。图片生成发生在当前正文 Agent 会话内。

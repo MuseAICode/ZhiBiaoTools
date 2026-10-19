@@ -102,18 +102,18 @@ function allowedAttributes(element: Element, options: RestrictedHtmlParseOptions
   if (ROOT_TAGS.has(tag)) names.add('id');
   if (tag === 'ol') names.add('start');
   if (tag === 'figure') {
-    names.add('data-yb-generation');
-    names.add('data-yb-size');
+    names.add('data-app-generation');
+    names.add('data-app-size');
     // 画框适配方式：contain 按真实比例放进画框不裁切，cover 居中裁切；缺省即 cover。
-    names.add('data-yb-fit');
+    names.add('data-app-fit');
   }
-  if (tag === 'template' || tag === 'aside') names.add('data-yb-role');
+  if (tag === 'template' || tag === 'aside') names.add('data-app-role');
   if (tag === 'img') {
     names.add('alt');
-    names.add('data-yb-asset-ref');
+    names.add('data-app-asset-ref');
     if (options.allowImageSrc) names.add('src');
   }
-  if (tag === 'table') names.add('data-yb-preset');
+  if (tag === 'table') names.add('data-app-preset');
   if (tag === 'th' || tag === 'td') {
     names.add('rowspan');
     names.add('colspan');
@@ -229,12 +229,12 @@ function validateList(list: Element, context: BlockContext) {
 
 function validateFigure(figure: Element, context: BlockContext, ids: Map<string, number>) {
   validateId(figure, context, ids);
-  const generation = figure.getAttribute('data-yb-generation') || '';
-  if (!FIGURE_GENERATIONS.has(generation)) addIssue(context, 'error', 'figure 缺少合法 data-yb-generation');
-  const size = figure.getAttribute('data-yb-size') || '';
-  if (!FIGURE_SIZES.has(size)) addIssue(context, 'error', 'figure 缺少合法 data-yb-size');
-  const fit = figure.getAttribute('data-yb-fit');
-  if (fit !== null && !FIGURE_FITS.has(fit)) addIssue(context, 'error', 'figure 的 data-yb-fit 只能是 contain 或 cover');
+  const generation = figure.getAttribute('data-app-generation') || '';
+  if (!FIGURE_GENERATIONS.has(generation)) addIssue(context, 'error', 'figure 缺少合法 data-app-generation');
+  const size = figure.getAttribute('data-app-size') || '';
+  if (!FIGURE_SIZES.has(size)) addIssue(context, 'error', 'figure 缺少合法 data-app-size');
+  const fit = figure.getAttribute('data-app-fit');
+  if (fit !== null && !FIGURE_FITS.has(fit)) addIssue(context, 'error', 'figure 的 data-app-fit 只能是 contain 或 cover');
   if (!onlyWhitespaceTextOutside(figure, new Set(['template', 'img', 'figcaption']))) {
     addIssue(context, 'error', 'figure 只能包含 template、img 和 figcaption');
   }
@@ -246,7 +246,7 @@ function validateFigure(figure: Element, context: BlockContext, ids: Map<string,
   if (captions.length > 1) addIssue(context, 'error', 'figure 最多包含一个 figcaption');
   const prompt = templates[0];
   if (prompt) {
-    if (prompt.getAttribute('data-yb-role') !== 'prompt') addIssue(context, 'error', 'template 的 data-yb-role 必须为 prompt');
+    if (prompt.getAttribute('data-app-role') !== 'prompt') addIssue(context, 'error', 'template 的 data-app-role 必须为 prompt');
     const promptContent = prompt instanceof HTMLTemplateElement ? prompt.content : prompt;
     if (elementChildren(promptContent).length || !promptContent.textContent?.trim()) {
       addIssue(context, 'error', '配图提示 template 只能包含非空文字');
@@ -255,9 +255,9 @@ function validateFigure(figure: Element, context: BlockContext, ids: Map<string,
   const image = images[0];
   if (image) {
     if (!image.getAttribute('alt')?.trim()) addIssue(context, 'error', 'img 必须包含非空 alt');
-    const assetRef = image.getAttribute('data-yb-asset-ref');
+    const assetRef = image.getAttribute('data-app-asset-ref');
     if (assetRef != null && !isWorkspaceRelativeAssetRef(assetRef)) {
-      addIssue(context, 'error', 'data-yb-asset-ref 必须是工作区内的相对路径');
+      addIssue(context, 'error', 'data-app-asset-ref 必须是工作区内的相对路径');
     }
   }
   if (captions[0]) validateInlineContainer(captions[0], context);
@@ -342,8 +342,8 @@ function validateImagePreset(table: Element, preset: string, context: BlockConte
 
 function validateTable(table: Element, context: BlockContext, ids: Map<string, number>) {
   validateId(table, context, ids);
-  const preset = table.getAttribute('data-yb-preset') || '';
-  if (!TABLE_PRESETS.has(preset)) addIssue(context, 'error', 'table 缺少合法 data-yb-preset');
+  const preset = table.getAttribute('data-app-preset') || '';
+  if (!TABLE_PRESETS.has(preset)) addIssue(context, 'error', 'table 缺少合法 data-app-preset');
   if (!onlyWhitespaceTextOutside(table, new Set(['caption', 'thead', 'tbody']))) {
     addIssue(context, 'error', 'table 只能直接包含 caption、thead 和 tbody');
   }
@@ -408,7 +408,7 @@ function validateBlock(root: Element, aside: Element | null, context: BlockConte
     validateTable(root, context, ids);
   }
   if (aside) {
-    if (tag !== 'table' || aside.getAttribute('data-yb-role') !== 'table-notes') addIssue(context, 'error', 'aside 只能作为表格后的 table-notes');
+    if (tag !== 'table' || aside.getAttribute('data-app-role') !== 'table-notes') addIssue(context, 'error', 'aside 只能作为表格后的 table-notes');
     if (!onlyWhitespaceTextOutside(aside, new Set(['p']))) addIssue(context, 'error', '表注 aside 只能包含 p');
     for (const paragraph of elementChildren(aside)) validateInlineContainer(paragraph, context);
   }

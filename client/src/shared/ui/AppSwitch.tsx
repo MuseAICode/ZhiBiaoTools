@@ -9,18 +9,18 @@ export interface AppSwitchProps {
   id?: string;
 }
 
-/** 统一开关：基于 Radix Switch，替代原生 checkbox 拼装的 yb-switch-control 与各处自建开关 */
+/** 统一开关：基于 Radix Switch，替代原生 checkbox 拼装的 app-switch-control 与各处自建开关 */
 export default function AppSwitch({ checked, onCheckedChange, disabled = false, 'aria-label': ariaLabel, id }: AppSwitchProps) {
   return (
     <Switch.Root
       id={id}
-      className="yb-switch"
+      className="app-switch"
       checked={checked}
       onCheckedChange={onCheckedChange}
       disabled={disabled}
       aria-label={ariaLabel}
     >
-      <Switch.Thumb className="yb-switch-thumb" />
+      <Switch.Thumb className="app-switch-thumb" />
     </Switch.Root>
   );
 }

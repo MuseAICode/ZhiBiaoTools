@@ -99,28 +99,28 @@ export function buildSkeletonSystemPrompt() {
 
 配图块的写法：
 <!-- app:block -->
-<figure id="fig1" data-yb-generation="生成方式" data-yb-size="画框">
-  <template data-yb-role="prompt">这里写配图生成提示词，说清楚画什么、有哪些节点和关系</template>
+<figure id="fig1" data-app-generation="生成方式" data-app-size="画框">
+  <template data-app-role="prompt">这里写配图生成提示词，说清楚画什么、有哪些节点和关系</template>
   <img alt="图片内容的简短描述">
   <figcaption>图例文字</figcaption>
 </figure>
 
-data-yb-generation 三选一，按这张图真正该画什么来选，不要固定用同一种：
+data-app-generation 三选一，按这张图真正该画什么来选，不要固定用同一种：
 - mermaid：有明确先后或从属关系的流程图、层级图、职责关系图；
 - htmlImage：组织架构、矩阵、看板、指标卡、架构拓扑这类需要排版的信息图；
 - aiImage：施工现场、设备、环境、实施场景这类需要写实画面的效果图。
 一节里有多张图时，尽量让它们用不同的生成方式，不要全用同一种。
 
-data-yb-size 从块清单为该图列出的可选画框里挑一个，按内容的自然形状选：
+data-app-size 从块清单为该图列出的可选画框里挑一个，按内容的自然形状选：
 自上而下的长流程用竖版，左右流向或并列对比用横版，闭环和矩阵用方形。
 
 图文混排块（左图右文）的写法：
 <!-- app:block -->
-<table id="mix1" data-yb-preset="imageText">
+<table id="mix1" data-app-preset="imageText">
   <caption>这一块的小标题</caption>
   <tbody>
     <tr>
-      <td><figure id="fig2" data-yb-generation="htmlImage" data-yb-size="tall">…同上…</figure></td>
+      <td><figure id="fig2" data-app-generation="htmlImage" data-app-size="tall">…同上…</figure></td>
       <td><p><strong>一句话要点</strong></p><p>结合左图展开的说明文字</p></td>
     </tr>
   </tbody>
@@ -128,7 +128,7 @@ data-yb-size 从块清单为该图列出的可选画框里挑一个，按内容�
 
 并列图组块的写法（三列用 threeImages，四宫格用 fourImages，四宫格写两行两列）：
 <!-- app:block -->
-<table id="grp1" data-yb-preset="threeImages">
+<table id="grp1" data-app-preset="threeImages">
   <caption>这一组图的总标题</caption>
   <tbody>
     <tr>
@@ -144,7 +144,7 @@ data-yb-size 从块清单为该图列出的可选画框里挑一个，按内容�
 
 数据表格块的写法（preset 用块清单指定的那个）：
 <!-- app:block -->
-<table id="tbl1" data-yb-preset="headerRow">
+<table id="tbl1" data-app-preset="headerRow">
   <caption>表题</caption>
   <thead><tr><th scope="col">列名</th>…</tr></thead>
   <tbody><tr><td>单元格</td>…</tr></tbody>
@@ -229,7 +229,7 @@ export interface AssembledFigure {
 
 /**
  * 把 AI 产出的 HTML 补成可渲染的受限 HTML：按骨架顺序给每个 figure
- * 补 data-yb-size 和占位图引用。尺寸是版面规划的结果，绝不交给模型决定。
+ * 补 data-app-size 和占位图引用。尺寸是版面规划的结果，绝不交给模型决定。
  */
 export function assembleRestrictedHtml(
   rawHtml: string,
@@ -276,9 +276,9 @@ export function assembleRestrictedHtml(
     const asset = assetRefs[spec.id] || PLACEHOLDER_ASSETS[index % PLACEHOLDER_ASSETS.length];
 
     // 生成方式听模型的，它没写或写歪了就用骨架轮转分配的那种。
-    const generation = normalizeGeneration(figure.getAttribute('data-yb-generation')) || spec.suggested;
+    const generation = normalizeGeneration(figure.getAttribute('data-app-generation')) || spec.suggested;
     // 画框也听模型的，但要过版面这一关：超出高度预算就降到最接近的可用画框。
-    const wanted = normalizeSize(figure.getAttribute('data-yb-size'));
+    const wanted = normalizeSize(figure.getAttribute('data-app-size'));
     const { size, downgraded } = resolveFigureSize(wanted, spec.allowedSizes);
     // 流程图和信息图一个像素都不能切，实景照片才走裁切。
     const fit: FigureFit = DEFAULT_FIGURE_FIT[generation];
@@ -300,13 +300,13 @@ export function assembleRestrictedHtml(
       aspectHeight: geometry.aspectHeight,
     });
 
-    figure.setAttribute('data-yb-size', size);
-    figure.setAttribute('data-yb-generation', generation);
-    figure.setAttribute('data-yb-fit', fit);
+    figure.setAttribute('data-app-size', size);
+    figure.setAttribute('data-app-generation', generation);
+    figure.setAttribute('data-app-fit', fit);
     figure.setAttribute('id', spec.id);
     const image = figure.querySelector('img');
     if (image) {
-      image.setAttribute('data-yb-asset-ref', asset);
+      image.setAttribute('data-app-asset-ref', asset);
       image.setAttribute('src', asset);
     }
     patched += 1;
@@ -355,7 +355,7 @@ export function measureBlocks(html: string) {
   const document = parser.parseFromString(`<body>${html}</body>`, 'text/html');
   return Array.from(document.body.children).map((element) => {
     const tag = element.tagName.toLowerCase();
-    const preset = element.getAttribute('data-yb-preset') || '';
+    const preset = element.getAttribute('data-app-preset') || '';
     return {
       id: element.getAttribute('id') || '',
       tag: preset ? `${tag}/${preset}` : tag,

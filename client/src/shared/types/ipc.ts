@@ -484,7 +484,7 @@ export interface DeveloperLayoutFigureRequest {
 export interface DeveloperLayoutFigureResult {
   id: string;
   generation: string;
-  /** 可直接写进 data-yb-asset-ref 的相对路径。 */
+  /** 可直接写进 data-app-asset-ref 的相对路径。 */
   assetRef: string;
   width: number;
   height: number;

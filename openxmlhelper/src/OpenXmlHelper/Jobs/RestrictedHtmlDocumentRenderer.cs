@@ -116,7 +116,7 @@ static class RestrictedHtmlDocumentRenderer
         var index = 0;
         while (index < ranges.Count)
         {
-            var pageTemplate = ranges[index].GetAttribute("data-yb-export-page-template") == "true";
+            var pageTemplate = ranges[index].GetAttribute("data-app-export-page-template") == "true";
             var pageFormat = pageTemplate ? format : basic;
             // 首页不同为封面预留；整本导出尚未接入封面，暂不应用该设置。
             var section = CreateSectionProperties(mainPart, pageFormat, pageTemplate ? chrome : ChromeAssets.Empty, firstPageDifferent: false);
@@ -128,7 +128,7 @@ static class RestrictedHtmlDocumentRenderer
             do
             {
                 var range = ranges[index++];
-                var rangeFormat = range.GetAttribute("data-yb-export-template") == "true" ? format : basic;
+                var rangeFormat = range.GetAttribute("data-app-export-template") == "true" ? format : basic;
                 body.RemoveAllChildren();
                 body.AppendChild(section.CloneNode(true));
                 var prepared = PrepareHtml(range.InnerHtml, rangeFormat, outlineOnly: true);
@@ -142,7 +142,7 @@ static class RestrictedHtmlDocumentRenderer
                     pageElements.Add(element);
                 }
             }
-            while (index < ranges.Count && (ranges[index].GetAttribute("data-yb-export-page-template") == "true") == pageTemplate);
+            while (index < ranges.Count && (ranges[index].GetAttribute("data-app-export-page-template") == "true") == pageTemplate);
 
             body.RemoveAllChildren();
             body.Append(pageElements);
@@ -181,7 +181,7 @@ static class RestrictedHtmlDocumentRenderer
     /// <summary>自检副本的定位段落转为零宽书签，不进入可见正文或改变分页。</summary>
     static void ApplyLayoutBookmarks(Wp.Body body, int bookmarkId)
     {
-        const string prefix = "APPMARKLAYOUT:yb_layout_";
+        const string prefix = "APPMARKLAYOUT:app_layout_";
         foreach (var marker in body.Elements<Wp.Paragraph>().Where(p => p.InnerText.StartsWith(prefix, StringComparison.Ordinal)).ToList())
         {
             var next = marker.NextSibling();
@@ -286,7 +286,7 @@ static class RestrictedHtmlDocumentRenderer
             var level = int.Parse(heading.LocalName[1..], CultureInfo.InvariantCulture);
             counters[level - 1] += 1;
             Array.Clear(counters, level, counters.Length - level);
-            var outlineNumber = heading.GetAttribute("data-yb-outline-number");
+            var outlineNumber = heading.GetAttribute("data-app-outline-number");
             var number = outlineOnly
                 ? (outlineNumber is null ? "" : FormatHeadingNumber(outlineNumber.Split('.').Select(int.Parse).ToArray(), format.Heading(level)))
                 : FormatHeadingNumber(counters[..level], format.Heading(level));

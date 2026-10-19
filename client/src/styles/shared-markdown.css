@@ -22,7 +22,7 @@
 .markdown-viewer h3,
 .markdown-viewer h4 {
   margin: 1.4em 0 0.68em;
-  color: var(--yb-text);
+  color: var(--app-text);
   line-height: 1.35;
 }
 
@@ -33,7 +33,7 @@
 .markdown-viewer h2 {
   padding-bottom: 10px;
   font-size: 22px;
-  border-bottom: 1px solid var(--yb-border-soft);
+  border-bottom: 1px solid var(--app-border-soft);
 }
 
 .markdown-viewer h3 {
@@ -84,9 +84,9 @@
 
 .markdown-viewer blockquote {
   padding: 12px 16px;
-  color: var(--yb-text-soft);
+  color: var(--app-text-soft);
   background: rgba(33, 116, 253, 0.06);
-  border-left: 4px solid var(--yb-primary);
+  border-left: 4px solid var(--app-primary);
   border-radius: 0 14px 14px 0;
 }
 
@@ -95,8 +95,8 @@
   max-height: min(72vh, 680px);
   overflow: auto;
   background: #ffffff;
-  border: 1px solid var(--yb-border-soft);
-  border-radius: var(--yb-radius-md);
+  border: 1px solid var(--app-border-soft);
+  border-radius: var(--app-radius-md);
   scrollbar-gutter: stable;
 }
 
@@ -118,8 +118,8 @@
   overflow-wrap: anywhere;
   white-space: normal;
   background: #ffffff;
-  border-right: 1px solid var(--yb-border-soft);
-  border-bottom: 1px solid var(--yb-border-soft);
+  border-right: 1px solid var(--app-border-soft);
+  border-bottom: 1px solid var(--app-border-soft);
 }
 
 .markdown-viewer th:last-child,
@@ -135,7 +135,7 @@
   position: sticky;
   top: 0;
   z-index: 2;
-  color: var(--yb-text);
+  color: var(--app-text);
   background: #f1f6ff;
 }
 
@@ -143,7 +143,7 @@
 .markdown-viewer td:first-child {
   position: sticky;
   left: 0;
-  box-shadow: 1px 0 0 var(--yb-border-soft);
+  box-shadow: 1px 0 0 var(--app-border-soft);
 }
 
 .markdown-viewer th:first-child {
@@ -158,16 +158,16 @@
 
 .markdown-viewer code {
   padding: 2px 6px;
-  color: var(--yb-primary-deep);
+  color: var(--app-primary-deep);
   background: rgba(33, 116, 253, 0.08);
-  border-radius: var(--yb-radius-sm);
+  border-radius: var(--app-radius-sm);
 }
 
 .markdown-viewer pre {
   overflow: auto;
   padding: 16px;
   background: #101828;
-  border-radius: var(--yb-radius-lg);
+  border-radius: var(--app-radius-lg);
 }
 
 .markdown-viewer pre code {
@@ -178,7 +178,7 @@
 
 .markdown-viewer img {
   max-width: 100%;
-  border-radius: var(--yb-radius-md);
+  border-radius: var(--app-radius-md);
 }
 
 .markdown-viewer p:has(> img:only-child),
@@ -198,7 +198,7 @@
   line-height: var(--ef-body-line-height, inherit);
   color: inherit;
   background: #ffffff;
-  box-shadow: var(--yb-shadow), 0 0 1px rgba(0, 0, 0, 0.06);
+  box-shadow: var(--app-shadow), 0 0 1px rgba(0, 0, 0, 0.06);
 }
 .markdown-viewer.export-format-preview p {
   margin-top: var(--ef-body-spacing-before, 0);
@@ -375,7 +375,7 @@
   padding: 20px;
   background: #ffffff;
   border: 1px solid rgba(228, 233, 240, 0.88);
-  border-radius: var(--yb-radius-xl);
+  border-radius: var(--app-radius-xl);
   box-shadow: 0 28px 80px rgba(0, 0, 0, 0.26);
 }
 
@@ -387,16 +387,16 @@
   width: 34px;
   height: 34px;
   place-items: center;
-  color: var(--yb-text-soft);
+  color: var(--app-text-soft);
   font-size: 22px;
   line-height: 1;
   background: rgba(248, 250, 253, 0.92);
-  border: 1px solid var(--yb-border-soft);
-  border-radius: var(--yb-radius-pill);
+  border: 1px solid var(--app-border-soft);
+  border-radius: var(--app-radius-pill);
 }
 
 .image-preview-close:hover {
-  color: var(--yb-primary);
+  color: var(--app-primary);
   background: #ffffff;
   border-color: rgba(33, 116, 253, 0.22);
 }
@@ -404,7 +404,7 @@
 .image-preview-card h2 {
   padding-right: 44px;
   margin: 0;
-  color: var(--yb-text);
+  color: var(--app-text);
   font-size: 18px;
 }
 
@@ -414,7 +414,7 @@
   max-height: calc(100vh - 178px);
   justify-self: center;
   object-fit: contain;
-  border-radius: var(--yb-radius-lg);
+  border-radius: var(--app-radius-lg);
 }
 
 .markdown-empty-state {
@@ -428,14 +428,14 @@
 }
 
 .markdown-empty-state strong {
-  color: var(--yb-text);
+  color: var(--app-text);
   font-size: 20px;
 }
 
 .markdown-empty-state p {
   max-width: 520px;
   margin: 12px 0 0;
-  color: var(--yb-text-soft);
+  color: var(--app-text-soft);
   line-height: 1.8;
 }
 
@@ -460,19 +460,19 @@
   z-index: 5;
   height: 28px;
   padding: 0 10px;
-  color: var(--yb-primary);
+  color: var(--app-primary);
   font-size: 12px;
   font-weight: 800;
   background: rgba(255, 255, 255, 0.92);
   border: 1px solid rgba(33, 116, 253, 0.18);
-  border-radius: var(--yb-radius-pill);
+  border-radius: var(--app-radius-pill);
   box-shadow: 0 10px 24px rgba(15, 23, 42, 0.12);
   cursor: pointer;
-  transition: background var(--yb-duration-fast) ease, border-color var(--yb-duration-fast) ease, color var(--yb-duration-fast) ease, transform var(--yb-duration-fast) ease;
+  transition: background var(--app-duration-fast) ease, border-color var(--app-duration-fast) ease, color var(--app-duration-fast) ease, transform var(--app-duration-fast) ease;
 }
 
 .markdown-fullscreen-trigger:hover:not(:disabled) {
-  color: var(--yb-primary-deep);
+  color: var(--app-primary-deep);
   background: #ffffff;
   border-color: rgba(33, 116, 253, 0.34);
 }
@@ -525,15 +525,15 @@
   z-index: 3;
   height: 38px;
   padding: 0 16px;
-  color: var(--yb-primary);
+  color: var(--app-primary);
   font-size: 14px;
   font-weight: 800;
   background: rgba(255, 255, 255, 0.92);
   border: 1px solid rgba(33, 116, 253, 0.22);
-  border-radius: var(--yb-radius-pill);
+  border-radius: var(--app-radius-pill);
   box-shadow: 0 12px 34px rgba(15, 23, 42, 0.16);
   cursor: pointer;
-  transition: background var(--yb-duration-fast) ease, border-color var(--yb-duration-fast) ease, color var(--yb-duration-fast) ease;
+  transition: background var(--app-duration-fast) ease, border-color var(--app-duration-fast) ease, color var(--app-duration-fast) ease;
 }
 
 .markdown-fullscreen-close:hover {
@@ -557,8 +557,8 @@
   overflow: auto;
   background: #ffffff;
   border: 1px solid rgba(228, 233, 240, 0.88);
-  border-radius: var(--yb-radius-xl);
-  box-shadow: var(--yb-shadow);
+  border-radius: var(--app-radius-xl);
+  box-shadow: var(--app-shadow);
 }
 
 .markdown-fullscreen-content > .markdown-viewer.export-format-preview {
@@ -581,7 +581,7 @@
   gap: 4px;
   padding: 10px 14px;
   background: #ffffff;
-  border-bottom: 1px solid var(--yb-border-soft);
+  border-bottom: 1px solid var(--app-border-soft);
 }
 
 .markdown-editor-toolbar-spacer {
@@ -594,17 +594,17 @@
   justify-content: center;
   width: 34px;
   height: 34px;
-  color: var(--yb-text-soft);
+  color: var(--app-text-soft);
   font-size: 14px;
   background: transparent;
   border: 1px solid transparent;
-  border-radius: var(--yb-radius-sm);
+  border-radius: var(--app-radius-sm);
   cursor: pointer;
-  transition: background var(--yb-duration-fast) ease, color var(--yb-duration-fast) ease;
+  transition: background var(--app-duration-fast) ease, color var(--app-duration-fast) ease;
 }
 
 .markdown-editor-toolbar button:hover:not(:disabled) {
-  color: var(--yb-primary);
+  color: var(--app-primary);
   background: rgba(33, 116, 253, 0.08);
 }
 
@@ -616,15 +616,15 @@
 .markdown-editor-toolbar .markdown-editor-fullscreen-trigger {
   width: auto;
   padding: 0 12px;
-  color: var(--yb-primary);
+  color: var(--app-primary);
   font-weight: 800;
   background: rgba(33, 116, 253, 0.08);
   border-color: rgba(33, 116, 253, 0.12);
-  border-radius: var(--yb-radius-pill);
+  border-radius: var(--app-radius-pill);
 }
 
 .markdown-editor-toolbar .markdown-editor-fullscreen-trigger:hover:not(:disabled) {
-  color: var(--yb-primary-deep);
+  color: var(--app-primary-deep);
   background: rgba(33, 116, 253, 0.13);
 }
 
@@ -634,7 +634,7 @@
   min-height: 0;
   flex: 1;
   padding: 18px 20px;
-  color: var(--yb-text);
+  color: var(--app-text);
   font-family: Consolas, 'Microsoft YaHei UI', monospace;
   font-size: 14px;
   line-height: 1.72;
@@ -646,11 +646,11 @@
 }
 
 .markdown-editor-textarea::placeholder {
-  color: var(--yb-text-muted);
+  color: var(--app-text-muted);
 }
 
 .markdown-editor-textarea:disabled {
-  color: var(--yb-text-muted);
+  color: var(--app-text-muted);
   cursor: not-allowed;
   background: rgba(248, 250, 253, 0.78);
 }
@@ -667,12 +667,12 @@
   overflow: hidden;
   background: #ffffff;
   border: 1px solid rgba(228, 233, 240, 0.9);
-  border-radius: var(--yb-radius-xl);
+  border-radius: var(--app-radius-xl);
   box-shadow: 0 28px 72px rgba(23, 32, 51, 0.18);
 }
 
 .content-editor-empty {
   margin: 0;
-  color: var(--yb-text-muted);
+  color: var(--app-text-muted);
 }
 

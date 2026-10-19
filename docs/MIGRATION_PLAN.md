@@ -15,9 +15,9 @@
 | 4 | 文件上传 / 下载 / 资源协议 | 进行中 | 旧仓库 PR #34（文件存储：S3 兼容对象存储、本地 SeaweedFS、`files` 表与强制 RLS、按内容校验类型、大小上限与组织配额、附件方式下载、7 天恢复期） |
 | 5 | 数据层迁移（按业务逐个） | 进行中 | 旧仓库 PR #35（拆分计划，见“第 5 步说明”；记录上传白名单与桌面版的差距） |
 | 6 | 任务队列与 worker | 未开始 | — |
-| 7 | OpenXmlHelper 容器化与离屏渲染 | 未开始 | — |
+| 7 | OpenXmlHelper 容器化与离屏渲染（前置：CI 新增 .NET 编译与 OpenXmlHelper 测试，见“第 9 步说明”的品牌改名第三部分） | 未开始 | — |
 | 8 | Agent 沙箱 | 未开始 | — |
-| 9 | 收尾与上线 | 进行中 | #1（品牌改名第一部分：用户可见文字和文档）、#2（品牌改名第二部分：代码标识符、数据与协议、打包，新增 CI 禁用词检查） |
+| 9 | 收尾与上线 | 进行中 | #1（品牌改名第一部分：用户可见文字和文档）、#2（品牌改名第二部分：代码标识符、数据与协议、打包，新增 CI 禁用词检查）、#5（品牌改名第三部分：原产品名缩写前缀改为中性前缀 `app`，禁用词检查加入该缩写） |
 
 状态取值：未开始 / 进行中 / 已完成。一步由多个 PR 完成时，在“PR”列依次列出编号。
 
@@ -439,6 +439,8 @@ AI 网关加固，做法见 `docs/SERVER_DESIGN.md` 第 10.9 节。`client/` 未
 | 15 | 旧仓库 PR #17 | 旧 userData（`text_model_provider: 'official'` 且未经 旧仓库 PR #12 迁移的，以及已经 旧仓库 PR #12 迁移、`official_text_provider_paused_notice_pending: true` 的两种）：启动不出现“内测版服务暂停提供”提示，只在自定义档案为空时提示“文本模型尚未配置”并跳到设置-文本模型；设置页下拉框没有“内测版 API”，文本模型页没有官方账户面板；保存设置后 `user_config.json` 中 `text_model_profiles.official` 仍在，`official_api_session.json` 仍在；全程不访问 内测版服务。本项取代第 4、5 项 | 不再适用（旧仓库 PR #19 删除安装标识、内容服务和旧配置迁移，见第 17 项） |
 | 16 | 旧仓库 PR #18 | 设置页文本模型和生图模型的服务商下拉框里没有“金龙中转站”；旧 userData 中文本、生图选中金龙的，启动后变为“自定义”，Base URL 显示原金龙地址，Key 显示“已配置（末尾 xxxx）”，不重新填写即可测试连接、生成正文和配图，在设置页保存后 Key 仍在；原自定义档案已有内容的，`user_config.json` 中出现 `custom_before_jinlong_migration`；火山方舟、DeepSeek、Agnes、Google AI Studio 的“获取”仍能打开对应页面，自定义和 ComfyUI 的“获取”置灰；侧栏展开和收起时都没有“加群”，底部只有“设置”，没有多余空白 | 未测（旧配置迁移部分不再适用，旧仓库 PR #19 删除迁移代码） |
 | 17 | 旧仓库 PR #19 | 全新 userData 启动：侧栏底部只有“设置”（未配置使用文档时），没有“日志”“公告”，不弹公告；“资源下载”分组不显示；设置-文本模型“高级参数”没有“自动填充高级参数”按钮，思考强度为输入框，离开设置时的上下文长度提醒不提“自动填充”；隐私声明第 03 条为“不上报使用统计”；`user_config.json` 中没有 `analytics_client_id` / `analytics_created_at`；全程（含 AI 文本请求、生图测试、Agent 任务）没有埋点请求，开发者模式下 Token 统计仍正常累计；新版更新检查（未配置更新源时）和插件停用状态不变 | 未测 |
+| 18 | #5 | 全局样式变量和公共类名改用 `--app-*` / `app-*` 后，逐页检查界面外观无变化：主色、文字层级、边框、圆角、阴影、动画时长，开关（`app-switch`）、进度条（`app-progress-track`）、空状态（`app-empty-state`）、对话框弹出动画、Toast 与 Agent 提问浮层的层级，以及受限 HTML 预览中配图画框比例、图片类型角标和图片表格布局 | 未测 |
+| 19 | #5 | 新生成一份含 AI 图片 / HTML 图片 / Mermaid 图、图片表格（imageText、threeImages、fourImages）和数据表格的技术方案，整本导出 Word：图片正常嵌入，`data-app-size` 画框比例和 `data-app-fit` 适配方式生效；数据表格按 `data-app-preset` 应用表头行 / 表头列样式；目录标题编号与目录一致（`data-app-outline-number`）；模板范围与页面范围切换正确（`data-app-export-template` / `data-app-export-page-template`）；再跑一次格式自检，定位书签（`app_layout_`）能对应回小节 | 未测 |
 
 0.2 回归时发现两个既有问题，留给后续 PR：
 - `hasInformativeText` 要求连续 10 个字母、数字或汉字。如果 PDF 只有表格、单元格又都很短，`|` 会把文字切断，整份文件被误判为 `pdf_text_layer_missing`。
@@ -464,15 +466,24 @@ AI 网关加固，做法见 `docs/SERVER_DESIGN.md` 第 10.9 节。`client/` 未
 - 数据与协议（中性前缀 `app`）：`app.sqlite`、`app-asset://`、`<!-- app:block -->`、`<!-- app:keep-N -->`、Word 内容控件标签 `app:body:` / `app:field:`、OpenXmlHelper 段落标记 `APPMARK*`、Pi 自检令牌 `APP_PI_*`、表格令牌 `APP_CONTENT_TABLE_`、废标分隔符 `---app-rejection-*---`、`app:plugins-changed` 事件、Pi provider id `app`、临时目录与 DOM id 前缀 `app-`；
 - docs 中原作者服务统一称“内测版（已移除）”，不写原产品名和域名；
 - `CLAUDE.md` 删除“已有命名暂不修改”规则和禁用词原文，改由 CI 的 `scripts/check-banned-words.sh` 检查（检查脚本自身除外）；
-- 未改：`yb` 缩写（CSS 变量 `--yb-*`、受限 HTML 的 `data-yb-*` 属性、`yb_layout_` 等）不在禁用词内，留给下一个单独 PR（见下方“品牌改名第三部分”）。
+- 未改：原产品名缩写（CSS 变量、受限 HTML 属性、布局标记等的前缀）留给下一个单独 PR，已在第三部分（#5）完成。
 
-#### 品牌改名第三部分：`yb` 缩写改为 `app`（未开始）
+#### 品牌改名第三部分：原产品名缩写前缀改为 `app`（#5）
 
-单独一个 PR，不与其他改动合并：
+原产品名的两字母拼音缩写曾用作样式、属性和标识符前缀，本 PR 统一改为中性前缀 `app`，后半部分不变；新名称均已确认与仓库现有名称不冲突。本版本无存量用户，**不做兼容**：解析与导出代码不再识别旧属性。
 
-- 把 `yb` 缩写统一改为中性前缀 `app`：CSS 变量与类名（`--yb-*`、`yb-*`）、受限 HTML 属性（`data-yb-*` 改为 `data-app-*`）、标记与书签名（`yb_layout_` 等）、函数和变量名（`ybTableKeepNext`、`ybKeepHeight` 等）；
-- AI 提示词、解析与清洗代码（`restrictedHtml.ts` 等）和 OpenXmlHelper（C#）必须同步修改，并补测试证明新属性能被正确生成、解析和导出；
-- 完成后把 `yb-`、`yb_` 加入 `scripts/check-banned-words.sh` 的禁用词检查。
+- CSS：设计变量 `--app-*`（44 个，`tokens.css` 定义，19 个样式文件引用）；公共类名 `app-switch`、`app-switch-thumb`、`app-switch-control`、`app-empty-state`、`app-progress-track`；动画 `app-spin`、`app-progress-sweep`、`app-dialog-overlay-in`、`app-dialog-card-in`；
+- 受限 HTML 属性：`data-app-generation`、`data-app-size`、`data-app-fit`、`data-app-role`、`data-app-asset-ref`、`data-app-preset`；整本导出由 Main 组装的 `data-app-outline-number`、`data-app-export-template`、`data-app-export-page-template`；样式表中的 `data-app-rows`、`data-app-row-even`；
+- 格式自检定位标记 `APPMARKLAYOUT:app_layout_<序号>`（Main 与 OpenXmlHelper 同步）；
+- 函数和变量：`appTableKeepNext`、`appTableKeepEnd`、`appTableRowKeepsNext`、`appTableRowStart`、`appTableKeepRowsHeight`、`appTableCellKeepHeight`、`appKeepHeight`、`appPageContentHeight`、`appCellContentHeight`，探针 id `app-keep-probe`（均在 docx-editor 补丁中，只改补丁新增行，`npm ci` 时 `patch-package --error-on-fail --error-on-warn` 能正常打上）；
+- AI 提示词（`受限HTML生成规范.md`、`正文模板.html`）、解析与清洗（`restrictedHtml.ts`、`htmlStructure.cjs`、布局预算）、Main 服务、OpenXmlHelper（C#）、`scripts/受限HTML转Word.ps1` 和两份开发说明同步修改；开发测试页的项目编号改为 `ZB-TEST-001`；
+- 新增 `client/tests/src/restrictedHtmlAttributes.test.ts`：AI 提示词示例与正文模板能通过前端解析和 Main 导出预检，前端预览保留新属性且样式表有对应选择器，其他前缀的属性不被识别，C# 读取的属性与前端白名单、Main 组装的属性一致，定位标记前缀一致；
+- 本 PR 在开发环境用 apt 安装 .NET SDK 10，实跑一次真实导出链路（`technicalPlanExport.build` → `openXmlHelperService` → OpenXmlHelper），结果见 PR 描述；
+- `scripts/check-banned-words.sh` 新增该缩写的检查（规则见脚本）：前面不是字母或数字、后接连字符或下划线的写法，以及 data 属性前缀写法，不区分大小写；另以区分大小写的规则拦截后接大写字母的驼峰标识符。无关单词（如 `PyBuilder`、可研报告编号前缀 `KYBG-`、依赖锁文件中的哈希、docx-editor 压缩代码中的变量名）不会误报。
+
+后续事项（本 PR 登记，未做）：
+
+- **CI 新增 .NET 编译与 OpenXmlHelper 测试**：仓库目前没有 C# 测试项目，CI 也不编译 OpenXmlHelper，C# 改动只能靠本地实跑验证。新增测试项目（覆盖受限 HTML 的配图、表格预设、标题编号和页面范围）和 CI 任务，**最迟在第 7 步 Word 导出迁到服务端之前完成**。新增测试框架依赖时按 `CLAUDE.md` 做许可证审计。
 
 ## 1. 现状概览
 
@@ -598,12 +609,12 @@ AI 网关加固，做法见 `docs/SERVER_DESIGN.md` 第 10.9 节。`client/` 未
 4. **文件上传 / 下载 / 资源协议**：上传接口 + 对象存储 + 带鉴权的资源路由，替换 `getPathForFile`/`filePaths`、`app-asset://`、`openFile`、保存对话框。
 5. **数据层迁移（按业务逐个）**：模板库 → 资信库 → 知识库 → 标书查重 → 废标检查 → 可研报告 → 技术方案，每个 Store 改成异步 Postgres 实现并按 `org_id`（项目级再加 `project_id`）隔离；不做 `app.sqlite` 导入（旧仓库 PR #26 第 18 项）。拆分为 13 个 PR，先做 `projects` 和生成产物存储，见“第 5 步说明”。
 6. **任务队列与 worker**：`taskService` 迁到 BullMQ worker，进度推送、暂停/继续、重启恢复、每用户互斥和两级并发上限。先迁无 Agent 的短任务（查重、废标、招标解析），再迁目录、全局事实。
-7. **OpenXmlHelper 容器化**：Word 导出、模板样张、模板提取改成调用 helper 服务；离屏渲染改成 Playwright。
+7. **OpenXmlHelper 容器化**：Word 导出、模板样张、模板提取改成调用 helper 服务；离屏渲染改成 Playwright。前置：CI 新增 .NET 编译与 OpenXmlHelper 测试（#5 登记）。
 8. **Agent 沙箱**：Pi Runtime 迁到隔离沙箱，最后迁正文生成、原方案还原、格式自检这类最复杂的长任务。
 9. **收尾**：插件下线或重做、开发者工具改管理员页面；不自建 analytics Worker（0.18 决定；客户端埋点、内容服务代码和 `analytics/` 目录已在 0.19 删除）；压测、安全评审，再上线。
    上线检查（对外提供服务前逐项完成）：
    - ~~品牌名替换：旧产品名、旧 bridge 全局名、旧资源协议和数据库文件名等已有命名统一改为本项目名称“智标” / ZhiBiaoTools（第 1 步前决定第 3 项推迟到此）~~ 已完成：第一部分（用户可见文字和文档）见 #1，第二部分（其余全部）见“第 9 步说明”；
-   - `yb` 缩写改为中性前缀 `app`，完成后把 `yb-`、`yb_` 加入 CI 禁用词检查（品牌改名第三部分，单独 PR，见“第 9 步说明”）；
+   - ~~原产品名缩写前缀改为中性前缀 `app`，完成后把该缩写加入 CI 禁用词检查~~ 已完成：品牌改名第三部分，见 #5 和“第 9 步说明”；
    - 升级 GitHub 计划，使分支保护在私有仓库上强制生效：`main` 要求 PR 合并，CI 的 `Banned words`、`Client build / syntax / audit`、`Server typecheck / test / audit` 设为必须通过；当前免费版私有仓库的分支保护不生效，`#3`（临时草稿 PR，已关闭）验证时 `Banned words` 失败但 PR 仍显示为可合并（`mergeable_state: unstable`）；升级后用同样方法复测，确认显示为无法合并（`blocked`）；
    - 把 `SECURITY.md`、`CODE_OF_CONDUCT.md`、`.github/ISSUE_TEMPLATE/问题反馈.md` 中的 `{{CONTACT_EMAIL}}` 占位符（0.20）替换为本项目的联系方式；
    - 重写 Web 版隐私声明：现有设置页隐私声明按桌面版“数据保存在本机”编写，Web 版需说明服务端存储的数据、API Key 的保管方式、日志与保留期限、删除方式；按 旧仓库 PR #26 决定还要写明服务器位于境外（香港）、调用的第三方模型服务商、用量记录的保留期，以及项目删除后 7 天恢复期、注销后 30 天内删除；
