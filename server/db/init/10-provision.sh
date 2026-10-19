@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # 开发环境 PostgreSQL 首次初始化（数据卷为空时由官方镜像的 docker-entrypoint 执行一次）：
-# 创建迁移角色（表属主）、应用角色、鉴权函数和计费函数的属主角色，以及业务库。角色属性与 server/tests/db/harness.ts 一致，修改时两边同步。
-# 设计见 docs/SERVER_DESIGN.md 第 2.6、10 节：四个角色都不是超级用户、没有 BYPASSRLS；应用角色不拥有任何表。
+# 创建迁移角色（表属主）、应用角色、鉴权函数、计费函数和存储配额函数的属主角色，以及业务库。角色属性与 server/tests/db/harness.ts 一致，修改时两边同步。
+# 设计见 docs/SERVER_DESIGN.md 第 2.6、10 节：五个角色都不是超级用户、没有 BYPASSRLS；应用角色不拥有任何表。
 # 密码从 Docker secrets 读取，经 psql 变量以字面量传入，不拼接进 SQL 文本。
 set -euo pipefail
 
@@ -21,6 +21,9 @@ GRANT bidtools_auth TO bidtools_owner WITH INHERIT FALSE, SET TRUE;
 -- 计费函数（管理员充值、冲正、定价）和账本触发器的属主，属性同 bidtools_auth。
 CREATE ROLE bidtools_billing NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS NOINHERIT;
 GRANT bidtools_billing TO bidtools_owner WITH INHERIT FALSE, SET TRUE;
+-- 存储配额函数的属主（统计已删除项目下仍在恢复期内的文件和产物），属性同 bidtools_auth。
+CREATE ROLE bidtools_storage NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS NOINHERIT;
+GRANT bidtools_storage TO bidtools_owner WITH INHERIT FALSE, SET TRUE;
 CREATE DATABASE :"db_name" OWNER bidtools_owner;
 REVOKE ALL ON DATABASE :"db_name" FROM PUBLIC;
 GRANT CONNECT, TEMPORARY ON DATABASE :"db_name" TO bidtools_app;

@@ -8,6 +8,7 @@ import * as aiGateway from './0004_ai_gateway.ts';
 import * as platformModels from './0005_platform_models.ts';
 import * as files from './0006_files.ts';
 import * as projects from './0007_projects.ts';
+import * as artifacts from './0008_artifacts.ts';
 
 export const migrations: Readonly<Record<string, Migration>> = Object.freeze({
   '0001_identity': identity,
@@ -17,4 +18,5 @@ export const migrations: Readonly<Record<string, Migration>> = Object.freeze({
   '0005_platform_models': platformModels,
   '0006_files': files,
   '0007_projects': projects,
+  '0008_artifacts': artifacts,
 });

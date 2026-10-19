@@ -16,3 +16,9 @@ export const AUTH_ROLE = 'bidtools_auth';
  * 对账本和价格表只有 SELECT、INSERT，余额只能经账本触发器修改。迁移角色以 SET（不继承）加入它。
  */
 export const BILLING_ROLE = 'bidtools_billing';
+/**
+ * 存储配额函数 files_org_usage_bytes 的 SECURITY DEFINER 属主（迁移 0008）：配额要统计应用角色在 RLS 下看不到的行
+ * （已删除项目下、仍在恢复期内的文件和产物）。与 bidtools_auth 相同：NOLOGIN、非超级用户、无 BYPASSRLS，
+ * 只有为它单独建的只读策略和列级 SELECT 授权。迁移角色以 SET（不继承）加入它。
+ */
+export const STORAGE_ROLE = 'bidtools_storage';

@@ -5,7 +5,7 @@ import { randomBytes } from 'node:crypto';
 import { Kysely, PostgresDialect } from 'kysely';
 import pg from 'pg';
 import type { DatabaseConfig } from '../../src/config.ts';
-import { APP_ROLE, AUTH_ROLE, BILLING_ROLE, OWNER_ROLE } from '../../src/db/roles.ts';
+import { APP_ROLE, AUTH_ROLE, BILLING_ROLE, OWNER_ROLE, STORAGE_ROLE } from '../../src/db/roles.ts';
 
 export interface TestDatabase {
   readonly name: string;
@@ -54,7 +54,7 @@ async function ensureRole(client: pg.Pool, role: string, password: string): Prom
 }
 
 /**
- * SECURITY DEFINER 函数的属主（登录前查询 bidtools_auth、计费 bidtools_billing）：不能登录；
+ * SECURITY DEFINER 函数的属主（登录前查询 bidtools_auth、计费 bidtools_billing、存储配额 bidtools_storage）：不能登录；
  * 迁移角色可以 SET ROLE 成它（不继承它的权限），用于在迁移中建删函数。
  */
 async function ensureFunctionOwnerRole(client: pg.Pool, role: string): Promise<void> {
@@ -78,6 +78,7 @@ export async function createTestDatabase(): Promise<TestDatabase> {
     await ensureRole(maintenance, APP_ROLE, appPassword);
     await ensureFunctionOwnerRole(maintenance, AUTH_ROLE);
     await ensureFunctionOwnerRole(maintenance, BILLING_ROLE);
+    await ensureFunctionOwnerRole(maintenance, STORAGE_ROLE);
     await maintenance.query(`CREATE DATABASE ${quoteIdent(name)} OWNER ${quoteIdent(OWNER_ROLE)}`);
     await maintenance.query(`REVOKE ALL ON DATABASE ${quoteIdent(name)} FROM PUBLIC`);
     await maintenance.query(`GRANT CONNECT, TEMPORARY ON DATABASE ${quoteIdent(name)} TO ${quoteIdent(APP_ROLE)}`);

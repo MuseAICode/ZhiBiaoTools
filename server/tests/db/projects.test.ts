@@ -9,6 +9,7 @@ import { tenantOf } from '../../src/auth/hooks.ts';
 import { DEFAULT_AUTH_RATE_LIMITS, type AuthRateLimitSettings } from '../../src/auth/rateLimit.ts';
 import { createDatabase, type DatabaseHandle } from '../../src/db/database.ts';
 import { migrateToLatest } from '../../src/db/migrator.ts';
+import { STORAGE_ROLE } from '../../src/db/roles.ts';
 import type { Database } from '../../src/db/schema.ts';
 import { withTenant, type TenantContext } from '../../src/db/tenant.ts';
 import { PROJECT_ID_PARAMS, requireProject } from '../../src/projects/access.ts';
@@ -220,6 +221,7 @@ describe('files.project_id', () => {
       update: { project_id: null },
       onProjectDelete: 'restrict',
       projectIdNullable: true,
+      definerRoles: [STORAGE_ROLE],
     },
     { admin: () => superuser, app: () => appDb },
   );
@@ -241,20 +243,15 @@ describe('files.project_id', () => {
   it('文件接口返回 projectId', async () => {
     const member = await newMember();
     const project = await createOk(member);
-    const fileId = await withTenant(appDb, member.context, async (trx) => {
-      const row = await trx
-        .insertInto('files')
-        .values({ org_id: member.orgId, project_id: project.id, purpose: 'tender', display_name: 'c.pdf', extension: 'pdf', created_by: member.userId })
-        .returning('id')
-        .executeTakeFirstOrThrow();
-      return row.id;
-    });
-    // 用超级用户直接标记为已上传（不经对象存储），只验证接口的返回字段。
-    await superuser
-      .updateTable('files')
-      .set({ status: 'uploaded', mime: 'application/pdf', size_bytes: 10, sha256: Buffer.alloc(32) })
-      .where('id', '=', fileId)
-      .execute();
+    // 用超级用户直接写入已上传的记录（不经对象存储和配额触发器），只验证接口的返回字段。
+    const { id: fileId } = await superuser
+      .insertInto('files')
+      .values({
+        org_id: member.orgId, project_id: project.id, purpose: 'tender', display_name: 'c.pdf', extension: 'pdf', created_by: member.userId,
+        status: 'uploaded', mime: 'application/pdf', size_bytes: 10, sha256: Buffer.alloc(32), uploaded_at: new Date(),
+      })
+      .returning('id')
+      .executeTakeFirstOrThrow();
     const response = await call(member, 'GET', `/api/files/${fileId}`);
     expect(response.statusCode, response.body).toBe(200);
     expect(response.json()).toMatchObject({ id: fileId, projectId: project.id });
