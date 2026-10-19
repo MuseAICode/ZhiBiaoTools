@@ -371,9 +371,16 @@ AI 网关加固，做法见 `docs/SERVER_DESIGN.md` 第 10.9 节。`client/` 未
 
 与路线图的偏离：
 
-- 上一节建议第 2、3 项与第 6 步的解析任务一起做，本 PR 提前做了上传校验。理由：本步只收下并按原样存储，不解析，下载一律附件；“只能在沙箱中由 LibreOffice 解析”的约束由第 6 步承担，第 6 步的解析任务必须按记录的 MIME 分派，`text/html`、`message/rfc822`、`application/rtf`、`application/xml` 一律只进沙箱中的 LibreOffice（`.xls` 的 HTML / SpreadsheetML 可用 SheetJS，同样在沙箱中）；
-- **MHT**：LibreOffice 不认识 MHT，会当作纯文本读出 MIME 头和 base64。第 6 步需要先在沙箱中解开 MIME，取 `text/html` 部分（按其 `Content-Transfer-Encoding` 和 `charset` 解码）再交给 LibreOffice；
+- 上一节建议第 2、3 项与第 6 步的解析任务一起做，本 PR 提前做了上传校验。理由：本步只收下并按原样存储，不解析，下载一律附件；解析时的约束由第 6 步承担，见下面的“第 6 步解析要求”；
 - 两种 Office 2003 XML 都记为 `application/xml`，解析时按扩展名区分（`.doc` / `.wps` 是 Word，`.xls` 是 SpreadsheetML）。
+
+**第 6 步解析要求**（本 PR 放行的格式在第 6 步解析时必须满足，第 6 步的解析任务 PR 逐项核对）：
+
+- **按记录的 MIME 分派，只在沙箱中解析**：`text/html`、`message/rfc822`、`application/rtf`、`application/xml` 一律只进沙箱中的 LibreOffice（`.xls` 的 HTML / SpreadsheetML 可用 SheetJS，同样在沙箱中），不在 api / worker 进程内解析；
+- **解析沙箱完全断网**：没有任何网络接口（不只是限制出站），沙箱内的进程无法访问外网、内网和元数据地址；
+- **HTML / MHT / RTF 禁止加载任何远程资源**：外链图片、样式表、脚本、`<iframe>` / `<object>`、RTF 的 `INCLUDEPICTURE` / `INCLUDETEXT` 等域和 OLE 链接一律不加载、不更新；MHT 中 `Content-Location` 指向的外部地址同样不跟随，只用包内已有的部分。断网是兜底，解析器本身也要关闭链接更新和远程加载；
+- **XML 类格式（Word 2003 XML、SpreadsheetML）禁用 DTD 和外部实体**：拒绝含 `<!DOCTYPE` 的文档，或以禁用 DTD、外部实体、外部参数实体和 XInclude 的方式解析（防 XXE 和实体膨胀）；不能只依赖 LibreOffice 的默认设置，需要在交给 LibreOffice / SheetJS 之前先检查，并有测试；
+- **MHT 先解包**：LibreOffice 不认识 MHT，会当作纯文本读出 MIME 头和 base64。需要先在沙箱中解开 MIME，取 `text/html` 部分（按其 `Content-Transfer-Encoding` 和 `charset` 解码）再交给 LibreOffice，解出的 HTML 同样适用上一条“禁止加载远程资源”。
 
 ### 第 5 步说明
 
@@ -626,7 +633,7 @@ AI 网关加固，做法见 `docs/SERVER_DESIGN.md` 第 10.9 节。`client/` 未
 3. **配置与 AI 网关**：配置按组织 / 用户入库；平台统一提供 AI（旧仓库 PR #26），API Key 由平台持有、只在服务端；`aiService` 搬到服务端成为 AI 网关，同时实现平台模型清单、用量计量、余额检查和价格表（`docs/SERVER_DESIGN.md` 第 10 节）；`ai.chat/requestJson/testImageModel`、`config.listModels/getModelInfo` 走服务端，后两者只在管理后台提供。
 4. **文件上传 / 下载 / 资源协议**：上传接口 + 对象存储 + 带鉴权的资源路由，替换 `getPathForFile`/`filePaths`、`app-asset://`、`openFile`、保存对话框。
 5. **数据层迁移（按业务逐个）**：模板库 → 资信库 → 知识库 → 标书查重 → 废标检查 → 可研报告 → 技术方案，每个 Store 改成异步 Postgres 实现并按 `org_id`（项目级再加 `project_id`）隔离；不做 `app.sqlite` 导入（旧仓库 PR #26 第 18 项）。拆分为 13 个 PR，先做 `projects` 和生成产物存储，见“第 5 步说明”。
-6. **任务队列与 worker**：`taskService` 迁到 BullMQ worker，进度推送、暂停/继续、重启恢复、每用户互斥和两级并发上限。先迁无 Agent 的短任务（查重、废标、招标解析），再迁目录、全局事实。
+6. **任务队列与 worker**：`taskService` 迁到 BullMQ worker，进度推送、暂停/继续、重启恢复、每用户互斥和两级并发上限。先迁无 Agent 的短任务（查重、废标、招标解析），再迁目录、全局事实。文档解析须满足第 4 步说明中“上传白名单补充（#6）”的“第 6 步解析要求”（沙箱完全断网、HTML / MHT / RTF 禁止加载远程资源、XML 类格式禁用 DTD 和外部实体等）。
 7. **OpenXmlHelper 容器化**：Word 导出、模板样张、模板提取改成调用 helper 服务；离屏渲染改成 Playwright。前置：CI 新增 .NET 编译与 OpenXmlHelper 测试（#5 登记）。
 8. **Agent 沙箱**：Pi Runtime 迁到隔离沙箱，最后迁正文生成、原方案还原、格式自检这类最复杂的长任务。
 9. **收尾**：插件下线或重做、开发者工具改管理员页面；不自建 analytics Worker（0.18 决定；客户端埋点、内容服务代码和 `analytics/` 目录已在 0.19 删除）；压测、安全评审，再上线。
