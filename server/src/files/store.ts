@@ -1,9 +1,11 @@
 // files 表的读写（迁移 0006_files）。组织和用户一律来自 TenantContext，所有查询都经 withTenant，
 // 由 RLS 保证只能看到、修改本组织的文件；跨组织的 fileId 与不存在的一样返回 null。
+// 所属项目已删除的文件不可访问，也不在回收站中，随项目一起恢复（src/projects/visibility.ts）。
 import { sql, type Kysely, type Selectable } from 'kysely';
 import type { Database, FilesTable } from '../db/schema.ts';
 import { withTenant, type TenantContext } from '../db/tenant.ts';
 import { AppError } from '../errors.ts';
+import { projectIsLive } from '../projects/visibility.ts';
 import { FILE_RESTORE_DAYS, ORG_STORAGE_QUOTA_BYTES, type FilePurpose } from './policy.ts';
 import type { InspectionResult } from './inspect.ts';
 
@@ -129,7 +131,7 @@ export async function abandonUpload(db: Kysely<Database>, context: TenantContext
   );
 }
 
-/** 已上传、未删除的文件；其他组织的、已删除的、上传中的都返回 null。 */
+/** 已上传、未删除的文件；其他组织的、已删除的、上传中的、所属项目已删除的都返回 null。 */
 export async function findFile(db: Kysely<Database>, context: TenantContext, fileId: string): Promise<FileRecord | null> {
   const row = await withTenant(db, context, (trx) =>
     trx
@@ -138,13 +140,14 @@ export async function findFile(db: Kysely<Database>, context: TenantContext, fil
       .where('id', '=', fileId)
       .where('status', '=', 'uploaded')
       .where('deleted_at', 'is', null)
+      .where(projectIsLive('files.project_id'))
       .executeTakeFirst(),
   );
   return row ? toRecord(row) : null;
 }
 
 export interface ListFilesOptions {
-  /** true：只列回收站中仍可恢复的文件。 */
+  /** true：只列回收站中仍可恢复的文件（所属项目已删除的不列出，随项目恢复）。 */
   deleted: boolean;
   purpose?: FilePurpose;
   limit: number;
@@ -152,7 +155,7 @@ export interface ListFilesOptions {
 
 export async function listFiles(db: Kysely<Database>, context: TenantContext, options: ListFilesOptions): Promise<FileRecord[]> {
   const rows = await withTenant(db, context, (trx) => {
-    let query = trx.selectFrom('files').selectAll().where('status', '=', 'uploaded');
+    let query = trx.selectFrom('files').selectAll().where('status', '=', 'uploaded').where(projectIsLive('files.project_id'));
     query = options.deleted
       ? query.where('deleted_at', 'is not', null).where(sql<boolean>`deleted_at > now() - make_interval(days => ${FILE_RESTORE_DAYS})`)
       : query.where('deleted_at', 'is', null);
@@ -162,7 +165,7 @@ export async function listFiles(db: Kysely<Database>, context: TenantContext, op
   return rows.map(toRecord);
 }
 
-/** 软删除，7 天内可恢复。已删除或不存在时返回 null。 */
+/** 软删除，7 天内可恢复。已删除、不存在或所属项目已删除时返回 null。 */
 export async function softDeleteFile(db: Kysely<Database>, context: TenantContext, fileId: string): Promise<FileRecord | null> {
   const row = await withTenant(db, context, (trx) =>
     trx
@@ -171,13 +174,14 @@ export async function softDeleteFile(db: Kysely<Database>, context: TenantContex
       .where('id', '=', fileId)
       .where('status', '=', 'uploaded')
       .where('deleted_at', 'is', null)
+      .where(projectIsLive('files.project_id'))
       .returningAll()
       .executeTakeFirst(),
   );
   return row ? toRecord(row) : null;
 }
 
-/** 恢复回收站中的文件。不在回收站中、已超过恢复期或不存在时返回 null。 */
+/** 恢复回收站中的文件。不在回收站中、已超过恢复期、不存在或所属项目已删除（应恢复项目）时返回 null。 */
 export async function restoreFile(db: Kysely<Database>, context: TenantContext, fileId: string): Promise<FileRecord | null> {
   try {
     const row = await withTenant(db, context, (trx) =>
@@ -187,6 +191,7 @@ export async function restoreFile(db: Kysely<Database>, context: TenantContext, 
         .where('id', '=', fileId)
         .where('deleted_at', 'is not', null)
         .where(sql<boolean>`deleted_at > now() - make_interval(days => ${FILE_RESTORE_DAYS})`)
+        .where(projectIsLive('files.project_id'))
         .returningAll()
         .executeTakeFirst(),
     );

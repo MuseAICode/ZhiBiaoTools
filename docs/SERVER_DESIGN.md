@@ -385,7 +385,7 @@ Markdown 中远程图片的下载（`docs/EXTERNAL_SERVICES.md` §2.9）URL 来�
 ### 6.3 存储隔离
 
 - 对象存储一个私有 bucket，**禁止公开读**、禁止列目录；
-- 对象键由服务端生成：`org/{orgId}/files/{fileId}` 和 `org/{orgId}/artifacts/{jobId}/{name}`，其中 `{name}` 也是服务端常量或校验过的安全字符集；
+- 对象键由服务端生成：`org/{orgId}/files/{fileId}` 和 `org/{orgId}/artifacts/{artifactId}`（#8 实现时由原计划的 `org/{orgId}/artifacts/{jobId}/{name}` 改为按产物 id，名称只作下载文件名，见路线图第 5 步“生成产物”）；
 - `file_objects` 表：`id`、`org_id`、`project_id`（可空）、`purpose`、`storage_key`、`display_name`、`mime`、`size`、`sha256`、`status`、`created_by`、时间戳；
 - 开启服务端加密（用同一云厂商 KMS 管理的密钥，或对象存储默认加密）；
 - 删除：项目删除时标记，后台任务延迟 7 天物理删除对象，期间可恢复；注销账户后 30 天内删除（第 9 节第 17 项）；
@@ -419,7 +419,7 @@ Markdown 中远程图片的下载（`docs/EXTERNAL_SERVICES.md` §2.9）URL 来�
 - **配额**：每组织 20 GiB，常量写在迁移中，改配额需要新迁移。计入的是已上传、未删除或仍在 7 天恢复期内的文件（回收站中的文件仍占配额，防止“上传—删除”循环无限占用存储）；`uploading` 行（含进程崩溃遗留的）不计入。触发器用事务级 advisory lock 串行同一组织的检查，并发上传合计不会越过配额。
 - **下载**：`GET /api/files/:fileId/content` 由 api 从对象存储**流式转发，不签发预签名链接**（无法撤销）；**一律** `Content-Disposition: attachment`（第 6.4 节原计划图片预览用 `inline`，改为一律附件，图片预览等需要时再单独设计），另加 `X-Content-Type-Options: nosniff`、`Content-Security-Policy: default-src 'none'; sandbox`、`Cache-Control: private, no-store`。其他组织的 `fileId` 与不存在的一样返回 404。
 - **删除**：`DELETE /api/files/:fileId` 软删除（`deleted_at`），7 天内可经 `POST /api/files/:fileId/restore` 恢复（第 9 节第 17 项），过期后不可访问、不可恢复、不计入配额；恢复期由触发器保证（过期恢复抛 `FS002`）。组织内成员都可以上传、删除（组织内共享，第 9 节第 2 项）。另有 `GET /api/files`（`?deleted=true` 为回收站）、`GET /api/files/:fileId`、`GET /api/files/usage`。
-- **留给后续**：过期文件和遗留 `uploading` 行的物理清理（跨组织的后台任务，第 6 步 worker 建成后实现）；`project_id`（已由 #7 加上）；ZIP 炸弹、PDF 页数等解析阶段的防护（第 6.2 节，在沙箱中解析时实现）；生成产物（`artifacts`）；前端接入。
+- **留给后续**：过期文件和遗留 `uploading` 行的物理清理（跨组织的后台任务，第 6 步 worker 建成后实现）；`project_id`（已由 #7 加上）；ZIP 炸弹、PDF 页数等解析阶段的防护（第 6.2 节，在沙箱中解析时实现）；生成产物（`artifacts`，已由 #8 实现，见路线图第 5 步）；前端接入。
 
 ## 7. Agent 执行命令的沙箱隔离
 

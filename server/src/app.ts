@@ -14,6 +14,7 @@ import { createLoggerOptions } from './logger.ts';
 import { createLogMailer, type Mailer } from './mail/mailer.ts';
 import { registerAdminRoutes } from './routes/admin.ts';
 import { registerAiRoutes } from './routes/ai.ts';
+import { registerArtifactRoutes } from './routes/artifacts.ts';
 import { registerAuthRoutes } from './routes/auth.ts';
 import { registerFileRoutes, type FileRouteDependencies } from './routes/files.ts';
 import { registerHealthRoutes } from './routes/health.ts';
@@ -35,7 +36,7 @@ export interface BuildAppOptions {
    * 主密钥只交给 AI 网关和凭据加密，不放进配置对象。
    */
   keyWrapper?: KeyWrapper | null;
-  /** 对象存储（src/server.ts 按 S3_* 创建）。未提供时文件接口返回 503。 */
+  /** 对象存储（src/server.ts 按 S3_* 创建）。未提供时文件接口和产物下载接口返回 503。 */
   objectStore?: ObjectStore | null;
   /** 测试用：替换上传并发上限和空闲超时。 */
   uploadLimits?: Pick<FileRouteDependencies, 'maxConcurrentUploads' | 'uploadIdleTimeoutMs'>;
@@ -109,6 +110,7 @@ export async function buildApp(config: AppConfig, options: BuildAppOptions): Pro
   await app.register(registerAiRoutes, { prefix: '/api/ai', gateway, maxOutputTokens: config.ai.maxOutputTokens });
   await app.register(registerFileRoutes, { prefix: '/api/files', db, objectStore: options.objectStore ?? null, ...options.uploadLimits });
   await app.register(registerProjectRoutes, { prefix: '/api/projects', db });
+  await app.register(registerArtifactRoutes, { prefix: '/api/artifacts', db, objectStore: options.objectStore ?? null });
 
   return app;
 }

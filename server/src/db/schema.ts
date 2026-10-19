@@ -1,5 +1,6 @@
 // Kysely 的表类型，与 migrations/ 中的 DDL 手工保持一致。
 import type { ColumnType, Generated } from 'kysely';
+import type { ArtifactKind } from '../artifacts/store.ts';
 import type { FilePurpose } from '../files/policy.ts';
 import type { ProjectKind } from '../projects/store.ts';
 
@@ -261,6 +262,31 @@ export interface ProjectsTable {
   deleted_by: ColumnType<string | null, never, string | null>;
 }
 
+export const ARTIFACT_STATUSES = ['writing', 'ready'] as const;
+export type ArtifactStatus = (typeof ARTIFACT_STATUSES)[number];
+
+/**
+ * 生成产物的元数据（迁移 0008_artifacts）。storage_key 是生成列 'org/{org_id}/artifacts/{id}'，不能写入；
+ * project_id、source_file_id 至少有一个，写入后不能改；完成（ready）后内容不能改，配额由触发器 artifacts_guard 检查。
+ */
+export interface ArtifactsTable {
+  id: ColumnType<string, never, never>;
+  org_id: ColumnType<string, string, never>;
+  project_id: ColumnType<string | null, string | null | undefined, never>;
+  source_file_id: ColumnType<string | null, string | null | undefined, never>;
+  storage_key: ColumnType<string, never, never>;
+  kind: ColumnType<ArtifactKind, ArtifactKind, never>;
+  name: ColumnType<string, string, never>;
+  mime: ColumnType<string, string, never>;
+  status: ColumnType<ArtifactStatus, never, ArtifactStatus>;
+  /** bigint，pg 返回字符串。 */
+  size_bytes: ColumnType<string | null, never, number>;
+  sha256: ColumnType<Buffer | null, never, Buffer>;
+  created_by: ColumnType<string, string, never>;
+  created_at: ColumnType<Date, never, never>;
+  completed_at: ColumnType<Date | null, never, never>;
+}
+
 export interface Database {
   organizations: OrganizationsTable;
   users: UsersTable;
@@ -276,4 +302,5 @@ export interface Database {
   platform_models: PlatformModelsTable;
   files: FilesTable;
   projects: ProjectsTable;
+  artifacts: ArtifactsTable;
 }

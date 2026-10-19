@@ -8,6 +8,7 @@ import { OWNER_ROLE } from '../../src/db/roles.ts';
 import { connect, createTestDatabase, type TestDatabase } from './harness.ts';
 
 const APPLICATION_TABLES = [
+  'artifacts',
   'auth_tokens',
   'billing_ledger',
   'files',
@@ -38,6 +39,7 @@ const APP_FUNCTIONS = [
   'app_current_org_id',
   'app_current_user_id',
   'app_touch_updated_at',
+  'artifacts_guard',
   'auth_consume_invitation',
   'auth_issue_password_reset',
   'auth_login_lookup',
@@ -152,6 +154,7 @@ describe('迁移升级与回滚', () => {
       (await sql<{ prosrc: string }>`SELECT prosrc FROM pg_proc WHERE proname = 'ai_usage_begin'`.execute(testDb.admin)).rows.map((row) => row.prosrc);
     expectSuccess(await migrateToLatest(owner));
     expect((await source())[0]).toContain('ai_model_price');
+    expect(expectSuccess(await migrateDown(owner))).toEqual(['Down:0008_artifacts']);
     expect(expectSuccess(await migrateDown(owner))).toEqual(['Down:0007_projects']);
     expect(expectSuccess(await migrateDown(owner))).toEqual(['Down:0006_files']);
     expect(expectSuccess(await migrateDown(owner))).toEqual(['Down:0005_platform_models']);
