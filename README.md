@@ -1,4 +1,4 @@
-# 易标投标工具箱
+# 智标投标工具箱
 
 <p align="center">
   <strong>简体中文</strong> | <a href="./README.en.md">English</a>

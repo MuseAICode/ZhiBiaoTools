@@ -235,7 +235,7 @@ function createDefaultTemplateName(date = new Date()): string {
   const minute = String(date.getMinutes()).padStart(2, '0');
   const second = String(date.getSeconds()).padStart(2, '0');
 
-  return `yibiao-${year}-${month}-${day}-${hour}${minute}${second}`;
+  return `ZhiBiaoTools-${year}-${month}-${day}-${hour}${minute}${second}`;
 }
 
 function createDefaultExportFormat(): ExportFormatConfig {

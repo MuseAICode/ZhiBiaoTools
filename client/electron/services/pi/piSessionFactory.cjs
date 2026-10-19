@@ -60,12 +60,12 @@ async function createPiSession({ workspaceDir, sessionsDir, sessionFile, environ
     allowModelNetwork: false,
   });
   modelRuntime.registerProvider('yibiao', {
-    name: 'Yibiao AI',
+    name: 'ZhiBiaoTools AI',
     baseUrl: `${proxyInfo.baseUrl}/v1`,
     api: 'openai-completions',
     models: [{
       id: 'default',
-      name: 'Yibiao Current Text Model',
+      name: 'ZhiBiaoTools Current Text Model',
       reasoning: false,
       input: ['text'],
       contextWindow: normalizeContextLimit(config.context_length_limit),
