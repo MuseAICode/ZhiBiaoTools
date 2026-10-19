@@ -12,7 +12,7 @@
 | 1 | 抽象 bridge | 进行中 | 旧仓库 PR #21（决定记录）、旧仓库 PR #22（Vitest）、旧仓库 PR #23（修复 output_token_limit）、旧仓库 PR #24（新建 `src/shared/bridge`） |
 | 2 | 服务端骨架 | 进行中 | 旧仓库 PR #25（设计文档 `docs/SERVER_DESIGN.md`）、旧仓库 PR #26（决定 18 项事项，新增计费与合规章节）、旧仓库 PR #27（`server/` 基础设施：配置、日志、`/healthz`、错误处理、安全响应头、Docker、CI）、旧仓库 PR #28（数据库层：PostgreSQL 17、Kysely 迁移、身份与租户表、RLS、`TenantContext`、`/readyz`）、旧仓库 PR #29（鉴权：登录前查询的 `SECURITY DEFINER` 函数、argon2id、服务端会话与 CSRF、邀请注册、找回密码、限流、平台管理员命令行）、旧仓库 PR #30（限流的客户端 IP：新增 `TRUSTED_PROXIES`，只采信可信代理附加的 `X-Forwarded-For`） |
 | 3 | 配置与 AI 网关 | 进行中 | 旧仓库 PR #31（计费账本：组织余额、只追加的账本、带版本的价格表、幂等扣费、管理员手动充值与冲正，不调用 AI）、旧仓库 PR #32（AI 网关：调用前预扣冻结、按实际用量结算、冻结超时自动释放、`usage_records`、平台 Key 信封加密、DeepSeek / 通义千问流式适配、`POST /api/ai/chat`）、旧仓库 PR #33（平台模型白名单 `platform_models`：只有登记且启用、并有生效价格的模型能调用，免费须显式标记；管理员登记 / 启用 / 停用接口；用户断开时中止上游请求的端到端测试） |
-| 4 | 文件上传 / 下载 / 资源协议 | 进行中 | 旧仓库 PR #34（文件存储：S3 兼容对象存储、本地 SeaweedFS、`files` 表与强制 RLS、按内容校验类型、大小上限与组织配额、附件方式下载、7 天恢复期） |
+| 4 | 文件上传 / 下载 / 资源协议 | 进行中 | 旧仓库 PR #34（文件存储：S3 兼容对象存储、本地 SeaweedFS、`files` 表与强制 RLS、按内容校验类型、大小上限与组织配额、附件方式下载、7 天恢复期）、#6（上传白名单补齐桌面版能导入的内容：OLE 内容的 `.docx`，`.doc/.wps` 的 RTF / HTML / MHT / Word 2003 XML，`.xls` 的 HTML 表格 / SpreadsheetML，`%PDF-` 前有多余字节的 PDF） |
 | 5 | 数据层迁移（按业务逐个） | 进行中 | 旧仓库 PR #35（拆分计划，见“第 5 步说明”；记录上传白名单与桌面版的差距） |
 | 6 | 任务队列与 worker | 未开始 | — |
 | 7 | OpenXmlHelper 容器化与离屏渲染（前置：CI 新增 .NET 编译与 OpenXmlHelper 测试，见“第 9 步说明”的品牌改名第三部分） | 未开始 | — |
@@ -341,7 +341,7 @@ AI 网关加固，做法见 `docs/SERVER_DESIGN.md` 第 10.9 节。`client/` 未
 - 回收站中的文件仍占配额，直到恢复期结束；
 - 过期文件和遗留上传记录的物理清理、解析阶段的 ZIP 炸弹 / PDF 页数检查、替换 `getPathForFile` / `filePaths` / `app-asset://` / `openFile` / 保存对话框留给第 4 步后续 PR 和第 6 步。
 
-#### 上传白名单与桌面版的差距（记录，待第 4 步后续 PR 处理）
+#### 上传白名单与桌面版的差距（旧仓库 PR #35 记录；第 1~4 项已由 #6 补上，第 5 项随第 6 步）
 
 `server/src/files/policy.ts` 的扩展名集合与桌面版**本地解析**的集合逐项一致：`tender`（招标文件、原方案、可研资料、废标检查的招标 / 投标文件都用它）为 txt、md、markdown、docx、pdf、doc、wps、xls、xlsx；`knowledge`、`duplicate-check` 同上但不含 txt；`credential-image` 为 png、jpg、jpeg、webp、bmp、gif。老式 `.doc` / `.xls` 和 WPS 文字 `.wps` 已覆盖（接受 OLE，也接受改了扩展名的 OOXML）。但按**内容**比较，桌面版还能导入以下文件，服务端会以 `FILE_TYPE_MISMATCH` 拒绝：
 
@@ -355,7 +355,25 @@ AI 网关加固，做法见 `docs/SERVER_DESIGN.md` 第 10.9 节。`client/` 未
 
 另外，WPS 表格 `.et`、WPS 演示 `.dps` 和模板 `.wpt` / `.ett` 桌面版本身也不支持，不算遗漏；如果产品上需要，`.et` 可按 OLE 接受、经 LibreOffice 转成 xlsx 后解析，单独评估。
 
-以上都只改 `server/src/files/inspect.ts`、`policy.ts` 和测试，不改迁移；第 2、3 项放行的是文本类格式，必须同时满足第 6.2 节“在沙箱中解析”的前提，建议与第 6 步的解析任务一起做。本 PR 不修改。
+以上都只改 `server/src/files/inspect.ts`、`policy.ts` 和测试，不改迁移；第 2、3 项放行的是文本类格式，必须同时满足第 6.2 节“在沙箱中解析”的前提，建议与第 6 步的解析任务一起做。旧仓库 PR #35 不修改。第 1~4 项已在 #6 提前补上（偏离见下一节），第 5 项仍随第 6 步。
+
+#### 上传白名单补充（#6）
+
+补上上表第 1~4 项，只改 `server/src/files/inspect.ts` 和测试；`policy.ts` 的扩展名集合、迁移、`client/` 都没有改动，没有新增依赖。做法见 `docs/SERVER_DESIGN.md` 第 6.5 节。要点：
+
+- `.docx` 接受 OLE，MIME 记为 `application/msword`（解析按老式 Word 处理）；
+- `.doc` / `.wps` 接受 RTF（`{\rtf`，`application/rtf`）、HTML（`<!doctype html` 或 `<html` 开头，`text/html`）、MHT（开头是 MIME 头且含 `MIME-Version:`，`message/rfc822`）、Word 2003 XML（`<?xml` 开头、根元素 `w:wordDocument`，`application/xml`）；`.xls` 接受 HTML 表格和 SpreadsheetML 2003 XML（`<?xml` 开头、含 `urn:schemas-microsoft-com:office:spreadsheet`，`application/xml`）。允许 UTF-8 BOM 和开头空白，UTF-16 不识别；CSV 与 BIFF2~4 仍拒绝；
+- **HTML / MHT 只能以 `.doc` / `.wps` / `.xls` 上传**（MHT 只对 `.doc` / `.wps`），`.html`、`.htm`、`.mht`、`.mhtml`、`.rtf`、`.xml` 扩展名仍不开放；其他扩展名（图片、`.pdf`、`.docx`、`.xlsx`、`.txt` 以外）收到这些内容一律 `FILE_TYPE_MISMATCH`；
+- PDF 在前 1024 字节（`SNIFF_BYTES`，与 pdfjs 一致）内查找 `%PDF-`；开头是 HTML / MHT / RTF / XML 的多格式文件不当作 PDF；
+- 二进制文件头仍在前 16 字节判断，不符立即中断；只有文件头不是已知二进制格式、且扩展名允许文本类内容或 PDF 时，才最多再等 1024 字节；
+- 下载不变：一律 `Content-Disposition: attachment`，`X-Content-Type-Options: nosniff`、`Content-Security-Policy: default-src 'none'; sandbox`，记录为 `text/html` 的文件也不会在浏览器中渲染；
+- 测试用的真实样本在 `server/tests/files/samples/`：除 MHT 外都由 LibreOffice 24.2 导出，并确认 LibreOffice 能按改后的扩展名正确读出内容（PDF 用 pdftotext 确认）。
+
+与路线图的偏离：
+
+- 上一节建议第 2、3 项与第 6 步的解析任务一起做，本 PR 提前做了上传校验。理由：本步只收下并按原样存储，不解析，下载一律附件；“只能在沙箱中由 LibreOffice 解析”的约束由第 6 步承担，第 6 步的解析任务必须按记录的 MIME 分派，`text/html`、`message/rfc822`、`application/rtf`、`application/xml` 一律只进沙箱中的 LibreOffice（`.xls` 的 HTML / SpreadsheetML 可用 SheetJS，同样在沙箱中）；
+- **MHT**：LibreOffice 不认识 MHT，会当作纯文本读出 MIME 头和 base64。第 6 步需要先在沙箱中解开 MIME，取 `text/html` 部分（按其 `Content-Transfer-Encoding` 和 `charset` 解码）再交给 LibreOffice；
+- 两种 Office 2003 XML 都记为 `application/xml`，解析时按扩展名区分（`.doc` / `.wps` 是 Word，`.xls` 是 SpreadsheetML）。
 
 ### 第 5 步说明
 

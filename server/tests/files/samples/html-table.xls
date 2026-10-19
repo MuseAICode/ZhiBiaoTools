@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+
+<html>
+<head>
+	
+	<meta http-equiv="content-type" content="text/html; charset=utf-8"/>
+	<title></title>
+	<meta name="generator" content="LibreOffice 24.2.7.2 (Linux)"/>
+	<meta name="created" content="00:00:00"/>
+	<meta name="changed" content="00:00:00"/>
+	
+	<style type="text/css">
+		body,div,table,thead,tbody,tfoot,tr,th,td,p { font-family:"Liberation Sans"; font-size:x-small }
+		a.comment-indicator:hover + comment { background:#ffd; position:absolute; display:block; border:1px solid black; padding:0.5em;  } 
+		a.comment-indicator { background:red; display:inline-block; border:1px solid black; width:0.5em; height:0.5em;  } 
+		comment { display:none;  } 
+	</style>
+	
+</head>
+
+<body>
+<table cellspacing="0" border="0">
+	<colgroup width="38"></colgroup>
+	<colgroup width="52"></colgroup>
+	<colgroup width="38"></colgroup>
+	<tr>
+		<td height="17" align="left" data-sheets-value="{ &quot;1&quot;: 2, &quot;2&quot;: &quot;序号&quot;}"><font face="WenQuanYi Zen Hei">序号</font></td>
+		<td align="left" data-sheets-value="{ &quot;1&quot;: 2, &quot;2&quot;: &quot;名称&quot;}"><font face="WenQuanYi Zen Hei">名称</font></td>
+		<td align="left" data-sheets-value="{ &quot;1&quot;: 2, &quot;2&quot;: &quot;数量&quot;}"><font face="WenQuanYi Zen Hei">数量</font></td>
+	</tr>
+	<tr>
+		<td height="17" align="right" sdval="1" sdnum="1033;">1</td>
+		<td align="left" data-sheets-value="{ &quot;1&quot;: 2, &quot;2&quot;: &quot;服务器&quot;}"><font face="WenQuanYi Zen Hei">服务器</font></td>
+		<td align="right" sdval="2" sdnum="1033;">2</td>
+	</tr>
+	<tr>
+		<td height="17" align="right" sdval="2" sdnum="1033;">2</td>
+		<td align="left" data-sheets-value="{ &quot;1&quot;: 2, &quot;2&quot;: &quot;交换机&quot;}"><font face="WenQuanYi Zen Hei">交换机</font></td>
+		<td align="right" sdval="4" sdnum="1033;">4</td>
+	</tr>
+</table>
+<!-- ************************************************************************** -->
+</body>
+
+</html>
