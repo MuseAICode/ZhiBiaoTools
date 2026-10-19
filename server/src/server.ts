@@ -1,0 +1,88 @@
+// 进程入口：校验配置 → 启动 → 收到 SIGTERM / SIGINT 时优雅退出。
+import { KeyringError, loadFileKeyWrapper, type KeyWrapper } from './ai/keyring.ts';
+import { buildApp } from './app.ts';
+import { expireStaleHolds } from './billing/usage.ts';
+import { ConfigError, loadConfig, type AppConfig } from './config.ts';
+import { createDatabase } from './db/database.ts';
+import { createS3ObjectStore } from './files/objectStore.ts';
+
+const SHUTDOWN_TIMEOUT_MS = 10_000;
+/** 清理到期冻结的间隔。到期的冻结本来就不占用余额，这里只把记录标为 abandoned。 */
+const HOLD_SWEEP_INTERVAL_MS = 60_000;
+
+function failStartup(message: string, extra: Record<string, unknown> = {}): never {
+  // 此时日志器尚未创建，直接输出一行结构化 JSON 到 stderr。
+  process.stderr.write(`${JSON.stringify({ level: 'fatal', time: Date.now(), msg: message, ...extra })}\n`);
+  process.exit(1);
+}
+
+let config: AppConfig;
+try {
+  config = loadConfig(process.env);
+} catch (error) {
+  if (error instanceof ConfigError) failStartup(error.message, { issues: error.issues });
+  throw error;
+}
+
+let keyWrapper: KeyWrapper | null = null;
+if (config.ai.kekFile) {
+  try {
+    keyWrapper = loadFileKeyWrapper(config.ai.kekFile, config.ai.kekVersion);
+  } catch (error) {
+    if (error instanceof KeyringError) failStartup(error.message);
+    throw error;
+  }
+}
+
+// 连接池按需建连：数据库暂时不可用时进程照常启动，由 /readyz 报告未就绪。
+const database = createDatabase(config.database, {
+  onIdleError: (error) => app.log.warn({ err: error }, 'idle database connection error'),
+});
+const objectStore = config.storage ? createS3ObjectStore(config.storage) : null;
+const app = await buildApp(config, { database, keyWrapper, objectStore });
+if (!keyWrapper) app.log.warn('AI_KEK_FILE is not set, AI gateway disabled');
+if (!objectStore) app.log.warn('S3_BUCKET is not set, file storage disabled');
+
+const sweeper = setInterval(() => {
+  expireStaleHolds(database.db).then(
+    (expired) => {
+      if (expired > 0) app.log.warn({ expired }, 'expired abandoned ai usage holds');
+    },
+    (error: unknown) => app.log.warn({ err: error }, 'ai usage hold sweep failed'),
+  );
+}, HOLD_SWEEP_INTERVAL_MS);
+sweeper.unref();
+
+app.addHook('onClose', async () => {
+  clearInterval(sweeper);
+  await database.destroy();
+});
+
+let shuttingDown = false;
+async function shutdown(signal: NodeJS.Signals) {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  app.log.info({ signal }, 'shutting down');
+  const timer = setTimeout(() => {
+    app.log.error('shutdown timed out, exiting');
+    process.exit(1);
+  }, SHUTDOWN_TIMEOUT_MS);
+  timer.unref();
+  try {
+    await app.close();
+    process.exit(0);
+  } catch (error) {
+    app.log.error({ err: error }, 'shutdown failed');
+    process.exit(1);
+  }
+}
+
+process.once('SIGTERM', () => void shutdown('SIGTERM'));
+process.once('SIGINT', () => void shutdown('SIGINT'));
+
+try {
+  await app.listen({ host: config.host, port: config.port });
+} catch (error) {
+  app.log.fatal({ err: error }, 'failed to start');
+  process.exit(1);
+}

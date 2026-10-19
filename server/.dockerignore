@@ -1,0 +1,13 @@
+node_modules
+dist
+coverage
+tests
+vitest.config.ts
+.env
+.env.*
+Dockerfile
+.dockerignore
+vitest.db.config.ts
+db
+scripts
+.dev-secrets

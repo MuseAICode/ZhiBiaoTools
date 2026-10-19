@@ -1,0 +1,116 @@
+export type TextModelProvider = 'volcengine' | 'deepseek' | 'agnes' | 'custom';
+export type AiRequestMode = 'normal' | 'stream';
+// 更新源由随包的 electron/resources/update-feed.json 决定，默认未配置。
+export type UpdateChannel = 'custom';
+
+export interface TextModelConfig {
+  api_key: string;
+  base_url: string;
+  model_name: string;
+  multimodal_enabled: boolean;
+  reasoning_effort: string;
+  context_length_limit: number;
+  output_token_limit: number;
+  concurrency_limit: number;
+  temperature_enabled: boolean;
+  temperature: number;
+  request_mode: AiRequestMode;
+}
+
+export type TextModelProfiles = Record<TextModelProvider, TextModelConfig>;
+
+export interface AiConfig extends TextModelConfig {
+  text_model_provider: TextModelProvider;
+  text_model_profiles: TextModelProfiles;
+}
+
+export interface ConfigSaveResult {
+  success: boolean;
+  message: string;
+  config_path?: string;
+}
+
+export interface ModelListResult {
+  success: boolean;
+  message: string;
+  models: string[];
+}
+
+export interface ImageModelTestResult {
+  success: boolean;
+  message: string;
+  image_url?: string;
+  image_data?: string;
+  mime_type?: string;
+}
+
+export type ImageModelProvider = 'volcengine' | 'google-ai-studio' | 'agnes' | 'custom' | 'comfyui';
+export type ImageModelStatus = 'untested' | 'available' | 'unavailable';
+export type ImageModelSize = 'auto' | '512' | '1K' | '2K' | '3K' | '4K' | '1024x768' | '1024x1024' | '768x1024' | '1536x1024' | '1024x1536' | '2048x2048' | '2048x1152' | '3840x2160' | '2160x3840';
+export type ImageModelRatio = '1:1' | '3:4' | '4:3' | '16:9' | '9:16' | '2:3' | '3:2' | '21:9';
+
+export interface ImageModelConfig {
+  provider: ImageModelProvider;
+  base_url?: string;
+  api_key: string;
+  model_name: string;
+  image_size: ImageModelSize;
+  image_ratio?: ImageModelRatio;
+  request_mode: AiRequestMode;
+  concurrency_limit: number;
+  comfyui_workflow?: string;
+  status?: ImageModelStatus;
+  tested_at?: string;
+  last_error?: string;
+}
+
+export type ImageModelProfiles = Record<ImageModelProvider, ImageModelConfig>;
+
+export type FileParserProvider = 'local' | 'mineru-accurate-api' | 'mineru-agent-api';
+
+export interface FileParserConfig {
+  provider: FileParserProvider;
+  mineru_token?: string;
+}
+
+export interface ComponentsConfig {
+  file_parser: FileParserConfig;
+  mermaid_concurrency_limit: number;
+  html_concurrency_limit: number;
+}
+
+// config:load 返回的凭据字段一律为空字符串，只通过这里了解是否已配置和末尾几位。
+export interface CredentialStatus {
+  configured: boolean;
+  tail: string;
+}
+
+export interface CredentialStatusMap {
+  text: Partial<Record<TextModelProvider, CredentialStatus>>;
+  image: Partial<Record<ImageModelProvider, CredentialStatus>>;
+  mineru: CredentialStatus;
+}
+
+// 保存时凭据留空表示不修改；要删除已保存的凭据，在这里列出对应服务商。
+export interface CredentialClearRequest {
+  text?: TextModelProvider[];
+  image?: ImageModelProvider[];
+  mineru?: boolean;
+}
+
+export interface ClientConfig extends AiConfig {
+  image_model: ImageModelConfig;
+  image_model_profiles: ImageModelProfiles;
+  components: ComponentsConfig;
+  agent_auto_answer_enabled?: boolean;
+  gpu_hardware_acceleration_enabled?: boolean;
+  gpu_hardware_acceleration_configured?: boolean;
+  export_format?: import('./exportFormat').ExportFormatConfig;
+  developer_mode?: boolean;
+  developer_token_stats_auto_open?: boolean;
+  developer_agent_monitor_auto_open?: boolean;
+  storage_cleanup_version?: number;
+  credential_status?: CredentialStatusMap;
+  credential_clear?: CredentialClearRequest;
+}
+

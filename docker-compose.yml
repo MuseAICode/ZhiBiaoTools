@@ -1,0 +1,160 @@
+# 开发用 Docker Compose：api + PostgreSQL 17 + 本地 S3 兼容对象存储（SeaweedFS），Redis 在后续 PR 中加入。
+# 用法：
+#   1. server/scripts/init-dev-secrets.sh   # 首次运行：生成数据库密码、AI 主密钥和对象存储密钥到 server/.dev-secrets/（不入库）
+#   2. docker compose up --build            # migrate 执行完迁移后 api 才启动
+#   3. 访问 http://localhost:3000/healthz 和 /readyz
+#   4. 创建首个平台管理员：cd server && MIGRATION_DATABASE_PASSWORD_FILE=.dev-secrets/db_owner_password npm run admin:create -- --email <邮箱>
+# 已有的数据卷是 旧仓库 PR #29 之前初始化的（缺少 bidtools_auth 角色）时，先 docker compose down -v 重建。
+# 旧仓库 PR #34 起新增 s3 服务：已有的开发环境需要重新运行 init-dev-secrets.sh 生成 s3_secret_key（已有的文件不会被覆盖）。
+# 重建数据库：docker compose down -v（会删除数据卷）。
+# 生产部署的 compose 与网络划分见 docs/SERVER_DESIGN.md 第 8.1 节，不使用本文件。
+name: bidtools-dev
+
+x-hardening: &hardening
+  read_only: true
+  tmpfs:
+    - /tmp:size=64m
+  cap_drop:
+    - ALL
+  security_opt:
+    - no-new-privileges:true
+  init: true
+
+x-database-env: &database-env
+  DATABASE_HOST: postgres
+  DATABASE_PORT: "5432"
+  DATABASE_NAME: bidtools
+
+services:
+  postgres:
+    # 按 digest 固定（docs/SERVER_DESIGN.md 第 8.1 节），升级时同时更新标签和 digest；与 CI 的服务容器一致。
+    image: postgres:17.11-bookworm@sha256:3645570cccdfa447589da9f57dd740faa29b30938e861289a5574b6ca6b03826
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
+      POSTGRES_DB: postgres
+      APP_DB_NAME: bidtools
+    secrets:
+      - postgres_password
+      - db_owner_password
+      - db_app_password
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./server/db/init:/docker-entrypoint-initdb.d:ro
+    ports:
+      # 只绑定本机回环地址，供本机的迁移命令和数据库客户端使用，不对局域网暴露。
+      - "127.0.0.1:5432:5432"
+    shm_size: 128m
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready --username=postgres --dbname=postgres"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  # 本地 S3 兼容对象存储，只用于开发和本机测试；生产环境用云厂商的对象存储（docs/SERVER_DESIGN.md 第 6.3 节）。
+  # SeaweedFS（Apache-2.0）的单进程模式 weed mini，启动时创建 bucket。按 digest 固定，升级时同时更新标签和 digest；与 CI 一致。
+  # 必须设置访问密钥：不设置时 SeaweedFS 接受任意密钥。关闭遥测（默认会向 SeaweedFS 官方上报统计）、管理界面、WebDAV 和
+  # Iceberg / Lance 接口；只有 S3 端口 8333 映射到本机回环地址，其余端口不对外。
+  s3:
+    image: chrislusf/seaweedfs:4.48@sha256:4e61d15fd35994cb1e43e1e553dff106794841fd9a99ade2fc8c8bfce4d7872d
+    user: "1000:1000"
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - >-
+        export AWS_SECRET_ACCESS_KEY="$$(cat /run/secrets/s3_secret_key)" &&
+        exec /entrypoint.sh mini -dir=/data -ip=127.0.0.1 -ip.bind=0.0.0.0
+        -master.telemetry=false -admin.ui=false -webdav=false -s3.port.iceberg=0 -s3.port.lance=0
+        -s3.autoCreateBucket=false -bucket=bidtools-dev
+    environment:
+      AWS_ACCESS_KEY_ID: bidtools-dev
+    secrets:
+      - s3_secret_key
+    volumes:
+      - s3data:/data
+    ports:
+      # 只绑定本机回环地址，供本机的集成测试使用，不对局域网暴露。
+      - "127.0.0.1:8333:8333"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8333/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+    <<: *hardening
+    restart: unless-stopped
+
+  migrate:
+    image: bidtools-api:dev
+    build:
+      context: ./server
+    command: ["node", "dist/db/migrate.js", "latest"]
+    environment:
+      <<: *database-env
+      MIGRATION_DATABASE_USER: bidtools_owner
+      MIGRATION_DATABASE_PASSWORD_FILE: /run/secrets/db_owner_password
+    secrets:
+      - db_owner_password
+    depends_on:
+      postgres:
+        condition: service_healthy
+    <<: *hardening
+    restart: "no"
+
+  api:
+    image: bidtools-api:dev
+    build:
+      context: ./server
+    environment:
+      NODE_ENV: development
+      LOG_LEVEL: debug
+      # 浏览器只在 localhost 上接受非 https 的 Secure Cookie（__Host-session），开发时用 http://localhost:3000 访问。
+      PUBLIC_ORIGIN: http://localhost:3000
+      # 开发环境直连 api、前面没有反向代理，不信任任何代理：X-Forwarded-For 一律忽略，限流按连接对端地址计数
+      # （经 127.0.0.1 端口映射进来的请求，对端地址都是 Docker 网关，相当于所有本机请求共用一个计数）。
+      # 生产部署在 Caddy 后面时，只填 Caddy 容器的固定地址，见 docs/SERVER_DESIGN.md 第 8.1 节。
+      TRUSTED_PROXIES: ""
+      <<: *database-env
+      DATABASE_USER: bidtools_app
+      DATABASE_PASSWORD_FILE: /run/secrets/db_app_password
+      # AI 网关的主密钥文件（开发用；生产环境换成云 KMS，docs/SERVER_DESIGN.md 第 4.2 节）。
+      AI_KEK_FILE: /run/secrets/ai_kek
+      # 对象存储（docs/SERVER_DESIGN.md 第 6.3 节）。生产环境换成云厂商的地址、地域和访问密钥。
+      S3_ENDPOINT: http://s3:8333
+      S3_REGION: us-east-1
+      S3_BUCKET: bidtools-dev
+      S3_FORCE_PATH_STYLE: "true"
+      S3_ACCESS_KEY_ID: bidtools-dev
+      S3_SECRET_ACCESS_KEY_FILE: /run/secrets/s3_secret_key
+    # 只拿应用角色的密码、主密钥和对象存储密钥，拿不到属主和超级用户密码；migrate 拿不到主密钥和对象存储密钥。
+    secrets:
+      - db_app_password
+      - ai_kek
+      - s3_secret_key
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      s3:
+        condition: service_healthy
+    ports:
+      # 只绑定本机回环地址，不对局域网暴露。
+      - "127.0.0.1:3000:3000"
+    <<: *hardening
+    restart: unless-stopped
+
+secrets:
+  postgres_password:
+    file: ./server/.dev-secrets/postgres_password
+  db_owner_password:
+    file: ./server/.dev-secrets/db_owner_password
+  db_app_password:
+    file: ./server/.dev-secrets/db_app_password
+  ai_kek:
+    file: ./server/.dev-secrets/ai_kek
+  s3_secret_key:
+    file: ./server/.dev-secrets/s3_secret_key
+
+volumes:
+  pgdata:
+  s3data:

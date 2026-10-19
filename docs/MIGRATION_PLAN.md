@@ -1,0 +1,589 @@
+# client Web 化改造路线图
+
+> **仓库迁移说明**：本项目已从旧仓库 `museaicode/Bidtools` 迁移到本仓库，以旧仓库 `main` 的最新快照作为单个初始提交，不含历史提交。旧仓库仅作为历史档案保留，不再接受改动。本文及其他文档中“旧仓库 PR #N”均指旧仓库的 PR；本仓库新建的 PR 直接写 `#N`。迁移时已取得原作者的商业授权，本项目改为闭源商业授权，原 `LICENSE`、`NOTICE` 和原作者归属信息已删除。
+
+本文是 `client/` 从 Electron 桌面客户端改造成 Web 服务的路线图，内容来自 旧仓库 PR #1 的分析报告（以合并时的 `main` 为基线）。每个改造 PR 完成后更新下面的进度表；实际做法偏离路线图时，在 PR 中说明原因并同步修改本文。
+
+## 进度
+
+| 步骤 | 内容 | 状态 | PR |
+|---|---|---|---|
+| 0 | 前置：处理高危依赖漏洞，确定 AGPL 第 13 条源码链接方案，新增 PR CI，移除原作者的发布与镜像 workflow，梳理外部服务 | 已完成 | 旧仓库 PR #3、旧仓库 PR #4、旧仓库 PR #5、旧仓库 PR #6、旧仓库 PR #7、旧仓库 PR #8、旧仓库 PR #9、旧仓库 PR #10、旧仓库 PR #11、旧仓库 PR #12、旧仓库 PR #13、旧仓库 PR #14、旧仓库 PR #15、旧仓库 PR #16、旧仓库 PR #17、旧仓库 PR #18、旧仓库 PR #19、旧仓库 PR #20 |
+| 1 | 抽象 bridge | 进行中 | 旧仓库 PR #21（决定记录）、旧仓库 PR #22（Vitest）、旧仓库 PR #23（修复 output_token_limit）、旧仓库 PR #24（新建 `src/shared/bridge`） |
+| 2 | 服务端骨架 | 进行中 | 旧仓库 PR #25（设计文档 `docs/SERVER_DESIGN.md`）、旧仓库 PR #26（决定 18 项事项，新增计费与合规章节）、旧仓库 PR #27（`server/` 基础设施：配置、日志、`/healthz`、错误处理、安全响应头、Docker、CI）、旧仓库 PR #28（数据库层：PostgreSQL 17、Kysely 迁移、身份与租户表、RLS、`TenantContext`、`/readyz`）、旧仓库 PR #29（鉴权：登录前查询的 `SECURITY DEFINER` 函数、argon2id、服务端会话与 CSRF、邀请注册、找回密码、限流、平台管理员命令行）、旧仓库 PR #30（限流的客户端 IP：新增 `TRUSTED_PROXIES`，只采信可信代理附加的 `X-Forwarded-For`） |
+| 3 | 配置与 AI 网关 | 进行中 | 旧仓库 PR #31（计费账本：组织余额、只追加的账本、带版本的价格表、幂等扣费、管理员手动充值与冲正，不调用 AI）、旧仓库 PR #32（AI 网关：调用前预扣冻结、按实际用量结算、冻结超时自动释放、`usage_records`、平台 Key 信封加密、DeepSeek / 通义千问流式适配、`POST /api/ai/chat`）、旧仓库 PR #33（平台模型白名单 `platform_models`：只有登记且启用、并有生效价格的模型能调用，免费须显式标记；管理员登记 / 启用 / 停用接口；用户断开时中止上游请求的端到端测试） |
+| 4 | 文件上传 / 下载 / 资源协议 | 进行中 | 旧仓库 PR #34（文件存储：S3 兼容对象存储、本地 SeaweedFS、`files` 表与强制 RLS、按内容校验类型、大小上限与组织配额、附件方式下载、7 天恢复期） |
+| 5 | 数据层迁移（按业务逐个） | 进行中 | 旧仓库 PR #35（拆分计划，见“第 5 步说明”；记录上传白名单与桌面版的差距） |
+| 6 | 任务队列与 worker | 未开始 | — |
+| 7 | OpenXmlHelper 容器化与离屏渲染 | 未开始 | — |
+| 8 | Agent 沙箱 | 未开始 | — |
+| 9 | 收尾与上线 | 未开始 | — |
+
+状态取值：未开始 / 进行中 / 已完成。一步由多个 PR 完成时，在“PR”列依次列出编号。
+
+### 第 0 步细项
+
+| 细项 | 状态 | PR |
+|---|---|---|
+| 0.1 `npm audit fix`（不加 `--force`）+ 零代码升级：lockfile 内升级、`brace-expansion` 升到 5.0.12、`overrides` 把 pi-coding-agent 内的 `undici` 升到 8.10.2 | 已完成 | 旧仓库 PR #3 |
+| 0.2 `pdfjs-dist` 升到 6.x：改 `doc2markdown/convert.mjs` 的销毁调用，并解决与 `pdf-parse` 内置 pdfjs 5.4.296 的版本冲突（实际做法：升到 6.4.299，表格提取用本模块专用的 `PDFWorker`，见下方说明） | 已完成 | 旧仓库 PR #4 |
+| 0.3 `xlsx` 换成 SheetJS 0.20.3：`convert.mjs` 的 ESM 读取改成 `XLSX.read(buffer)`（实际做法：官方 CDN 的 tarball 存入 `client/vendor/xlsx-0.20.3.tgz`，`package.json` 用 `file:` 引用，见下方说明） | 已完成 | 旧仓库 PR #5 |
+| 0.4 `patch-package`（`braces` / `micromatch` 没有修复版，仅开发期 postinstall 使用）：**接受风险**，见下方说明；后续升级 `@docx-editor.dev/core` 时顺带评估去掉补丁 | 已完成（接受风险） | 旧仓库 PR #18 |
+| 0.5 AGPL 第 13 条源码链接方案：**上线前决定**，开发期间仓库保持公开，见下方说明（迁移到新仓库后改为闭源商业授权，已不再需要） | 已完成（不再需要） | 旧仓库 PR #18 |
+| 0.6 PR CI：`.github/workflows/ci.yml`，每个 PR 和推送到 `main` 时在 `client/` 下跑 `npm ci`、`npm run build`、`electron/` 下全部 `.cjs`/`.mjs` 的 `node --check`、`npm audit --audit-level=critical` | 已完成 | 旧仓库 PR #6 |
+| 0.7 删除原作者的发布与镜像 workflow：`sync-mirrors.yml`、`sync-releases.yml`、`star-history.yml`、`release.yml`，以及 `.github/scripts/` 中只被它们调用的脚本；保留 `ci.yml` | 已完成 | 旧仓库 PR #7 |
+| 0.8 外部服务清单与独立运营评估（只读分析，不改代码）：`docs/EXTERNAL_SERVICES.md` | 已完成 | 旧仓库 PR #8 |
+| 0.9 按 `docs/EXTERNAL_SERVICES.md` §3 修改 `AGENTS.md`、`client/开发说明.md` 中与独立运营冲突的规则（只改文档） | 已完成 | 旧仓库 PR #9 |
+| 0.10 外部服务 P0：移除 Agent 失败诊断上传（`/agent-errors`），失败信息改为只写本机日志 | 已完成 | 旧仓库 PR #10 |
+| 0.11 外部服务 P0：默认文本模型不再是“易标官方”，改为未配置并在启动时引导用户配置；移除启动时匿名注册和下发 API Key 写入本地配置；设置页隐藏“易标官方”选项（代码保留）。默认生图模型另开细项 | 已完成 | 旧仓库 PR #11 |
+| 0.12 外部服务 P0：默认生图模型改为未配置；旧配置中已选中“易标官方”的文本模型按 `docs/EXTERNAL_SERVICES.md` §2.2 方案 2 一次性迁移为未配置，官方 Key 保留不用，启动时提示用户 | 已完成 | 旧仓库 PR #12 |
+| 0.13 外部服务 P1：停用插件系统。Main 不再注册插件 IPC、不加载已安装插件、不请求 `/plugins`；Renderer 隐藏插件管理菜单、插件更新提示和依赖桌宠插件的“AI 调整”入口。代码保留，Web 版计划下线 | 已完成 | 旧仓库 PR #13 |
+| 0.14 外部服务 P0：远程公告不再渲染原始 HTML，排查所有远程内容和 AI 输出的渲染位置，`MarkdownRenderer` 默认禁用原始 HTML 并加标签/属性/协议白名单；`config:load` 返回的 API Key 和 MinerU Token 一律打码，界面只看到“已配置/未配置”和末尾几位，保存时空值表示不修改 | 已完成 | 旧仓库 PR #14 |
+| 0.15 外部服务 P0（远程控制类）：移除 IP 封禁（`/ip-blocks`）及命中即退出；移除授权链路（许可证校验、过期/“来源不可信”弹窗、离线授权、公钥与构建证明）；停用原作者的 GitHub / AtomGit / Cloudflare 更新渠道，更新源改为随包配置且默认为空，验签实现前不下载；汇总桌面版待测清单 | 已完成 | 旧仓库 PR #15 |
+| 0.16 外部服务 P1/P2（剩余原作者内容服务）：埋点、公告、更新日志、资源页、群二维码、模型信息、使用文档、打赏的地址改为构建时写入 `electron/resources/remote-services.json`，默认全部为空，为空时不发请求、隐藏入口或显示空状态；`client_id` 改为随机安装标识，旧的机器码派生 ID 读取时替换；删除从未挂载的启动广告组件 | 已完成 | 旧仓库 PR #16 |
+| 0.17 外部服务（`v3.yibiao.pro`）：整体移除“易标官方”文本模型服务商和官方账户（服务、IPC、preload API、类型、设置页账户面板、默认 Base URL、请求头、余额不足跳转），删除 旧仓库 PR #11 的隐藏开关和 旧仓库 PR #12 的迁移提示；旧配置为 `official` 时直接切到“自定义”，本地官方会话文件和官方 Key 不删除、不读取 | 已完成 | 旧仓库 PR #17 |
+| 0.18 第 0 步收尾：删除设置页金龙“获取 Key”推广链接 `s.markup.com.cn/jl`，并整体移除“金龙中转站”预置服务商（文本和生图），旧配置迁移为“自定义”；删除侧边栏“加群”按钮、内置的原作者用户群二维码和远程二维码查询；删除 `文章/` 目录；记录 0.4、0.5 和“不自建 analytics Worker”的决定 | 已完成 | 旧仓库 PR #18 |
+| 0.19 清理原作者的非归属类信息（`LICENSE`、`NOTICE`、署名和原仓库链接不动）：删除 `analytics/` 目录和客户端中只为它服务的埋点、安装标识与内容服务代码（公告、更新日志、资源页、模型信息）；删除原作者的历史更新日志、使用说明中的原作者内容和 `screenshots/` 中的赞助商图片；README 改写为中性说明；删除 `configStore` 中“官方”“金龙”旧配置的迁移代码；删除失效的 `check:docx`（连同同样失效的 `check:chrome`、`check`）；全局搜索剩余引用并分类 | 已完成 | 旧仓库 PR #19 |
+| 0.20 继续清理原作者的非归属类信息（`LICENSE`、`NOTICE`、署名和原仓库链接不动）：删除 `.github/FUNDING.yml` 和 AtomGit 发布工具；删除 `.agents/skills/yibiao-user-manual/`、`assets/star-history/` 和 `screenshots/`；删除打赏功能；“给作者点 star”提示改为“功能开发中”；删除 `html图片.md` 中的 `mt.agnet.top` 一段；问题反馈模板、`SECURITY.md`、`CODE_OF_CONDUCT.md` 的联系邮箱改为占位符，`CONTRIBUTING.md` 改写；隐私声明第 01、02 条改为中性表述 | 已完成 | 旧仓库 PR #20 |
+
+0.2 的实际做法与原方案 B 的差异：没有另起 worker 线程，也没有调整调用顺序（Electron 主进程里多次转换时，只调顺序不够），而是在 `convert.mjs` 加载时用 pdfjs 6 自己的 worker 建一个专用 `PDFWorker` 传给 `getDocument`，然后清掉 `globalThis.pdfjsWorker`，让 pdf-parse 照常加载自己的 5.4.296。同一 PR 还补了 `cMapUrl` / `standardFontDataUrl`（非嵌入中文字体），并修了 `constructPath` 遇到空路径（`null`）时抛错的问题。之前因为版本冲突，这条路径从来没有跑到，所以这个问题一直没暴露。
+
+0.3 的做法：SheetJS 从 0.18.5 起不再发布到 npm 官方仓库，路线图原先在“官方 CDN”和“npm 镜像”之间待定，最终选了官方 CDN，但不在安装时联网下载，而是把 `https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz` 存进 `client/vendor/`，`package.json` 写 `"xlsx": "file:vendor/xlsx-0.20.3.tgz"`。这样安装不依赖 cdn.sheetjs.com 的可用性，也不用信任第三方镜像；`package-lock.json` 的 `integrity` 记录了 tarball 的 sha512，文件被改动时 `npm ci` 会拒绝安装。官方没有发布校验值，核对方式是把 tarball 内容与 npm 官方仓库上独立重新发布的 `@e965/xlsx@0.20.3` 逐文件比对：全部 24 个代码文件一致，只有包名、仓库地址和 README 不同。升级 SheetJS 时替换这个文件、重新 `npm install --save ./vendor/xlsx-<版本>.tgz`，并重新核对校验值。`vendor/` 不在 electron-builder 的 `files` 里，tarball 不会进安装包。
+
+0.6 是路线图外新增的细项：后续改造 PR 都要过同一套构建和审计，先把检查固化到 CI，避免依赖每次手工执行。CI 只读（`permissions: contents: read`），不使用任何 secret，与原有发布类 workflow 互不影响；high 级漏洞（目前是 0.4 里 `patch-package` 带进来的 `braces` / `micromatch`）不让 CI 失败，仍按 0.4 跟踪。
+
+0.7 是路线图外新增的细项：这四个 workflow 依赖原作者的 secret、变量和自托管 Runner（AtomGit、Gitee、Cloudflare R2、构建证明私钥、Star History token），在本仓库要么跑不通，要么每次 push 都失败；`release.yml` 还会以原作者名义构建并签发桌面安装包。删掉后本仓库只剩只读的 `ci.yml`。删除的脚本：`sync-atomgit-git.mjs`、`sync-atomgit-release.mjs`（经 `release_download.*` 调用）、`sync-gitee-release.mjs`、`publish-r2-release.mjs`、`release_download.sh`、`release_download.bat`。没有被任何 workflow 调用的 `setup-atomgit-runner.*`、`sync-secrets.ps1`、`恢复到指定版本.bat` 暂时保留。仓库里其余指向这些文件或原作者镜像/存储地址的地方（文档、README、`updateService.cjs` 的更新渠道、`package.json` 的 `publish`、`tools/upload_atomgit_release.py`、`assets/star-history/` 等）本 PR 不改，清单见 PR 描述，留给后续 PR（更新渠道在第 9 步随 Web 化一并处理）。
+
+0.8 是路线图外新增的细项：独立运营前，先弄清客户端连接了哪些原作者服务、发出了什么数据。结论和逐项建议见 `docs/EXTERNAL_SERVICES.md`。该文档 §4 列出了后续 PR 的优先级，其中 P0 项（远程公告的 `allowRawHtml`、Agent 失败诊断上传整个工作区、默认使用官方模型、IP 封禁、授权与构建证明、更新渠道）应在任何对外分发之前完成。§3 指出 `AGENTS.md` 的“禁止删除或弱化任何埋点”与独立运营冲突；本文第 4 节 AI 服务行和第 9 步的“埋点等价保留、不删任何统计”同样来自这条约束。等 `AGENTS.md` 修改后，再同步改写这两处。本 PR 不改约束本身。
+
+0.9 是路线图外新增的细项，按 `docs/EXTERNAL_SERVICES.md` §3 改写规则：埋点从“禁止删除或弱化”改为“只能发往本项目自有服务，且不得包含用户文档内容、API Key 和设备硬件标识”；删除原作者 Cloudflare 账户的计费说明和 `release.yml` 发布流程、构建证明相关说明；“本机可信”前提收窄为本机产生的数据，远程下发的内容一律视为不可信；在 `AGENTS.md` 中明确写入当时的许可证归属声明保留要求（迁移到新仓库时已删除）。同一 PR 同步改写了本文第 4 节 AI 服务行、第 5 节部署行和第 9 步。§3 中“新增菜单页面同步 Dashboard 路由中文名”一条依赖是否自建 Dashboard，暂不改动。
+
+0.10 起按 `docs/EXTERNAL_SERVICES.md` §4 逐项处理外部服务，每项一个细项、一个 PR，状态同时记在该文档 §4。0.10 删除了 `agentErrorReporter.cjs`、`agentErrorReportProcess.cjs`（及其 `utilityProcess`）和 `taskService.cjs` 里只为上传采集的任务参数快照；Agent 最终失败改为写本机 `userData/logs/agent/agent-failures.jsonl`，只含任务标识、错误类型、状态码和脱敏后的错误消息。`analytics/worker/` 中的 `/agent-errors` 接收端、R2 存储和 Dashboard 页面是服务端源码，客户端不再调用，本 PR 不动，等决定自建 Worker 的范围时一并处理。
+
+0.11 只处理 `docs/EXTERNAL_SERVICES.md` §4 第三条 P0 中的文本模型和官方账户部分，偏离如下：
+- 默认生图模型改成“未配置”拆到后续 PR，保持每个 PR 只做一件事；
+- “未配置”没有新增一个 provider 取值，而是默认选中“自定义”且 Base URL、模型名称、API Key 均为空，复用现有的 `useTextModelSetupRedirect` 启动检查跳到设置-文本模型；
+- 官方账户服务启动时只恢复用户此前主动邮箱登录的会话，不再匿名注册；邮箱登录和绑定也不再拉取或创建 API Key 写入 `user_config.json`；
+- 已在本地选中“易标官方”的旧配置不迁移：provider 和已写入的官方 Key 原样保留，设置页对这类配置仍显示该选项，避免下拉框与实际配置不一致。处理方案待决定，见 `docs/EXTERNAL_SERVICES.md` §2.2（已在 0.12 按方案 2 处理）。
+
+0.12 处理 §4 第三条 P0 的剩余部分和第四条 P0，偏离如下：
+- 两件事合并为一个 PR：都是“默认不再指向原作者及其合作方的模型服务”，且都只改 `configStore.cjs` 的默认值和读取时的归一化；
+- 生图默认值改为空的“自定义”，与 0.11 文本模型一致，没有新增 provider 取值；生图是可选功能，不加启动跳转，未测试可用前不会调用。已保存的旧生图配置不迁移；
+- 官方文本配置迁移到“自定义”时沿用用户已有的自定义档案（不清空），没有自定义档案的即为未配置；启动提示常驻并跳到设置-文本模型，即使自定义档案已可用也让用户确认一次。
+
+0.13 处理 `docs/EXTERNAL_SERVICES.md` §4 的插件 P1 项，偏离如下：
+- §4 原建议“移除插件市场的自动检查、下载和安装”，实际做法是**整体停用**插件系统，连已安装插件也不再加载：插件代码在 Main 进程中 `require()` 执行、能拿到 `ipcMain` 和 `BrowserWindow`，且没有签名校验，只停市场不停加载，已装插件仍是同样的风险；
+- 代码暂时保留，用两个同名开关 `PLUGIN_SYSTEM_ENABLED = false` 控制（Main：`electron/ipc/index.cjs`；Renderer：`src/features/plugins/pluginSystem.ts`），两处需同时修改。Main 侧不注册 `plugins:*` / `plugin-config:*` IPC，`pluginService.initialize` 不再执行，所以也不会创建 `userData/plugins/`；已安装插件的文件和 `plugin-states.json` 原样留在磁盘上，不删除；
+- “AI 调整”（技术方案目录与全局事实、可研报告目录）只能经桌宠插件发起，插件停用后随之隐藏，没有在本 PR 改成非插件实现；
+- `preload.cjs` 中 `window.yibiao.plugins.*` 暂不删除，调用会因没有对应 handler 而失败；插件相关代码在第 9 步随 Web 化一并删除或重做。
+
+0.14 处理 `docs/EXTERNAL_SERVICES.md` §4 第一条 P0，并提前做了第 3 步中“`config.load` 返回脱敏值”的桌面版部分，偏离如下：
+- 两件事合并为一个 PR：远程公告注入 HTML 的危害正是读取 `config.load()` 中的明文 Key，只修渲染不修配置，或者反过来，都只堵住一半；
+- 没有只改 `UpdateNotifier.tsx` 一处，而是把 `MarkdownRenderer` 默认值改成 `allowRawHtml=false`，所有调用方显式传值：远程内容和 AI 输出传 `false`；本地解析的文档（招标文件、知识库、废标检查的文档原文）和技术方案正文（会原样保留原方案中的 HTML 表格）传 `true`。另外不论是否开启原始 HTML，`MarkdownRenderer` 都只重建白名单中的标签，丢弃 `style`、事件属性和白名单外的 `class`，链接只允许 `http(s)`/`mailto`/`#`，图片只允许 `http(s)`/`yibiao-asset`/`blob`/位图 `data:`。禁用原始 HTML 时仍识别不带属性的 `<br>`、`<mark>`（AI 表格单元格换行和查错高亮依赖它们）；
+- 打码在 IPC 层（`configIpc.cjs`、`aiIpc.cjs` 经 `services/configSecrets.cjs`）完成，`configStore` 和 Main 内部调用仍拿明文。`config:save`、`config:list-models`、`ai:test-image-model` 收到的空凭据按已保存的档案还原；**Base URL 有改动时不还原**（否则改写 Base URL 就能让 Main 把已保存的 Key 发往任意地址），需要重新填写。删除已保存的凭据改用 `credential_clear` 显式请求，设置页提供“清除”按钮；
+- MinerU Token 一并打码，虽然不是模型服务商的 Key，但同样是凭据；
+- 设置页输入框只保留用户本次新填写的值；官方账户状态变化时只刷新凭据状态，不再把官方 Key 读进界面。
+
+0.15 处理 `docs/EXTERNAL_SERVICES.md` §4 的第五、六、七条 P0，偏离如下：
+- 三件事合并为一个 PR（按本次需求一并处理）：都是原作者服务对本地客户端的远程控制（远程退出、远程锁定、远程替换安装包），且都只删除或停用、不新增功能；
+- 授权链路**直接删除**，没有像 0.11、0.13 那样用开关保留：它依赖原作者的私钥和构建证明，自建构建永远验证不过，保留没有可复用价值。用户本地的 `license.json` 不删除，只是不再读取；“联系作者购买离线包”文案一并删除；
+- 更新功能保留代码结构但去掉三个原作者渠道，更新源从“用户在设置页选择渠道”改为“构建时写入 `electron/resources/update-feed.json`”，默认为空即不发请求。这样 Renderer 无法把更新源改到任意地址；`update_channel` 配置项随之删除；
+- 验签没有在本 PR 实现（自有更新服务器和签名格式尚未确定），而是在下载前加了一道总是拒绝的 `verifyReleaseSignature`，即“先关门，接入时再按格式实现”；路线图第 9 步 Web 化时仍按原计划删除更新功能；
+- `package.json` 的 `build.publish` 改为 `null`；
+- 本 PR 同时把 旧仓库 PR #4、旧仓库 PR #5、旧仓库 PR #11~旧仓库 PR #14 中“需在桌面版实测”的事项汇总到下面的“桌面版待测清单”。
+
+0.16 处理 `docs/EXTERNAL_SERVICES.md` §4 中剩余的原作者内容服务（P1 的启动广告、打赏、远程群二维码，P2 的服务地址集中配置、`client_id` 随机化、`mt.agnet.top` 文档标注），偏离如下：
+- 多项合并为一个 PR（按本次需求一并处理）：都是“把写死的原作者地址改成构建时配置、默认为空”，改法相同；
+- 地址集中在 `electron/resources/remote-services.json`，沿用 0.15 `update-feed.json` 的做法：Main 运行时读取（`services/remoteServices.cjs`），Renderer 在 Vite 构建时打包同一个文件（`src/shared/remoteServices.ts`），运行时无法修改；只接受 https。四个键：`analyticsUrl`（埋点完整地址）、`contentServiceUrl`（自建 Worker 根地址，承载 `/notice(s)`、`/changelogs`、`/resources`、`/system-settings`、`/model-info`）、`userGuideUrl`、`donationServiceUrl`。内容类接口没有逐个拆键，因为 `analytics/worker/` 本来就在同一个 Worker 上提供它们；
+- 埋点代码结构和事件字段保留，`analyticsUrl` 为空时 `sendAnalytics`、`trackAiRequest`、`trackAgentRuntime` 直接返回，连配置都不读取；
+- 打赏没有删除，而是在未配置 `donationServiceUrl` 时不弹提示、不恢复待支付订单、不发支付请求（本地仍累计使用时长和导出次数）。§4 原建议“移除”，保留结构是为了以后可能接入自己的赞助渠道；
+- 启动广告 `StartupAdvertisementDialog.tsx` 经核对**从首次提交起就没有被任何组件挂载**，Vite 不会打包它，所以 `oss.agnet.top` 广告图实际从未被请求（`EXTERNAL_SERVICES.md` 原先“每次启动强制 8 秒”的描述有误，已更正）。没有改成可配置，而是连同样式直接删除；
+- `client_id` 改为 `install-v1-<随机 UUID>`，`machineIdentity.cjs` 改名为 `clientIdentity.cjs` 并删除读取 `MachineGuid` / `IOPlatformUUID` / `machine-id` / 主机名的代码；旧配置中 `machine-v1-` 开头的 ID 连同创建时间在读取时丢弃并重新生成。Client ID 改由 Main 保管，`config:save` 不再用 Renderer 传入的值覆盖；Renderer 中早期 localStorage Client ID 的迁移逻辑删除，只清理旧值；
+- 设置页隐私声明第 03 条按是否配置埋点地址显示，不再写死“上报到 Cloudflare”；
+- 未处理：设置页金龙“获取 Key”的推广链接 `s.markup.com.cn/jl`、侧边栏内置的原作者用户群二维码（`assets/group-chat-qr.png`）、`v3.yibiao.pro` 官方账户与模型代码（已在 0.17 移除），见 `EXTERNAL_SERVICES.md` §6。
+
+0.17 按本项目“不使用原作者官方服务”的决定处理 `docs/EXTERNAL_SERVICES.md` §2.2 和 §4 待决定事项 1，偏离如下：
+- 与 0.11、0.13 用开关保留代码的做法不同，本次**直接删除**，不再保留开关：不打算重新开放，保留只会让死代码继续携带原作者地址；
+- 旧仓库 PR #12 的迁移（`official_text_provider_migrated` 标记、常驻“易标官方服务暂停提供”提示）一并删除。旧配置仍为 `official` 的，`configStore.cjs` 读取时直接切到“自定义”，并丢弃顶层镜像的官方 Base URL 和 Key（否则会被当成未知服务商的配置带进自定义档案）；用户已有的自定义档案沿用，没有则为未配置，按普通“文本模型尚未配置”引导；
+- 用户本地数据不删除：`official_api_session.json`、`official_recharge_qr_cache.json` 留在磁盘上不再读取；`user_config.json` 中的 `text_model_profiles.official`（含官方 Key）在写回配置时原样照抄，不解析、不返回给调用方，避免配置归一化把它删掉；
+- 工作区数据库的 `official_invoice_info` 表保留：它属于已发布的第 24 版迁移，删除需要新增迁移且会丢弃用户已填的开票信息，程序只是不再读写；
+- `ai:balance-insufficient` 事件、`SettingsPageRequest.openRecharge` 等只为官方余额不足服务的代码一并删除，`useTextModelSetupRedirect` 只保留启动时的未配置检查；
+- `analytics/worker/` 中与官方相关的服务端代码不属于客户端，本 PR 不动。
+
+0.18 按本次决定收尾第 0 步：
+- 金龙推广链接：`SettingsPage.tsx` 的文本和生图“获取 Key”地址表中删除金龙一项。生图的“获取”按钮原先没有置灰逻辑，一并补上，地址表改为 `Partial`，未预置地址的服务商不再弹“自定义……没有预置”的提示；
+- 金龙中转站预置服务商：**整体移除**（文本和生图都删除）。删除的内容包括服务商选项、预置 Base URL（`jlaudeapi.com/v1`、`img-api.jlaudeapi.com/v1`）、默认模型（文本 `gpt-3.5-turbo`、生图 `gpt-image-2`）、“模型名称为空时回退到金龙默认生图模型”的特殊处理、`aiService.cjs` 中的生图服务商元数据、设置页的说明文案和类型定义。正文配图的 Agent 提示词里“当前金龙 gpt-image-2-1k 的 tall 使用 768x1024”改为“gpt-image-2-1k 模型的 tall 使用 768x1024”，只去掉服务商名，尺寸要求不变（同步修改 `开发说明.md`）；
+- 金龙旧配置迁移（`configStore.cjs` 的 `migrateLegacyJinlongProvider`，每次读取配置时在归一化之前执行，结果写回磁盘）：
+  - 文本模型选中 `jinlong` 的，改为“自定义”。自定义档案取金龙档案的值，再用顶层镜像字段覆盖，Base URL、Key、模型名称、并发、思考强度、请求方式等全部沿用；
+  - 生图模型选中 `jinlong` 的，`image_model.provider` 改为 `custom`，其余字段（含测试状态）原样保留；
+  - 预置服务商的 Base URL 原先不可编辑，固定为金龙地址，并且每次读取都会写回配置文件，所以迁移直接用用户配置文件里已保存的地址，代码中不再保留任何金龙地址。只有配置文件中确实没有 Base URL 时，才按“未配置”引导用户填写；
+  - Key 不会丢失：迁移在 `configStore.load()` 中完成，`configSecrets` 还原 Key 时拿到的“已保存档案”就是迁移后的自定义档案。设置页回传的自定义 Base URL 与已保存的一致，留空的 Key 按原规则还原；用户改了 Base URL 时仍按原规则不沿用 Key。没有改动 `configSecrets.cjs`；
+  - 迁移会覆盖原有的自定义档案。覆盖前自定义档案如果已有内容（Base URL、Key 或模型名称任一非空），存到 `custom_before_jinlong_migration` 键下，留在配置文件中；
+  - 没有选中金龙、只是保存过金龙档案（含 Key）的，不迁移；金龙档案连同上面的存档都按 0.17 处理官方档案的方式原样留在 `user_config.json` 中（`retainLegacyOfficialProfile` 扩展为 `retainLegacyProfiles`），程序不读取，也不返回给 Renderer；
+  - 用临时 userData 验证过 4 种场景：选中金龙且自定义档案为空、选中金龙且自定义档案已有内容、未选中金龙、旧官方配置；另外验证了第二次读取不改写文件，以及经 `maskConfigForRenderer` / `resolveIncomingConfigSecrets` 回传保存后 Key 仍在。
+- 加群：删除侧边栏“加群”按钮和弹窗、`client/assets/group-chat-qr.png`、对应样式和图标。远程替换二维码（`/system-settings`）原本只为这个弹窗服务，客户端查询代码一并删除；`remote-services.json` 的 `contentServiceUrl` 不再承载 `/system-settings`。底部快捷入口全部未配置时不再渲染空的快捷入口容器，侧栏底部只剩“设置”。`analytics/` 中的 `/system-settings` 服务端代码按下一条保留不动；
+- `文章/`：原作者的技术文章（含 `oss.agnet.top` 图床插图）整体删除，仓库内没有其他文件引用它。删除不影响归属声明：`LICENSE`、`NOTICE`、README 中的原作者信息和原仓库链接保持不变；
+- 0.4 `patch-package`：接受风险，视为完成。理由：`patch-package` 只在开发机和 CI 的 `npm install` / `npm ci` 时由 `postinstall` 运行，它带进来的 `braces` / `micromatch` 只处理仓库内固定的补丁文件路径，不接收用户输入；它是 `devDependencies`，不在 electron-builder 的 `files` 中，不进入安装包，也不会进入 Web 版服务端镜像。`npm audit` 的这两条 high 继续由 CI 的 `--audit-level=critical` 放行；
+- 0.5 AGPL 第 13 条源码链接：上线前决定，视为第 0 步完成。开发期间本仓库保持公开，对外提供网络服务前（第 9 步）确定 Web 版界面中源码链接的位置和指向，并加入第 9 步的上线检查。迁移到新仓库后本项目改为闭源商业授权，不再提供源码链接，第 9 步的对应上线检查已删除；
+- analytics Worker：**不自建**。客户端的埋点（`analytics.ts`、`trackAiRequest`、`trackAgentRuntime`）和内容服务代码（公告、更新日志、资源页、模型信息，及 `remote-services.json` 中对应的键）目前默认为空、不发请求，在第 9 步删除；`analytics/` 目录暂时保留，删除时机另行决定。本文第 5 节部署行和第 9 步已同步改写。
+
+0.19 按本次需求一次清理，偏离如下：
+- 多项合并为一个 PR（按本次需求一并处理）：都是删除原作者的非归属类内容，不新增功能。原计划在第 9 步删除的客户端埋点和内容服务代码提前到本 PR 删除；`analytics/` 目录的去留（0.18 待定）定为删除；
+- 删除的客户端代码：Renderer `shared/analytics/analytics.ts` 及全部 `trackXxx` 调用、`shared/remoteNotice.ts` 和启动公告弹窗（`UpdateNotifier` 只保留更新检查和插件更新提示）、`features/notice`、`features/changelog`、`features/resources`（`resources` 路由和“精选资源”菜单，“资源下载”分组只在插件系统开启时显示）、设置页“自动填充高级参数”和只由它填充的思考强度下拉框（改为只能手动录入）、对应样式；Main `aiService.cjs` 的 `trackAiRequest` 和 `getModelInfo`（`config:get-model-info` IPC、preload 和类型一并删除）、`agent/agentRuntimeAnalytics.cjs`、`utils/clientIdentity.cjs` 和配置中的 `analytics_client_id` / `analytics_created_at`。`remote-services.json` 只保留 `userGuideUrl`、`donationServiceUrl`（使用文档和打赏不依赖 `analytics/`，不在本次范围）。隐私声明第 03 条改为“不上报使用统计”；
+- `aiService.cjs` 中原 `analyticsTracked` 标记同时控制文本 Token 统计只记一次，改名为 `tokenStatsRecorded` 保留，生图路径的标记随埋点删除；
+- 插件系统的 `pluginService.cjs` 仍写着原作者插件市场 `analytics.agnet.top/plugins`，插件系统已停用（0.13），按原计划第 9 步随插件代码处理，本 PR 不动；
+- `configStore.cjs` 删除 0.17 的 `dropLegacyOfficialTextProvider`、0.18 的 `migrateLegacyJinlongProvider`、`retainLegacyProfiles` 及 `custom_before_jinlong_migration` 存档逻辑（本版本无存量用户）。旧配置中的 `official` / `jinlong` 现在按通用的“未知服务商”规则切到“自定义”，写回配置时不再照抄已移除服务商的档案；用临时 userData 验证过全新配置、`official` 旧配置和保存回读；
+- 使用说明：删除 `更新日志/`、“精选资源”“公告与版本更新”“插件管理”三页及其截图（对应功能已删除或停用，插件页还描述原作者的插件市场和桌宠插件），删除“配置文本模型”中的官方 API 一节和常见问题中的官方账户、自动填充说明；
+- `screenshots/` 删除 7 张赞助商图片和原作者的企业微信二维码；原作者品牌横幅、演示截图和 `assets/star-history/` 不再被 README 引用，但不属于赞助商，本 PR 不删，见 PR 描述中的剩余引用清单；
+- `check:docx` 引用的 `scripts/check-docx-table-pagination.cjs` 和 `check:chrome` 引用的 `scripts/check-chrome-layout.mjs` 在仓库历史中从未存在，无从修复，三条脚本一并删除，`开发说明.md` 改为说明需手动验证；
+- 第 1 步前待决定事项第 7 项随本 PR 解决：`AGENTS.md` 和 `开发说明.md` 中“新增菜单页面同步 Dashboard 路由中文名”及 Analytics 一节已删除。
+
+0.20 按本次需求继续清理，偏离如下：
+- 多项合并为一个 PR（按本次需求一并处理），都是删除原作者的非归属类内容，不新增功能；
+- 删除的文件：`.github/FUNDING.yml`（爱发电链接）、`.github/scripts/`（`setup-atomgit-runner.bat/.sh`、`sync-secrets.ps1`、`恢复到指定版本.bat`）、`tools/upload_atomgit_release.py`（`tools/` 只有这一个文件）、`.agents/skills/yibiao-user-manual/`（`.agents/` 只有这一个技能）、`assets/star-history/`、`screenshots/` 全部 12 张图片（README 已不引用任何一张）；`.gitignore` 中只为这些工具服务的条目（技能 `.env.local`、使用说明同步状态、`tools/测试文件`、`tools/对比结果`、企业微信群聊导出工具）一并删除，`.env.secrets` 等密钥忽略规则保留；
+- 打赏：删除 `donationService.cjs`、`donationIpc.cjs`、`DonationPromptProvider.tsx`、`shared-donation.css`、`paths.cjs` 的 `getDonationStateFilePath`、preload 的 `donation.*`、`ipc.ts` 的 `Donation*` 类型和 `YibiaoBridge.donation`、导出 Word 时的计数与提示，以及 `remote-services.json` 的 `donationServiceUrl`。Main 侧 `services/remoteServices.cjs` 原本只被打赏使用，随之删除，`remote-services.json` 现在只由 Renderer 在构建时读取（`userGuideUrl`）。用户本地已有的 `donation_state.json` 不删除、不读取；
+- “给作者点 star”提示（`githubStarNotice`）改名为 `developingNotice`，文案改为“功能开发中，敬请期待。”，不再附原仓库链接；问题反馈和功能建议模板中的 star 引导一并删除；
+- 联系邮箱改为占位符 `{{CONTACT_EMAIL}}`，需要在对外公开前替换为本项目的联系方式；`SECURITY.md` 第一句中的产品名“易标 AI”未改（品牌名，见第 1 步前待决定事项第 3 项；括号中的原项目名已在迁移到新仓库时删除）；
+- 全局搜索时发现两处“其他”类引用，一并处理：`pluginService.cjs` 的插件市场地址 `analytics.agnet.top/plugins`（0.19 计划留到第 9 步）改为空字符串，为空时不请求插件列表、不上报下载，插件代码本身仍在第 9 步处理；`updateService.cjs` 注释中“原作者的 GitHub、AtomGit、Cloudflare 渠道已停用”一句删除。
+
+### 第 1 步开始前需要决定的事项
+
+以下 7 项已在 旧仓库 PR #21 决定（只改文档）。
+
+1. **桌面版是否继续维护和发布**：**只做 Web 版，改造期间不发布桌面版。**但在 Web 版能完整运行之前，Electron 是唯一能验证功能的环境，所以每一步仍须保证 Electron 可以运行（`npm run dev` 能启动、已有功能可用）。下面的桌面版待测清单保留，继续用来验证。
+2. **待测清单是否作为第 1 步的前提**：**是。**先测完待测清单第 3、7、9、10、12、17 项。测完之前只做不改变运行行为的准备工作（文档、测试框架、CI，以及新建但还没有被调用的代码）；替换 `window.yibiao` 调用、删除接口等会改变运行路径的改动，等这几项测完、结果回填后再合并。
+3. **产品名称与 `window.yibiao` 命名**：**推迟到项目完成时处理。**`window.yibiao`、产品名“易标”等已有命名暂不修改；第 1 步新建的 bridge 使用中性命名（例如 `src/shared/bridge` 导出 `getBridge()`、类型 `AppBridge`，Web 实现为 `WebBridge`），不再新增带 `yibiao` 的名字。新增代码的命名规则见 `CLAUDE.md`“命名规则”。
+4. **第 1 步的 PR 粒度**：**先建 `src/shared/bridge`，再按第 2 节的模块 A~K 分批替换调用。**不一次性机械替换。
+5. **已停用功能是否带进 bridge 接口**：**不带进。**插件、更新、授权遗留的接口和类型（`ipc.ts` 中的类型、`preload` 方法及对应 Main 侧代码）在第 1 步之前另开 PR 删除，bridge 只定义仍在使用的接口。依赖桌宠插件的“AI 调整”（技术方案目录与全局事实、可研报告目录）随插件一起删除，记为**待重做**（以后改成不依赖插件的实现，列入第 9 步之前的功能补齐）。
+6. **是否引入单元测试框架**：**第 1 步引入 Vitest，并加入 CI**（`ci.yml` 新增测试步骤，失败即 CI 失败）。首批测试覆盖 bridge 的选择逻辑；Web 实现落地后补序列化（第 4 节提到的 `undefined` 字段丢失）的测试。
+7. ~~**`AGENTS.md` 中依赖 Dashboard 的规则**~~：**已在 旧仓库 PR #19 解决**（0.19 删除了“新增菜单页面同步 Dashboard 路由中文名”及 Analytics 一节）。
+
+#### 接下来的 PR 计划
+
+按顺序执行。标“准备”的不改变运行行为，可以在待测项测完之前合并；其余等第 2 项所列待测项测完再合并。
+
+| 顺序 | PR 内容 | 类型 |
+|---|---|---|
+| 1 | 旧仓库 PR #21 记录第 1 步前的决定：本节、`CLAUDE.md` 命名规则、第 9 步上线检查补充 | 准备（只改文档） |
+| 2 | ~~引入 Vitest：`client/` 加 `vitest` 开发依赖和 `npm test` 脚本，写一个示例测试；`ci.yml` 加测试步骤~~ **已完成（旧仓库 PR #22）**，做法见下方说明 | 准备 |
+| 3 | ~~新建 `src/shared/bridge`（中性命名）：默认实现返回 `window.yibiao`，类型继续以 `ipc.ts` 为准；暂不替换任何调用；给选择逻辑写 Vitest 测试~~ **已完成（旧仓库 PR #24）**，做法见下方说明 | 准备 |
+| — | 在 Windows 上实测待测清单第 3、7、9、10、12、17 项并回填结果（需要人工，结果可随下一个 PR 或单独的文档 PR 回填） | 前提 |
+| 4 | 删除插件、更新、授权遗留的接口和类型（`ipc.ts`、`preload.cjs`、对应 IPC 和服务），“AI 调整”入口随之删除并记为待重做；待测清单追加对应验证项 | 改变运行路径 |
+| 5~ | 按第 2 节模块 A~K 分批把 `window.yibiao` 调用替换为 `getBridge()`，每批一个 PR（可把调用很少的模块合并为一批）；每批合并前确认 Electron 可运行 | 改变运行路径 |
+| 最后 | 全部替换完成后，`AGENTS.md` 中“Renderer 只通过 `window.yibiao`”改为“只通过 `src/shared/bridge`”，第 1 步标为已完成 | 只改文档 |
+
+第 2 项（旧仓库 PR #22）的实际做法，与计划的偏离如下：
+- 依赖固定版本：`vitest` 4.1.11（2026-08-18 发布，兼容现有 Vite 7）、`jsdom` 29.1.1（Renderer 组件测试需要 DOM）。没有选 Vitest 5：发布不久，且要求 Node ≥22.12；jsdom 30 要求 Node ≥22.22.2，高于当前开发环境。React 组件用 `react-dom/server` 渲染，没有引入 Testing Library；
+- 测试放 `client/tests/`（`tests/src/`、`tests/electron/`），不进入 Vite 构建产物，也不随 `electron/**` 打包；`.cjs` 用 `createRequire` 加载，保持 CommonJS 语义。`vitest.config.ts` 独立于 `vite.config.ts`；`tsconfig.json` 的 `include` 加上 `tests` 和 `vitest.config.ts`，测试代码也经过 `tsc --noEmit`；
+- 没有写示例测试，首批测试改为覆盖第 0 步改过、但没在真实环境验证过的纯逻辑：`configSecrets.cjs` 的打码与还原（含“改 Base URL 不还原 Key”、`credential_clear`、生图模型列表）、`configStore.cjs` 的旧配置兼容与保存合并、`MarkdownRenderer` 的 HTML 白名单清洗。这些测试不能替代待测清单第 7、8 项的桌面版实测。bridge 选择逻辑的测试随第 3 项一起写；
+- 没有修改业务代码。测试发现一个既有问题，先用 `it.fails` 记录，已在 旧仓库 PR #23 修复（补上该字段，测试改为普通 `it`）：`configStore.cjs` 的 `textProfileFromUnknownProvider` 没有带上 `output_token_limit`，经“未知服务商 / 没有服务商 → 自定义”路径读取的旧配置首次 `load()` 返回的配置缺这个字段（原档案里的值丢失），下一次 `load()` 才补默认值 0 并再次写盘；
+- CI 在 `npm run build` 之后运行 `npm run test`，失败即 CI 失败。job 名称不变，避免影响已有的分支保护设置。
+
+第 3 项（旧仓库 PR #24）的实际做法，与计划的偏离如下：
+- 新建 `client/src/shared/bridge/`：`types.ts`（`AppBridge`）、`electronBridge.ts`（`createElectronBridge`）、`webBridge.ts`（`createWebBridge`、`BridgeNotImplementedError`）、`index.ts`（`getBridge()`、`detectBridgeKind()`）。没有任何现有文件引用它，构建产物中不包含这些代码，运行行为零变化；
+- `AppBridge` = `Omit<YibiaoBridge, DisabledBridgeKey>`：类型仍以 `ipc.ts` 为准，但按决定第 5 项去掉已停用的更新、插件接口（`getLatestVersion`、`getUpdateDownloadUrl`、`checkUpdate`、`startUpdate`、`quitAndInstall`、`onUpdateProgress`、`onUpdateDownloaded`、`onUpdateError`、`onPluginUpdatesAvailable`、`plugins`）。授权接口已在 旧仓库 PR #15 删除，无需排除。这些接口本身仍留在 `ipc.ts` 和 `preload.cjs`，由第 4 项删除。注意 `WorkspaceDatabaseGate.tsx`（数据库版本过新时“下载新版客户端”）仍调用 `getUpdateDownloadUrl`，第 4 项删除更新接口时要一并改掉这里，否则该模块无法替换为 `getBridge()`；
+- Electron 实现不复制、不包装：`createElectronBridge` 原样返回 `window.yibiao`，只在类型上收窄。`getBridge()` 每次重新读取 `window.yibiao`（非 null 对象即选 Electron 实现），返回值与 `window.yibiao` 始终是同一个对象，后续替换调用时行为不变；
+- 计划外提前新建了 `WebBridge` 空壳：所有方法都在，用 `satisfies AppBridge` 保证与接口一一对应；返回 Promise 的方法以 `BridgeNotImplementedError` 拒绝，事件订阅和 `getPathForFile` 同步抛出，错误信息带方法路径（如 `WebBridge 尚未实现：config.load`）。`platform` 为 `'web'`，`appName` 按命名规则暂留空字符串，第 9 步统一确定；
+- 序列化测试提前写（计划是 Web 实现落地后补）：Web 实现尚不存在，所以写成特征测试，固定 Electron IPC（结构化克隆）与 JSON 的差异，作为 `WebBridge` 编解码设计的约束：值为 `undefined` 的字段键丢失（以 `rejectionCheckStore.cjs` 的 `hasOwn` 补丁为例，`{ tenderDocument: undefined }` 经 JSON 后从“清空”变成“不改”）、数组中 `undefined` 变 `null`、顶层 `undefined` 参数无法序列化、`Uint8Array` 变成按下标的普通对象、`Date` 变成字符串。测试在 `client/tests/src/bridge/`。
+
+### 第 2 步说明
+
+旧仓库 PR #25 新增 `docs/SERVER_DESIGN.md`（只写文档，不改代码），给出第 2~9 步服务端的目标设计：技术栈、多用户数据模型、注册登录与会话、API Key 加密存储、任务队列与进度推送、文件上传下载、Agent 沙箱和部署架构。该文档第 9 节列出 18 项待决定事项，决定结果记录在本节。与第 5 节原建议的偏离（均待第 9 节确认）：
+- 实时推送建议用 **SSE** 而不是 WebSocket：现有 19 个 `onXxx` 都是单向推送，命令本来就走 `invoke`，SSE 走普通 HTTP，鉴权、断线重连和代理兼容都更简单；
+- 运行时建议 **Node 24 LTS** 而不是 Node 22：Node 22 在 2027-04 结束维护；
+- 数据访问在 Kysely / Drizzle 之间定为 **Kysely**，与现有手写 SQL 的 Store 一一对应；
+- Agent 沙箱在 gVisor / Firecracker 之间建议 **gVisor 起步**，经 `SandboxDriver` 接口抽象，以后可换；整个 Pi 运行时进沙箱，沙箱只能访问 AI 网关，不持有任何 API Key；
+- API Key 加密由“KMS 或 libsodium”改为 **Node 内置 `crypto` 的 AES-256-GCM 信封加密**，主密钥起步用 Docker secret，可切换到云 KMS；
+- 新增设计约束：数据库加行级安全（RLS）作为第二层隔离；用户填写的 Base URL 要防 SSRF；文档解析（含 LibreOffice）和 Chromium 渲染与 Agent 共用沙箱。
+
+#### 设计文档决定事项（旧仓库 PR #26）
+
+`docs/SERVER_DESIGN.md` 第 9 节的 18 项已在 旧仓库 PR #26 决定（只改文档），上方几条“待第 9 节确认”的偏离随之确认：
+
+- **采用建议**：第 1 项（组织 + 个人组织）、第 2 项（知识库、资信库、模板组织内共享）、第 3 项（数据模型支持多项目，界面第一版仍每种业务一个项目）、第 5 项（仅邀请注册）、第 9 项（BullMQ + Redis）、第 10 项（SSE）、第 11 项（Node 24 LTS）、第 12 项（gVisor 起步）、第 15 项（文档 100 MB、图片 10 MB、每组织 20 GB、每日 Agent 8 小时）、第 16 项（不接 ClamAV）、第 17 项（恢复期 7 天、注销后 30 天内删除）、第 18 项（不做桌面数据导入）；
+- **第 13 项 部署位置**：服务器部署在**境外，优先香港**，面向中国大陆用户；不办理 ICP 备案，上线前实测大陆访问质量（`SERVER_DESIGN.md` 第 8.0 节）；
+- **第 8、14 项**：KMS 和对象存储选**同一云厂商**（香港地域），云厂商待选，列入 `docs/EXTERNAL_SERVICES.md` §7。KEK 由此从“Docker secret 起步”改为生产环境直接用云 KMS，开发环境用密钥文件；
+- **第 4 项 登录方式**：支持邮箱 + 密码和手机号 + 短信验证码两种；**第一版只实现邮箱 + 密码**，`users` 表预留 `phone`、`phone_verified_at`（第 3.1 节）；
+- **第 6 项 发信服务**：待选，在 `docs/EXTERNAL_SERVICES.md` §7 列为待定外部服务，选型和上线前要验证对 QQ / 163 邮箱的送达率；
+- **第 7 项 API Key 归属**：**平台统一提供 AI 并按量计费**，偏离原建议（组织级 Key）。用户不再填写 Key 和 Base URL，凭据改为平台级、由平台管理员维护（`SERVER_DESIGN.md` 第 4 节）；新增第 10 节“AI 用量计量与计费”：AI 网关是唯一计量点，按组织、按模型、按任务记账，余额不足时拒绝新任务，运行中耗尽则暂停保留 checkpoint，价格表带版本，管理员手动充值（TOTP + 大额双人复核，流水只追加）。**在线支付、发票、短信登录列为第二版**，依赖境内主体；
+- **新增第 11 节“合规待确认事项”**：个人信息出境、生成式 AI 监管、模型服务商对中国大陆用户的条款限制，以及收款主体，标为**上线前必须完成**，已加入第 9 步上线检查。
+
+对后续步骤的影响：
+
+- 第 3 步“配置与 AI 网关”增加平台模型清单、用量计量、余额检查和价格表，下方第 6 节第 3 步已同步改写；设置页对普通用户隐藏服务商、Base URL、API Key 和测试连接；
+- 第 5 节“密钥”一行原写“用户自带的 API Key”，按第 7 项改为平台凭据，已同步改写；
+- 第 6 步入队时检查余额（`SERVER_DESIGN.md` 第 10.3 节）。
+
+#### 服务端基础设施（旧仓库 PR #27）
+
+第 2 步的第一个代码 PR，只搭基础设施，不含数据库、Redis、鉴权和任何业务接口。`client/` 未改动。
+
+- 新建 `server/`：Node 24.21.0 + TypeScript 5.9.3 + Fastify 5.12.5，独立的 `package.json` / `package-lock.json`。直接依赖只有 `fastify`、`@fastify/helmet`，开发依赖 `typescript`、`vitest`（与 `client/` 同为 4.1.11）、`@types/node`。版本全部写死（`.npmrc` 的 `save-exact=true`），整棵依赖树用 `npm install --before=2026-10-04` 解析，即每个包都选发布超过两周的版本；`engine-strict=true`，Node 版本不对时安装失败；
+- 源码用 Node 24 原生的 TypeScript 类型擦除直接运行（`npm run dev` 即 `node --watch src/server.ts`），相对导入写 `.ts` 扩展名，`tsconfig` 开启 `erasableSyntaxOnly`（禁止 `enum`、参数属性等需要转译的语法）；`npm run build` 用 `rewriteRelativeImportExtensions` 编译到 `dist/`，镜像中运行编译产物；
+- **配置**（`src/config.ts`）：只读环境变量，启动时一次校验全部变量，有问题时一次性列出，stderr 输出一行结构化 JSON 并以退出码 1 退出；错误信息只含变量名和期望格式，**不回显变量值**（后续数据库密码等会走同一机制）。目前只有 `NODE_ENV`（必需，`development` / `test` / `production`，不设默认值，防止生产环境误用开发默认值）、`HOST`（默认 `127.0.0.1`，镜像中为 `0.0.0.0`）、`PORT`（默认 3000）、`LOG_LEVEL`（默认 `info`）。设计文档第 1 节入参校验用 TypeBox，环境变量只有 4 个，暂时手写解析，不引入依赖；
+- **日志**（`src/logger.ts`）：pino（Fastify 内置），按字段名脱敏 `password`、`apiKey` / `api_key`、`token`、`secret`、`authorization`、`cookie`、`set-cookie` 等，覆盖顶层和两层嵌套，替换为 `[REDACTED]`；请求日志只记录方法和路径，**不记录查询串和请求头**；
+- **请求 ID**：服务端生成 UUID，不采用客户端传入的值，通过 `x-request-id` 响应头和错误响应体返回，便于用户反馈问题时对照日志；
+- **`/healthz`**：只返回 `{"status":"ok"}`，不返回版本、运行时长等信息，`Cache-Control: no-store`，正常请求不写 info 日志。`/readyz` 随 PostgreSQL、Redis 一起加入；
+- **统一错误处理**（`src/errors.ts`）：响应体固定为 `{ error: { code, message, requestId } }`。只有 `AppError` 的文案会返回给客户端；其他 4xx（JSON 解析失败、请求体过大、校验失败等）按状态码返回通用中文文案，不带 Fastify 错误码、解析器细节和 schema 字段名；5xx 一律返回“服务器内部错误”，消息和堆栈只写日志。测试中发现业务代码 `throw` 非 `Error` 值时错误处理器自身会出错、退回 Fastify 默认处理器并原样回显消息，已修复并加测试；
+- **安全响应头**：`@fastify/helmet`，CSP 按设计文档第 6.4 节，HSTS、`nosniff`、`Referrer-Policy`、`Permissions-Policy` 按第 8.2 节，另加 `X-Frame-Options: DENY`。Caddy 接入后仍保留应用层这一份，作为纵深防御；`trustProxy` 暂时关闭，接入反向代理时按实际拓扑开启；
+- **Docker**：`server/Dockerfile` 多阶段构建，基础镜像 `node:24.21.0-bookworm-slim` 按 digest 固定；运行阶段只含生产依赖和 `dist/`，文件归 root 所有，进程以镜像自带的非 root 用户 `node`（UID 1000）运行，带 `HEALTHCHECK`。根目录 `docker-compose.yml` 仅供开发，目前只有 `api` 服务：端口只绑 `127.0.0.1`，只读根文件系统、`cap_drop: ALL`、`no-new-privileges`、`init: true`。PostgreSQL 和 Redis 留给下一个 PR；
+- **CI**：`ci.yml` 新增 `server-checks` 任务，Node 24.21.0，依次 `npm ci`、`npm run typecheck`、`npm run build`、`npm run test`、`npm audit --audit-level=high`。与 `client-checks` 只拦 critical 不同，server 是新依赖树、目前 0 漏洞，所以从 high 起拦；`client-checks` 仍用 Node 22，不在本 PR 改动。
+
+#### 数据库层（旧仓库 PR #28）
+
+第 2 步的第二个代码 PR：PostgreSQL、迁移、第一批表和双层隔离中的数据库层。`client/` 未改动。
+
+- **依赖**：`kysely` 0.29.6、`pg` 8.23.1（开发依赖 `@types/pg` 8.23.1），按 `npm install --before=2026-10-04` 解析（发布超过两周），`npm audit` 0 漏洞；
+- **迁移**：用 Kysely 自带的 `Migrator`（设计文档第 1 节在它与 `node-pg-migrate` 间二选一，选它以免多一个依赖），迁移是 `src/db/migrations/` 下手写 SQL 的 TS 文件，经 `migrations/index.ts` 静态登记（不扫描目录，类型擦除直接运行和编译产物都能用）。每个迁移在独立事务中执行、由咨询锁串行化；重复执行是空操作；每个迁移都有 `down`。命令：`npm run db:migrate`（到最新）、`npm run db:rollback`（回滚一个），输出一行一条 JSON；
+- **角色**：`bidtools_owner`（表属主，只用于迁移）和 `bidtools_app`（应用连接），都是 `NOSUPERUSER NOBYPASSRLS`，应用角色不拥有任何表、不能在 `public` 建表。角色和库属于集群级配置，不在迁移中创建：开发环境由 `server/db/init/10-provision.sh` 在 PostgreSQL 首次初始化时创建，生产环境由管理员按同样的属性创建（上线前写进部署文档，第 9 步）；
+- **配置**：新增 `DATABASE_HOST` / `DATABASE_PORT` / `DATABASE_NAME` / `DATABASE_USER`（默认 `127.0.0.1` / `5432` / `bidtools` / `bidtools_app`）和必需的 `DATABASE_PASSWORD`（或 `DATABASE_PASSWORD_FILE`，对应 Docker secrets，二者只能设一个）；迁移命令另读 `MIGRATION_DATABASE_USER`（默认 `bidtools_owner`）和 `MIGRATION_DATABASE_PASSWORD[_FILE]`，api 进程拿不到属主密码。错误信息仍不回显值，也不回显密钥文件路径；
+- **第一批表**（`0001_identity`）：`organizations`、`users`（预留 `phone`（E.164，可空，非空唯一）和 `phone_verified_at`）、`org_memberships`（沿用设计文档表名，即需求中的 memberships）、`sessions`、`auth_tokens`（类型含预留的 `sms_login`）。令牌只存 32 字节 SHA-256。组织下的表带 `org_id`：`org_memberships`、`sessions`（`(org_id, user_id)` 复合外键指向成员关系，移出组织时会话随之删除）；`users` 和 `auth_tokens` 是身份表，用户可属于多个组织，按设计文档第 2.2 节不带 `org_id`，按用户隔离；
+- **RLS**：五张表都 `ENABLE` + `FORCE ROW LEVEL SECURITY`（属主也受约束）。上下文是事务级设置 `app.org_id` / `app.user_id`，经 `app_current_org_id()` / `app_current_user_id()` 读取，空值统一为 NULL，未设置时所有策略都不成立。策略：`organizations`、`org_memberships` 按当前组织；`users` 只能看到当前组织的成员、只能改自己、INSERT 按 `app.user_id`（注册时成员关系尚不存在）、不授予 DELETE；`sessions` 按当前组织 + 当前用户；`auth_tokens` 按当前用户；
+- **`TenantContext`**（`src/db/tenant.ts`）：`withTenant(db, { orgId, userId, role }, fn)` 开事务、用 `set_config(..., true)` 设置上下文后执行 `fn`，提交或回滚后设置自动清除，连接回到池中不会带上一个请求的组织。`orgId` / `userId` 不是 UUID、`role` 不合法时直接拒绝；
+- **`/readyz`**：执行 `SELECT 1`（2 秒超时，含建连），成功返回 `{"status":"ok"}`，失败返回 503 `{"status":"unavailable"}`，原因只写 warn 日志；`/healthz` 不变、不检查数据库。数据库暂时不可用时进程照常启动；
+- **docker-compose.yml**：新增 `postgres`（`postgres:17.11-bookworm` 按 digest 固定，数据卷 `pgdata` 持久化，端口只绑 `127.0.0.1`）和一次性的 `migrate` 服务（迁移成功后 `api` 才启动）。三个密码（超级用户、属主、应用）经 Docker secrets 传入，由 `server/scripts/init-dev-secrets.sh` 随机生成到 `server/.dev-secrets/`（已 gitignore），`api` 只挂载应用角色的密码；
+- **测试与 CI**：`npm run test` 仍只跑单元测试；新增 `npm run test:db`（`vitest.db.config.ts`，需要 `TEST_DATABASE_ADMIN_URL`），每个测试文件新建独立的库、结束时删除，覆盖：迁移升级、重复执行、逐个回滚到空库再升级、迁移中途失败整体回滚、迁移命令；每张业务表都强制 RLS 且有策略（防止以后漏开）；应用角色属性、不能关闭 RLS 或建表；未设置上下文时五张表都返回 0 行（含属主角色、含连接复用后）；组织 A 读不到、改不到、写不进组织 B；`/readyz` 连真实数据库。CI 的 `server-checks` 加 PostgreSQL 服务容器（与 compose 同一 digest）运行这些测试。把策略改成 `USING (true)` 后有 7 个用例失败，测试能发现策略被放宽；
+- **留给鉴权 PR**：登录（按邮箱查用户）、按令牌哈希查会话、找回密码查令牌都发生在拿到用户和组织之前，在本 PR 的策略下查不到任何行。鉴权 PR 中为这几个查询提供专门的受控入口（例如只返回单行的 `SECURITY DEFINER` 函数，属主为专用角色），届时同步更新设计文档第 2.6 节。“我加入的组织列表”（切换组织）同样留到那时。
+
+统计口径更正：第 3 节“55 张表”是 `sqliteDatabase.cjs` 中 `CREATE TABLE` 的条数，去掉迁移中重复创建的 `technical_plan_global_fact_groups`，实际为 54 张表，与 `sql/workspace_schema.sql` 一致。
+
+#### 鉴权（旧仓库 PR #29）
+
+第 2 步的第三个代码 PR，实现设计文档第 3 节的注册、登录与会话。`client/` 未改动，没有新增 npm 依赖。
+
+- **登录前查询的受控入口**（迁移 `0002_auth`，补上 旧仓库 PR #28 留下的缺口）：按邮箱查用户（`auth_login_lookup`）、按令牌哈希查会话（`auth_session_lookup`）、签发和使用找回密码令牌（`auth_issue_password_reset` / `auth_reset_password`）、兑换邀请（`auth_consume_invitation`），以及修改密码时吊销本人全部会话（`auth_revoke_my_sessions`，只作用于 `app.user_id`）。六个函数都是 `SECURITY DEFINER`、`SET search_path = pg_catalog, pg_temp`、表名全限定；按完整邮箱或令牌哈希精确匹配，最多一行，只返回调用方需要的字段；收回 `PUBLIC` 的 `EXECUTE`，只授权给 `bidtools_app`。找回密码令牌的 30 分钟有效期写死在函数里，调用方不能签发长期令牌；`auth_reset_password` 只接受 argon2id 哈希，防止误写明文；
+- **函数属主是新角色 `bidtools_auth`**：`NOLOGIN NOSUPERUSER NOBYPASSRLS`，不能登录，也不靠 BYPASSRLS 读数据，而是在五张表上为它单独建 `TO bidtools_auth` 的策略，并且只授予函数用到的列（例如 `users` 只有 `id`、`email`、`password_hash`、`status`、`email_verified_at`）。迁移角色是它的成员（`INHERIT FALSE, SET TRUE`），只用于在迁移中 `SET ROLE` 建删函数，不继承它的策略，直接查表仍是 0 行。偏离设计的地方：旧仓库 PR #28 设想“属主为专用角色”时没有写明需要新的集群级角色，本 PR 补进了 `server/db/init/10-provision.sh` 和测试 harness。**已有的开发数据卷不会重跑初始化脚本**，要么 `docker compose down -v` 重建，要么按脚本手工建角色；生产环境同样由管理员创建（加入第 9 步上线检查）；
+- **收紧 `users` 的写权限**：应用角色改为列级授权，INSERT 只能写 `id`、`email`、`password_hash`、`email_verified_at`，UPDATE 只能改 `password_hash`、`updated_at`。应用进程因此不能把任何人设为平台管理员，也不能改状态或邮箱；
+- **新表 `invitations`**：平台级邀请（受邀邮箱、令牌哈希、发起人、7 天过期、兑换时间和兑换人），RLS 只允许平台管理员以自己的名义插入、只能看到自己发出的邀请，应用角色不能改删。偏离设计：设计文档第 2.5 节的 `org_invitations`（组织 owner 邀请成员加入团队组织）留到团队功能，本 PR 只做决定第 5 项要求的“平台管理员邀请注册”；
+- **密码**：argon2id（19 MiB、2 次迭代、并行度 1），用 **Node 24 内置的 `crypto.argon2`**，没有引入原生依赖，存为 PHC 字符串。至少 10 位、不超过 128 位、拒绝常见弱口令和邮箱用户名。登录时邮箱不存在、已停用、未验证都用同参数的假哈希做一次完整校验，响应码、文案（“邮箱或密码错误”）和耗时与密码错误一致；
+- **会话**：256 位随机令牌，库中只存 SHA-256；Cookie 为 `__Host-session`（`HttpOnly; Secure; SameSite=Lax; Path=/`，无 `Domain`）。空闲 7 天、绝对 30 天，最近活动超过 10 分钟才写库续期。登录、注册、修改密码时轮换令牌；登出吊销当前会话；修改密码和找回密码后吊销该用户在所有组织的全部会话；被移出组织、用户停用后会话立即失效。默认需要登录，只有声明 `config.access = 'public'` 的路由（登录、登出、注册、找回密码、健康检查）放行；
+- **CSRF / 跨站**：改变状态的请求必须同时满足 `Origin`（缺失时看 `Referer`）等于新配置 `PUBLIC_ORIGIN`、带 `X-Requested-With: app`、有请求体时 `Content-Type` 是 `application/json`；去掉了 Fastify 默认的 `text/plain` 解析器。`PUBLIC_ORIGIN` 生产环境必需且必须是 https，开发、测试默认 `http://localhost:3000`（浏览器只在 `localhost` 上接受非 https 的 `Secure` Cookie，所以开发时用 `localhost` 而不是 `127.0.0.1` 访问）。另外 Ajv 改为拒绝未声明的请求体字段（Fastify 默认静默删除）；
+- **邀请注册**：`POST /api/admin/invitations`（平台管理员，每次从库中读取是否管理员，撤销立即生效）生成邀请，响应中返回一次链接，同时经发信接口发出。`POST /api/auth/register` 在一个事务中兑换邀请、建个人组织、用户（邮箱即受邀邮箱，凭链接送达视为已验证）、成员关系和会话，任一步失败整体回滚、邀请保持未用；
+- **首个平台管理员**：`npm run admin:create -- --email <邮箱>`（镜像中 `node dist/cli/create-admin.js`），用迁移角色连接，密码在终端中两次不回显输入或从标准输入读取，不经命令行参数；
+- **找回密码**：不论邮箱是否存在都返回同样的 202，邮件在响应之后异步发送；令牌一次性、30 分钟过期，新请求作废旧令牌，重放、过期、伪造一律“链接无效或已过期”。邮件和邀请链接都把令牌放在 `#` 之后，不进入访问日志和 `Referer`；
+- **发信接口**（`src/mail/mailer.ts`）：发信服务未选定，目前只有日志实现。`development` 输出完整邮件（含链接）便于联调；其他环境只输出打码后的收件人和主题，正文不进日志。日志脱敏字段补充 `password_hash`、`currentPassword`、`newPassword`、`tokenHash`、`token_hash`；
+- **限流**：登录按 IP（30 次 / 15 分钟）、按邮箱（10 次 / 15 分钟）并在连续 5 次失败后指数退避（1 秒起、最长 15 分钟，不存在的邮箱同样计数）；注册按 IP（10 次 / 小时）；找回密码按 IP（10 次 / 小时）和按邮箱（3 次 / 小时）；重置确认按 IP（10 次 / 15 分钟）；修改密码按用户（5 次 / 15 分钟）。超限返回 429 和 `Retry-After`。偏离设计：设计文档第 3.5 节写的是 `@fastify/rate-limit` + Redis，但 Redis 要到第 6 步才接入，本 PR 先用进程内存实现（每个限流器的键数有上限），接口不变；**多实例部署前必须换成共享存储**，已加入第 9 步上线检查。反向代理接入时同时要开启 `trustProxy`，否则所有请求的 IP 都是代理地址；
+- **测试**：单元测试覆盖 argon2id 格式与假哈希耗时、密码强度、限流与退避、Cookie 属性、CSRF 各种来源与内容类型、默认需要登录、发信日志脱敏、`PUBLIC_ORIGIN` 校验。数据库测试覆盖：六个函数的属性、属主、授权（`PUBLIC`、迁移角色、其他角色都不能调用），以及通配符、正则、大小写、空值、注入串都不能列举，停用和未验证用户查不到，吊销、过期、停用、移出组织的会话查不到，令牌重放、过期、类型不符、被新令牌作废都失败，回滚后邀请保持未用；应用角色不能自封平台管理员、改状态或邮箱，非管理员不能发邀请、管理员不能冒名发邀请；端到端覆盖命令行、登录（错误与不存在的邮箱响应一致）、轮换、篡改和过期令牌、滑动续期上限、登出重放、跨站强制登出、邀请注册及重放、越权、找回密码全流程、修改密码吊销其他设备，以及每个接口的限流。把函数改成 `LIKE` 匹配、去掉吊销 / 过期检查后有 20 个用例失败。本地用 PostgreSQL 16 跑通，CI 仍是 17。
+
+#### 限流的客户端 IP（旧仓库 PR #30）
+
+- **修复前**：`trustProxy: false`，按 IP 的限流键（登录、注册、找回密码、重置确认）和会话的 IP 摘要取 `request.ip`，即 TCP 对端地址。直连时伪造 `X-Forwarded-For` 不起作用，但部署到 Caddy 后面时所有请求的 IP 都是 Caddy 的地址，全站共用一个计数；而如果为此简单地开 `trustProxy: true`，任何客户端都能用伪造的 `X-Forwarded-For` 换 IP 绕过限流；
+- **新配置 `TRUSTED_PROXIES`**：逗号分隔的 IP 或 CIDR，默认空（不信任任何代理，行为与修复前相同）；不接受前缀为 0 的网段和 `loopback` 等别名，错误信息不回显值。非空时作为地址列表交给 Fastify 的 `trustProxy`：只有对端在列表中才读 `X-Forwarded-For`，从右往左取第一个不可信地址，客户端在左侧伪造的部分不被采信；`X-Forwarded-Host` / `Proto` 同样只在对端可信时采信，CSRF 和邮件链接用的是 `PUBLIC_ORIGIN`，不受影响；
+- **部署**：`edge` 网络固定子网，`caddy` 固定地址，`TRUSTED_PROXIES` 只填这一个地址，`api` 不映射端口（设计文档第 8.1 节）；开发用 `docker-compose.yml` 显式设为空并加了说明；
+- **测试**：未配置时伪造 `X-Forwarded-For`（包括来自代理地址的请求）仍按对端地址计数；配置后经代理的不同客户端分别计数，经代理时在左侧伪造的值不影响计数，绕过代理直连时不采信该头，CIDR 和 IPv4 映射的 IPv6 对端地址都能匹配。把 `trustProxy` 改成 `true` 有 4 个用例失败，改成 `false` 有 2 个失败。
+
+### 第 3 步说明
+
+#### 计费账本（旧仓库 PR #31）
+
+第 3 步的第一个计费 PR，按 `docs/SERVER_DESIGN.md` 第 10 节实现账本，**不调用任何 AI**。`client/` 未改动，没有新增 npm 依赖。做法和与设计的偏离见 `SERVER_DESIGN.md` 第 10.7 节，要点：
+
+- 迁移 `0003_billing`：`org_balances`、`billing_ledger`（只追加：充值、赠送、扣费、冲正，扣费记录请求编号、服务商、模型、输入 / 输出 token 数和价格版本）、`model_prices`（服务商 + 模型 + 输入 / 输出单价，带生效时间，只能新增版本）。三张表都带 `org_id` 并强制 RLS；应用角色对账本只有 `SELECT`、`INSERT`（且只能插入本组织的扣费、只能写用量列），对余额和价格表只读；
+- 金额为 `bigint`，单位 0.0001 元，计价用 `numeric` 精确计算后向上取整，全程不经过浮点；
+- 扣费、余额更新在同一语句（同一事务）中由账本触发器完成，持本组织余额行的行锁，同一请求编号只扣一次，余额不足整笔拒绝（402 `INSUFFICIENT_BALANCE`），余额不会为负；
+- 管理员手动充值、冲正、定价只能经 `SECURITY DEFINER` 函数，校验平台管理员并记录操作人和备注；接口要求重新输入密码、充值要求再次输入金额；
+- 新角色 `bidtools_billing`（`NOLOGIN`，同 `bidtools_auth`），已加入 `server/db/init/10-provision.sh` 和测试 harness。**已有的开发数据卷不会重跑初始化脚本**，要么 `docker compose down -v` 重建，要么按脚本手工建角色；
+- 服务商记录为 `deepseek`、`qwen` 两家；发信服务记为“待定，首个真实用户注册前必须完成”（`docs/EXTERNAL_SERVICES.md` §7）。
+
+与路线图 / 设计的偏离：
+
+- **TOTP 二次验证和大额双人复核本 PR 实现不了**（TOTP 尚未实现），按要求先**禁用大额充值**：单笔手动充值 / 赠送上限写死为 1,000 元，超过一律拒绝；二次验证暂用重新输入密码。实现 TOTP 和双人复核后用新迁移放开，已加入第 9 步上线检查；
+- 扣费写入账本而不是设计中的 `usage_records`，余额不能为负（设计原允许被进行中的调用透支），“调用后才发现余额不足”的处理留给 AI 网关 PR 决定（预扣冻结或差额由平台承担），届时同步修改设计第 10.3 节；
+- 设计中的 `adjustment` 改为整笔冲正 `reversal`，价格表去掉 `effective_to`；`refund`、`low_balance_threshold`、缓存 token / 生图 / MinerU 单价、上游成本、充值的 `audit_logs` 和通知邮件留到后续 PR。
+
+测试（`npm run test:db`，本地 PostgreSQL 16 跑通，CI 为 17）：计价精度（含超过 2^53 时浮点会算错的用例、溢出报错、计费列全为 `bigint`）、扣费记录字段、幂等（重复提交、并发 10 个同一请求编号、用量不一致拒绝、余额已不足时重放仍返回首次结果、编号按组织隔离）、并发扣费（余额够 10 笔时 25 笔并发恰好成功 10 笔、扣费与充值交错后不变式成立）、余额不足、未定价、跨组织隔离（余额 / 账本 / 专属价不可见、不能给其他组织记账、专属价只对本组织生效、未设置上下文返回 0 行）、账本不可修改（应用角色无 `UPDATE` / `DELETE` / `TRUNCATE`、不能写余额和价格、不能自行充值或指定金额，表属主和超级用户被触发器拒绝）、管理员充值 / 冲正 / 定价的权限与校验，以及三个管理员接口的端到端测试（二次验证、金额二次确认、JSON 数字和小数金额被拒、大额拒绝、越权、跨站、限流）。去掉行锁、幂等检查、余额检查，或放宽插入策略、给应用角色加 `UPDATE` 权限，分别有 2、4、4、1、6 个用例失败。
+
+#### AI 网关与预扣冻结（旧仓库 PR #32）
+
+第 3 步的第二个计费 PR，做法和与设计的偏离见 `docs/SERVER_DESIGN.md` 第 10.3、10.8 节。`client/` 未改动，没有新增 npm 依赖。要点：
+
+- **计费决定**：调用前按“已知输入 token 的上界 + 最大输出 token”估算最高费用并冻结，余额（减去进行中的冻结）不足以冻结则拒绝、不调用服务商；调用结束按实际用量结算、释放多余部分；冻结超时自动释放（到期的冻结不再计入，不依赖后台任务）；服务商出错或超时不收费、冻结全额释放。设计文档第 10.3 节已按此改写，旧仓库 PR #31 遗留的“调用后余额不足”问题由此解决，余额仍不会为负；
+- 迁移 `0004_ai_gateway`：`usage_records`（每次调用一行，含不收费的调用、所属任务、上游成本，`pending` 行即冻结）、`provider_credentials`（平台凭据密文）、`model_prices` 的上游成本单价、账本的 `usage_id` 和新版账本触发器；写入一律经 `SECURITY DEFINER` 函数，应用角色读不到上游成本；
+- 平台 Key 用 KEK 文件信封加密（`AI_KEK_FILE`，开发环境由 `init-dev-secrets.sh` 生成 `ai_kek`），只有 `src/ai/gateway.ts` 解密；日志、错误信息、响应中都不出现 Key；
+- 服务商：`deepseek`、`qwen`，OpenAI 兼容的流式接口，Base URL 由平台管理员与 Key 一起配置（通义千问国内站 / 国际站待定）；出站只允许 https、拒绝内网地址、不跟随重定向；
+- 新配置：`AI_KEK_FILE`、`AI_KEK_VERSION`、`AI_UPSTREAM_TIMEOUT_MS`、`AI_HOLD_TTL_SECONDS`、`AI_MAX_OUTPUT_TOKENS`、`AI_UPSTREAM_PRIVATE_HOSTS`；
+- 测试全部对本机模拟服务商，CI 不使用真实 Key。**已有的开发环境**需要重新运行 `server/scripts/init-dev-secrets.sh` 生成 `ai_kek`（已有的密码文件不会被覆盖），否则 `docker compose up` 找不到该 secret。
+
+与路线图的偏离：
+
+- 平台模型清单（`platform_models`）、设置页的“选择模型 + 查看单价”、管理后台的模型列表和连通性测试、生图和 MinerU、按组织的并发上限（依赖 Redis）留给后续 PR；请求暂时直接给出服务商和模型名；
+- 网关先在 `api` 进程中提供交互式的 `ai.chat`，任务调用等第 6 步 worker 建成后接入；`jobs.billed_amount` 同样等第 6 步。
+
+#### 平台模型白名单（旧仓库 PR #33）
+
+AI 网关加固，做法见 `docs/SERVER_DESIGN.md` 第 10.9 节。`client/` 未改动，没有新增 npm 依赖。要点：
+
+- **此前对未定价模型的处理**：拒绝（`ai_usage_begin` 抛 503 `MODEL_PRICE_NOT_CONFIGURED`，不冻结、不调用服务商），并非免费。但有两个缺口：价格表中有价的任何模型都能调用，没有上架控制；价格为 0 / 0 的版本等于默认免费，不需要管理员显式标记；
+- 迁移 `0005_platform_models`：白名单表和管理员函数，`ai_usage_begin` 改为冻结前经 `ai_model_price` 检查；网关在解密 Key 之前预检。未登记 404、已停用 403、未定价（含未标记免费的零价格）503、免费标记与价格矛盾 503、伪造服务商名 400，都不调用服务商、不收费；
+- 管理员接口：`GET /api/admin/ai/models`、`POST /api/admin/ai/models`（登记，默认停用，`isFree` 必填）、`POST /api/admin/ai/models/:id/enable`、`POST /api/admin/ai/models/:id/disable`；登记和启用要求重新输入密码；
+- 用户断开：确认 `POST /api/ai/chat` 在连接关闭时立即关闭到服务商的连接，新增真实 TCP 连接的端到端测试；补上“处理开始前已断开”和“冻结前已取消”两处缺口；
+- **已有的开发数据库**迁移后所有模型都要先登记并启用（`POST /api/admin/ai/models` + `/enable`）才能调用。
+
+与路线图的偏离：第 3 步原计划的平台模型清单包括对用户展示的名称、上游模型 ID、能力、设置页“选择模型 + 查看单价”和连通性测试，本 PR 只做调用白名单，其余留到后续 PR（设计第 10.9 节）。
+
+### 第 4 步说明
+
+#### 文件存储（旧仓库 PR #34）
+
+服务端的上传、下载、删除，做法见 `docs/SERVER_DESIGN.md` 第 6.5 节。`client/` 未改动。新增 npm 依赖 `@aws-sdk/client-s3`、`@aws-sdk/lib-storage`（3.1145.0）。要点：
+
+- 对象存储只依赖 S3 API，云厂商待定（香港节点）；开发环境在 `docker-compose.yml` 中新增 `s3` 服务（SeaweedFS 4.48，只绑定 `127.0.0.1:8333`，关闭遥测），CI 以同一镜像启动；
+- 迁移 `0006_files`：`files` 表带 `org_id`、强制 RLS，对象键是生成列 `org/{org_id}/files/{id}`（随机 UUID，不使用用户文件名）；配额（每组织 20 GiB）和 7 天恢复期由触发器保证；
+- 接口：`POST /api/files`（原始字节上传）、`GET /api/files`、`GET /api/files/usage`、`GET /api/files/:fileId`、`GET /api/files/:fileId/content`（一律附件下载）、`DELETE /api/files/:fileId`（软删除）、`POST /api/files/:fileId/restore`；
+- 新配置：`S3_ENDPOINT`、`S3_REGION`、`S3_BUCKET`、`S3_FORCE_PATH_STYLE`、`S3_ACCESS_KEY_ID`、`S3_SECRET_ACCESS_KEY(_FILE)`；**已有的开发环境**需要重新运行 `server/scripts/init-dev-secrets.sh` 生成 `s3_secret_key`（已有的文件不会被覆盖），否则 `docker compose up` 找不到该 secret。
+
+与路线图、设计的偏离：
+
+- 上传用 `application/octet-stream` 原始字节而不是 multipart（设计第 6.1 节），理由见设计第 6.5 节；
+- 表名用 `files` 而不是 `file_objects`，暂不含 `project_id`（第 5 步建 `projects` 后补）；
+- 下载由 api 流式转发，不签发预签名链接；图片也一律以附件下载，不 `inline`；
+- 文本文件按原样存储并记录编码，不在上传时转成 UTF-8；
+- 回收站中的文件仍占配额，直到恢复期结束；
+- 过期文件和遗留上传记录的物理清理、解析阶段的 ZIP 炸弹 / PDF 页数检查、替换 `getPathForFile` / `filePaths` / `yibiao-asset://` / `openFile` / 保存对话框留给第 4 步后续 PR 和第 6 步。
+
+#### 上传白名单与桌面版的差距（记录，待第 4 步后续 PR 处理）
+
+`server/src/files/policy.ts` 的扩展名集合与桌面版**本地解析**的集合逐项一致：`tender`（招标文件、原方案、可研资料、废标检查的招标 / 投标文件都用它）为 txt、md、markdown、docx、pdf、doc、wps、xls、xlsx；`knowledge`、`duplicate-check` 同上但不含 txt；`credential-image` 为 png、jpg、jpeg、webp、bmp、gif。老式 `.doc` / `.xls` 和 WPS 文字 `.wps` 已覆盖（接受 OLE，也接受改了扩展名的 OOXML）。但按**内容**比较，桌面版还能导入以下文件，服务端会以 `FILE_TYPE_MISMATCH` 拒绝：
+
+| # | 桌面版能导入、服务端拒绝的文件 | 桌面版的处理 | 补充方案 |
+|---|---|---|---|
+| 1 | 扩展名是 `.docx`、内容是 OLE 的老 Word 文件 | `convert.mjs` 的 `detectFileFormat` 按文件头判为 `legacy_word`，转换前改回 `.doc` | `docx` 的允许类型加 `ole`，MIME 记为 `application/msword`，解析按老式 Word 处理；风险低 |
+| 2 | 扩展名是 `.doc` / `.wps`、内容是 RTF、HTML、MHT 或 Word 2003 XML（政府采购平台常见的“另存为 doc”） | 文件头既不是 OLE 也不是 ZIP 时按扩展名交给 LibreOffice / Word / WPS 转换 | 新增内容类型 `rtf`（`{\rtf`）、`mht`（`MIME-Version:` 头）、`html`、`word-xml`（`<?xml` 且含 `w:wordDocument`），只对 doc / wps 放行；MIME 按真实内容记录；只能在第 6 步的沙箱中由 LibreOffice 解析，下载仍一律附件 |
+| 3 | 扩展名是 `.xls`、内容是 HTML 表格、SpreadsheetML 2003 XML、CSV 或 BIFF2~4（各类系统导出的“xls”） | 按扩展名交给 SheetJS，SheetJS 能读这些格式 | 对 xls 放行 `html`、`spreadsheet-xml`（含 `urn:schemas-microsoft-com:office:spreadsheet`）；CSV 与 BIFF2~4 没有可靠的文件头，建议不放行，提示用户另存为 xlsx |
+| 4 | `%PDF-` 前有少量多余字节的 PDF | 按扩展名交给 pdfjs，pdfjs 容忍文件头前 1024 字节内的垃圾 | 文件头判断扩大到前 1024 字节内查找 `%PDF-`；优先级低 |
+| 5 | 设置中解析服务选 MinerU 时的 ppt、pptx、图片（png、jpg、jpeg、jp2、webp、gif、bmp）和 html（仅精准解析） | `fileService.cjs` 的 `getSelectableExtensions` 在本地集合之外加上 MinerU 集合 | Web 版是否由平台提供 MinerU 解析尚未决定（`platform_models` 的“解析”能力）；决定提供时，`tender` 加 ppt（OLE）、pptx（ZIP 内有 `ppt/presentation.xml`）、jp2 和已有的图片类型，html 不放行 |
+
+另外，WPS 表格 `.et`、WPS 演示 `.dps` 和模板 `.wpt` / `.ett` 桌面版本身也不支持，不算遗漏；如果产品上需要，`.et` 可按 OLE 接受、经 LibreOffice 转成 xlsx 后解析，单独评估。
+
+以上都只改 `server/src/files/inspect.ts`、`policy.ts` 和测试，不改迁移；第 2、3 项放行的是文本类格式，必须同时满足第 6.2 节“在沙箱中解析”的前提，建议与第 6 步的解析任务一起做。本 PR 不修改。
+
+### 第 5 步说明
+
+#### 拆分计划
+
+只做计划，不改代码。原则（`docs/SERVER_DESIGN.md` 第 2 节）：
+
+- 每个 PR 只做一个模块或一组紧密相关的表：一个迁移 + 异步 Store（只接受 `TenantContext`）+ 该模块面向用户的同步接口 + 测试（含 RLS“未设置上下文返回 0 行”和跨组织访问拒绝）。Store 中给任务用的写函数（如 `checkpointTask` 写结果）在本步一并实现并直接测试，第 6 步的 worker 只负责调用；
+- 各模块的 `*_tasks` 表和 `task_logs` **不迁移**，由第 6 步的 `jobs` / `job_events` 取代；本步的 `loadState` 类接口中任务状态先返回空；
+- `*_path`、`document_dir` 等路径字段改为 `files.id`（用户上传的原件）或生成产物 id（解析出的 Markdown、图片等，见 5.2）；
+- 导入文档在本步只做“把已上传的 `files.id` 挂到项目 / 知识库”，文档状态停在“待解析”，解析（`doc2markdown`、LibreOffice、MinerU）在第 6 步的 worker 中执行；
+- 不做 `yibiao.sqlite` 导入（第 9 节第 18 项）。路线图原写“数据迁移脚本支持从 `yibiao.sqlite` 导入”，按 旧仓库 PR #26 的决定删去；
+- `official_invoice_info` 不迁移。
+
+**各模块涉及的表、接口与依赖**（模块编号同第 2 节）：
+
+| 模块 | 表 | 本步的服务端接口 | 依赖 | 推迟到 |
+|---|---|---|---|---|
+| A 应用壳层 | 无 | 无（`database.getStatus` 由 `/readyz` 取代；更新、GPU、系统字体在 Web 端做空实现） | — | 第 9 步（bridge 空实现）；系统字体列表随第 7 步镜像字体 |
+| B 配置 | 新表 `org_settings`、`user_settings`（拆自 `user_config.json`，不在 SQLite 中） | `GET/PATCH /api/settings`（组织级：选用的 `platform_model_id`、并发、导出偏好；用户级：界面偏好、`agent_auto_answer_enabled`）；返回中不含任何 Key | `platform_models`（旧仓库 PR #33） | 设置页“选择模型 + 查看单价”的前端接入随第 3 步后续 PR |
+| C AI / Agent | 无 SQLite 表；Pi 持久任务状态 `task-state.json` | 无 | — | **第 8 步**（改存 `jobs.checkpoint`） |
+| D 后台任务 | 各模块的 `*_tasks`、`task_logs` | 无 | — | **第 6 步**（`jobs` / `job_events`） |
+| E 技术方案 | `technical_plan_meta`、`_generation_config`、`_generation_bid_tasks`、`_generation_reference_docs`、`_bid_items`、`_outline_nodes`、`_global_fact_groups`、`_content_sections`、`_content_plans`（`_tasks` 见 D） | `GET /api/projects/:id/technical-plan`（`loadState`）、`PATCH .../step`、`DELETE`（`clear`）、`.../generation-config`、`.../bid-analysis-config`、`.../content-options`、招标文件和原方案的挂载与移除、`readTenderMarkdown` / `readTenderSourceMarkdown`、`selectBidSection`、`PUT .../outline`（保留 `reason` 协议）、`PUT .../global-facts`、`PUT .../chapters/:nodeId`、`resetContentGeneration` | projects、5.2 生成产物；`_generation_reference_docs` 引用知识库文档；`_bid_items` 由招标解析任务写入 | 招标解析、多标段识别：**第 6 步**；目录生成 / 调整、全局事实生成 / 调整：**第 6 步核实**（调用 `agentService.runTask`，若 Pi 需要命令工具则**第 8 步**）；正文生成、原方案还原：**第 8 步**；`previewContentWord`、`openBidTemplate`：**第 7 步** |
+| F 可研报告 | `feasibility_report_meta`、`_outline_nodes`（`_tasks` 见 D） | `loadState`、`updateStep`、`saveProjectInfo`、`saveAnalysis`、`saveOutlineConfig`、`saveOutline`、`saveKeyParameters`、`saveChapterContent`、可研资料的挂载 / 移除 / `readSourceMarkdown`、`clear` | projects、5.2 | 资料分析、关键参数：**第 6 步**；目录生成 / 调整（`agentService.runTask`）：**第 6 步核实，可能第 8 步**；正文生成：**第 8 步** |
+| G 废标检查 | `rejection_check_meta`、`_documents`、`_extraction`、`_results`、`_risk_findings`、`_typo_findings`、`_logic_findings`（`_tasks` 见 D） | `loadState`、`importDocument`（挂载 `files.id`）、`removeDocument`、`saveUiState`、`updateState`、`clear`、`exportExcel`（服务端同步生成 xlsx 后附件下载，不需要队列） | projects、5.2；`importTenderFromTechnicalPlan` 依赖 E | 废标项解析、废标检查：**第 6 步** |
+| G 标书查重 | `duplicate_check_meta`、`_files`、`_analysis_sections`、`_content_files`、`_metadata_items`、`_outline_items`、`_outline_groups`、`_outline_pairwise`、`_content_duplicates`、`_content_occurrences`、`_image_files`、`_duplicate_images`、`_image_occurrences`（`_tasks` 见 D） | `loadState`、`saveFiles`（挂载 `files.id`，取代 `selectDuplicateCheckFiles`）、`saveUiState`、`updateState`、`clear`、`exportExcel` | projects、5.2 | 查重分析：**第 6 步** |
+| H 知识库 | `knowledge_folders`、`_documents`、`_document_steps`、`_blocks`、`_candidate_items`、`_items`、`_item_blocks`、`_discarded_groups`、`_reports`、`_match_batches`（组织级） | 文件夹增删改与排序、文档移动 / 删除、`uploadDocuments`（挂载 `files.id`）、`search`（分页）、`readMarkdown`、`readItems`、`readAnalysis` | 5.2（不依赖 projects） | 文档准备（解析、切块、条目抽取）、`retryDocument`、`startMatching`、`onEvent` 推送：**第 6 步** |
+| H 资信库 | `credential_library_profile`（主键改为 `org_id`）、`_certificates`、`_employees`、`_projects`、`_other_materials`、`_images`（`relative_path` 改为 `files.id`） | `load`、`saveProfile`、`addProfileImages`（挂载 `credential-image` 文件）、`deleteImage`、证书 / 人员 / 业绩 / 其他材料的保存与删除；图片经 `/api/files/:id/content` 读取 | 文件存储（旧仓库 PR #34）；不依赖 projects 和 5.2 | `importTestData`（开发者功能）不迁移 |
+| I 导出与模板 | `export_templates`（系统模板 `org_id` 为空、全体只读） | `templates.list/get/create/update/delete/duplicate` | 无 | `renderPreview`、`exportWord`：**第 7 步**；`export.openFile` 改为下载，随第 4 步后续 PR |
+| J 文件 / 插件 | 文件已由 `files`（旧仓库 PR #34）承担；插件无表 | `files.project_id`（见 5.1） | projects | `getPathForFile` 替换：第 4 步后续 PR；插件：第 9 步下线 |
+| K 开发者工具 | 无 SQLite 表；Token 统计（JSON 文件）已由 `usage_records`（旧仓库 PR #32）取代 | 无 | — | 第 9 步改为管理员页面；Agent 监视器依赖**第 8 步** |
+
+**PR 拆分顺序**：
+
+| 序号 | 内容 | 依赖 | 状态 | PR |
+|---|---|---|---|---|
+| 5.0 | 拆分计划（本文档）、上传白名单差距记录 | — | 已完成 | 旧仓库 PR #35 |
+| 5.1 | `projects`（`org_id`、`kind`：technical-plan / feasibility-report / rejection-check / duplicate-check、名称、`created_by`、软删除与 7 天恢复期）；`files` 加可空 `project_id`（复合外键 `(org_id, project_id)`）；项目接口 `GET/POST /api/projects`、`GET/PATCH/DELETE /api/projects/:id`、恢复；路由层的项目归属校验（按 `projectId` 查项目并核对 `org_id` 与 `kind`）；项目级表的迁移与测试模板（复合外键、RLS、`timestamptz` / `jsonb` 约定） | — | 未开始 | — |
+| 5.2 | 生成产物存储：解析出的 Markdown、提取的图片等派生文件（对象键 `org/{org_id}/artifacts/{id}`，可挂 `project_id`，记来源 `file_id`，计入组织配额），只读接口；写入方是第 6 步的解析任务，本步只提供 Store 函数和测试 | 5.1 | 未开始 | — |
+| 5.3 | B 配置：`org_settings`、`user_settings` | — | 未开始 | — |
+| 5.4 | I 模板库：`export_templates` | — | 未开始 | — |
+| 5.5 | H 资信库：6 张表 | — | 未开始 | — |
+| 5.6 | H 知识库（一）：`knowledge_folders`、`_documents`、`_document_steps`、文件夹与文档管理接口 | 5.2 | 未开始 | — |
+| 5.7 | H 知识库（二）：`_blocks`、`_candidate_items`、`_items`、`_item_blocks`、`_discarded_groups`、`_reports`、`_match_batches`、检索与读取接口 | 5.6 | 未开始 | — |
+| 5.8 | G 标书查重：13 张表与接口、`exportExcel` | 5.1、5.2 | 未开始 | — |
+| 5.9 | G 废标检查：7 张表与接口、`exportExcel`（不含 `importTenderFromTechnicalPlan`） | 5.1、5.2 | 未开始 | — |
+| 5.10 | F 可研报告：2 张表与接口 | 5.1、5.2 | 未开始 | — |
+| 5.11 | E 技术方案（一）：`technical_plan_meta`、`_generation_config`、`_generation_bid_tasks`、`_generation_reference_docs`、`_bid_items`，状态、配置、招标文件 / 原方案、标段接口 | 5.1、5.2、5.6 | 未开始 | — |
+| 5.12 | E 技术方案（二）：`_outline_nodes`、`_global_fact_groups`，`saveOutline`（`reason` 协议、节点 UUID 与 `sort_order` 语义不变）、`saveGlobalFacts` | 5.11 | 未开始 | — |
+| 5.13 | E 技术方案（三）：`_content_sections`、`_content_plans`，`saveChapterContent`、`resetContentGeneration`；补上废标检查的 `importTenderFromTechnicalPlan` | 5.12、5.9 | 未开始 | — |
+
+顺序说明：5.1 是所有项目级模块的基础，最先做；5.2 是所有“导入后读 Markdown”的接口的基础。5.3~5.5 不依赖二者，可在 5.1 评审期间并行。之后按路线图原顺序（模板库 → 资信库 → 知识库 → 查重 → 废标 → 可研 → 技术方案）由简到繁，技术方案最复杂，表最多、持久化协议最多，拆成三个 PR。知识库排在技术方案之前，因为 `_generation_reference_docs` 引用知识库文档。
+
+**推迟到第 6、7、8 步的部分**（本步只建表和 Store，不实现）：
+
+- **第 6 步（任务队列）**：所有 `*_tasks` / `task_logs`；所有解析任务（招标文件、原方案、可研资料、废标文档、查重文件、知识库文档）；招标解析、多标段识别、查重分析、废标项解析与检查、可研资料分析与关键参数、知识库准备与匹配；所有进度推送（`onTaskEvent`、`knowledgeBase.onEvent`）；过期文件与产物的物理清理；
+- **第 6 步核实、可能推迟到第 8 步**：技术方案的目录生成 / 调整、全局事实生成 / 调整，可研报告的目录生成 / 调整。它们经 `agentService.runTask` 调用 Pi，路线图第 6 步原计划在队列中迁移，需先确认这些任务的 Pi 是否用到 `read/write/bash` 等命令工具；用到则随第 8 步迁移；
+- **第 7 步（OpenXmlHelper 与离屏渲染）**：模板样张 `renderPreview`、Word 导出、`previewContentWord`、模板提取；
+- **第 8 步（Agent 沙箱）**：正文生成、章节重写、原方案还原、格式自检、Agent 问答，Pi 持久任务状态，开发者 Agent 监视器。
+
+
+
+以下改动只在 Node、构建或无头浏览器中验证过，本仓库的开发环境无法启动 Electron（网络策略拦截 Electron 二进制下载、没有图形界面）。请在 Windows（必要时 macOS）的 `npm run dev` 和打包版中逐项验证，结果回填到“状态”列（未测 / 通过 / 失败：说明）。新的 PR 如果留下桌面版待测项，继续追加到这里。
+
+| # | 来源 | 场景与预期 | 状态 |
+|---|---|---|---|
+| 1 | 旧仓库 PR #4 | Windows **打包版**导入一份真实招标 PDF：能正常转出 Markdown 和表格（pdfjs 6 专用 `PDFWorker` 与 pdf-parse 内置 pdfjs 5.4.296 共存；cmaps、standard_fonts 能从 asar 内 `node_modules/pdfjs-dist` 读取）。顺带关注已知问题：合并单元格的表输出两份、跨页长表误报 `pdf_text_layer_missing`、非嵌入 CID 中文字体的正文缺失 | 未测 |
+| 2 | 旧仓库 PR #5 | 打包版导入一份 Excel 招标附件（ESM 路径 `convert.mjs` 读取 SheetJS 0.20.3），再导出一次废标检查结果和查重结果 xlsx（CJS 路径 `checkResultExportService.cjs`） | 未测 |
+| 3 | 旧仓库 PR #11 | 全新 userData 首次启动：默认是空的“自定义”文本服务商，启动即跳到设置-文本模型并提示“请先选择服务商并填写 API Key、模型名称”；新配置下拉框里没有“易标官方API”；启动时不再向 `v3.yibiao.pro` 匿名注册 | 未测 |
+| 4 | 旧仓库 PR #11 | ~~曾邮箱登录官方账户的旧 userData：启动只恢复会话，不再拉取或写入 API Key；账户面板可查看余额~~ | 不再适用（旧仓库 PR #17 移除官方账户，见第 15 项） |
+| 5 | 旧仓库 PR #12 | 旧配置 `text_model_provider: 'official'`：启动后常驻提示“易标官方服务暂停提供，文本模型已切换为‘自定义’……”，跳到设置-文本模型，关闭后下次启动不再出现（旧仓库 PR #17 起不再提示，见第 15 项）；设置页生图模型初始为空的“自定义”，未测试可用前不发生图请求 | 未测 |
+| 6 | 旧仓库 PR #13 | 侧边栏没有“插件管理”菜单，“资源下载”分组描述为“投标资料下载”；`plugin-manager` 路由不显示；技术方案首页和可研报告首页没有“AI 调整”按钮；启动后没有插件更新提示，已安装插件不加载，不请求 `analytics.agnet.top/plugins` | 未测 |
+| 7 | 旧仓库 PR #14 | 设置页文本模型、生图模型和 MinerU Token 显示“已配置（末尾 xxxx）/ 未配置”；输入框留空保存不改动已有 Key；“清除 / 撤销”按钮生效；修改自定义 Base URL 后提示需要重新填写 Key；`config:save`、`config:list-models`、`ai:test-image-model` 用已保存的 Key 正常工作；Agent 测试页和启动检查按 `credential_status` 判断是否已配置 | 未测 |
+| 8 | 旧仓库 PR #14 | 远程公告弹窗、公告板、更新日志、资源页以及各类 AI 输出正常渲染，表格单元格内 `<br>` 换行和查错 `<mark>` 高亮仍生效；招标文件和技术方案正文中的 HTML 表格仍显示 | 未测 |
+| 9 | 旧仓库 PR #15 | 启动后不请求 `analytics.agnet.top/ip-blocks`、`/license/activate`，没有授权提醒或“来源不可信”弹窗；设置页“关于”只显示“项目信息”（使用文档；原仓库链接已在迁移到新仓库时删除，未配置使用文档时不显示该卡片），没有授权状态和“离线激活授权” | 未测 |
+| 10 | 旧仓库 PR #15 | 打包版设置页“检查更新”提示“未配置更新源，不检查更新”，启动和每 30 分钟轮询时不访问 GitHub、AtomGit、原作者 OSS 域名（`agnet.top` 子域）；设置页没有“自动更新渠道”；`npm run dist:win` 在 `build.publish: null` 下能正常出包 | 未测 |
+| 11 | 旧仓库 PR #15 | 数据库版本过新（`yibiao.sqlite` 来自更高版本）时，点击“下载新版客户端”提示从发布渠道自行获取新版，不打开原作者地址 | 未测 |
+| 12 | 旧仓库 PR #16 | 默认构建（`remote-services.json` 全空）启动：侧栏底部只有“设置”（旧仓库 PR #18 删除“加群”；旧仓库 PR #16 时为“加群”和“设置”），没有“文档”“日志”“公告”；“资源下载”分组不显示；不出现公告弹窗；设置页“自动填充高级参数”按钮隐藏，“关于”只有 GitHub 仓库一行，隐私声明第 03 条显示“当前版本未配置统计服务”；全程（含 AI 请求、Agent 任务、Word 导出 5 次以上）不访问 `analytics.agnet.top`、`wiki.agnet.top`、`oss.agnet.top`，不弹打赏提示 | 未测 |
+| 13 | 旧仓库 PR #16 | 旧 userData（`analytics_client_id` 以 `machine-v1-` 开头）启动后，`user_config.json` 中改为 `install-v1-` 开头的新 ID，再次启动和在设置页保存后不再变化 | 不再适用（旧仓库 PR #19 删除安装标识、内容服务和旧配置迁移，见第 17 项） |
+| 14 | 旧仓库 PR #16 | 在 `remote-services.json` 填入自建 Worker 的 https 地址后重新构建：公告、日志、资源、模型信息、使用文档入口恢复（旧仓库 PR #18 起没有群二维码），埋点发往配置地址；填 http 地址时按未配置处理 | 不再适用（旧仓库 PR #19 删除安装标识、内容服务和旧配置迁移，见第 17 项） |
+| 15 | 旧仓库 PR #17 | 旧 userData（`text_model_provider: 'official'` 且未经 旧仓库 PR #12 迁移的，以及已经 旧仓库 PR #12 迁移、`official_text_provider_paused_notice_pending: true` 的两种）：启动不出现“易标官方服务暂停提供”提示，只在自定义档案为空时提示“文本模型尚未配置”并跳到设置-文本模型；设置页下拉框没有“易标官方API”，文本模型页没有官方账户面板；保存设置后 `user_config.json` 中 `text_model_profiles.official` 仍在，`official_api_session.json` 仍在；全程不访问 `v3.yibiao.pro`。本项取代第 4、5 项 | 不再适用（旧仓库 PR #19 删除安装标识、内容服务和旧配置迁移，见第 17 项） |
+| 16 | 旧仓库 PR #18 | 设置页文本模型和生图模型的服务商下拉框里没有“金龙中转站”；旧 userData 中文本、生图选中金龙的，启动后变为“自定义”，Base URL 显示原金龙地址，Key 显示“已配置（末尾 xxxx）”，不重新填写即可测试连接、生成正文和配图，在设置页保存后 Key 仍在；原自定义档案已有内容的，`user_config.json` 中出现 `custom_before_jinlong_migration`；火山方舟、DeepSeek、Agnes、Google AI Studio 的“获取”仍能打开对应页面，自定义和 ComfyUI 的“获取”置灰；侧栏展开和收起时都没有“加群”，底部只有“设置”，没有多余空白 | 未测（旧配置迁移部分不再适用，旧仓库 PR #19 删除迁移代码） |
+| 17 | 旧仓库 PR #19 | 全新 userData 启动：侧栏底部只有“设置”（未配置使用文档时），没有“日志”“公告”，不弹公告；“资源下载”分组不显示；设置-文本模型“高级参数”没有“自动填充高级参数”按钮，思考强度为输入框，离开设置时的上下文长度提醒不提“自动填充”；隐私声明第 03 条为“不上报使用统计”；`user_config.json` 中没有 `analytics_client_id` / `analytics_created_at`；全程（含 AI 文本请求、生图测试、Agent 任务）没有埋点请求，开发者模式下 Token 统计仍正常累计；新版更新检查（未配置更新源时）和插件停用状态不变 | 未测 |
+
+0.2 回归时发现两个既有问题，留给后续 PR：
+- `hasInformativeText` 要求连续 10 个字母、数字或汉字。如果 PDF 只有表格、单元格又都很短，`|` 会把文字切断，整份文件被误判为 `pdf_text_layer_missing`。
+- 同一张表被 pdf-parse 和 pdfjs 同时识别、结果又不一样时（比如有合并单元格），`hasSimilarPdfTable` 不会去重，两份都会输出。
+
+
+## 1. 现状概览
+
+- 调用链：Renderer（React/Vite）→ `window.yibiao`（`electron/preload.cjs`，约 208 个方法，其中 172 个 `invoke`、19 个事件订阅）→ `electron/ipc/*.cjs`（21 个文件）→ `electron/services/*.cjs`（78 个服务，约 4.6 万行）。
+- Renderer 有 55 个文件、约 307 处调用 `window.yibiao`。另有少量调用经 `bridge` / `getBridge()` 别名，主要在开发者页面。
+- Renderer 不直接访问 Node 或 `fs`，**bridge 是唯一的端口**，所以 Web 化可以用“替换 bridge 实现”的方式渐进推进。这是本项目最大的有利条件。
+
+## 2. `window.yibiao` 调用清单（按功能模块）
+
+格式：`方法（调用处数）`。标 ⚡ 的是事件订阅（Main → Renderer 推送）。
+
+**A. 应用壳层 / 更新 / 系统**
+- `getVersion(2)`、`platform(1)`、`openExternal(11)`、`ui.setCurrentView(3)`
+- `checkUpdate(2)`、`quitAndInstall(2)`、`getUpdateDownloadUrl(1)`、⚡`onUpdateProgress`、⚡`onUpdateDownloaded`、⚡`onUpdateError`、⚡`onPluginUpdatesAvailable`
+- GPU：`getGpuHardwareAccelerationStatus`、`saveGpuHardwareAccelerationPreference`、`startGpuHardwareAccelerationTrial`、`relaunchWithGpuHardwareAccelerationDisabled`
+- `requiredOnlineServices.getStatus(1)`；`database.getStatus` / ⚡`database.onStatus`（`WorkspaceDatabaseGate`）
+- `systemFonts.list(1)`
+- 已暴露但 Renderer 没有调用：`getLatestVersion`、`startUpdate`
+
+**B. 配置 / 许可证 / 官方账户 / 打赏**
+- `config.load(18)`、`config.save(2)`、`config.listModels(2)`、`config.getModelInfo(1)`、`config.openConfigFolder(1)`
+- `license.getStatus(3)`、`refresh(1)`、`importOfflineFile(1)`、`activateOfflineCode(1)`
+- （已在 0.17 删除）`officialAccount.*` 17 个方法共 24 处：登录、发送验证码、绑定邮箱、余额、充值下单/查询/关闭、流水、兑换码、发票，以及 ⚡`onStateChanged`、⚡`onRechargeOrderChanged`
+- `donation.createTip`、`getOrderStatus`、`finalizeOrderStatus`、⚡`onPrompt`、⚡`onPaid`；已暴露未调用：`donation.getConfig`
+
+**C. AI / Agent**
+- `ai.chat`、`ai.requestJson`（经 `shared/ai/aiClient.ts`）、`ai.testImageModel`、⚡`ai.onHttpError`、⚡`ai.onBalanceInsufficient`（已在 0.17 删除）
+- `agent.run`、`selfCheck`、`exportSelfCheckReport`、`getStatus`、`restart`、`getPendingQuestion`、`answerQuestion`、`suppressQuestionAutoAnswer`、⚡`onStatus`、⚡`onQuestion`
+- `autoConfirmation.getState`、`setEnabled`、⚡`onChanged`
+
+**D. 后台任务（`tasks`，18 个方法共 31 处）**
+- 技术方案：`startBidSectionExtraction(2)`、`startBidAnalysis`、`startOutlineGeneration`、`suppressOutlineSelectionAutoConfirmation`、`startGlobalFactsGeneration`、`startContentGeneration(5)`、`pauseContentGeneration`；`technicalPlan.saveOutlineSelection` 实际走 `tasks:confirm-outline-selection`
+- 可研报告：`startFeasibilityAnalysis`、`startFeasibilityOutline`、`startFeasibilityParameters`、`startFeasibilityContent`、`pauseFeasibilityContent`；已暴露未调用：`startFeasibilityHumanWriting`
+- 废标 / 查重：`startRejectionItemsExtraction`、`startRejectionCheck`、`startDuplicateAnalysis`
+- 通用：`getActiveTasks(4)`、⚡`onTaskEvent(4)`
+
+**E. 技术方案（`technicalPlan`，21 个方法共 37 处）**
+- 状态：`loadState(11)`、`updateStep`、`clear`、`resetContentGeneration`
+- 生成配置：`saveGenerationConfig(7)`、`saveBidAnalysisConfig`、`saveContentGenerationOptions`
+- 文件：`importTenderDocument`、`removeTenderDocument`、`importOriginalPlanDocument`、`removeOriginalPlanDocument`、`readTenderMarkdown`、`readTenderSourceMarkdown`、`openBidTemplate`（用系统程序打开 docx）
+- 标段：`checkBidSections`、`selectBidSection`
+- 目录 / 事实 / 正文：`saveOutline`（`reason` 持久化协议）、`saveGlobalFacts`、`saveChapterContent`、`previewContentWord`
+- 已暴露未调用：`loadGenerationConfig`、`readContentWord`
+
+**F. 可研报告（`feasibilityReport`，12 个方法共 17 处）**
+- `loadState(4)`、`importSourceDocuments`、`removeSourceDocument`、`readSourceMarkdown`、`updateStep`、`saveProjectInfo`、`saveAnalysis(2)`、`saveOutlineConfig`、`saveOutline`、`saveKeyParameters(2)`、`saveChapterContent`、`clear`；已暴露未调用：`readCombinedSourceMarkdown`
+
+**G. 废标检查 / 标书查重**
+- `rejectionCheck.*` 8 个方法共 15 处：`loadState(4)`、`importDocument`、`importTenderFromTechnicalPlan(2)`、`removeDocument`、`saveUiState(3)`、`updateState`、`exportExcel(2)`、`clear`
+- `duplicateCheck.*` 5 个方法共 7 处：`loadState(2)`、`saveFiles`、`saveUiState`、`exportExcel(2)`、`clear`；已暴露未调用：`duplicateCheck.updateState`
+- `file.selectDuplicateCheckFiles(1)`（Main 原生文件选择框）
+
+**H. 知识库 / 资信库**
+- `knowledgeBase.*` 15 个方法共 20 处：文件夹 CRUD 与排序、文档移动/删除、`uploadDocuments`（Main 弹选择框）、`retryDocument`、`startMatching`、`search`（分页）、`readMarkdown`、`readItems`、`readAnalysis`、⚡`onEvent`
+- `credentialLibrary.*` 13 个方法：`load`、`importTestData`、`saveProfile`、`addProfileImages(fieldKey, filePaths)`、`deleteImage`，以及证书、人员、业绩、其他材料的 save/delete
+
+**I. 导出与模板**
+- `export.exportWord(3)`（Main 弹保存框）、`export.openFile(5)`（系统程序打开）、⚡`export.onWordExportProgress(3)`
+- `templates.list(3)`、`get(2)`、`create`、`update`、`delete`、`duplicate`、`renderPreview`（经 OpenXmlHelper 生成 Word 样张）
+
+**J. 文件 / 插件**
+- `file.getPathForFile(8)`：把拖拽的 `File` 转成本地绝对路径。所有上传入口都依赖它，Web 里**不存在等价能力**。
+- `plugins.*` 12 个方法共 21 处：市场、安装（含离线）、卸载、启停、更新、`openConfig`（独立 BrowserWindow）、`notifyEvent`；已暴露未调用：`plugins.checkUpdates`
+
+**K. 开发者工具（只在开发者模式）**
+- `developerTokenStats.*`、`developerAgentMonitor.*`（含 `openWorkspace` 打开本地目录）、`developerExpansionReplaceTest.run`、`developerLayoutFigure.*`
+
+## 3. Electron Main 中依赖本地能力的部分
+
+| 类别 | 关键实现 | 本地依赖 |
+|---|---|---|
+| **文件系统** | `utils/paths.cjs`、`fileService.cjs`、各 Store、`utils/importedImages.cjs`、`storageCleanupService.cjs`、`utils/forceRemove.cjs` | `userData/` 下的 `user_config.json`（含明文 API Key）、`workspace/<feature>/`、`imported-images/`、`generated-images/`、`logs/`、`plugins/`、`agent-runtime/pi/`；`dialog.showOpen/SaveDialog`（fileService、knowledgeBase、export、checkResultExport、license、credentialLibrary、plugin、agent）；`shell.openPath/openExternal`；自定义协议 `yibiao-asset://` |
+| **文档解析** | `fileService.cjs` → `doc2markdown/convert.mjs` | mammoth、pdf-parse/pdfjs、xlsx、turndown；`.doc/.wps` 通过 `child_process` 调本机 **LibreOffice**；可选 MinerU 在线 API |
+| **SQLite** | `sqliteDatabase.cjs`（55 张表、migration、健康检查、备份）、`technicalPlanStore`、`knowledgeBaseStore`、`rejectionCheckStore`、`duplicateCheckStore`、`feasibilityReportStore`、`templateStore`、`taskLogStore`、`officialInvoiceStore`、`textTokenStatsStore`；`piPersistentTaskStore` | `better-sqlite3` native 模块，单文件 `yibiao.sqlite`，**同步 API**，整库默认单用户（表中没有 user/tenant 字段，大量 `*_meta` 是单行“当前项目”） |
+| **.NET OpenXmlHelper** | `openXmlHelperService.cjs`、`pi/piOpenXmlTool.cjs`、`technicalPlanExport.cjs`、`contentGenerationOutput.cjs`、`templateExtractionTask.cjs` | 随包 .NET 10 自包含可执行文件（`vendor/openxml-tools/<platform>`），常驻子进程，stdin/stdout 一行 JSON 信号，**任务目录在 `userData/workspace` 下靠共享文件系统交换数据**，一次只跑一个任务 |
+| **Pi Agent 命令工具** | `agentService.cjs`、`services/pi/*`、`services/agent/agentToolEnvironment.cjs`、`agentOpenAiProxy.cjs`、`piSelfCheckService.cjs` | `@earendil-works/pi-coding-agent` 在 Main 内运行；七个原生工具 `read/write/edit/bash/grep/find/ls` **直接操作本机文件系统**；`bash` 在 Windows 上实际是 PowerShell 5.1，其他系统是 `/bin/sh`；随包 `rg`/`fd`/`jq`（`vendor/agent-tools`）注入 PATH；本地 HTTP 代理把 Pi 请求转到 `aiService`；Agent 最终失败只写本机日志（旧仓库 PR #10 起不再上传） |
+| **后台任务** | `taskService.cjs`（技术方案 / 查重 / 废标三组互斥任务、checkpoint、重启恢复）、`knowledgeBaseService.cjs`（文档级 preparation/matching）、`contentGeneration*.cjs`、`aiService.cjs`（文本/生图队列、并发、重试、Token 统计）、`exportService.cjs` | 进程内内存状态 + SQLite 持久化；进度通过 `webContents.send` 推送；队列作用域和取消信号都在单进程内 |
+| **离屏渲染** | `localImageRenderService.cjs`（HTML/Mermaid → PNG）、`contentGenerationLayout.cjs` + `wordLayoutPreload.cjs`（隐藏窗口里跑 docx-editor 做 Canvas 分页测量） | 隐藏的 Electron `BrowserWindow` / Chromium |
+| **其他本机能力** | `systemFontService.cjs`（子进程枚举系统字体）、`utils/clientIdentity.cjs`（随机安装标识，用于配置中的 client_id；0.16 起不再读取机器码，许可证已在 0.15 移除）、`updateService.cjs`（electron-updater，0.15 起更新源默认为空）、`pluginService.cjs` + `pluginContext.cjs`（`require()` 加载第三方插件代码并给 `ipcMain`、`BrowserWindow`）、GPU 加速开关 | 依赖桌面进程和本机 |
+
+## 4. 每一类的 Web 服务端方案与难度
+
+| 类别 | Web 方案 | 难度 | 关键风险 |
+|---|---|---|---|
+| **bridge 层**（第 2 节全部） | 新建 `WebBridge`（`src/shared/bridge/webBridge.ts`，旧仓库 PR #24 已建空壳）实现 `AppBridge` 接口：`invoke` → `fetch('/api/<channel>')`，事件 → 一条 WebSocket/SSE 按频道分发，`onXxx` 仍返回取消函数。Electron 和 Web 两套实现并存，Renderer 业务代码基本不动 | 中 | 约 170 个通道要逐一映射；`hasOwnProperty` 型 patch 语义必须在 JSON 序列化后保持（`undefined` 字段会丢失，需要改用显式 `null` 或字段清单） |
+| **文件选择 / 路径**（`getPathForFile`、`importXxx(filePaths)`、`uploadDocuments`、`addProfileImages`、`selectDuplicateCheckFiles`） | 改成浏览器 `<input type=file>` / 拖拽 → multipart 上传或分片直传对象存储，接口参数从 `filePaths` 改成 `uploadIds` | 中 | 改接口签名，Renderer 上传区组件（`UploadBoard` 等）要改；上传必须做类型/大小/文件名校验（这是唯一的用户输入边界） |
+| **导出 / 打开文件**（`exportWord`、`exportExcel`、`openFile`、`openBidTemplate`、`openConfigFolder`、`yibiao-asset://`） | 服务端生成后返回下载 URL（带签名、短时效）；`openFile` 改成浏览器下载/在线预览；`yibiao-asset://` 改成带鉴权的 `/assets/:userId/...` 静态路由 | 低-中 | 资源 URL 必须校验归属，防止跨用户访问 |
+| **配置 / API Key**（`config.*`） | `user_config.json` 拆成按用户的 DB 记录；API Key 加密存储（KMS/信封加密），**只在服务端解密使用**，`config.load` 返回脱敏值；模型列表、模型测试在服务端代理 | 中 | 桌面版 `config.load` 已改为打码返回、保存时空值不修改（0.14，`services/configSecrets.cjs`）；Web 化时把这层搬到服务端，并补上加密存储 |
+| **SQLite** | 迁到 PostgreSQL：所有表加 `user_id`/`workspace_id`，把单行 `*_meta` “当前项目”模型改成“多项目”；Store 从 `better-sqlite3` 同步 API 改成异步（Kysely/Drizzle + 事务）；`sqliteDatabase.cjs` 的 migration 转成正式迁移工具；`sql/workspace_schema.sql` 作为目标结构起点 | **高** | Store 共约 9 千行同步代码，`checkpointTask` 依赖同步事务原子性；要逐 Store 改写并保持 `saveOutline reason` 等持久化协议不变 |
+| **文件型产物**（workspace 下的 Markdown、图片、Word、Agent 会话目录） | 对象存储（S3/MinIO）保存长期产物，按 `tenant/user/project/...` 前缀隔离；任务执行时拉到 worker 本地临时目录，结束后回写 | 中-高 | 现在大量逻辑靠“同一台机器上的路径”串起来（OpenXmlHelper 任务目录、Agent 工作区、HTML 引用图片），需要定义清楚“工作区挂载”约定 |
+| **文档解析**（mammoth/pdf/xlsx/LibreOffice/MinerU） | 纯 JS 部分直接搬到服务端；LibreOffice 放进 worker 镜像（`soffice --headless`）；MinerU 保持服务端调用 | 低-中 | `pdfjs-dist`、`xlsx` 存在高危漏洞，处理多用户上传前必须升级或隔离；解析放在受限容器里，设超时和资源上限 |
+| **.NET OpenXmlHelper** | 作为独立 sidecar / 微服务容器（.NET 10 本身跨平台）：保留现有“任务目录 + 一行 JSON 信号”协议，worker 与 helper 共享同一临时卷；或者包一层 HTTP/gRPC，入参出参走对象存储。按并发需要水平扩展多个实例（现在一次只跑一个任务） | 中 | 需要验证 Linux 下的中文字体、EMF/WMF 处理与 Windows 输出一致；`job` 名称校验已经有防路径穿越 |
+| **Pi Agent 命令工具** | **每个 Agent 任务一个隔离沙箱**（容器 / gVisor / Firecracker），工作区挂载到沙箱内；`bash` 统一用 Linux `/bin/sh`，`rg`/`fd`/`jq` 预装进镜像；禁网或只放行到内部 AI 网关；资源和时长配额；Agent 的 `ask-user` 问答通过 WebSocket 推到对应用户 | **高** | 现在的工具直接操作本机，多用户服务端上这是**任意命令执行**面，必须做到沙箱隔离、不能挂载其他用户的数据；提示词里写死的 “Windows PowerShell 5.1” 等环境说明要随之调整；`agentToolEnvironment` 的 PATH 注入改成镜像内置 |
+| **后台任务** | 任务队列（BullMQ + Redis，或基于 Postgres 的 pg-boss/Graphile Worker），API 进程只负责入队；worker 进程执行 `taskService` 逻辑；进度经 Redis pub/sub → WebSocket 推给对应用户；`queueScopeId`、取消、暂停改成“任务记录状态 + 分布式取消信号”；重启恢复逻辑原样复用到 worker 启动 | **高** | 现在的互斥是“全局一组只能跑一个”，Web 化后要改成“每用户/每项目”互斥；`aiService` 的并发上限要从“单机”改成“每用户 + 全局”两级；长任务（正文生成可能跑几十分钟）需要可抢占和断点续跑 |
+| **离屏渲染**（HTML/Mermaid 转图、docx-editor 分页测量） | worker 内用 Playwright + Chromium（headless）替代隐藏 `BrowserWindow`；字体随镜像安装，保证与桌面版测量口径一致 | 中 | 渲染的是 AI 生成的 HTML，需要禁网、禁 JS 外联，并在独立 Chromium 上下文中执行 |
+| **AI 服务**（`aiService.cjs`、Agent 本地代理） | 基本可以原样搬到服务端（本来就在 Main）；作为 AI 网关统一管理 Key、队列、重试和 Token 统计；`onHttpError`/`onBalanceInsufficient` 改成按用户推送 | 低-中 | 客户端埋点已在 0.19 删除；如需统计另行设计服务端统计，不得包含用户文档内容和 API Key |
+| **鉴权 / 账户 / 许可证** | 新增用户体系（邮箱验证码登录或接 OIDC；原“官方账户”已在 0.17 移除，不再复用），会话用 HttpOnly Cookie；**每个 API 都要校验资源归属**；原机器码许可证模型（已在 0.15 移除）改成按账户/席位授权 | 中-高 | 当前代码按“本机可信、不做层间校验”设计（AGENTS.md 明确规定），Web 化后这条前提**不再成立**，鉴权、授权和输入校验要从头补上 |
+| **更新 / GPU / 系统字体** | 更新和 GPU 在 Web 端删除或做成空实现；系统字体改成“服务端可用字体列表”（Word 导出实际用的就是服务端字体） | 低 | — |
+| **插件** | 现有插件在 Main 中 `require()` 任意代码并拿到 `ipcMain`/`BrowserWindow`，**不能**搬到多用户服务端。Web 版建议先下线，以后重做成前端 iframe 沙箱 + 受限 API（桌面版已在 0.13 停用，代码保留） | 高（重做）/ 低（下线） | 安全边界完全不同 |
+| **开发者工具** | Token 统计、Agent 监视器改成管理员页面（按任务查看）；`openWorkspace` 改成在线浏览工作区文件 | 低-中 | 只对管理员开放 |
+
+## 5. 建议的后端技术栈
+
+详细设计和与下列建议的偏离见 `docs/SERVER_DESIGN.md` 及上方“第 2 步说明”。
+
+- **语言 / 框架**：**Node.js 22 + TypeScript + Fastify**（或 NestJS）。理由：现有约 4.6 万行 Main 业务是 Node CommonJS，`aiService`、`taskService`、各 Task、Pi Agent SDK（`@earendil-works/pi-coding-agent`）、cheerio/mammoth/docx 等都能直接复用，迁移成本最低。
+- **数据库**：**PostgreSQL**（多租户、并发写、JSONB 存编排/运行时快照），ORM 用 Kysely 或 Drizzle；迁移工具用 Drizzle Kit / node-pg-migrate。
+- **任务队列**：**BullMQ + Redis**（Redis 同时用于进度 pub/sub 和分布式取消信号）；如果想少一个组件，可以用 pg-boss。
+- **实时推送**：WebSocket（`@fastify/websocket` 或 Socket.IO），一条连接按频道复用，对应现在 19 个 `onXxx` 事件。
+- **文件存储**：S3 兼容对象存储（自建可用 MinIO），签名 URL 上传和下载。
+- **Word 助手**：现有 `openxmlhelper/` .NET 10 独立容器，与 worker 共享临时卷。
+- **Agent 沙箱**：Docker/Kubernetes Job + gVisor（或 Firecracker），镜像内置 `rg`/`fd`/`jq`、LibreOffice、中文字体、Chromium（Playwright）。
+- **鉴权**：邮箱验证码 / OIDC + HttpOnly Session Cookie，RBAC 至少分普通用户和管理员。（旧仓库 PR #26 决定：邮箱 + 密码和手机号 + 短信验证码两种，第一版只做邮箱 + 密码。）
+- **密钥**：~~用户自带的 API Key 用信封加密（KMS 或 libsodium + 主密钥）存库~~。旧仓库 PR #26 决定由平台统一提供 AI 并按量计费：平台持有的模型服务 Key 用信封加密存库，主密钥在云 KMS（`docs/SERVER_DESIGN.md` 第 4、10 节）。
+- **部署**：Docker Compose 起步（api / worker / openxml / redis / postgres / minio），之后上 K8s；不自建 `analytics/` Worker（0.18 决定，0.19 已删除该目录和客户端埋点）；上线后如需统计，另行设计服务端统计，不沿用客户端埋点。
+
+## 6. 分步改造顺序（每步一个或几个小 PR）
+
+0. **前置**：处理 `npm audit` 中跟上传、解析、网络相关的高危漏洞（`pdfjs-dist`、`xlsx`、`adm-zip`、`undici`、`tar`）；~~补 Web 版的 AGPL 第 13 条源码链接方案~~（0.5：改为闭源商业授权后不再需要）。
+1. **抽象 bridge**：Renderer 改成从 `src/shared/bridge` 获取 API（默认仍是 `window.yibiao`），类型继续以 `ipc.ts` 为准。行为零变化，Electron 照常可用。
+2. **服务端骨架**：Fastify + 鉴权 + PostgreSQL + 用户/工作区表；`WebBridge` 打通 `invoke` → HTTP 和事件 → WebSocket 的通用机制，先迁 `getVersion`、`config.*` 这类无状态接口。
+3. **配置与 AI 网关**：配置按组织 / 用户入库；平台统一提供 AI（旧仓库 PR #26），API Key 由平台持有、只在服务端；`aiService` 搬到服务端成为 AI 网关，同时实现平台模型清单、用量计量、余额检查和价格表（`docs/SERVER_DESIGN.md` 第 10 节）；`ai.chat/requestJson/testImageModel`、`config.listModels/getModelInfo` 走服务端，后两者只在管理后台提供。
+4. **文件上传 / 下载 / 资源协议**：上传接口 + 对象存储 + 带鉴权的资源路由，替换 `getPathForFile`/`filePaths`、`yibiao-asset://`、`openFile`、保存对话框。
+5. **数据层迁移（按业务逐个）**：模板库 → 资信库 → 知识库 → 标书查重 → 废标检查 → 可研报告 → 技术方案，每个 Store 改成异步 Postgres 实现并按 `org_id`（项目级再加 `project_id`）隔离；不做 `yibiao.sqlite` 导入（旧仓库 PR #26 第 18 项）。拆分为 13 个 PR，先做 `projects` 和生成产物存储，见“第 5 步说明”。
+6. **任务队列与 worker**：`taskService` 迁到 BullMQ worker，进度推送、暂停/继续、重启恢复、每用户互斥和两级并发上限。先迁无 Agent 的短任务（查重、废标、招标解析），再迁目录、全局事实。
+7. **OpenXmlHelper 容器化**：Word 导出、模板样张、模板提取改成调用 helper 服务；离屏渲染改成 Playwright。
+8. **Agent 沙箱**：Pi Runtime 迁到隔离沙箱，最后迁正文生成、原方案还原、格式自检这类最复杂的长任务。
+9. **收尾**：插件下线或重做、开发者工具改管理员页面；不自建 analytics Worker（0.18 决定；客户端埋点、内容服务代码和 `analytics/` 目录已在 0.19 删除）；压测、安全评审，再上线。
+   上线检查（对外提供服务前逐项完成）：
+   - 品牌名替换：产品名“易标”、`window.yibiao`、`yibiao-asset://`、`yibiao.sqlite` 等已有命名统一改为本项目名称（第 1 步前决定第 3 项推迟到此）；
+   - 把 `SECURITY.md`、`CODE_OF_CONDUCT.md`、`.github/ISSUE_TEMPLATE/问题反馈.md` 中的 `{{CONTACT_EMAIL}}` 占位符（0.20）替换为本项目的联系方式；
+   - 重写 Web 版隐私声明：现有设置页隐私声明按桌面版“数据保存在本机”编写，Web 版需说明服务端存储的数据、API Key 的保管方式、日志与保留期限、删除方式；按 旧仓库 PR #26 决定还要写明服务器位于境外（香港）、调用的第三方模型服务商、用量记录的保留期，以及项目删除后 7 天恢复期、注销后 30 天内删除；
+   - 完成 `docs/SERVER_DESIGN.md` 第 11 节“合规待确认事项”（旧仓库 PR #26），每项都有律师确认的结论并已落实到设计和界面，未完成不得对外提供服务：
+     - 个人信息出境：合规路径、告知与单独同意、个人信息保护影响评估、向模型服务商再转移、备份地域；
+     - 生成式 AI 监管：是否适用及所需备案或登记、生成内容标识、内容审核与投诉渠道、用户身份要求；
+     - 模型服务商对中国大陆用户的条款限制：逐家确认，确定 `platform_models` 上架清单；
+     - 第一版线下收款的主体、方式与币种；
+   - 发信服务选定并完成 QQ / 163 等邮箱的送达率实测（`docs/EXTERNAL_SERVICES.md` §7）；**首个真实用户注册前必须完成**（旧仓库 PR #31），不必等到上线；
+   - 鉴权上线前提（旧仓库 PR #29）：生产数据库按开发环境同样的属性创建 `bidtools_owner`、`bidtools_app`、`bidtools_auth` 三个角色（`bidtools_auth` 为 `NOLOGIN`，迁移角色以 `INHERIT FALSE, SET TRUE` 加入），写进部署文档；发信接口换成正式发信服务的实现；登录、注册、找回密码的限流从进程内存换成 Redis（多实例部署前必须完成）；按反向代理拓扑设置 `TRUSTED_PROXIES`（旧仓库 PR #30，只填 Caddy 的固定地址），用两个不同出口的客户端确认限流和会话中的 IP 是真实客户端地址；用 `npm run admin:create` 创建首个平台管理员后，确认平台管理员已开启 TOTP（设计文档第 3.4 节，TOTP 尚未实现）；
+   - 计费核对：价格表已录入并公示，计价函数测试通过，余额不足拒绝新任务和运行中耗尽暂停已实测，管理员充值的 TOTP 和双人复核已启用；旧仓库 PR #31 暂用重新输入密码做二次验证并禁用 1,000 元以上的单笔充值，TOTP 和双人复核实现后再用新迁移放开大额充值；生产数据库按开发环境同样的属性创建 `bidtools_billing` 角色（`NOLOGIN`，迁移角色以 `INHERIT FALSE, SET TRUE` 加入），写进部署文档；
+   - AI 网关（旧仓库 PR #32）：主密钥从 `AI_KEK_FILE` 换成云 KMS 的 `KeyWrapper` 实现（第 9 节第 8 项），开启删除保护和调用审计；生产环境 `AI_UPSTREAM_PRIVATE_HOSTS` 为空；确定通义千问使用国内站还是国际站并在管理后台填写对应 Base URL；用真实 Key 在预发环境核对两家服务商流式响应中的用量字段与控制台账单一致；
+   - 从大陆主要省份和运营商实测访问香港服务器的延迟和可用性（`docs/SERVER_DESIGN.md` 第 8.0 节）。
+   - 文件存储（旧仓库 PR #34）：选定云厂商对象存储（与 KMS 同一家、香港地域），bucket 私有、禁止公开读和列目录，开启服务端加密（默认加密或 KMS 密钥），配置生命周期规则清理未完成的分片上传；api 使用只能访问该 bucket 的最小权限访问密钥；用真实服务跑一遍 `tests/db/files.test.ts` 确认 S3 兼容性；过期文件和遗留 `uploading` 记录的物理清理任务已上线（否则对象只增不减）；Caddy 层设置请求体上限（略大于 100 MB）；`S3_ENDPOINT` 为 https。

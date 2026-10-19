@@ -1,0 +1,149 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  client-checks:
+    name: Client build / syntax / audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    defaults:
+      run:
+        working-directory: client
+        shell: bash
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: client/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci --prefer-offline --no-audit --no-fund
+
+      - name: Build (tsc --noEmit + vite build)
+        run: npm run build
+
+      - name: Unit tests (Vitest)
+        run: npm run test
+
+      - name: Syntax check Electron .cjs/.mjs
+        run: |
+          set -uo pipefail
+          count=0
+          failed=0
+          while IFS= read -r -d '' file; do
+            count=$((count + 1))
+            if ! node --check "$file"; then
+              echo "::error file=client/${file}::node --check failed"
+              failed=$((failed + 1))
+            fi
+          done < <(find electron -type f \( -name '*.cjs' -o -name '*.mjs' \) -print0)
+          echo "Checked ${count} files, ${failed} failed."
+          if [ "$count" -eq 0 ]; then
+            echo "::error::No .cjs/.mjs files found under client/electron."
+            exit 1
+          fi
+          [ "$failed" -eq 0 ]
+
+      - name: npm audit (fail on critical)
+        run: npm audit --audit-level=critical
+
+  server-checks:
+    name: Server typecheck / test / audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    # 数据库集成测试（npm run test:db）用的 PostgreSQL，与 docker-compose.yml 使用同一镜像 digest。
+    # 只在 CI 的一次性容器中使用，超级用户密码不是密钥。
+    services:
+      postgres:
+        image: postgres:17.11-bookworm@sha256:3645570cccdfa447589da9f57dd740faa29b30938e861289a5574b6ca6b03826
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready --username=postgres --dbname=postgres"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 20
+
+    defaults:
+      run:
+        working-directory: server
+        shell: bash
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          # 与 server/Dockerfile 的基础镜像保持一致
+          node-version: 24.21.0
+          cache: npm
+          cache-dependency-path: server/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci --prefer-offline --no-audit --no-fund
+
+      # 文件存储集成测试用的 S3 兼容服务，与 docker-compose.yml 的 s3 服务使用同一镜像 digest 和参数。
+      # 服务容器不能指定启动命令（weed mini），所以在这里启动。访问密钥只用于 CI 的一次性容器，不是机密。
+      - name: Start SeaweedFS (S3)
+        run: |
+          docker run -d --name seaweedfs -p 127.0.0.1:8333:8333 \
+            -e AWS_ACCESS_KEY_ID=ci-access -e AWS_SECRET_ACCESS_KEY=ci-secret-key \
+            chrislusf/seaweedfs:4.48@sha256:4e61d15fd35994cb1e43e1e553dff106794841fd9a99ade2fc8c8bfce4d7872d \
+            mini -dir=/data -ip=127.0.0.1 -ip.bind=0.0.0.0 \
+            -master.telemetry=false -admin.ui=false -webdav=false -s3.port.iceberg=0 -s3.port.lance=0 \
+            -s3.autoCreateBucket=false
+          for attempt in $(seq 1 60); do
+            if curl -fsS -o /dev/null http://127.0.0.1:8333/healthz; then exit 0; fi
+            sleep 1
+          done
+          docker logs seaweedfs
+          exit 1
+
+      - name: Typecheck (tsc --noEmit)
+        run: npm run typecheck
+
+      - name: Build (tsc emit)
+        run: npm run build
+
+      - name: Unit tests (Vitest)
+        run: npm run test
+
+      - name: Database tests (migrations, RLS, /readyz, file storage)
+        run: npm run test:db
+        env:
+          TEST_DATABASE_ADMIN_URL: postgres://postgres:postgres@127.0.0.1:5432/postgres
+          TEST_S3_ENDPOINT: http://127.0.0.1:8333
+          TEST_S3_ACCESS_KEY_ID: ci-access
+          TEST_S3_SECRET_ACCESS_KEY: ci-secret-key
+
+      - name: Shell script syntax (bash -n)
+        run: bash -n db/init/10-provision.sh && bash -n scripts/init-dev-secrets.sh
+
+      - name: npm audit (fail on high)
+        run: npm audit --audit-level=high
