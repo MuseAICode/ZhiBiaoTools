@@ -1,9 +1,10 @@
 import { createHash } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { describe, expect, it } from 'vitest';
 import { AppError } from '../../src/errors.ts';
-import { InspectionStream, readZipEntryNames, TAIL_BYTES, type InspectionResult } from '../../src/files/inspect.ts';
+import { InspectionStream, readZipEntryNames, SNIFF_BYTES, TAIL_BYTES, type InspectionResult } from '../../src/files/inspect.ts';
 import { HTML_PAYLOAD, SVG_PAYLOAD, makeBmp, makeDocx, makeGif, makeJpeg, makeOle, makePdf, makePng, makeWebp, makeXlsx, makeZip } from './fixtures.ts';
 
 const tooLarge = () => new AppError(413, 'FILE_TOO_LARGE', 'too large');
@@ -66,7 +67,8 @@ describe('InspectionStream：按内容判断真实类型', () => {
     ['docx', makePdf],
     ['docx', makeXlsx],
     ['xlsx', makeDocx],
-    ['docx', makeOle],
+    ['xlsx', makeOle],
+    ['pdf', makeOle],
     ['png', makeJpeg],
     ['jpg', makePng],
     ['png', () => HTML_PAYLOAD],
@@ -117,6 +119,122 @@ describe('InspectionStream：按内容判断真实类型', () => {
   it('BMP 头中的文件大小与实际不符时拒绝', async () => {
     await expectRejected('bmp', makeBmp(12345));
     expect((await inspect('bmp', makeBmp(0))).mime).toBe('image/bmp');
+  });
+});
+
+/**
+ * 真实样本（tests/files/samples/）：除 MHT 外都由 LibreOffice 24.2 从同一份招标文件 / 表格导出，再改成各类系统常见的扩展名；
+ * MHT 按 Word“单个文件网页”的结构手工封装同一份 HTML；带前缀的 PDF 是在导出的 PDF 前加了一段报表系统的头。
+ */
+const sample = (name: string): Buffer => readFileSync(new URL(`./samples/${name}`, import.meta.url));
+
+describe('InspectionStream：桌面版能导入的其他内容', () => {
+  it.each<[string, string, string, string]>([
+    ['docx', 'ole-word.docx', 'ole', 'application/msword'],
+    ['doc', 'rtf-word.doc', 'rtf', 'application/rtf'],
+    ['wps', 'rtf-word.doc', 'rtf', 'application/rtf'],
+    ['doc', 'html-word.doc', 'html', 'text/html'],
+    ['wps', 'html-word.doc', 'html', 'text/html'],
+    ['doc', 'mht-word.doc', 'mht', 'message/rfc822'],
+    ['wps', 'mht-word.doc', 'mht', 'message/rfc822'],
+    ['doc', 'word2003-xml.wps', 'word-xml', 'application/xml'],
+    ['wps', 'word2003-xml.wps', 'word-xml', 'application/xml'],
+    ['xls', 'html-table.xls', 'html', 'text/html'],
+    ['xls', 'spreadsheet-xml.xls', 'spreadsheet-xml', 'application/xml'],
+    ['pdf', 'junk-prefix.pdf', 'pdf', 'application/pdf'],
+  ])('.%s 接受真实样本 %s，按内容记录为 %s', async (extension, name, kind, mime) => {
+    const content = sample(name);
+    for (const chunkSize of [1, 7, 4096]) {
+      const result = await inspect(extension, content, { chunkSize });
+      expect(result.kind).toBe(kind);
+      expect(result.mime).toBe(mime);
+      expect(result.size).toBe(content.length);
+    }
+  });
+
+  it('开头有 UTF-8 BOM 和空白时仍能识别', async () => {
+    const html = Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from('\r\n  '), sample('html-table.xls')]);
+    expect((await inspect('xls', html)).mime).toBe('text/html');
+    const rtf = Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), sample('rtf-word.doc')]);
+    expect((await inspect('doc', rtf)).mime).toBe('application/rtf');
+  });
+
+  it.each<[string, string]>([
+    // 带脚本的 HTML 改成图片、PDF、OOXML 的扩展名。
+    ['png', 'html'],
+    ['jpg', 'html'],
+    ['gif', 'html'],
+    ['webp', 'html'],
+    ['bmp', 'html'],
+    ['pdf', 'html'],
+    ['docx', 'html'],
+    ['xlsx', 'html'],
+    // 其他文本类格式只对各自的扩展名放行。
+    ['png', 'html-word.doc'],
+    ['pdf', 'html-word.doc'],
+    ['docx', 'html-word.doc'],
+    ['xlsx', 'html-table.xls'],
+    ['png', 'mht-word.doc'],
+    ['xls', 'mht-word.doc'],
+    ['docx', 'mht-word.doc'],
+    ['pdf', 'mht-word.doc'],
+    ['xls', 'rtf-word.doc'],
+    ['docx', 'rtf-word.doc'],
+    ['pdf', 'rtf-word.doc'],
+    ['xls', 'word2003-xml.wps'],
+    ['docx', 'word2003-xml.wps'],
+    ['doc', 'spreadsheet-xml.xls'],
+    ['wps', 'spreadsheet-xml.xls'],
+    ['xlsx', 'spreadsheet-xml.xls'],
+    ['png', 'junk-prefix.pdf'],
+    ['doc', 'junk-prefix.pdf'],
+    ['xlsx', 'ole-word.docx'],
+  ])('伪装：.%s 的内容是 %s 时拒绝', async (extension, name) => {
+    await expectRejected(extension, name === 'html' ? HTML_PAYLOAD : sample(name));
+  });
+
+  it.each<[string, Buffer]>([
+    // 其他 XML：根元素不是 Word / SpreadsheetML 2003。
+    ['doc', SVG_PAYLOAD],
+    ['doc', Buffer.from('<?xml version="1.0"?><svg xmlns="http://www.w3.org/2000/svg" onload="alert(1)"/>')],
+    ['xls', Buffer.from('<?xml version="1.0"?><svg xmlns="http://www.w3.org/2000/svg" onload="alert(1)"/>')],
+    // 没有可靠文件头的 CSV、BIFF2~4 不放行（提示用户另存为 xlsx）。
+    ['xls', Buffer.from('序号,名称,数量\n1,服务器,2\n', 'utf8')],
+    ['xls', Buffer.from([0x09, 0x00, 0x04, 0x00, 0x02, 0x00, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00])],
+    // 普通文本、不是以 MIME 头开头的“MIME-Version”。
+    ['doc', Buffer.from('投标须知：本项目采购服务器设备。', 'utf8')],
+    ['doc', Buffer.from('投标须知\r\n\r\nMIME-Version: 1.0\r\n', 'utf8')],
+    // HTML 片段：不以 <!doctype html> 或 <html> 开头。
+    ['xls', Buffer.from('<script>alert(1)</script><table><tr><td>1</td></tr></table>', 'utf8')],
+    ['doc', Buffer.from('<htmlx>', 'utf8')],
+  ])('.%s 不认识的文本内容拒绝（#%#）', async (extension, content) => {
+    await expectRejected(extension, content);
+  });
+
+  it('PDF 前的多余字节超过 1024 字节时拒绝；在此之内时接受', async () => {
+    const pdf = makePdf();
+    await expectRejected('pdf', Buffer.concat([Buffer.alloc(SNIFF_BYTES, 0x20), pdf]));
+    const within = Buffer.concat([Buffer.alloc(SNIFF_BYTES - 5, 0x20), pdf]);
+    expect((await inspect('pdf', within, { chunkSize: 100 })).mime).toBe('application/pdf');
+    expect(SNIFF_BYTES).toBe(1024);
+  });
+
+  it('开头是 HTML、后面带 %PDF- 的多格式文件不当作 PDF', async () => {
+    await expectRejected('pdf', Buffer.concat([HTML_PAYLOAD, makePdf()]));
+    await expectRejected('pdf', Buffer.concat([sample('mht-word.doc').subarray(0, 200), makePdf()]));
+  });
+
+  it('二进制文件头不符时不等 1024 字节，前 16 字节到达就拒绝', async () => {
+    const stream = new InspectionStream({ extension: 'doc', maxBytes: 1024 * 1024, tooLarge });
+    const error = await new Promise<unknown>((resolve) => {
+      stream.on('error', resolve);
+      stream.write(makePng().subarray(0, 16));
+    });
+    expect((error as AppError).code).toBe('FILE_TYPE_MISMATCH');
+  });
+
+  it.each(['html', 'htm', 'mht', 'mhtml', 'rtf', 'xml'])('.%s 扩展名不开放', (extension) => {
+    expect(() => new InspectionStream({ extension, maxBytes: 10, tooLarge })).toThrow(AppError);
   });
 });
 

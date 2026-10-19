@@ -3,6 +3,8 @@
 //
 // 以 Transform 流的形式串在上传链路中，边写对象存储边校验，不整体读入内存：
 // - 文件头（魔数）在前几个字节到达时就判断，不符立即中断，不必等整个文件传完；
+//   没有魔数的文本类格式（.doc / .wps / .xls 的 RTF、HTML、MHT、Office 2003 XML）和文件头前有多余字节的 PDF
+//   最多再看前 SNIFF_BYTES 字节；
 // - docx / xlsx 是 ZIP，要看中央目录里有没有 [Content_Types].xml 和对应的主文档，中央目录在文件末尾，
 //   所以保留最后 TAIL_BYTES 字节，流结束时解析；
 // - 文本文件逐块用 fatal 模式解码，必须是合法 UTF-8 或 GB18030（含 GBK），不能含 NUL；
@@ -13,16 +15,36 @@ import { Transform, type TransformCallback } from 'node:stream';
 import { TextDecoder } from 'node:util';
 import { AppError } from '../errors.ts';
 
-export type ContentKind = 'pdf' | 'docx' | 'xlsx' | 'ole' | 'text' | 'png' | 'jpeg' | 'gif' | 'webp' | 'bmp';
+export type ContentKind =
+  | 'pdf'
+  | 'docx'
+  | 'xlsx'
+  | 'ole'
+  | 'rtf'
+  | 'mht'
+  | 'html'
+  | 'word-xml'
+  | 'spreadsheet-xml'
+  | 'text'
+  | 'png'
+  | 'jpeg'
+  | 'gif'
+  | 'webp'
+  | 'bmp';
 
-/** 扩展名 → 允许的内容类型。.doc / .wps / .xls 也接受改了扩展名的 OOXML（桌面版查重同样兼容）。 */
+/**
+ * 扩展名 → 允许的内容类型，与桌面版能导入的内容一致（docs/MIGRATION_PLAN.md 第 4 步“上传白名单与桌面版的差距”）：
+ * - .doc / .wps / .xls 也接受改了扩展名的 OOXML（桌面版查重同样兼容），.docx 也接受 OLE 的老 Word 文件；
+ * - .doc / .wps 接受各类系统“另存为 doc”的 RTF、HTML、MHT、Word 2003 XML，.xls 接受导出为“xls”的 HTML 表格和
+ *   SpreadsheetML 2003 XML。HTML / MHT 只能以这三个扩展名上传，.html / .mht 扩展名不开放。
+ */
 const EXTENSION_KINDS: Readonly<Record<string, readonly ContentKind[]>> = Object.freeze({
   pdf: ['pdf'],
-  docx: ['docx'],
+  docx: ['docx', 'ole'],
   xlsx: ['xlsx'],
-  doc: ['ole', 'docx'],
-  wps: ['ole', 'docx'],
-  xls: ['ole', 'xlsx'],
+  doc: ['ole', 'docx', 'rtf', 'mht', 'html', 'word-xml'],
+  wps: ['ole', 'docx', 'rtf', 'mht', 'html', 'word-xml'],
+  xls: ['ole', 'xlsx', 'html', 'spreadsheet-xml'],
   txt: ['text'],
   md: ['text'],
   markdown: ['text'],
@@ -35,6 +57,8 @@ const EXTENSION_KINDS: Readonly<Record<string, readonly ContentKind[]>> = Object
 });
 
 const OLE_MIME: Readonly<Record<string, string>> = Object.freeze({
+  // 扩展名是 .docx、内容是 OLE 的老 Word 文件，按老式 Word 记录和解析。
+  docx: 'application/msword',
   doc: 'application/msword',
   wps: 'application/vnd.ms-works',
   xls: 'application/vnd.ms-excel',
@@ -44,6 +68,11 @@ const KIND_MIME: Readonly<Record<Exclude<ContentKind, 'ole' | 'text'>, string>> 
   pdf: 'application/pdf',
   docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
   xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  rtf: 'application/rtf',
+  mht: 'message/rfc822',
+  html: 'text/html',
+  'word-xml': 'application/xml',
+  'spreadsheet-xml': 'application/xml',
   png: 'image/png',
   jpeg: 'image/jpeg',
   gif: 'image/gif',
@@ -51,8 +80,12 @@ const KIND_MIME: Readonly<Record<Exclude<ContentKind, 'ole' | 'text'>, string>> 
   bmp: 'image/bmp',
 });
 
-/** 判断文件头所需的字节数。 */
+/** 判断二进制文件头所需的字节数。 */
 const HEAD_BYTES = 16;
+/** 文本类格式和带前缀的 PDF 最多看这么多字节；pdfjs 同样只在前 1024 字节内找 %PDF-。 */
+export const SNIFF_BYTES = 1024;
+/** 需要看 SNIFF_BYTES 才能判断的内容类型。 */
+const WIDE_KINDS: readonly ContentKind[] = ['pdf', 'rtf', 'mht', 'html', 'word-xml', 'spreadsheet-xml'];
 /** ZIP 中央目录（加上目录尾记录和注释）必须落在最后这么多字节内，否则拒绝。4 MiB 足够容纳数万个条目。 */
 export const TAIL_BYTES = 4 * 1024 * 1024;
 const MAX_ZIP_ENTRIES = 100_000;
@@ -86,6 +119,39 @@ function sniffHead(head: Buffer): ContentKind | 'zip' | null {
   if (startsWith(head, [0x52, 0x49, 0x46, 0x46]) && startsWith(head, [0x57, 0x45, 0x42, 0x50], 8)) return 'webp'; // RIFF....WEBP
   // BM + 4 字节文件大小 + 4 字节保留位（必须为 0）；文件大小在结束时核对。
   if (startsWith(head, [0x42, 0x4d]) && head.length >= 14 && head.readUInt32LE(6) === 0) return 'bmp';
+  return null;
+}
+
+const MIME_VERSION_LINE = /^mime-version:/i;
+const HEADER_LINE = /^[a-z0-9-]+:/i;
+
+/**
+ * 判断没有魔数的格式（sniffHead 之后、二进制格式都不符时）。只看开头的结构，不看全文：
+ * - RTF：`{\rtf`；
+ * - Office 2003 XML：`<?xml` 开头，根元素是 `w:wordDocument`，或含 SpreadsheetML 命名空间；
+ * - HTML：`<!doctype html` 或 `<html` 开头（Word、Excel、LibreOffice 导出的都是这样）；
+ * - MHT：开头是 MIME 头，头部（第一个空行之前）有 `MIME-Version:`；
+ * - PDF：前 SNIFF_BYTES 字节内有 `%PDF-`，且开头不是上面任何一种。
+ * 允许 UTF-8 BOM 和开头的空白；UTF-16 编码的文本不识别。
+ */
+export function sniffWide(head: Buffer): ContentKind | null {
+  let start = startsWith(head, [0xef, 0xbb, 0xbf]) ? 3 : 0;
+  while (start < head.length && [0x20, 0x09, 0x0d, 0x0a].includes(head[start]!)) start += 1;
+  const text = head.toString('latin1', start);
+  const lower = text.toLowerCase();
+  if (text.startsWith('{\\rtf')) return 'rtf';
+  if (text.startsWith('<?xml')) {
+    if (text.includes('<w:wordDocument')) return 'word-xml';
+    if (text.includes('urn:schemas-microsoft-com:office:spreadsheet')) return 'spreadsheet-xml';
+    return null;
+  }
+  if (lower.startsWith('<!doctype html') || /^<html[\s>]/.test(lower)) return 'html';
+  if (start === 0 && HEADER_LINE.test(text)) {
+    const headerEnd = text.search(/\r?\n\r?\n/);
+    const header = headerEnd === -1 ? text : text.slice(0, headerEnd);
+    if (header.split(/\r?\n/).some((line) => MIME_VERSION_LINE.test(line))) return 'mht';
+  }
+  if (head.subarray(0, SNIFF_BYTES).includes('%PDF-', 0, 'latin1')) return 'pdf';
   return null;
 }
 
@@ -143,6 +209,8 @@ export class InspectionStream extends Transform {
   #size = 0;
   #head = Buffer.alloc(0);
   #headKind: ContentKind | 'zip' | null | undefined;
+  /** 文件头不是已知的二进制格式时，是否再看前 SNIFF_BYTES 字节。 */
+  #wideSniff: boolean;
   #tail: Buffer[] = [];
   #tailLength = 0;
   #utf8: TextDecoder | null = null;
@@ -155,6 +223,7 @@ export class InspectionStream extends Transform {
     const allowed = EXTENSION_KINDS[options.extension];
     if (!allowed) throw rejectType();
     this.#allowed = allowed;
+    this.#wideSniff = allowed.some((kind) => WIDE_KINDS.includes(kind));
     if (allowed.includes('text')) {
       this.#utf8 = new TextDecoder('utf-8', { fatal: true });
       this.#gb18030 = new TextDecoder('gb18030', { fatal: true });
@@ -192,23 +261,28 @@ export class InspectionStream extends Transform {
     this.#hash.update(chunk);
 
     if (this.#headKind === undefined) {
-      this.#head = Buffer.concat([this.#head, chunk.subarray(0, HEAD_BYTES - this.#head.length)]);
-      if (this.#head.length >= HEAD_BYTES) this.#decideHead();
+      this.#head = Buffer.concat([this.#head, chunk.subarray(0, SNIFF_BYTES - this.#head.length)]);
+      if (this.#head.length >= HEAD_BYTES) this.#decideHead(false);
     }
     if (this.#headKind === 'zip' || this.#headKind === undefined) this.#keepTail(chunk);
     if (this.#utf8) this.#decodeText(chunk);
   }
 
-  /** 文件头已足够判断：二进制格式不在允许的集合中就立即拒绝。 */
-  #decideHead(): void {
-    const kind = sniffHead(this.#head);
-    this.#headKind = kind;
+  /** 文件头已足够判断：不在允许的集合中就立即拒绝。final 表示文件已经结束，不会再有更多字节。 */
+  #decideHead(final: boolean): void {
+    let kind = sniffHead(this.#head);
     if (this.#allowed.includes('text')) {
+      this.#headKind = kind;
       // 文本文件没有魔数；但明显是二进制格式的（PDF、ZIP、OLE、图片）直接拒绝，不必等解码失败。
       // BMP 的 “BM” 太短，正常文本也可能以它开头，不在此列。
       if (kind !== null && kind !== 'bmp') throw rejectType();
       return;
     }
+    if (kind === null && this.#wideSniff) {
+      if (!final && this.#head.length < SNIFF_BYTES) return; // 等更多字节
+      kind = sniffWide(this.#head);
+    }
+    this.#headKind = kind;
     const zipAllowed = this.#allowed.includes('docx') || this.#allowed.includes('xlsx');
     if (kind === null || (kind === 'zip' ? !zipAllowed : !this.#allowed.includes(kind))) throw rejectType();
     if (kind !== 'zip') {
@@ -246,7 +320,7 @@ export class InspectionStream extends Transform {
 
   #finish(): InspectionResult {
     if (this.#size === 0) throw new AppError(400, 'FILE_EMPTY', '文件为空');
-    if (this.#headKind === undefined) this.#decideHead();
+    if (this.#headKind === undefined) this.#decideHead(true);
     const extension = this.#options.extension;
     const sha256 = this.#hash.digest();
     const done = (kind: ContentKind, mime: string): InspectionResult => ({ kind, mime, size: this.#size, sha256 });

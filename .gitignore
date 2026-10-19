@@ -10,6 +10,8 @@ config.json
 uploads/
 *.docx
 *.pdf
+# 上传校验的真实样本（server/tests/files/samples/）需要跟踪
+!server/tests/files/samples/*
 
 # 构建和打包相关
 dist/

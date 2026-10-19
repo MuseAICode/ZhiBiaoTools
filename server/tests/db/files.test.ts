@@ -1,6 +1,7 @@
 // 文件上传、下载、删除的端到端测试（真实数据库 + S3 兼容对象存储）：
 // 跨组织访问、伪造类型、超大文件、配额、路径穿越文件名、已删除文件的访问、上传中断。
 import { randomUUID } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import { request as httpRequest } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { Readable } from 'node:stream';
@@ -187,6 +188,20 @@ describe('上传与下载', () => {
     expect(response.headers['cache-control']).toBe('private, no-store');
   });
 
+  it('“另存为 doc”的 HTML：按真实内容记录为 text/html，下载仍以附件返回，禁止嗅探和渲染', async () => {
+    const member = await newMember();
+    const content = readFileSync(new URL('../files/samples/html-word.doc', import.meta.url));
+    const file = await uploadOk(member, '招标文件.doc', content);
+    expect(file).toMatchObject({ extension: 'doc', mime: 'text/html', size: content.length });
+    const response = await get(member, `/api/files/${file.id}/content`);
+    expect(response.statusCode).toBe(200);
+    expect(response.rawPayload.equals(content)).toBe(true);
+    expect(response.headers['content-type']).toBe('text/html');
+    expect(response.headers['content-disposition']).toMatch(/^attachment; /);
+    expect(response.headers['x-content-type-options']).toBe('nosniff');
+    expect(response.headers['content-security-policy']).toBe("default-src 'none'; sandbox");
+  });
+
   it('浏览器给的 Content-Type 不被采信：只接受 application/octet-stream', async () => {
     const member = await newMember();
     const response = await upload(member, 'a.png', makePng(), { purpose: 'credential-image', headers: { 'content-type': 'image/png' } });
@@ -260,6 +275,8 @@ describe('伪造类型', () => {
     ['credential-image', '证书.png', SVG_PAYLOAD],
     ['credential-image', '证书.jpg', makePng()],
     ['credential-image', '证书.png', HTML_PAYLOAD],
+    ['tender', '招标文件.docx', HTML_PAYLOAD],
+    ['knowledge', '资料.xlsx', HTML_PAYLOAD],
   ])('%s：%s 的内容是别的格式时拒绝，不留下记录和对象', async (purpose, name, content) => {
     const member = await newMember();
     const response = await upload(member, name, content, { purpose });
@@ -271,6 +288,7 @@ describe('伪造类型', () => {
 
   it.each<[string, string]>([
     ['tender', 'page.html'],
+    ['tender', 'page.mht'],
     ['tender', 'run.exe'],
     ['credential-image', 'icon.svg'],
     ['credential-image', 'scan.pdf'],
