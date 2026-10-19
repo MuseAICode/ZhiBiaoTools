@@ -155,3 +155,4 @@ textarea:focus-visible {
     transition-duration: 0.01ms !important;
   }
 }
+/* data-yb-size 临时验证禁用词检查，随后还原 */
