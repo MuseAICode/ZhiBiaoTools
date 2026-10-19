@@ -419,7 +419,7 @@ AI 网关加固，做法见 `docs/SERVER_DESIGN.md` 第 10.9 节。`client/` 未
 |---|---|---|---|---|
 | 5.0 | 拆分计划（本文档）、上传白名单差距记录 | — | 已完成 | 旧仓库 PR #35 |
 | 5.1 | `projects`（`org_id`、`kind`：technical-plan / feasibility-report / rejection-check / duplicate-check、名称、`created_by`、软删除与 7 天恢复期）；`files` 加可空 `project_id`（复合外键 `(org_id, project_id)`）；项目接口 `GET/POST /api/projects`、`GET/PATCH/DELETE /api/projects/:id`、恢复；路由层的项目归属校验（按 `projectId` 查项目并核对 `org_id` 与 `kind`）；项目级表的迁移与测试模板（复合外键、RLS、`timestamptz` / `jsonb` 约定） | — | 已完成 | #7 |
-| 5.2 | 生成产物存储：解析出的 Markdown、提取的图片等派生文件（对象键 `org/{org_id}/artifacts/{id}`，可挂 `project_id`，记来源 `file_id`，计入组织配额），只读接口；写入方是第 6 步的解析任务，本步只提供 Store 函数和测试 | 5.1 | 未开始 | — |
+| 5.2 | 生成产物存储：解析出的 Markdown、提取的图片等派生文件（对象键 `org/{org_id}/artifacts/{id}`，可挂 `project_id`，记来源 `file_id`，计入组织配额），只读接口；写入方是第 6 步的解析任务，本步只提供 Store 函数和测试。另补上项目删除与文件的联动（5.1 留下）：项目软删除时，其下的文件（`files.project_id`）和生成产物同步不可访问；恢复项目时一起恢复；过期后与项目一起由清理任务物理删除（清理任务本身在第 6 步） | 5.1 | 未开始 | — |
 | 5.3 | B 配置：`org_settings`、`user_settings` | — | 未开始 | — |
 | 5.4 | I 模板库：`export_templates` | — | 未开始 | — |
 | 5.5 | H 资信库：6 张表 | — | 未开始 | — |
@@ -448,6 +448,7 @@ AI 网关加固，做法见 `docs/SERVER_DESIGN.md` 第 10.9 节。`client/` 未
 - **迁移 `0007_projects`**：`projects`（`org_id`、`kind`、`name`、`created_by`、`created_at`、`updated_at`、`deleted_at`、`deleted_by`，`UNIQUE (org_id, id)` 供子表复合外键引用）。`kind` 只能是 `technical-plan` / `feasibility-report` / `rejection-check` / `duplicate-check`；名称 1~200 字、首尾无空白。强制 RLS，应用角色只能读写本组织、`created_by` 必须是当前用户；`kind`、`created_by` 没有列级 UPDATE 授权，建好后不能改；**不授予 DELETE**，只能软删除，触发器 `projects_guard` 保证已删除的项目除恢复外不能再改（`PJ004`）、删除超过 7 天不能恢复（`PJ002`），并维护 `updated_at`。物理删除留给第 6 步的清理任务。
 - **`files.project_id`**：可空，复合外键 `(org_id, project_id) → projects (org_id, id)`，**不级联**（与 `files.org_id` 相同：对象存储中的内容要先由清理任务删除，项目不能连带删掉元数据而留下孤儿对象）；应用角色有该列的 INSERT / UPDATE 授权，供后续模块“把已上传的 `files.id` 挂到项目”。文件接口的返回中加了 `projectId`；上传接口暂不接受 `projectId`，挂载随各模块的导入接口。
 - **项目接口**：`GET /api/projects`（`?kind=`、`?deleted=true` 为回收站、`?limit=`）、`POST /api/projects`、`GET/PATCH/DELETE /api/projects/:projectId`、`POST /api/projects/:projectId/restore`；组织内成员都可以操作（组织内共享，第 9 节第 2 项）。名称做 NFC 归一化、去掉控制字符和零宽 / 双向文本控制字符（Unicode Cc / Cf）和首尾空白。
+- **项目删除与文件的联动留给 5.2**：本 PR 中项目软删除不影响其下文件，`GET /api/files/:fileId` 仍可访问；5.2 补上“同步不可访问、一起恢复、过期后一起清理”，见上方拆分顺序表。
 - **路由层归属校验**：`src/projects/access.ts` 的 `requireProject(db, context, projectId, kind)` 和 `PROJECT_ID_PARAMS`。各模块的项目级接口（`/api/projects/:projectId/<模块>/...`）先调用它：按 `TenantContext` 查出未删除的项目，再显式核对 `org_id` 和 `kind`；查不到、别的组织、已删除、`kind` 不符一律返回同一个 `404 PROJECT_NOT_FOUND`。
 - **项目级表模板**：迁移写法见 `server/tests/db/fixtures/exampleProjectTable.ts`（单行 meta 表以 `project_id` 为主键、多行子表、引用 `files` 的复合外键、`jsonb` 顶层类型约束、`timestamptz`、`updated_at` 触发器函数 `app_touch_updated_at()`（建在 0007 中）、索引以 `org_id, project_id` 开头、RLS 与授权）；该文件只在测试中执行，不登记到迁移清单。隔离测试模板是 `server/tests/db/projectTable.ts` 的 `describeProjectTable`：RLS 启用并强制、策略只授予应用角色、`org_id` / `project_id` 不可空、未设置上下文时查询返回 0 行且写入被拒绝、跨组织读写互相隔离、复合外键挡住跨组织的 `project_id`（插入和改挂）、项目物理删除时级联或被挡住。5.2 起每张项目级表都照模板写迁移，并调用一次 `describeProjectTable`；本 PR 已对 `files` 和两张模板表各跑一遍。
 
