@@ -12,8 +12,8 @@
   gap: 16px;
   padding: 12px 14px;
   background: rgba(255, 255, 255, 0.88);
-  border: 1px solid var(--yb-border-soft);
-  border-radius: var(--yb-radius-lg);
+  border: 1px solid var(--app-border-soft);
+  border-radius: var(--app-radius-lg);
   box-shadow: 0 10px 28px rgba(33, 116, 253, 0.08);
 }
 
@@ -25,17 +25,17 @@
 }
 
 .knowledge-breadcrumb span {
-  color: var(--yb-text-muted);
+  color: var(--app-text-muted);
   font-size: 13px;
 }
 
 .knowledge-breadcrumb strong {
-  color: var(--yb-text);
+  color: var(--app-text);
   font-size: 18px;
 }
 
 .knowledge-breadcrumb small {
-  color: var(--yb-text-muted);
+  color: var(--app-text-muted);
   font-size: 12px;
 }
 
@@ -48,7 +48,7 @@
 
 .knowledge-toolbar-actions .secondary-action.is-active {
   color: #ffffff;
-  background: linear-gradient(135deg, var(--yb-primary), var(--yb-violet));
+  background: linear-gradient(135deg, var(--app-primary), var(--app-violet));
   border-color: transparent;
   box-shadow: 0 10px 24px rgba(33, 116, 253, 0.16);
 }
@@ -58,13 +58,13 @@
   gap: 8px;
   padding: 12px 14px;
   background: rgba(255, 255, 255, 0.88);
-  border: 1px solid var(--yb-border-soft);
-  border-radius: var(--yb-radius-lg);
+  border: 1px solid var(--app-border-soft);
+  border-radius: var(--app-radius-lg);
   box-shadow: 0 10px 28px rgba(33, 116, 253, 0.08);
 }
 
 .knowledge-global-search > label {
-  color: var(--yb-text);
+  color: var(--app-text);
   font-size: 13px;
   font-weight: 800;
 }
@@ -79,17 +79,17 @@
   min-width: 0;
   height: 42px;
   padding: 0 14px;
-  color: var(--yb-text);
+  color: var(--app-text);
   font-size: 14px;
   background: #ffffff;
-  border: 1px solid var(--yb-border-soft);
-  border-radius: var(--yb-radius-md);
+  border: 1px solid var(--app-border-soft);
+  border-radius: var(--app-radius-md);
   outline: none;
 }
 
 .knowledge-global-search-controls input:focus {
   border-color: rgba(33, 116, 253, 0.5);
-  box-shadow: var(--yb-focus-ring);
+  box-shadow: var(--app-focus-ring);
 }
 
 .knowledge-search-panel {
@@ -99,8 +99,8 @@
   flex: 1 1 0;
   overflow: hidden;
   background: rgba(255, 255, 255, 0.86);
-  border: 1px solid var(--yb-border-soft);
-  border-radius: var(--yb-radius-lg);
+  border: 1px solid var(--app-border-soft);
+  border-radius: var(--app-radius-lg);
   box-shadow: 0 12px 30px rgba(15, 23, 42, 0.06);
 }
 
@@ -121,8 +121,8 @@
   flex-wrap: wrap;
   gap: 12px;
   padding: 12px;
-  border-top: 1px solid var(--yb-border-soft);
-  color: var(--yb-text-muted);
+  border-top: 1px solid var(--app-border-soft);
+  color: var(--app-text-muted);
   font-size: 13px;
 }
 
@@ -135,16 +135,16 @@
   display: grid;
   gap: 10px;
   padding: 14px;
-  background: var(--yb-bg);
-  border: 1px solid var(--yb-border-soft);
-  border-radius: var(--yb-radius-md);
-  transition: background var(--yb-duration-fast) ease, border-color var(--yb-duration-fast) ease, box-shadow var(--yb-duration-fast) ease;
+  background: var(--app-bg);
+  border: 1px solid var(--app-border-soft);
+  border-radius: var(--app-radius-md);
+  transition: background var(--app-duration-fast) ease, border-color var(--app-duration-fast) ease, box-shadow var(--app-duration-fast) ease;
 }
 
 .knowledge-search-result-card:hover {
   background: #ffffff;
   border-color: rgba(33, 116, 253, 0.2);
-  box-shadow: var(--yb-shadow-sm);
+  box-shadow: var(--app-shadow-sm);
 }
 
 .knowledge-search-result-path,
@@ -156,14 +156,14 @@
 }
 
 .knowledge-search-result-path {
-  color: var(--yb-text-muted);
+  color: var(--app-text-muted);
   font-size: 12px;
 }
 
 .knowledge-search-result-path strong {
   overflow: hidden;
   max-width: 70ch;
-  color: var(--yb-primary);
+  color: var(--app-primary);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -174,12 +174,12 @@
 }
 
 .knowledge-search-result-card h3 {
-  color: var(--yb-text);
+  color: var(--app-text);
   font-size: 16px;
 }
 
 .knowledge-search-result-card p {
-  color: var(--yb-text-muted);
+  color: var(--app-text-muted);
   font-size: 13px;
   line-height: 1.7;
 }
@@ -201,8 +201,8 @@
   gap: 10px;
   padding: 10px 12px;
   background: rgba(255, 255, 255, 0.88);
-  border: 1px solid var(--yb-border-soft);
-  border-radius: var(--yb-radius-lg);
+  border: 1px solid var(--app-border-soft);
+  border-radius: var(--app-radius-lg);
   box-shadow: 0 10px 28px rgba(33, 116, 253, 0.08);
 }
 
@@ -211,17 +211,17 @@
   min-width: 180px;
   height: 42px;
   padding: 0 14px;
-  color: var(--yb-text);
+  color: var(--app-text);
   font-size: 14px;
   background: #ffffff;
-  border: 1px solid var(--yb-border-soft);
-  border-radius: var(--yb-radius-md);
+  border: 1px solid var(--app-border-soft);
+  border-radius: var(--app-radius-md);
   outline: none;
 }
 
 .knowledge-create-folder-bar input:focus {
   border-color: rgba(33, 116, 253, 0.5);
-  box-shadow: var(--yb-focus-ring);
+  box-shadow: var(--app-focus-ring);
 }
 
 .knowledge-layout {
@@ -238,8 +238,8 @@
   display: grid;
   min-height: 0;
   background: rgba(255, 255, 255, 0.86);
-  border: 1px solid var(--yb-border-soft);
-  border-radius: var(--yb-radius-lg);
+  border: 1px solid var(--app-border-soft);
+  border-radius: var(--app-radius-lg);
   box-shadow: 0 12px 30px rgba(15, 23, 42, 0.06);
 }
 
@@ -260,16 +260,16 @@
   justify-content: space-between;
   gap: 12px;
   padding: 12px 14px;
-  border-bottom: 1px solid var(--yb-border-soft);
+  border-bottom: 1px solid var(--app-border-soft);
 }
 
 .knowledge-panel-head strong {
-  color: var(--yb-text);
+  color: var(--app-text);
   font-size: 15px;
 }
 
 .knowledge-panel-head span {
-  color: var(--yb-text-muted);
+  color: var(--app-text-muted);
   font-size: 13px;
 }
 
@@ -291,11 +291,11 @@
   width: 100%;
   padding: 11px;
   text-align: left;
-  background: var(--yb-bg);
-  border: 1px solid var(--yb-border-soft);
-  border-radius: var(--yb-radius-md);
+  background: var(--app-bg);
+  border: 1px solid var(--app-border-soft);
+  border-radius: var(--app-radius-md);
   cursor: pointer;
-  transition: background var(--yb-duration-fast) ease, border-color var(--yb-duration-fast) ease, box-shadow var(--yb-duration-fast) ease, color var(--yb-duration-fast) ease, transform var(--yb-duration-fast) ease;
+  transition: background var(--app-duration-fast) ease, border-color var(--app-duration-fast) ease, box-shadow var(--app-duration-fast) ease, color var(--app-duration-fast) ease, transform var(--app-duration-fast) ease;
 }
 
 .knowledge-folder-card.is-dragging,
@@ -323,20 +323,20 @@
   place-items: center;
   width: 24px;
   height: 32px;
-  color: var(--yb-text-muted);
+  color: var(--app-text-muted);
   font-size: 16px;
   font-weight: 800;
   line-height: 1;
   background: rgba(148, 163, 184, 0.1);
   border: 1px solid rgba(148, 163, 184, 0.18);
-  border-radius: var(--yb-radius-sm);
+  border-radius: var(--app-radius-sm);
   cursor: grab;
   user-select: none;
-  transition: background var(--yb-duration-fast) ease, border-color var(--yb-duration-fast) ease, box-shadow var(--yb-duration-fast) ease, color var(--yb-duration-fast) ease, transform var(--yb-duration-fast) ease;
+  transition: background var(--app-duration-fast) ease, border-color var(--app-duration-fast) ease, box-shadow var(--app-duration-fast) ease, color var(--app-duration-fast) ease, transform var(--app-duration-fast) ease;
 }
 
 .knowledge-drag-handle:hover {
-  color: var(--yb-primary);
+  color: var(--app-primary);
   background: rgba(33, 116, 253, 0.1);
   border-color: rgba(33, 116, 253, 0.18);
 }
@@ -369,7 +369,7 @@
 .knowledge-folder-card:hover:not(.is-active):not(.is-dragging) {
   background: #ffffff;
   border-color: rgba(33, 116, 253, 0.18);
-  box-shadow: var(--yb-shadow-sm);
+  box-shadow: var(--app-shadow-sm);
 }
 
 .knowledge-folder-main > span {
@@ -378,10 +378,10 @@
   place-items: center;
   width: 34px;
   height: 34px;
-  color: var(--yb-primary);
+  color: var(--app-primary);
   font-weight: 800;
   background: rgba(33, 116, 253, 0.12);
-  border-radius: var(--yb-radius-md);
+  border-radius: var(--app-radius-md);
 }
 
 .knowledge-folder-actions {
@@ -392,13 +392,13 @@
 
 .knowledge-folder-actions button {
   padding: 6px 9px;
-  color: var(--yb-primary);
+  color: var(--app-primary);
   font-size: 12px;
   font-weight: 800;
   background: #ffffff;
-  border: 1px solid var(--yb-border-soft);
-  border-radius: var(--yb-radius-sm);
-  transition: background var(--yb-duration-fast) ease, border-color var(--yb-duration-fast) ease;
+  border: 1px solid var(--app-border-soft);
+  border-radius: var(--app-radius-sm);
+  transition: background var(--app-duration-fast) ease, border-color var(--app-duration-fast) ease;
 }
 
 .knowledge-folder-actions button:hover:not(:disabled) {
@@ -409,7 +409,7 @@
 .knowledge-folder-card strong,
 .knowledge-document-title strong,
 .knowledge-item-card strong {
-  color: var(--yb-text);
+  color: var(--app-text);
 }
 
 .knowledge-document-name {
@@ -427,7 +427,7 @@
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   background: rgba(15, 23, 42, 0.05);
   border: 1px solid rgba(148, 163, 184, 0.22);
-  border-radius: var(--yb-radius-sm);
+  border-radius: var(--app-radius-sm);
   padding: 3px 7px;
 }
 
@@ -435,7 +435,7 @@
 .knowledge-document-meta,
 .knowledge-empty-box p,
 .knowledge-item-card p {
-  color: var(--yb-text-muted);
+  color: var(--app-text-muted);
   font-size: 13px;
 }
 
@@ -447,11 +447,11 @@
   align-content: start;
   gap: 12px;
   padding: 14px;
-  background: var(--yb-bg);
-  border: 1px solid var(--yb-border-soft);
-  border-radius: var(--yb-radius-md);
-  transition: background var(--yb-duration-fast) ease, border-color var(--yb-duration-fast) ease,
-    box-shadow var(--yb-duration-fast) ease;
+  background: var(--app-bg);
+  border: 1px solid var(--app-border-soft);
+  border-radius: var(--app-radius-md);
+  transition: background var(--app-duration-fast) ease, border-color var(--app-duration-fast) ease,
+    box-shadow var(--app-duration-fast) ease;
 }
 
 /* 空态内的引导按钮不占满整行 */
@@ -462,7 +462,7 @@
 .knowledge-document-card:hover:not(.is-dragging) {
   background: #ffffff;
   border-color: rgba(33, 116, 253, 0.16);
-  box-shadow: var(--yb-shadow-sm);
+  box-shadow: var(--app-shadow-sm);
 }
 
 .knowledge-document-card.is-drop-before::before,
@@ -472,8 +472,8 @@
   left: 14px;
   height: 3px;
   content: '';
-  background: linear-gradient(90deg, var(--yb-primary), #7c3aed);
-  border-radius: var(--yb-radius-pill);
+  background: linear-gradient(90deg, var(--app-primary), #7c3aed);
+  border-radius: var(--app-radius-pill);
   box-shadow: 0 0 0 4px rgba(33, 116, 253, 0.12);
 }
 
@@ -503,20 +503,20 @@
 
 .knowledge-status {
   padding: 4px 10px;
-  color: var(--yb-text-muted);
+  color: var(--app-text-muted);
   font-size: 12px;
   font-weight: 700;
   background: rgba(148, 163, 184, 0.12);
-  border-radius: var(--yb-radius-pill);
+  border-radius: var(--app-radius-pill);
 }
 
 .knowledge-status.is-success {
-  color: var(--yb-success);
+  color: var(--app-success);
   background: rgba(16, 185, 129, 0.12);
 }
 
 .knowledge-status.is-error {
-  color: var(--yb-danger);
+  color: var(--app-danger);
   background: rgba(239, 68, 68, 0.12);
 }
 
@@ -528,7 +528,7 @@
 .knowledge-status.is-recovering,
 .knowledge-status.is-ready_for_matching,
 .knowledge-status.is-saving {
-  color: var(--yb-primary);
+  color: var(--app-primary);
   background: rgba(33, 116, 253, 0.12);
 }
 
@@ -540,19 +540,19 @@
 .knowledge-document-actions button,
 .knowledge-preview-tabs button {
   padding: 7px 12px;
-  color: var(--yb-text);
+  color: var(--app-text);
   font-size: 13px;
   font-weight: 700;
   background: #ffffff;
-  border: 1px solid var(--yb-border-soft);
-  border-radius: var(--yb-radius-md);
+  border: 1px solid var(--app-border-soft);
+  border-radius: var(--app-radius-md);
   cursor: pointer;
-  transition: background var(--yb-duration-fast) ease, border-color var(--yb-duration-fast) ease,
-    color var(--yb-duration-fast) ease;
+  transition: background var(--app-duration-fast) ease, border-color var(--app-duration-fast) ease,
+    color var(--app-duration-fast) ease;
 }
 
 .knowledge-document-actions button:hover:not(:disabled) {
-  color: var(--yb-primary);
+  color: var(--app-primary);
   background: rgba(33, 116, 253, 0.06);
   border-color: rgba(33, 116, 253, 0.2);
 }
@@ -570,15 +570,15 @@
 
 .knowledge-folder-actions button.is-danger,
 .knowledge-document-actions button.is-danger {
-  color: var(--yb-danger);
+  color: var(--app-danger);
   background: rgba(239, 68, 68, 0.08);
   border-color: rgba(239, 68, 68, 0.16);
 }
 
 .knowledge-preview-tabs button.is-active {
   color: #ffffff;
-  background: var(--yb-primary);
-  border-color: var(--yb-primary);
+  background: var(--app-primary);
+  border-color: var(--app-primary);
 }
 
 .knowledge-preview-panel {
@@ -588,15 +588,15 @@
 .knowledge-item-source-action {
   width: fit-content;
   padding: 7px 12px;
-  color: var(--yb-primary);
+  color: var(--app-primary);
   font-size: 13px;
   font-weight: 800;
   background: rgba(33, 116, 253, 0.08);
   border: 1px solid rgba(33, 116, 253, 0.16);
-  border-radius: var(--yb-radius-md);
+  border-radius: var(--app-radius-md);
   cursor: pointer;
   user-select: none;
-  transition: background var(--yb-duration-fast) ease, border-color var(--yb-duration-fast) ease, box-shadow var(--yb-duration-fast) ease, color var(--yb-duration-fast) ease, transform var(--yb-duration-fast) ease;
+  transition: background var(--app-duration-fast) ease, border-color var(--app-duration-fast) ease, box-shadow var(--app-duration-fast) ease, color var(--app-duration-fast) ease, transform var(--app-duration-fast) ease;
 }
 
 .knowledge-item-source-action:hover {
@@ -607,11 +607,11 @@
   min-height: 0;
   max-height: 260px;
   overflow: auto;
-  color: var(--yb-text);
+  color: var(--app-text);
   line-height: 1.78;
   background: #ffffff;
-  border: 1px solid var(--yb-border-soft);
-  border-radius: var(--yb-radius-md);
+  border: 1px solid var(--app-border-soft);
+  border-radius: var(--app-radius-md);
   padding: 12px;
 }
 
@@ -619,7 +619,7 @@
   display: flex;
   align-items: center;
   gap: 10px;
-  color: var(--yb-primary);
+  color: var(--app-primary);
   font-size: 13px;
 }
 
@@ -647,7 +647,7 @@
   height: min(820px, calc(100vh - 48px));
   background: #ffffff;
   border: 1px solid rgba(228, 233, 240, 0.9);
-  border-radius: var(--yb-radius-xl);
+  border-radius: var(--app-radius-xl);
   box-shadow: 0 28px 80px rgba(0, 0, 0, 0.26);
   transform: translate(-50%, -50%);
 }
@@ -658,7 +658,7 @@
   justify-content: space-between;
   gap: 14px;
   padding: 14px 16px;
-  border-bottom: 1px solid var(--yb-border-soft);
+  border-bottom: 1px solid var(--app-border-soft);
 }
 
 .knowledge-source-head > div {
@@ -668,7 +668,7 @@
 }
 
 .knowledge-source-head span {
-  color: var(--yb-text-muted);
+  color: var(--app-text-muted);
   font-size: 12px;
   font-weight: 800;
 }
@@ -676,7 +676,7 @@
 .knowledge-source-head h2 {
   overflow: hidden;
   margin: 0;
-  color: var(--yb-text);
+  color: var(--app-text);
   font-size: 16px;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -684,7 +684,7 @@
 
 .knowledge-source-head p {
   margin: 0;
-  color: var(--yb-text-soft);
+  color: var(--app-text-soft);
   font-size: 12px;
   line-height: 1.5;
 }
@@ -702,7 +702,7 @@
 }
 
 .knowledge-item-link-text {
-  color: var(--yb-primary);
+  color: var(--app-primary);
   text-decoration: underline;
   text-decoration-style: dotted;
   overflow-wrap: anywhere;
@@ -713,7 +713,7 @@
 .knowledge-item-content td,
 .knowledge-item-content th,
 .knowledge-item-content blockquote {
-  color: var(--yb-text);
+  color: var(--app-text);
 }
 
 .knowledge-item-content table {
@@ -727,7 +727,7 @@
 .knowledge-item-content td {
   min-width: 120px;
   padding: 9px 10px;
-  border: 1px solid var(--yb-border-soft);
+  border: 1px solid var(--app-border-soft);
 }
 
 .knowledge-item-content th {
@@ -738,10 +738,10 @@
   max-height: 260px;
   overflow: auto;
   white-space: pre-wrap;
-  color: var(--yb-text);
+  color: var(--app-text);
   background: #ffffff;
-  border: 1px solid var(--yb-border-soft);
-  border-radius: var(--yb-radius-md);
+  border: 1px solid var(--app-border-soft);
+  border-radius: var(--app-radius-md);
   padding: 12px;
 }
 
@@ -769,8 +769,8 @@
   flex: 1 1 0;
   overflow: hidden;
   background: rgba(255, 255, 255, 0.86);
-  border: 1px solid var(--yb-border-soft);
-  border-radius: var(--yb-radius-lg);
+  border: 1px solid var(--app-border-soft);
+  border-radius: var(--app-radius-lg);
   box-shadow: 0 12px 30px rgba(15, 23, 42, 0.06);
 }
 
@@ -796,17 +796,17 @@
   align-items: center;
   gap: 12px;
   padding: 16px;
-  border-bottom: 1px solid var(--yb-border-soft);
+  border-bottom: 1px solid var(--app-border-soft);
 }
 
 .knowledge-analysis-command strong {
-  color: var(--yb-text);
+  color: var(--app-text);
   font-size: 17px;
 }
 
 .knowledge-analysis-command p {
   margin: 6px 0 0;
-  color: var(--yb-text-soft);
+  color: var(--app-text-soft);
   font-size: 13px;
   line-height: 1.65;
 }
@@ -814,7 +814,7 @@
 .knowledge-analysis-command label {
   display: grid;
   gap: 6px;
-  color: var(--yb-text-muted);
+  color: var(--app-text-muted);
   font-size: 12px;
   font-weight: 800;
 }
@@ -823,10 +823,10 @@
   width: 100%;
   height: 42px;
   padding: 0 12px;
-  color: var(--yb-text);
+  color: var(--app-text);
   background: #ffffff;
-  border: 1px solid var(--yb-border-soft);
-  border-radius: var(--yb-radius-md);
+  border: 1px solid var(--app-border-soft);
+  border-radius: var(--app-radius-md);
   outline: none;
 }
 
@@ -835,25 +835,25 @@
   grid-template-columns: repeat(6, minmax(0, 1fr));
   gap: 10px;
   padding: 12px 16px;
-  border-bottom: 1px solid var(--yb-border-soft);
+  border-bottom: 1px solid var(--app-border-soft);
 }
 
 .knowledge-stat-card {
   display: grid;
   gap: 6px;
   padding: 12px;
-  background: var(--yb-bg);
-  border: 1px solid var(--yb-border-soft);
-  border-radius: var(--yb-radius-md);
+  background: var(--app-bg);
+  border: 1px solid var(--app-border-soft);
+  border-radius: var(--app-radius-md);
 }
 
 .knowledge-stat-card span {
-  color: var(--yb-text-muted);
+  color: var(--app-text-muted);
   font-size: 12px;
 }
 
 .knowledge-stat-card strong {
-  color: var(--yb-primary);
+  color: var(--app-primary);
   font-size: 20px;
 }
 
@@ -863,7 +863,7 @@
   align-items: center;
   gap: 8px;
   padding: 12px 16px;
-  border-bottom: 1px solid var(--yb-border-soft);
+  border-bottom: 1px solid var(--app-border-soft);
 }
 
 .knowledge-analysis-report strong,
@@ -871,15 +871,15 @@
   padding: 6px 10px;
   font-size: 12px;
   background: rgba(33, 116, 253, 0.08);
-  border-radius: var(--yb-radius-pill);
+  border-radius: var(--app-radius-pill);
 }
 
 .knowledge-analysis-report strong {
-  color: var(--yb-primary);
+  color: var(--app-primary);
 }
 
 .knowledge-analysis-report span {
-  color: var(--yb-text-soft);
+  color: var(--app-text-soft);
 }
 
 .knowledge-analysis-debug-log {
@@ -888,24 +888,24 @@
   gap: 10px;
   min-width: 0;
   padding: 10px 16px;
-  color: var(--yb-text-soft);
+  color: var(--app-text-soft);
   font-size: 12px;
-  border-bottom: 1px solid var(--yb-border-soft);
+  border-bottom: 1px solid var(--app-border-soft);
 }
 
 .knowledge-analysis-debug-log strong {
   flex: 0 0 auto;
-  color: var(--yb-primary);
+  color: var(--app-primary);
 }
 
 .knowledge-analysis-debug-log code {
   overflow: hidden;
   padding: 5px 8px;
-  color: var(--yb-primary-deep);
+  color: var(--app-primary-deep);
   text-overflow: ellipsis;
   white-space: nowrap;
   background: rgba(33, 116, 253, 0.08);
-  border-radius: var(--yb-radius-sm);
+  border-radius: var(--app-radius-sm);
 }
 
 .knowledge-analysis-grid {
@@ -923,7 +923,7 @@
 }
 
 .knowledge-analysis-section + .knowledge-analysis-section {
-  border-left: 1px solid var(--yb-border-soft);
+  border-left: 1px solid var(--app-border-soft);
 }
 
 .knowledge-candidate-list {
@@ -940,24 +940,24 @@
   display: grid;
   gap: 8px;
   padding: 14px;
-  background: var(--yb-bg);
-  border: 1px solid var(--yb-border-soft);
-  border-radius: var(--yb-radius-md);
+  background: var(--app-bg);
+  border: 1px solid var(--app-border-soft);
+  border-radius: var(--app-radius-md);
 }
 
 .knowledge-candidate-card small {
-  color: var(--yb-primary);
+  color: var(--app-primary);
   font-size: 12px;
   font-weight: 800;
 }
 
 .knowledge-candidate-card strong {
-  color: var(--yb-text);
+  color: var(--app-text);
 }
 
 .knowledge-candidate-card p {
   margin: 0;
-  color: var(--yb-text-muted);
+  color: var(--app-text-muted);
   font-size: 13px;
   line-height: 1.65;
 }

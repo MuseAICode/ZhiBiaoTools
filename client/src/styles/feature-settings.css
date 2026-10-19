@@ -19,8 +19,8 @@
 .settings-page-section {
   background: rgba(255, 255, 255, 0.92);
   border: 1px solid rgba(228, 233, 240, 0.88);
-  border-radius: var(--yb-radius-xl);
-  box-shadow: var(--yb-shadow);
+  border-radius: var(--app-radius-xl);
+  box-shadow: var(--app-shadow);
 }
 
 /* [8701-8729] settings-tab-shell/settings-tab */
@@ -34,7 +34,7 @@
   overflow-x: auto;
   background: rgba(255, 255, 255, 0.86);
   border: 1px solid rgba(228, 233, 240, 0.8);
-  border-radius: var(--yb-radius-pill);
+  border-radius: var(--app-radius-pill);
   box-shadow: 0 18px 44px rgba(23, 32, 51, 0.05);
 }
 
@@ -45,18 +45,18 @@
   font-weight: 800;
   background: transparent;
   border: 0;
-  border-radius: var(--yb-radius-xl);
+  border-radius: var(--app-radius-xl);
   white-space: nowrap;
-  transition: background var(--yb-duration-fast) ease, border-color var(--yb-duration-fast) ease, box-shadow var(--yb-duration-fast) ease, color var(--yb-duration-fast) ease, transform var(--yb-duration-fast) ease;
+  transition: background var(--app-duration-fast) ease, border-color var(--app-duration-fast) ease, box-shadow var(--app-duration-fast) ease, color var(--app-duration-fast) ease, transform var(--app-duration-fast) ease;
 }
 
 .settings-tab.is-active {
-  color: var(--yb-primary);
+  color: var(--app-primary);
   background: rgba(33, 116, 253, 0.12);
 }
 
 .settings-tab:hover:not(.is-active) {
-  color: var(--yb-primary);
+  color: var(--app-primary);
   background: rgba(33, 116, 253, 0.06);
 }
 
@@ -72,7 +72,7 @@
   align-items: center;
   gap: 8px;
   padding: 10px 24px 6px;
-  color: var(--yb-text-muted);
+  color: var(--app-text-muted);
   font-size: 11px;
   font-weight: 700;
   letter-spacing: 0.08em;
@@ -84,7 +84,7 @@
 }
 
 .settings-list {
-  border-top: 1px solid var(--yb-border-soft);
+  border-top: 1px solid var(--app-border-soft);
 }
 
 fieldset.settings-list {
@@ -105,7 +105,7 @@ fieldset.settings-list {
 }
 
 .settings-row + .settings-row {
-  border-top: 1px solid var(--yb-border-soft);
+  border-top: 1px solid var(--app-border-soft);
 }
 
 .settings-row-copy {
@@ -114,19 +114,19 @@ fieldset.settings-list {
 }
 
 .settings-row-copy strong {
-  color: var(--yb-text);
+  color: var(--app-text);
   font-size: 14px;
   font-weight: 700;
 }
 
 .settings-row-copy span {
-  color: var(--yb-text-soft);
+  color: var(--app-text-soft);
   font-size: 12px;
   line-height: 1.55;
 }
 
 .settings-row-copy .settings-credential-status {
-  color: var(--yb-text);
+  color: var(--app-text);
 }
 
 .settings-row-copy .settings-credential-status.is-warning {
@@ -136,7 +136,7 @@ fieldset.settings-list {
 .settings-credential-action {
   margin-left: 8px;
   padding: 0;
-  color: var(--yb-primary);
+  color: var(--app-primary);
   font-size: 12px;
   background: none;
   border: 0;
@@ -154,11 +154,11 @@ fieldset.settings-list {
   width: 100%;
   min-height: 36px;
   padding: 8px 12px;
-  color: var(--yb-text);
+  color: var(--app-text);
   font-size: 13px;
   background-color: #eef3fa;
   border: 1px solid #ccd6e3;
-  border-radius: var(--yb-radius-md);
+  border-radius: var(--app-radius-md);
   outline: none;
 }
 
@@ -190,7 +190,7 @@ fieldset.settings-list {
 .settings-row .settings-temperature-slider {
   min-height: 24px;
   padding: 0;
-  accent-color: var(--yb-primary);
+  accent-color: var(--app-primary);
   background: transparent;
   border: 0;
   border-radius: 0;
@@ -210,7 +210,7 @@ fieldset.settings-list {
 }
 
 .settings-temperature-control output {
-  color: var(--yb-primary);
+  color: var(--app-primary);
   font-size: 16px;
   font-weight: 700;
   text-align: right;
@@ -218,7 +218,7 @@ fieldset.settings-list {
 }
 
 .settings-temperature-control.is-disabled output {
-  color: var(--yb-text-soft);
+  color: var(--app-text-soft);
   opacity: 0.7;
 }
 
@@ -243,7 +243,7 @@ fieldset.settings-list {
   padding: 6px;
   background: #ffffff;
   border: 1px solid #ccd6e3;
-  border-radius: var(--yb-radius-md);
+  border-radius: var(--app-radius-md);
   box-shadow: 0 18px 44px rgba(23, 32, 51, 0.1);
 }
 
@@ -252,35 +252,35 @@ fieldset.settings-list {
   top: -6px;
   z-index: 1;
   padding: 8px 10px;
-  color: var(--yb-text-soft);
+  color: var(--app-text-soft);
   font-size: 12px;
   background: #ffffff;
-  border-bottom: 1px solid var(--yb-border-soft);
+  border-bottom: 1px solid var(--app-border-soft);
 }
 
 .font-picker-option {
   width: 100%;
   min-height: 34px;
   padding: 8px 10px;
-  color: var(--yb-text);
+  color: var(--app-text);
   font: inherit;
   text-align: left;
   background: transparent;
   border: 0;
-  border-radius: var(--yb-radius-md);
+  border-radius: var(--app-radius-md);
   cursor: pointer;
-  transition: background var(--yb-duration-fast) ease, border-color var(--yb-duration-fast) ease, box-shadow var(--yb-duration-fast) ease, color var(--yb-duration-fast) ease, transform var(--yb-duration-fast) ease;
+  transition: background var(--app-duration-fast) ease, border-color var(--app-duration-fast) ease, box-shadow var(--app-duration-fast) ease, color var(--app-duration-fast) ease, transform var(--app-duration-fast) ease;
 }
 
 .font-picker-option:hover,
 .font-picker-option.is-selected {
-  color: var(--yb-primary-deep);
+  color: var(--app-primary-deep);
   background: rgba(33, 116, 253, 0.1);
 }
 
 .font-picker-empty {
   padding: 12px 10px;
-  color: var(--yb-text-soft);
+  color: var(--app-text-soft);
   font-size: 13px;
 }
 
@@ -312,7 +312,7 @@ fieldset.settings-list {
 .export-bullet-option:hover,
 .export-bullet-option.is-active {
   background: #ffffff;
-  border-color: var(--yb-primary-deep);
+  border-color: var(--app-primary-deep);
   box-shadow: 0 0 0 3px rgba(33, 116, 253, 0.14);
 }
 
@@ -321,7 +321,7 @@ fieldset.settings-list {
 .settings-row textarea:focus {
   background-color: #ffffff;
   border-color: rgba(33, 116, 253, 0.5);
-  box-shadow: var(--yb-focus-ring);
+  box-shadow: var(--app-focus-ring);
 }
 
 .input-with-action {
@@ -332,7 +332,7 @@ fieldset.settings-list {
   overflow: hidden;
   background: #eef3fa;
   border: 1px solid #ccd6e3;
-  border-radius: var(--yb-radius-md);
+  border-radius: var(--app-radius-md);
 }
 
 .input-with-action.has-password-reveal {
@@ -342,7 +342,7 @@ fieldset.settings-list {
 .input-with-action:focus-within {
   background: #ffffff;
   border-color: rgba(33, 116, 253, 0.5);
-  box-shadow: var(--yb-focus-ring);
+  box-shadow: var(--app-focus-ring);
 }
 
 .settings-row .input-with-action input {
@@ -362,7 +362,7 @@ fieldset.settings-list {
 .input-with-action-button {
   min-height: 34px;
   padding: 0 14px;
-  color: var(--yb-primary);
+  color: var(--app-primary);
   font-weight: 800;
   white-space: nowrap;
   background: rgba(255, 255, 255, 0.48);
@@ -385,7 +385,7 @@ fieldset.settings-list {
 
 .input-with-action-icon-button:hover:not(:disabled),
 .input-with-action-icon-button[aria-pressed="true"]:not(:disabled) {
-  color: var(--yb-primary);
+  color: var(--app-primary);
   background: rgba(33, 116, 253, 0.1);
 }
 
@@ -405,7 +405,7 @@ fieldset.settings-list {
 }
 
 .input-with-action-button:hover:not(:disabled) {
-  color: var(--yb-primary-deep);
+  color: var(--app-primary-deep);
   background: rgba(33, 116, 253, 0.1);
 }
 
@@ -441,12 +441,12 @@ fieldset.settings-list {
   justify-content: center;
   gap: 6px;
   padding: 0 14px;
-  color: var(--yb-primary);
+  color: var(--app-primary);
   font-size: 13px;
   font-weight: 800;
   background: rgba(33, 116, 253, 0.1);
   border: 1px solid rgba(33, 116, 253, 0.16);
-  border-radius: var(--yb-radius-md);
+  border-radius: var(--app-radius-md);
 }
 
 .inline-action:disabled {
@@ -462,8 +462,8 @@ fieldset.settings-list {
   margin: 0 24px 12px;
   padding: 12px 16px;
   background: #ffffff;
-  border: 1px solid var(--yb-border-soft);
-  border-radius: var(--yb-radius-lg);
+  border: 1px solid var(--app-border-soft);
+  border-radius: var(--app-radius-lg);
   box-shadow: 0 8px 20px rgba(36, 48, 72, 0.05);
 }
 
@@ -474,13 +474,13 @@ fieldset.settings-list {
 }
 
 .image-model-status strong {
-  color: var(--yb-text);
+  color: var(--app-text);
   font-size: 16px;
 }
 
 .image-model-status span,
 .image-model-status small {
-  color: var(--yb-text-soft);
+  color: var(--app-text-soft);
   line-height: 1.55;
 }
 
@@ -489,7 +489,7 @@ fieldset.settings-list {
   padding: 8px 12px;
   font-style: normal;
   font-weight: 900;
-  border-radius: var(--yb-radius-pill);
+  border-radius: var(--app-radius-pill);
 }
 
 .image-model-status.is-untested em {
@@ -498,12 +498,12 @@ fieldset.settings-list {
 }
 
 .image-model-status.is-available em {
-  color: var(--yb-success);
+  color: var(--app-success);
   background: rgba(28, 168, 100, 0.12);
 }
 
 .image-model-status.is-unavailable em {
-  color: var(--yb-danger);
+  color: var(--app-danger);
   background: rgba(200, 50, 32, 0.1);
 }
 
@@ -515,8 +515,8 @@ fieldset.settings-list {
   margin: 0 24px 12px;
   padding: 12px 16px;
   background: #ffffff;
-  border: 1px solid var(--yb-border-soft);
-  border-radius: var(--yb-radius-lg);
+  border: 1px solid var(--app-border-soft);
+  border-radius: var(--app-radius-lg);
   box-shadow: 0 8px 20px rgba(36, 48, 72, 0.05);
 }
 
@@ -527,12 +527,12 @@ fieldset.settings-list {
 }
 
 .agent-self-check-status strong {
-  color: var(--yb-text);
+  color: var(--app-text);
   font-size: 16px;
 }
 
 .agent-self-check-status span {
-  color: var(--yb-text-soft);
+  color: var(--app-text-soft);
   line-height: 1.55;
 }
 
@@ -541,7 +541,7 @@ fieldset.settings-list {
   padding: 8px 12px;
   font-style: normal;
   font-weight: 900;
-  border-radius: var(--yb-radius-pill);
+  border-radius: var(--app-radius-pill);
 }
 
 .agent-self-check-status.is-untested em {
@@ -550,22 +550,22 @@ fieldset.settings-list {
 }
 
 .agent-self-check-status.is-checking em {
-  color: var(--yb-primary);
+  color: var(--app-primary);
   background: rgba(33, 116, 253, 0.1);
 }
 
 .agent-self-check-status.is-normal em {
-  color: var(--yb-success);
+  color: var(--app-success);
   background: rgba(28, 168, 100, 0.12);
 }
 
 .agent-self-check-status.is-busy em {
-  color: var(--yb-warning-deep);
+  color: var(--app-warning-deep);
   background: rgba(245, 158, 11, 0.14);
 }
 
 .agent-self-check-status.is-error em {
-  color: var(--yb-danger);
+  color: var(--app-danger);
   background: rgba(200, 50, 32, 0.1);
 }
 
@@ -575,8 +575,8 @@ fieldset.settings-list {
   margin: 12px 24px 20px;
   padding: 16px;
   background: #ffffff;
-  border: 1px solid var(--yb-border-soft);
-  border-radius: var(--yb-radius-lg);
+  border: 1px solid var(--app-border-soft);
+  border-radius: var(--app-radius-lg);
   box-shadow: 0 8px 20px rgba(36, 48, 72, 0.05);
 }
 
@@ -606,13 +606,13 @@ fieldset.settings-list {
 }
 
 .agent-self-check-result-head strong {
-  color: var(--yb-text);
+  color: var(--app-text);
   font-size: 18px;
 }
 
 .agent-self-check-result-head span,
 .agent-self-check-result-head small {
-  color: var(--yb-text-soft);
+  color: var(--app-text-soft);
   line-height: 1.55;
 }
 
@@ -636,19 +636,19 @@ fieldset.settings-list {
   min-width: 0;
   padding: 12px;
   background: rgba(248, 250, 253, 0.84);
-  border: 1px solid var(--yb-border-soft);
-  border-radius: var(--yb-radius-lg);
-  transition: background var(--yb-duration-fast) ease, border-color var(--yb-duration-fast) ease, box-shadow var(--yb-duration-fast) ease, color var(--yb-duration-fast) ease, transform var(--yb-duration-fast) ease;
+  border: 1px solid var(--app-border-soft);
+  border-radius: var(--app-radius-lg);
+  transition: background var(--app-duration-fast) ease, border-color var(--app-duration-fast) ease, box-shadow var(--app-duration-fast) ease, color var(--app-duration-fast) ease, transform var(--app-duration-fast) ease;
 }
 
 .agent-self-check-step strong {
-  color: var(--yb-text);
+  color: var(--app-text);
   font-size: 14px;
 }
 
 .agent-self-check-step span {
   overflow: hidden;
-  color: var(--yb-text-soft);
+  color: var(--app-text-soft);
   font-size: 12px;
   line-height: 1.45;
   text-overflow: ellipsis;
@@ -680,8 +680,8 @@ fieldset.settings-list {
   gap: 12px;
   padding: 14px;
   background: rgba(248, 250, 253, 0.84);
-  border: 1px solid var(--yb-border-soft);
-  border-radius: var(--yb-radius-lg);
+  border: 1px solid var(--app-border-soft);
+  border-radius: var(--app-radius-lg);
 }
 
 .agent-diagnostic-section.is-success {
@@ -717,12 +717,12 @@ fieldset.settings-list {
 }
 
 .agent-diagnostic-section-head strong {
-  color: var(--yb-text);
+  color: var(--app-text);
   font-size: 15px;
 }
 
 .agent-diagnostic-section-head span {
-  color: var(--yb-text-soft);
+  color: var(--app-text-soft);
   font-size: 12px;
   line-height: 1.45;
 }
@@ -733,31 +733,31 @@ fieldset.settings-list {
   font-size: 11px;
   font-style: normal;
   font-weight: 900;
-  border-radius: var(--yb-radius-pill);
+  border-radius: var(--app-radius-pill);
 }
 
 .agent-diagnostic-section.is-success .agent-diagnostic-section-head em {
-  color: var(--yb-success);
+  color: var(--app-success);
   background: rgba(28, 168, 100, 0.12);
 }
 
 .agent-diagnostic-section.is-warning .agent-diagnostic-section-head em {
-  color: var(--yb-warning-deep);
+  color: var(--app-warning-deep);
   background: rgba(245, 158, 11, 0.14);
 }
 
 .agent-diagnostic-section.is-running .agent-diagnostic-section-head em {
-  color: var(--yb-primary);
+  color: var(--app-primary);
   background: rgba(33, 116, 253, 0.1);
 }
 
 .agent-diagnostic-section.is-error .agent-diagnostic-section-head em {
-  color: var(--yb-danger);
+  color: var(--app-danger);
   background: rgba(200, 50, 32, 0.1);
 }
 
 .agent-diagnostic-section.is-skipped .agent-diagnostic-section-head em {
-  color: var(--yb-text-soft);
+  color: var(--app-text-soft);
   background: rgba(132, 145, 164, 0.12);
 }
 
@@ -773,18 +773,18 @@ fieldset.settings-list {
   gap: 4px;
   padding: 10px;
   background: #ffffff;
-  border: 1px solid var(--yb-border-soft);
-  border-radius: var(--yb-radius-md);
+  border: 1px solid var(--app-border-soft);
+  border-radius: var(--app-radius-md);
 }
 
 .agent-diagnostic-detail-grid span {
-  color: var(--yb-text-soft);
+  color: var(--app-text-soft);
   font-size: 11px;
 }
 
 .agent-diagnostic-detail-grid strong {
   overflow: hidden;
-  color: var(--yb-text);
+  color: var(--app-text);
   font-size: 12px;
   line-height: 1.45;
   text-overflow: ellipsis;
@@ -803,8 +803,8 @@ fieldset.settings-list {
   min-width: 0;
   padding: 12px;
   background: rgba(248, 250, 253, 0.84);
-  border: 1px solid var(--yb-border-soft);
-  border-radius: var(--yb-radius-lg);
+  border: 1px solid var(--app-border-soft);
+  border-radius: var(--app-radius-lg);
 }
 
 .agent-tool-check-item div {
@@ -818,7 +818,7 @@ fieldset.settings-list {
 .agent-tool-check-item strong {
   min-width: 0;
   overflow: hidden;
-  color: var(--yb-text);
+  color: var(--app-text);
   font-size: 14px;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -830,13 +830,13 @@ fieldset.settings-list {
   font-size: 11px;
   font-style: normal;
   font-weight: 900;
-  border-radius: var(--yb-radius-pill);
+  border-radius: var(--app-radius-pill);
 }
 
 .agent-tool-check-item span,
 .agent-tool-check-item small {
   overflow: hidden;
-  color: var(--yb-text-soft);
+  color: var(--app-text-soft);
   font-size: 12px;
   line-height: 1.45;
   text-overflow: ellipsis;
@@ -848,13 +848,13 @@ fieldset.settings-list {
 }
 
 .agent-tool-check-item.is-success em {
-  color: var(--yb-success);
+  color: var(--app-success);
   background: rgba(28, 168, 100, 0.12);
 }
 
 .agent-tool-check-item.is-pending em,
 .agent-tool-check-item.is-running em {
-  color: var(--yb-primary);
+  color: var(--app-primary);
   background: rgba(33, 116, 253, 0.1);
 }
 
@@ -863,7 +863,7 @@ fieldset.settings-list {
 }
 
 .agent-tool-check-item.is-warning em {
-  color: var(--yb-warning-deep);
+  color: var(--app-warning-deep);
   background: rgba(245, 158, 11, 0.14);
 }
 
@@ -872,7 +872,7 @@ fieldset.settings-list {
 }
 
 .agent-tool-check-item.is-error em {
-  color: var(--yb-danger);
+  color: var(--app-danger);
   background: rgba(200, 50, 32, 0.1);
 }
 
@@ -887,8 +887,8 @@ fieldset.settings-list {
   white-space: pre-wrap;
   word-break: break-word;
   background: #f6f8fc;
-  border: 1px solid var(--yb-border-soft);
-  border-radius: var(--yb-radius-lg);
+  border: 1px solid var(--app-border-soft);
+  border-radius: var(--app-radius-lg);
 }
 
 .image-test-preview {
@@ -899,8 +899,8 @@ fieldset.settings-list {
   margin: 0 24px 20px;
   padding: 14px;
   background: rgba(248, 250, 253, 0.86);
-  border: 1px solid var(--yb-border-soft);
-  border-radius: var(--yb-radius-lg);
+  border: 1px solid var(--app-border-soft);
+  border-radius: var(--app-radius-lg);
 }
 
 .image-test-preview div {
@@ -909,12 +909,12 @@ fieldset.settings-list {
 }
 
 .image-test-preview strong {
-  color: var(--yb-text);
+  color: var(--app-text);
   font-size: 17px;
 }
 
 .image-test-preview span {
-  color: var(--yb-text-soft);
+  color: var(--app-text-soft);
 }
 
 .image-test-preview img {
@@ -925,8 +925,8 @@ fieldset.settings-list {
   justify-self: end;
   object-fit: contain;
   background: #ffffff;
-  border: 1px solid var(--yb-border-soft);
-  border-radius: var(--yb-radius-lg);
+  border: 1px solid var(--app-border-soft);
+  border-radius: var(--app-radius-lg);
 }
 
 /* 文件解析方式介绍弹窗：横向对比表 */
@@ -942,19 +942,19 @@ fieldset.settings-list {
 .parser-help-note {
   margin: 0;
   padding: 10px 12px;
-  color: var(--yb-text-soft);
+  color: var(--app-text-soft);
   font-size: 13px;
   line-height: 1.55;
   background: rgba(33, 116, 253, 0.06);
   border: 1px solid rgba(33, 116, 253, 0.12);
-  border-radius: var(--yb-radius-md);
+  border-radius: var(--app-radius-md);
 }
 
 .parser-help-table-wrap {
   min-width: 0;
   overflow: auto;
-  border: 1px solid var(--yb-border-soft);
-  border-radius: var(--yb-radius-md);
+  border: 1px solid var(--app-border-soft);
+  border-radius: var(--app-radius-md);
 }
 
 .parser-help-table {
@@ -971,8 +971,8 @@ fieldset.settings-list {
   text-align: left;
   font-size: 12px;
   line-height: 1.45;
-  border-bottom: 1px solid var(--yb-border-soft);
-  border-right: 1px solid var(--yb-border-soft);
+  border-bottom: 1px solid var(--app-border-soft);
+  border-right: 1px solid var(--app-border-soft);
 }
 
 .parser-help-table th:last-child,
@@ -982,14 +982,14 @@ fieldset.settings-list {
 
 .parser-help-table thead th {
   background: rgba(248, 250, 253, 0.95);
-  color: var(--yb-text);
+  color: var(--app-text);
   font-weight: 700;
 }
 
 .parser-help-table thead th:first-child,
 .parser-help-table tbody th {
   width: 72px;
-  color: var(--yb-text-muted);
+  color: var(--app-text-muted);
   font-weight: 700;
   background: rgba(248, 250, 253, 0.7);
   white-space: nowrap;
@@ -998,7 +998,7 @@ fieldset.settings-list {
 .parser-help-table thead th strong {
   display: block;
   margin-bottom: 4px;
-  color: var(--yb-text);
+  color: var(--app-text);
   font-size: 13px;
   letter-spacing: -0.01em;
 }
@@ -1006,12 +1006,12 @@ fieldset.settings-list {
 .parser-help-table thead th span {
   display: inline-block;
   padding: 2px 7px;
-  color: var(--yb-primary);
+  color: var(--app-primary);
   font-size: 11px;
   font-weight: 800;
   background: rgba(33, 116, 253, 0.1);
   border: 1px solid rgba(33, 116, 253, 0.14);
-  border-radius: var(--yb-radius-pill);
+  border-radius: var(--app-radius-pill);
 }
 
 .parser-help-table thead .parser-help-col-primary {
@@ -1027,7 +1027,7 @@ fieldset.settings-list {
 }
 
 .parser-help-table tbody td {
-  color: var(--yb-text);
+  color: var(--app-text);
   font-weight: 600;
   word-break: break-word;
 }
@@ -1059,11 +1059,11 @@ fieldset.settings-list {
   gap: 12px;
   min-width: 0;
   padding: 18px;
-  color: var(--yb-text);
+  color: var(--app-text);
   text-decoration: none;
-  background: var(--yb-bg);
-  border: 1px solid var(--yb-border-soft);
-  border-radius: var(--yb-radius-xl);
+  background: var(--app-bg);
+  border: 1px solid var(--app-border-soft);
+  border-radius: var(--app-radius-xl);
   box-shadow: 0 12px 28px rgba(33, 116, 253, 0.06);
 }
 
@@ -1088,17 +1088,17 @@ fieldset.settings-list {
 .about-info-card > span {
   width: fit-content;
   padding: 4px 10px;
-  color: var(--yb-primary);
+  color: var(--app-primary);
   font-size: 12px;
   font-weight: 800;
   background: rgba(33, 116, 253, 0.08);
   border: 1px solid rgba(33, 116, 253, 0.12);
-  border-radius: var(--yb-radius-pill);
+  border-radius: var(--app-radius-pill);
 }
 
 .about-card-head strong,
 .about-info-card strong {
-  color: var(--yb-text);
+  color: var(--app-text);
   font-size: 17px;
   line-height: 1.35;
 }
@@ -1106,7 +1106,7 @@ fieldset.settings-list {
 .about-update-card p,
 .about-info-card p {
   margin: 0;
-  color: var(--yb-text-soft);
+  color: var(--app-text-soft);
   font-size: 13px;
   line-height: 1.7;
 }
@@ -1125,7 +1125,7 @@ fieldset.settings-list {
   justify-content: space-between;
   gap: 16px;
   padding: 12px 0;
-  border-bottom: 1px solid var(--yb-border-soft);
+  border-bottom: 1px solid var(--app-border-soft);
 }
 
 .about-links-item:last-child {
@@ -1134,20 +1134,20 @@ fieldset.settings-list {
 
 .about-links-label {
   flex-shrink: 0;
-  color: var(--yb-text-soft);
+  color: var(--app-text-soft);
   font-size: 13px;
 }
 
 .about-links-value {
   min-width: 0;
-  color: var(--yb-text);
+  color: var(--app-text);
   font-size: 13px;
   font-weight: 600;
   text-align: right;
 }
 
 .about-links-value.is-link {
-  color: var(--yb-primary);
+  color: var(--app-primary);
   text-decoration: none;
 }
 
@@ -1162,11 +1162,11 @@ fieldset.settings-list {
   color: #ffffff;
   font-size: 13px;
   font-weight: 700;
-  background: var(--yb-primary);
+  background: var(--app-primary);
   border: none;
-  border-radius: var(--yb-radius-md);
+  border-radius: var(--app-radius-md);
   cursor: pointer;
-  transition: opacity var(--yb-duration), transform var(--yb-duration);
+  transition: opacity var(--app-duration), transform var(--app-duration);
 }
 
 .about-update-card .update-button:hover {
@@ -1185,12 +1185,12 @@ fieldset.settings-list {
   gap: 14px;
   margin: 0 24px 24px;
   padding: 18px;
-  color: var(--yb-text-soft);
+  color: var(--app-text-soft);
   background:
     radial-gradient(circle at top left, rgba(33, 116, 253, 0.14), transparent 36%),
     linear-gradient(135deg, rgba(255, 255, 255, 0.96), rgba(248, 251, 255, 0.92));
   border: 1px solid rgba(33, 116, 253, 0.16);
-  border-radius: var(--yb-radius-lg);
+  border-radius: var(--app-radius-lg);
   box-shadow: 0 12px 28px rgba(33, 116, 253, 0.07);
 }
 
@@ -1202,18 +1202,18 @@ fieldset.settings-list {
 .privacy-statement-head span {
   width: fit-content;
   padding: 4px 10px;
-  color: var(--yb-primary);
+  color: var(--app-primary);
   font-size: 12px;
   font-weight: 800;
   letter-spacing: 0.12em;
   text-transform: uppercase;
   background: rgba(33, 116, 253, 0.1);
   border: 1px solid rgba(33, 116, 253, 0.16);
-  border-radius: var(--yb-radius-pill);
+  border-radius: var(--app-radius-pill);
 }
 
 .privacy-statement-head strong {
-  color: var(--yb-text);
+  color: var(--app-text);
   font-size: 18px;
 }
 
@@ -1236,7 +1236,7 @@ fieldset.settings-list {
   padding: 16px;
   background: rgba(255, 255, 255, 0.86);
   border: 1px solid rgba(33, 116, 253, 0.12);
-  border-radius: var(--yb-radius-lg);
+  border-radius: var(--app-radius-lg);
 }
 
 .privacy-item > span {
@@ -1245,11 +1245,11 @@ fieldset.settings-list {
   color: #ffffff;
   font-size: 12px;
   font-weight: 800;
-  background: var(--yb-primary);
-  border-radius: var(--yb-radius-pill);
+  background: var(--app-primary);
+  border-radius: var(--app-radius-pill);
 }
 
 .privacy-item strong {
-  color: var(--yb-text);
+  color: var(--app-text);
   font-size: 15px;
 }

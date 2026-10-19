@@ -20,7 +20,7 @@ export default function ProgressBar({ value, label, tone = 'primary', active = f
   const clamped = Math.max(0, Math.min(100, Number.isFinite(value) ? value : 0));
   return (
     <span
-      className={`yb-progress-track${tone !== 'primary' ? ` is-${tone}` : ''}${active ? ' is-active' : ''}${className ? ` ${className}` : ''}`}
+      className={`app-progress-track${tone !== 'primary' ? ` is-${tone}` : ''}${active ? ' is-active' : ''}${className ? ` ${className}` : ''}`}
       aria-label={label}
       style={{ '--progress': `${clamped}%` } as CSSProperties}
     >

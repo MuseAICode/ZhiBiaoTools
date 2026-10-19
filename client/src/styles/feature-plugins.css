@@ -18,8 +18,8 @@
     radial-gradient(circle at 95% 0%, rgba(33, 116, 253, 0.1), transparent 28%),
     rgba(255, 255, 255, 0.92);
   border: 1px solid rgba(228, 233, 240, 0.88);
-  border-radius: var(--yb-radius-xl);
-  box-shadow: var(--yb-shadow);
+  border-radius: var(--app-radius-xl);
+  box-shadow: var(--app-shadow);
 }
 
 .plugins-head {
@@ -45,7 +45,7 @@
 
 .plugins-head h2 {
   margin: 0;
-  color: var(--yb-text);
+  color: var(--app-text);
   font-size: 22px;
   line-height: 1.2;
   letter-spacing: -0.03em;
@@ -53,7 +53,7 @@
 
 .plugins-head p {
   margin: 0;
-  color: var(--yb-text-muted);
+  color: var(--app-text-muted);
   font-size: 13.5px;
   line-height: 1.7;
 }
@@ -80,10 +80,10 @@
   padding: 20px;
   background:
     linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(248, 250, 253, 0.86));
-  border: 1px solid var(--yb-border-soft);
-  border-radius: var(--yb-radius-xl);
+  border: 1px solid var(--app-border-soft);
+  border-radius: var(--app-radius-xl);
   box-shadow: 0 14px 34px rgba(23, 32, 51, 0.04);
-  transition: border-color var(--yb-duration-fast) ease, box-shadow var(--yb-duration-fast) ease, transform var(--yb-duration-fast) ease;
+  transition: border-color var(--app-duration-fast) ease, box-shadow var(--app-duration-fast) ease, transform var(--app-duration-fast) ease;
 }
 
 .plugin-card:hover {
@@ -107,7 +107,7 @@
   overflow: hidden;
   object-fit: cover;
   background: #f8fbff;
-  border: 1px solid var(--yb-border-soft);
+  border: 1px solid var(--app-border-soft);
   border-radius: 13px;
 }
 
@@ -125,7 +125,7 @@
 
 .plugin-card-title strong {
   overflow: hidden;
-  color: var(--yb-text);
+  color: var(--app-text);
   font-size: 16.5px;
   font-weight: 650;
   letter-spacing: -0.01em;
@@ -135,7 +135,7 @@
 
 .plugin-card-title small {
   overflow: hidden;
-  color: var(--yb-text-muted);
+  color: var(--app-text-muted);
   font-size: 12.5px;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -153,18 +153,18 @@
   align-items: center;
   height: 22px;
   padding: 0 9px;
-  color: var(--yb-primary);
+  color: var(--app-primary);
   font-size: 12px;
   font-weight: 700;
   background: rgba(33, 116, 253, 0.08);
   border: 1px solid rgba(33, 116, 253, 0.12);
-  border-radius: var(--yb-radius-pill);
+  border-radius: var(--app-radius-pill);
 }
 
 .plugin-card-description {
   margin: 0;
   flex: 1;
-  color: var(--yb-text-soft);
+  color: var(--app-text-soft);
   font-size: 13.5px;
   line-height: 1.7;
 }
@@ -176,7 +176,7 @@
   gap: 12px;
   flex-wrap: wrap;
   padding-top: 14px;
-  border-top: 1px solid var(--yb-border-soft);
+  border-top: 1px solid var(--app-border-soft);
 }
 
 .plugin-card-status {
@@ -191,12 +191,12 @@
   align-items: center;
   height: 24px;
   padding: 0 10px;
-  color: var(--yb-text-soft);
+  color: var(--app-text-soft);
   font-size: 12px;
   font-weight: 700;
   background: #f2f5f9;
-  border: 1px solid var(--yb-border-soft);
-  border-radius: var(--yb-radius-pill);
+  border: 1px solid var(--app-border-soft);
+  border-radius: var(--app-radius-pill);
 }
 
 .plugin-status-pill.is-installed {
@@ -206,19 +206,19 @@
 }
 
 .plugin-status-pill.is-enabled {
-  color: var(--yb-success);
+  color: var(--app-success);
   background: rgba(22, 138, 74, 0.1);
   border-color: rgba(22, 138, 74, 0.2);
 }
 
 .plugin-status-pill.is-update {
-  color: var(--yb-warning);
+  color: var(--app-warning);
   background: rgba(242, 138, 0, 0.1);
   border-color: rgba(242, 138, 0, 0.2);
 }
 
 .plugin-status-pill.is-updating {
-  color: var(--yb-warning);
+  color: var(--app-warning);
   background: rgba(242, 138, 0, 0.1);
   border-color: rgba(242, 138, 0, 0.2);
   animation: pulse 1.5s ease-in-out infinite;
@@ -234,7 +234,7 @@
 }
 
 .plugin-status-pill.is-error {
-  color: var(--yb-danger);
+  color: var(--app-danger);
   background: rgba(217, 45, 32, 0.1);
   border-color: rgba(217, 45, 32, 0.2);
 }
@@ -263,21 +263,21 @@
   padding: 24px;
   background: #ffffff;
   border: 1px solid rgba(228, 233, 240, 0.9);
-  border-radius: var(--yb-radius-xl);
-  box-shadow: var(--yb-shadow-modal);
+  border-radius: var(--app-radius-xl);
+  box-shadow: var(--app-shadow-modal);
   transform: translate(-50%, -50%);
 }
 
 .plugin-uninstall-dialog [data-radix-dialog-title] {
   margin: 0;
-  color: var(--yb-text);
+  color: var(--app-text);
   font-size: 20px;
   letter-spacing: -0.02em;
 }
 
 .plugin-uninstall-dialog [data-radix-dialog-description] {
   margin: 0;
-  color: var(--yb-text-soft);
+  color: var(--app-text-soft);
   font-size: 14px;
   line-height: 1.7;
 }

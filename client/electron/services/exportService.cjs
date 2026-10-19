@@ -2768,8 +2768,8 @@ async function renderMarkdownForRestrictedHtml(content, assets, context) {
     }
     const ref = `export-images/${assets.size}.${loaded.type || imageExtensionFromSource(source) || 'png'}`;
     assets.set(ref, loaded.buffer);
-    const figure = $('<figure data-yb-size="wide" data-yb-fit="contain"></figure>');
-    figure.append($('<img>').attr('data-yb-asset-ref', ref));
+    const figure = $('<figure data-app-size="wide" data-app-fit="contain"></figure>');
+    figure.append($('<img>').attr('data-app-asset-ref', ref));
     if ($(img).attr('alt')) figure.append($('<figcaption>').text($(img).attr('alt')));
     // 块级 figure 不能放在 Markdown 图片默认的 p 中。
     if ($(img).parent().is('p') && $(img).parent().contents().length === 1) $(img).parent().replaceWith(figure);

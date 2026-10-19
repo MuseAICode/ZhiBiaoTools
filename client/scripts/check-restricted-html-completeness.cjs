@@ -21,13 +21,13 @@ const validCases = [
   ['文本比较符和连接符', `${prefix}<p>数值 1 < 2，A & B。</p>`],
   ['转义后的标签示例', `${prefix}<p>&lt;ul id=&quot;s_1_&quot;&gt;</p>`],
   ['完整注释含标签示例', `${prefix}<!-- 示例：<ul id="s_1_ -->`],
-  ['完整图片框和提示词', `${prefix}<figure data-yb-size="wide"><template>中文图示</template><img alt="图片"><figcaption>图注</figcaption></figure>`],
+  ['完整图片框和提示词', `${prefix}<figure data-app-size="wide"><template>中文图示</template><img alt="图片"><figcaption>图注</figcaption></figure>`],
   ['完整内联格式及空元素', `${prefix}<p><strong>重点</strong><br><em>说明</em></p>`],
 ];
 const truncatedCases = [
   ['真实故障形态', '<ul id="s_1_'],
   ['标签名未写完', '<tabl'],
-  ['属性名未写完', '<ul data-yb'],
+  ['属性名未写完', '<ul data-app'],
   ['双引号未闭合', '<p title="中文内容'],
   ['单引号未闭合', "<p title='中文内容"],
   ['引号已闭合但缺少大于号', '<ul id="s_1_"'],
@@ -38,7 +38,7 @@ const truncatedCases = [
   ['结束标签未写完', '<ul><li>项目</li></ul'],
   ['注释未结束', '<!-- app:block'],
   ['注释结束符未写完', '<!-- 中文 --'],
-  ['图片空元素未写完', '<figure data-yb-size="wide"><img alt="图" /'],
+  ['图片空元素未写完', '<figure data-app-size="wide"><img alt="图" /'],
 ];
 
 // 合法样例确保新增检测不把正常 HTML 片段误判为截断。
@@ -58,7 +58,7 @@ test(`源码截断：${truncatedCases.length} 个样例全部拒绝`, () => {
 // 解析器 EOF 回调不能替代既有的元素闭合和图片结构检查。
 test('保留原结构约束：缺少 ul 结束标签、图片被包裹仍拒绝', () => {
   assert.throws(() => assertHtmlStructure(`${prefix}<ul><li>项目</li>`, { checkSourceCompleteness: true }), /缺少结束标签/);
-  assert.throws(() => assertHtmlStructure(`${prefix}<figure data-yb-size="wide"><strong><img alt="图"></strong></figure>`, { checkSourceCompleteness: true }), /直接子元素/);
+  assert.throws(() => assertHtmlStructure(`${prefix}<figure data-app-size="wide"><strong><img alt="图"></strong></figure>`, { checkSourceCompleteness: true }), /直接子元素/);
 });
 
 // 读取故障副本，验证默认行为不变，开启源码检查后能定位并拒绝。

@@ -59,7 +59,7 @@ function findHtmlStructureIssues(html, { checkSourceCompleteness = false } = {})
         ? `${describe(node)} 的 img 被其他元素包裹，须作为 figure 的直接子元素`
         : `${describe(node)} 须直接包含且仅包含一个 img，当前为 ${direct} 个`);
     }
-    if (!FIGURE_SIZES.has((figure.attr('data-yb-size') || '').trim())) add(node, `${describe(node)} 缺少合法的 data-yb-size`);
+    if (!FIGURE_SIZES.has((figure.attr('data-app-size') || '').trim())) add(node, `${describe(node)} 缺少合法的 data-app-size`);
   });
   $('img').each((_index, node) => {
     if (!$(node).closest('figure').length) add(node, `${describe(node)} 须放在 figure 内`);
@@ -143,12 +143,12 @@ function repairHtmlStructure(html) {
         repairs.push(`${label(figure)} 的图片移为直接子元素`);
       }
     }
-    if (!FIGURE_SIZES.has((figure.attr('data-yb-size') || '').trim())) {
-      figure.attr('data-yb-size', 'wide');
+    if (!FIGURE_SIZES.has((figure.attr('data-app-size') || '').trim())) {
+      figure.attr('data-app-size', 'wide');
       repairs.push(`${label(figure)} 补充画框比例`);
     }
     // 多出的图片各自拆成同比例的 figure；误入的正文和嵌套 figure 依原顺序移到其后。
-    const frame = { 'data-yb-size': figure.attr('data-yb-size'), ...(figure.attr('data-yb-fit') ? { 'data-yb-fit': figure.attr('data-yb-fit') } : {}) };
+    const frame = { 'data-app-size': figure.attr('data-app-size'), ...(figure.attr('data-app-fit') ? { 'data-app-fit': figure.attr('data-app-fit') } : {}) };
     const [image, ...extraImages] = figure.children('img').toArray();
     let anchor = figure;
     for (const child of figure.contents().toArray()) {
@@ -169,7 +169,7 @@ function repairHtmlStructure(html) {
   for (const node of $('img').toArray()) {
     const img = $(node);
     if (img.closest('figure').length) continue;
-    placeFigure($, img, $('<figure data-yb-size="wide" data-yb-fit="contain"></figure>').append(img.clone()));
+    placeFigure($, img, $('<figure data-app-size="wide" data-app-fit="contain"></figure>').append(img.clone()));
     repairs.push('游离图片放入 figure');
   }
   return { html: $.html(), repairs: [...new Set(repairs)] };

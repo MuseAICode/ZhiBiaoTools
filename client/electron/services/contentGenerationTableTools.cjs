@@ -17,7 +17,7 @@ const NUMBER_PATTERN = /\d+(?:\.\d+)?%?/g;
 // 图片表格属于配图布局，不参与数据表格清理。
 function hasDataTables(html) {
   const $ = load(html, null, false);
-  return $('table').toArray().some(node => !IMAGE_TABLE_PRESETS.includes($(node).attr('data-yb-preset')));
+  return $('table').toArray().some(node => !IMAGE_TABLE_PRESETS.includes($(node).attr('data-app-preset')));
 }
 
 // 阶段提示词只交代调用工具；查找、转换、核对和写回都由工具完成。
@@ -51,7 +51,7 @@ const readableText = node => textNodes([node]).join(' ').replace(/\s+/g, ' ').tr
 // 本节需转换的顶层数据表格及无法安全转换的原因；含图片或不在顶层的数据表格不转换。
 function scanTables(html) {
   const { $, nodes } = topLevelNodes(html);
-  const isData = node => !IMAGE_TABLE_PRESETS.includes($(node).attr('data-yb-preset'));
+  const isData = node => !IMAGE_TABLE_PRESETS.includes($(node).attr('data-app-preset'));
   const tables = [];
   const skipped = [];
   const elements = nodes.filter(item => item.kind === 'element');

@@ -37,7 +37,7 @@ export type FigureSize = keyof typeof FIGURE_GEOMETRY;
 export type FigureGeneration = 'aiImage' | 'mermaid' | 'htmlImage';
 
 /**
- * 画框适配方式，对应 C# 侧的 data-yb-fit。
+ * 画框适配方式，对应 C# 侧的 data-app-fit。
  * contain 只把画框当上界，图按真实比例缩进去，一个像素都不切；
  * cover 裁成画框比例。流程图和信息图必须 contain，实景照片才适合 cover。
  */

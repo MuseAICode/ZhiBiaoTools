@@ -44,7 +44,7 @@ async function previewContentSection({ sectionId, agentService, openXmlHelperSer
   let replacedImages = false;
   for (const element of $('figure').toArray()) {
     const figure = $(element);
-    const reference = ownImages($, element).first().attr('data-yb-asset-ref');
+    const reference = ownImages($, element).first().attr('data-app-asset-ref');
     let missing = !reference;
     if (reference) {
       try {

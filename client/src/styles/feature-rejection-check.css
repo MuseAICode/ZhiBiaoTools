@@ -16,8 +16,8 @@
 .rejection-result-command-bar {
   background: rgba(255, 255, 255, 0.94);
   border: 1px solid rgba(228, 233, 240, 0.88);
-  border-radius: var(--yb-radius-xl);
-  box-shadow: var(--yb-shadow);
+  border-radius: var(--app-radius-xl);
+  box-shadow: var(--app-shadow);
 }
 
 .rejection-bid-file-list {
@@ -34,11 +34,11 @@
 .rejection-bid-file-entry > span {
   width: max-content;
   padding: 3px 8px;
-  color: var(--yb-primary);
+  color: var(--app-primary);
   font-size: 12px;
   font-weight: 900;
   background: rgba(33, 116, 253, 0.09);
-  border-radius: var(--yb-radius-pill);
+  border-radius: var(--app-radius-pill);
 }
 
 .rejection-reader-card {
@@ -72,14 +72,14 @@
 }
 
 .rejection-custom-save-state {
-  color: var(--yb-text-muted);
+  color: var(--app-text-muted);
   font-size: 12px;
   font-weight: 800;
   white-space: nowrap;
 }
 
 .rejection-custom-save-state.is-dirty {
-  color: var(--yb-warning-deep);
+  color: var(--app-warning-deep);
 }
 
 .rejection-result-command-bar {
@@ -96,14 +96,14 @@
 .rejection-result-command-bar strong {
   display: block;
   margin: 7px 0 5px;
-  color: var(--yb-text);
+  color: var(--app-text);
   font-size: 24px;
   letter-spacing: -0.025em;
 }
 
 .rejection-result-command-bar p {
   margin: 0;
-  color: var(--yb-text-soft);
+  color: var(--app-text-soft);
 }
 
 .rejection-result-status {
@@ -112,20 +112,20 @@
   gap: 4px;
   padding: 10px 14px;
   background: rgba(248, 250, 253, 0.78);
-  border: 1px solid var(--yb-border-soft);
-  border-radius: var(--yb-radius-lg);
-  transition: background var(--yb-duration-fast) ease, border-color var(--yb-duration-fast) ease, box-shadow var(--yb-duration-fast) ease, color var(--yb-duration-fast) ease, transform var(--yb-duration-fast) ease;
+  border: 1px solid var(--app-border-soft);
+  border-radius: var(--app-radius-lg);
+  transition: background var(--app-duration-fast) ease, border-color var(--app-duration-fast) ease, box-shadow var(--app-duration-fast) ease, color var(--app-duration-fast) ease, transform var(--app-duration-fast) ease;
 }
 
 .rejection-result-status span {
-  color: var(--yb-text);
+  color: var(--app-text);
   font-size: 14px;
   font-weight: 800;
 }
 
 .rejection-result-status small {
   overflow: hidden;
-  color: var(--yb-text-muted);
+  color: var(--app-text-muted);
   font-size: 12px;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -174,8 +174,8 @@
   padding: 24px;
   background: rgba(255, 255, 255, 0.94);
   border: 1px solid rgba(228, 233, 240, 0.88);
-  border-radius: var(--yb-radius-xl);
-  box-shadow: var(--yb-shadow);
+  border-radius: var(--app-radius-xl);
+  box-shadow: var(--app-shadow);
 }
 
 .rejection-check-result-title {
@@ -194,7 +194,7 @@
   grid-template-columns: repeat(3, minmax(0, 1fr));
   background: #ffffff;
   border: 1px solid rgba(27, 50, 92, 0.14);
-  border-radius: var(--yb-radius-xl);
+  border-radius: var(--app-radius-xl);
 }
 
 .rejection-check-result-tab {
@@ -207,7 +207,7 @@
   border: 0;
   border-right: 1px solid rgba(27, 50, 92, 0.12);
   cursor: pointer;
-  transition: background var(--yb-duration-fast) ease, border-color var(--yb-duration-fast) ease, box-shadow var(--yb-duration-fast) ease, color var(--yb-duration-fast) ease, transform var(--yb-duration-fast) ease;
+  transition: background var(--app-duration-fast) ease, border-color var(--app-duration-fast) ease, box-shadow var(--app-duration-fast) ease, color var(--app-duration-fast) ease, transform var(--app-duration-fast) ease;
 }
 
 .rejection-check-result-tab:last-child {
@@ -223,7 +223,7 @@
 }
 
 .rejection-check-result-tab strong {
-  color: var(--yb-text);
+  color: var(--app-text);
   font-size: 20px;
 }
 
@@ -232,27 +232,27 @@
   font-size: 12px;
   font-style: normal;
   font-weight: 800;
-  border-radius: var(--yb-radius-pill);
+  border-radius: var(--app-radius-pill);
 }
 
 .rejection-check-result-tab.is-running em {
-  color: var(--yb-primary);
+  color: var(--app-primary);
   background: rgba(33, 116, 253, 0.1);
 }
 
 .rejection-check-result-tab.is-success em {
-  color: var(--yb-success);
+  color: var(--app-success);
   background: rgba(20, 130, 91, 0.1);
 }
 
 .rejection-check-result-tab.is-error em {
-  color: var(--yb-danger);
+  color: var(--app-danger);
   background: rgba(224, 72, 72, 0.1);
 }
 
 .rejection-check-result-tab.is-idle em,
 .rejection-check-result-tab.is-disabled em {
-  color: var(--yb-text-muted);
+  color: var(--app-text-muted);
   background: rgba(94, 111, 143, 0.1);
 }
 
@@ -264,13 +264,13 @@
   overflow: auto;
   padding: 34px;
   background: linear-gradient(180deg, rgba(248, 250, 253, 0.88), rgba(255, 255, 255, 0.98));
-  border: 1px solid var(--yb-border-soft);
-  border-radius: var(--yb-radius-xl);
+  border: 1px solid var(--app-border-soft);
+  border-radius: var(--app-radius-xl);
 }
 
 .rejection-check-result-content h3 {
   margin: 10px 0 12px;
-  color: var(--yb-text);
+  color: var(--app-text);
   font-size: 26px;
   letter-spacing: -0.025em;
 }
@@ -278,7 +278,7 @@
 .rejection-check-result-content p {
   max-width: 620px;
   margin: 0;
-  color: var(--yb-text-soft);
+  color: var(--app-text-soft);
   line-height: 1.8;
 }
 
@@ -320,15 +320,15 @@
   align-items: center;
   gap: 6px;
   padding: 7px 11px;
-  color: var(--yb-text-soft);
+  color: var(--app-text-soft);
   font-weight: 800;
   background: rgba(255, 255, 255, 0.78);
   border: 1px solid rgba(27, 50, 92, 0.12);
-  border-radius: var(--yb-radius-pill);
+  border-radius: var(--app-radius-pill);
 }
 
 .rejection-bid-result-filter button.is-active {
-  color: var(--yb-primary);
+  color: var(--app-primary);
   background: rgba(33, 116, 253, 0.1);
   border-color: rgba(33, 116, 253, 0.24);
 }
@@ -339,7 +339,7 @@
   color: inherit;
   font-size: 12px;
   background: rgba(27, 50, 92, 0.08);
-  border-radius: var(--yb-radius-pill);
+  border-radius: var(--app-radius-pill);
 }
 
 .rejection-finding-group {
@@ -353,14 +353,14 @@
   justify-content: space-between;
   gap: 12px;
   padding: 10px 12px;
-  color: var(--yb-text-soft);
+  color: var(--app-text-soft);
   background: linear-gradient(90deg, rgba(33, 116, 253, 0.08), rgba(91, 84, 211, 0.04));
   border: 1px solid rgba(33, 116, 253, 0.12);
-  border-radius: var(--yb-radius-lg);
+  border-radius: var(--app-radius-lg);
 }
 
 .rejection-finding-group-head strong {
-  color: var(--yb-text);
+  color: var(--app-text);
 }
 
 .rejection-finding-group-head span {
@@ -373,7 +373,7 @@
   overflow: hidden;
   background: rgba(255, 255, 255, 0.96);
   border: 1px solid rgba(27, 50, 92, 0.12);
-  border-radius: var(--yb-radius-xl);
+  border-radius: var(--app-radius-xl);
   box-shadow: 0 14px 32px rgba(33, 116, 253, 0.08);
 }
 
@@ -399,8 +399,8 @@
   text-align: left;
   background: transparent;
   border: 0;
-  border-radius: var(--yb-radius-lg);
-  transition: background var(--yb-duration-fast) ease, border-color var(--yb-duration-fast) ease, box-shadow var(--yb-duration-fast) ease, color var(--yb-duration-fast) ease, transform var(--yb-duration-fast) ease;
+  border-radius: var(--app-radius-lg);
+  transition: background var(--app-duration-fast) ease, border-color var(--app-duration-fast) ease, box-shadow var(--app-duration-fast) ease, color var(--app-duration-fast) ease, transform var(--app-duration-fast) ease;
 }
 
 .rejection-finding-toggle:hover {
@@ -413,11 +413,11 @@
   height: 28px;
   flex: 0 0 28px;
   place-items: center;
-  color: var(--yb-primary);
+  color: var(--app-primary);
   font-size: 18px;
   font-weight: 900;
   background: rgba(33, 116, 253, 0.1);
-  border-radius: var(--yb-radius-pill);
+  border-radius: var(--app-radius-pill);
 }
 
 .rejection-finding-title-wrap {
@@ -435,7 +435,7 @@
 
 .rejection-finding-title-wrap strong {
   overflow: hidden;
-  color: var(--yb-text);
+  color: var(--app-text);
   font-size: 16px;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -443,7 +443,7 @@
 
 .rejection-finding-title-wrap small {
   overflow: hidden;
-  color: var(--yb-text-soft);
+  color: var(--app-text-soft);
   font-size: 13px;
   line-height: 1.55;
   text-overflow: ellipsis;
@@ -458,16 +458,16 @@
   font-size: 12px;
   font-style: normal;
   font-weight: 900;
-  border-radius: var(--yb-radius-pill);
+  border-radius: var(--app-radius-pill);
 }
 
 .rejection-finding-file-tag {
-  color: var(--yb-primary);
+  color: var(--app-primary);
   background: rgba(33, 116, 253, 0.1);
 }
 
 .rejection-finding-tag.is-invalidBid {
-  color: var(--yb-danger);
+  color: var(--app-danger);
   background: rgba(200, 50, 32, 0.1);
 }
 
@@ -477,7 +477,7 @@
 }
 
 .rejection-finding-tag.is-typo {
-  color: var(--yb-warning-deep);
+  color: var(--app-warning-deep);
   background: rgba(245, 158, 11, 0.13);
 }
 
@@ -487,17 +487,17 @@
 }
 
 .rejection-finding-severity.is-high {
-  color: var(--yb-danger);
+  color: var(--app-danger);
   background: rgba(200, 50, 32, 0.1);
 }
 
 .rejection-finding-severity.is-medium {
-  color: var(--yb-warning-deep);
+  color: var(--app-warning-deep);
   background: rgba(245, 158, 11, 0.13);
 }
 
 .rejection-finding-severity.is-low {
-  color: var(--yb-success);
+  color: var(--app-success);
   background: rgba(20, 130, 91, 0.1);
 }
 
@@ -513,19 +513,19 @@
   padding: 8px 12px;
   font-weight: 800;
   border: 0;
-  border-radius: var(--yb-radius-pill);
+  border-radius: var(--app-radius-pill);
 }
 
 .rejection-finding-delete {
-  color: var(--yb-danger);
+  color: var(--app-danger);
   background: rgba(200, 50, 32, 0.08);
-  transition: background var(--yb-duration-fast) ease, border-color var(--yb-duration-fast) ease, box-shadow var(--yb-duration-fast) ease, color var(--yb-duration-fast) ease, transform var(--yb-duration-fast) ease;
+  transition: background var(--app-duration-fast) ease, border-color var(--app-duration-fast) ease, box-shadow var(--app-duration-fast) ease, color var(--app-duration-fast) ease, transform var(--app-duration-fast) ease;
 }
 
 .rejection-finding-copy {
-  color: var(--yb-primary);
+  color: var(--app-primary);
   background: rgba(33, 116, 253, 0.1);
-  transition: background var(--yb-duration-fast) ease, border-color var(--yb-duration-fast) ease, box-shadow var(--yb-duration-fast) ease, color var(--yb-duration-fast) ease, transform var(--yb-duration-fast) ease;
+  transition: background var(--app-duration-fast) ease, border-color var(--app-duration-fast) ease, box-shadow var(--app-duration-fast) ease, color var(--app-duration-fast) ease, transform var(--app-duration-fast) ease;
 }
 
 .rejection-finding-delete:hover {
@@ -544,13 +544,13 @@
 }
 
 .typo-finding-title i {
-  color: var(--yb-text-muted);
+  color: var(--app-text-muted);
   font-style: normal;
 }
 
 .typo-original-excerpt {
   margin: 0;
-  color: var(--yb-text-soft);
+  color: var(--app-text-soft);
   font-size: 13px;
   line-height: 1.7;
   white-space: pre-wrap;
@@ -577,19 +577,19 @@
   gap: 8px;
   padding: 14px;
   background: linear-gradient(180deg, rgba(248, 250, 253, 0.92), rgba(255, 255, 255, 0.98));
-  border: 1px solid var(--yb-border-soft);
-  border-radius: var(--yb-radius-lg);
+  border: 1px solid var(--app-border-soft);
+  border-radius: var(--app-radius-lg);
 }
 
 .rejection-finding-detail-block strong {
-  color: var(--yb-text);
+  color: var(--app-text);
   font-size: 14px;
 }
 
 .rejection-finding-markdown {
   min-height: 0;
   padding: 0;
-  color: var(--yb-text-soft);
+  color: var(--app-text-soft);
   font-size: 13px;
   line-height: 1.7;
   background: transparent;

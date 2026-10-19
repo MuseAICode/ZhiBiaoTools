@@ -18,7 +18,7 @@ sealed class RenderRestrictedHtmlDocxRequest
     [JsonPropertyName("asset_root")]
     public string AssetRoot { get; set; } = "";
 
-    /// <summary>Main 按配图扩展名声明的图片类型，键为 data-yb-asset-ref；仅在文件头无法识别时用于原样嵌入。</summary>
+    /// <summary>Main 按配图扩展名声明的图片类型，键为 data-app-asset-ref；仅在文件头无法识别时用于原样嵌入。</summary>
     [JsonPropertyName("asset_types")]
     public Dictionary<string, string>? AssetTypes { get; set; }
 

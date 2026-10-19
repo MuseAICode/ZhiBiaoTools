@@ -23,8 +23,8 @@ function readAiSection(workspaceDir, file) {
   if (!body.trim()) return { body, reason: '正文未生成', detail: `正文文件为空：${file}` };
   const $ = cheerio.load(body, null, false);
   for (const img of $('img').toArray()) {
-    const reference = $(img).attr('data-yb-asset-ref');
-    if (!reference) return { body, reason: '有图片未生成完成', detail: '图片缺少 data-yb-asset-ref' };
+    const reference = $(img).attr('data-app-asset-ref');
+    if (!reference) return { body, reason: '有图片未生成完成', detail: '图片缺少 data-app-asset-ref' };
     try {
       fs.accessSync(path.join(workspaceDir, reference));
     } catch (error) {
@@ -103,7 +103,7 @@ function createTechnicalPlanExport({ technicalPlanStore, templateStore, agentSer
       const recordImageFailure = (label, reason) => imageFailures.set(label, [...(imageFailures.get(label) || []), reason]);
       // 仅自检副本携带定位标记，转换器会将其替换为不可见书签。
       const mark = (html, source) => {
-        const name = `yb_layout_${layoutSources.length}`;
+        const name = `app_layout_${layoutSources.length}`;
         layoutSources.push({ name, ...source });
         return `<p>APPMARKLAYOUT:${name}</p>\n${html}`;
       };
@@ -141,10 +141,10 @@ function createTechnicalPlanExport({ technicalPlanStore, templateStore, agentSer
                   figure_ids: $(node).find('figure').addBack('figure').map((_i, figure) => $(figure).attr('id')).get(),
                   text: $(node).text().slice(0, 160),
                 })).join('\n');
-                recordImages(label, $('img').map((_i, img) => $(img).attr('data-yb-asset-ref')).get());
+                recordImages(label, $('img').map((_i, img) => $(img).attr('data-app-asset-ref')).get());
               } else {
                 body = section.body;
-                recordImages(label, section.$('img').map((_i, img) => section.$(img).attr('data-yb-asset-ref')).get());
+                recordImages(label, section.$('img').map((_i, img) => section.$(img).attr('data-app-asset-ref')).get());
               }
             } else if (String(item.content || '').trim()) {
               const assetCount = assets.size;
@@ -161,11 +161,11 @@ function createTechnicalPlanExport({ technicalPlanStore, templateStore, agentSer
           throw new Error(`小节 ${label} 导出失败：${error.message}`, { cause: error });
         }
         // 显式记录目录编号，正文内部标题不能改变后续目录编号。
-        const heading = `<h${level} data-yb-outline-number="${item.number}">${escapeHtml(item.title)}</h${level}>`;
+        const heading = `<h${level} data-app-outline-number="${item.number}">${escapeHtml(item.title)}</h${level}>`;
         append(`${layoutCheck ? mark(heading, { section_id: item.id, heading: level }) : heading}\n${body}`, useTemplate, sectionTemplate);
         onProgress?.({ phase: 'running', progress: 10 + Math.round((index + 1) / entries.length * 40), message: `正在读取正文 ${index + 1}/${entries.length}：${label}`, warnings: [], ...stats });
       }
-      const html = ranges.map(range => `<section data-yb-export-template="${range.useTemplate}" data-yb-export-page-template="${range.sectionTemplate}">${range.html}</section>`).join('\n');
+      const html = ranges.map(range => `<section data-app-export-template="${range.useTemplate}" data-app-export-page-template="${range.sectionTemplate}">${range.html}</section>`).join('\n');
       developerLogger?.write('export.technical_plan.html.assembled', { section_count: entries.length, skipped_section_count: warnings.length, html_chars: html.length, image_count: cheerio.load(html)('img').length });
       onProgress?.({ phase: 'running', progress: 55, message: '正在按当前模板转换整本 Word。', warnings: [], ...stats });
       const result = await openXmlHelperService.createRestrictedHtmlDocx(html, snapshot.export_format, {
