@@ -1,6 +1,7 @@
 // Kysely 的表类型，与 migrations/ 中的 DDL 手工保持一致。
 import type { ColumnType, Generated } from 'kysely';
 import type { FilePurpose } from '../files/policy.ts';
+import type { ProjectKind } from '../projects/store.ts';
 
 type Timestamp = ColumnType<Date, Date | string, Date | string>;
 type CreatedAt = ColumnType<Date, Date | string | undefined, never>;
@@ -241,6 +242,23 @@ export interface FilesTable {
   uploaded_at: ColumnType<Date | null, never, never>;
   deleted_at: ColumnType<Date | null, never, Date | string | null>;
   deleted_by: ColumnType<string | null, never, string | null>;
+  /** 所属项目（迁移 0007_projects），可空；复合外键 (org_id, project_id) 保证只能是本组织的项目。 */
+  project_id: ColumnType<string | null, string | null | undefined, string | null>;
+}
+
+/**
+ * 项目（迁移 0007_projects）。kind、created_by 建好后不能改；只能软删除，updated_at 由触发器 projects_guard 维护。
+ */
+export interface ProjectsTable {
+  id: ColumnType<string, never, never>;
+  org_id: ColumnType<string, string, never>;
+  kind: ColumnType<ProjectKind, ProjectKind, never>;
+  name: ColumnType<string, string, string>;
+  created_by: ColumnType<string, string, never>;
+  created_at: ColumnType<Date, never, never>;
+  updated_at: ColumnType<Date, never, never>;
+  deleted_at: ColumnType<Date | null, never, Date | string | null>;
+  deleted_by: ColumnType<string | null, never, string | null>;
 }
 
 export interface Database {
@@ -257,4 +275,5 @@ export interface Database {
   provider_credentials: ProviderCredentialsTable;
   platform_models: PlatformModelsTable;
   files: FilesTable;
+  projects: ProjectsTable;
 }

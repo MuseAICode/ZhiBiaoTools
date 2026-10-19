@@ -13,6 +13,8 @@ export interface FileRecord {
   id: string;
   storageKey: string;
   purpose: FilePurpose;
+  /** 所属项目；不属于任何项目时为 null。 */
+  projectId: string | null;
   displayName: string;
   extension: string;
   mime: string;
@@ -31,6 +33,7 @@ function toRecord(row: FileRow): FileRecord {
     id: row.id,
     storageKey: row.storage_key,
     purpose: row.purpose,
+    projectId: row.project_id,
     displayName: row.display_name,
     extension: row.extension,
     mime: row.mime!,

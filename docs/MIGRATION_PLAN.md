@@ -13,7 +13,7 @@
 | 2 | 服务端骨架 | 进行中 | 旧仓库 PR #25（设计文档 `docs/SERVER_DESIGN.md`）、旧仓库 PR #26（决定 18 项事项，新增计费与合规章节）、旧仓库 PR #27（`server/` 基础设施：配置、日志、`/healthz`、错误处理、安全响应头、Docker、CI）、旧仓库 PR #28（数据库层：PostgreSQL 17、Kysely 迁移、身份与租户表、RLS、`TenantContext`、`/readyz`）、旧仓库 PR #29（鉴权：登录前查询的 `SECURITY DEFINER` 函数、argon2id、服务端会话与 CSRF、邀请注册、找回密码、限流、平台管理员命令行）、旧仓库 PR #30（限流的客户端 IP：新增 `TRUSTED_PROXIES`，只采信可信代理附加的 `X-Forwarded-For`） |
 | 3 | 配置与 AI 网关 | 进行中 | 旧仓库 PR #31（计费账本：组织余额、只追加的账本、带版本的价格表、幂等扣费、管理员手动充值与冲正，不调用 AI）、旧仓库 PR #32（AI 网关：调用前预扣冻结、按实际用量结算、冻结超时自动释放、`usage_records`、平台 Key 信封加密、DeepSeek / 通义千问流式适配、`POST /api/ai/chat`）、旧仓库 PR #33（平台模型白名单 `platform_models`：只有登记且启用、并有生效价格的模型能调用，免费须显式标记；管理员登记 / 启用 / 停用接口；用户断开时中止上游请求的端到端测试） |
 | 4 | 文件上传 / 下载 / 资源协议 | 进行中 | 旧仓库 PR #34（文件存储：S3 兼容对象存储、本地 SeaweedFS、`files` 表与强制 RLS、按内容校验类型、大小上限与组织配额、附件方式下载、7 天恢复期）、#6（上传白名单补齐桌面版能导入的内容：OLE 内容的 `.docx`，`.doc/.wps` 的 RTF / HTML / MHT / Word 2003 XML，`.xls` 的 HTML 表格 / SpreadsheetML，`%PDF-` 前有多余字节的 PDF） |
-| 5 | 数据层迁移（按业务逐个） | 进行中 | 旧仓库 PR #35（拆分计划，见“第 5 步说明”；记录上传白名单与桌面版的差距） |
+| 5 | 数据层迁移（按业务逐个） | 进行中 | 旧仓库 PR #35（拆分计划，见“第 5 步说明”；记录上传白名单与桌面版的差距）、#7（5.1 项目：`projects` 表、`files.project_id`、项目接口、路由层归属校验、项目级表的迁移与测试模板） |
 | 6 | 任务队列与 worker | 未开始 | — |
 | 7 | OpenXmlHelper 容器化与离屏渲染（前置：CI 新增 .NET 编译与 OpenXmlHelper 测试，见“第 9 步说明”的品牌改名第三部分） | 未开始 | — |
 | 8 | Agent 沙箱 | 未开始 | — |
@@ -418,8 +418,8 @@ AI 网关加固，做法见 `docs/SERVER_DESIGN.md` 第 10.9 节。`client/` 未
 | 序号 | 内容 | 依赖 | 状态 | PR |
 |---|---|---|---|---|
 | 5.0 | 拆分计划（本文档）、上传白名单差距记录 | — | 已完成 | 旧仓库 PR #35 |
-| 5.1 | `projects`（`org_id`、`kind`：technical-plan / feasibility-report / rejection-check / duplicate-check、名称、`created_by`、软删除与 7 天恢复期）；`files` 加可空 `project_id`（复合外键 `(org_id, project_id)`）；项目接口 `GET/POST /api/projects`、`GET/PATCH/DELETE /api/projects/:id`、恢复；路由层的项目归属校验（按 `projectId` 查项目并核对 `org_id` 与 `kind`）；项目级表的迁移与测试模板（复合外键、RLS、`timestamptz` / `jsonb` 约定） | — | 未开始 | — |
-| 5.2 | 生成产物存储：解析出的 Markdown、提取的图片等派生文件（对象键 `org/{org_id}/artifacts/{id}`，可挂 `project_id`，记来源 `file_id`，计入组织配额），只读接口；写入方是第 6 步的解析任务，本步只提供 Store 函数和测试 | 5.1 | 未开始 | — |
+| 5.1 | `projects`（`org_id`、`kind`：technical-plan / feasibility-report / rejection-check / duplicate-check、名称、`created_by`、软删除与 7 天恢复期）；`files` 加可空 `project_id`（复合外键 `(org_id, project_id)`）；项目接口 `GET/POST /api/projects`、`GET/PATCH/DELETE /api/projects/:id`、恢复；路由层的项目归属校验（按 `projectId` 查项目并核对 `org_id` 与 `kind`）；项目级表的迁移与测试模板（复合外键、RLS、`timestamptz` / `jsonb` 约定） | — | 已完成 | #7 |
+| 5.2 | 生成产物存储：解析出的 Markdown、提取的图片等派生文件（对象键 `org/{org_id}/artifacts/{id}`，可挂 `project_id`，记来源 `file_id`，计入组织配额），只读接口；写入方是第 6 步的解析任务，本步只提供 Store 函数和测试。另补上项目删除与文件的联动（5.1 留下）：项目软删除时，其下的文件（`files.project_id`）和生成产物同步不可访问；恢复项目时一起恢复；过期后与项目一起由清理任务物理删除（清理任务本身在第 6 步） | 5.1 | 未开始 | — |
 | 5.3 | B 配置：`org_settings`、`user_settings` | — | 未开始 | — |
 | 5.4 | I 模板库：`export_templates` | — | 未开始 | — |
 | 5.5 | H 资信库：6 张表 | — | 未开始 | — |
@@ -440,6 +440,22 @@ AI 网关加固，做法见 `docs/SERVER_DESIGN.md` 第 10.9 节。`client/` 未
 - **第 6 步核实、可能推迟到第 8 步**：技术方案的目录生成 / 调整、全局事实生成 / 调整，可研报告的目录生成 / 调整。它们经 `agentService.runTask` 调用 Pi，路线图第 6 步原计划在队列中迁移，需先确认这些任务的 Pi 是否用到 `read/write/bash` 等命令工具；用到则随第 8 步迁移；
 - **第 7 步（OpenXmlHelper 与离屏渲染）**：模板样张 `renderPreview`、Word 导出、`previewContentWord`、模板提取；
 - **第 8 步（Agent 沙箱）**：正文生成、章节重写、原方案还原、格式自检、Agent 问答，Pi 持久任务状态，开发者 Agent 监视器。
+
+#### 项目（#7，5.1）
+
+只改 `server/`，不改 `client/`，没有新增依赖。
+
+- **迁移 `0007_projects`**：`projects`（`org_id`、`kind`、`name`、`created_by`、`created_at`、`updated_at`、`deleted_at`、`deleted_by`，`UNIQUE (org_id, id)` 供子表复合外键引用）。`kind` 只能是 `technical-plan` / `feasibility-report` / `rejection-check` / `duplicate-check`；名称 1~200 字、首尾无空白。强制 RLS，应用角色只能读写本组织、`created_by` 必须是当前用户；`kind`、`created_by` 没有列级 UPDATE 授权，建好后不能改；**不授予 DELETE**，只能软删除，触发器 `projects_guard` 保证已删除的项目除恢复外不能再改（`PJ004`）、删除超过 7 天不能恢复（`PJ002`），并维护 `updated_at`。物理删除留给第 6 步的清理任务。
+- **`files.project_id`**：可空，复合外键 `(org_id, project_id) → projects (org_id, id)`，**不级联**（与 `files.org_id` 相同：对象存储中的内容要先由清理任务删除，项目不能连带删掉元数据而留下孤儿对象）；应用角色有该列的 INSERT / UPDATE 授权，供后续模块“把已上传的 `files.id` 挂到项目”。文件接口的返回中加了 `projectId`；上传接口暂不接受 `projectId`，挂载随各模块的导入接口。
+- **项目接口**：`GET /api/projects`（`?kind=`、`?deleted=true` 为回收站、`?limit=`）、`POST /api/projects`、`GET/PATCH/DELETE /api/projects/:projectId`、`POST /api/projects/:projectId/restore`；组织内成员都可以操作（组织内共享，第 9 节第 2 项）。名称做 NFC 归一化、去掉控制字符和零宽 / 双向文本控制字符（Unicode Cc / Cf）和首尾空白。
+- **项目删除与文件的联动留给 5.2**：本 PR 中项目软删除不影响其下文件，`GET /api/files/:fileId` 仍可访问；5.2 补上“同步不可访问、一起恢复、过期后一起清理”，见上方拆分顺序表。
+- **路由层归属校验**：`src/projects/access.ts` 的 `requireProject(db, context, projectId, kind)` 和 `PROJECT_ID_PARAMS`。各模块的项目级接口（`/api/projects/:projectId/<模块>/...`）先调用它：按 `TenantContext` 查出未删除的项目，再显式核对 `org_id` 和 `kind`；查不到、别的组织、已删除、`kind` 不符一律返回同一个 `404 PROJECT_NOT_FOUND`。
+- **项目级表模板**：迁移写法见 `server/tests/db/fixtures/exampleProjectTable.ts`（单行 meta 表以 `project_id` 为主键、多行子表、引用 `files` 的复合外键、`jsonb` 顶层类型约束、`timestamptz`、`updated_at` 触发器函数 `app_touch_updated_at()`（建在 0007 中）、索引以 `org_id, project_id` 开头、RLS 与授权）；该文件只在测试中执行，不登记到迁移清单。隔离测试模板是 `server/tests/db/projectTable.ts` 的 `describeProjectTable`：RLS 启用并强制、策略只授予应用角色、`org_id` / `project_id` 不可空、未设置上下文时查询返回 0 行且写入被拒绝、跨组织读写互相隔离、复合外键挡住跨组织的 `project_id`（插入和改挂）、项目物理删除时级联或被挡住。5.2 起每张项目级表都照模板写迁移，并调用一次 `describeProjectTable`；本 PR 已对 `files` 和两张模板表各跑一遍。
+
+与路线图的偏离：
+
+- `docs/SERVER_DESIGN.md` 第 2.5 节原写 `projects` 有“归档时间”，按拆分计划改为软删除与 7 天恢复期，与文件一致；归档如有需要以后另加列；
+- 新增的通用触发器函数 `app_touch_updated_at()` 拆分计划中没有列出，属于“`timestamptz` 约定”的一部分，供项目级表复用。
 
 
 

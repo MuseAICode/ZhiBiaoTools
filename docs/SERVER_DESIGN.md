@@ -132,7 +132,7 @@ organizations（组织，数据隔离的边界）
 | `org_invitations` | 邀请邮箱、角色、令牌哈希、过期时间 |
 | `sessions` | 会话（第 3 节） |
 | `auth_tokens` | 邮箱验证、重置密码等一次性令牌，只存哈希 |
-| `projects` | `org_id`、`kind`、名称、`created_by`、归档时间 |
+| `projects` | `org_id`、`kind`、名称、`created_by`、软删除时间（#7 实现时由“归档时间”改为软删除与 7 天恢复期） |
 | `provider_credentials` | 平台级，加密后的模型服务 API Key / MinerU Token（第 4 节），不属于任何组织 |
 | `platform_models` | 平台提供给用户选择的模型清单（第 4.1 节），由平台管理员维护 |
 | `org_settings`、`user_settings` | 由 `user_config.json` 拆分：选用的平台模型、并发、导出偏好等放组织级；界面偏好放用户级。不再有用户填写的 Key 和 Base URL |
@@ -171,6 +171,13 @@ organizations（组织，数据隔离的边界）
 ### 2.7 桌面数据导入
 
 0.19 记录“本版本无存量用户”，所以**第一版不做** `app.sqlite` 导入工具（第 9 节第 18 项）。如果以后需要，做成“上传整个工作区压缩包 → 在沙箱中解析 → 导入成当前组织下的新项目”，按不可信输入处理。
+
+### 2.8 实现（#7）：项目与项目级表
+
+- **`projects`**（迁移 `0007_projects`）：强制 RLS，应用角色只能读写本组织、`created_by` 必须是当前用户；`kind`（`technical-plan` / `feasibility-report` / `rejection-check` / `duplicate-check`）和 `created_by` 建好后不能改；只能软删除（不授予 DELETE），7 天内可恢复，由触发器 `projects_guard` 保证（已删除的项目只能恢复，`PJ004`；过期恢复 `PJ002`）。`UNIQUE (org_id, id)` 供子表的复合外键引用。
+- **`files.project_id`**：可空，复合外键 `(org_id, project_id) → projects (org_id, id)`，不级联。
+- **归属校验**：`src/projects/access.ts` 的 `requireProject()`，按 `TenantContext` 查出未删除的项目并核对 `org_id` 与 `kind`，不符一律 `404 PROJECT_NOT_FOUND`（第 3.4 节“资源归属校验”）。
+- **项目级表的写法**以 `server/tests/db/fixtures/exampleProjectTable.ts` 为模板（第 2.4 节各条规则的具体 DDL），每张新表用 `server/tests/db/projectTable.ts` 的 `describeProjectTable` 跑一遍隔离测试。外键检查不受 RLS 约束，所以复合外键是“子记录挂不到别的组织的父记录上”的数据库层保证，即使应用代码传错了 `projectId`。
 
 ## 3. 注册、登录与会话
 
@@ -402,7 +409,7 @@ Markdown 中远程图片的下载（`docs/EXTERNAL_SERVICES.md` §2.9）URL 来�
 
 - **对象存储**：只依赖 S3 API（`@aws-sdk/client-s3` + `@aws-sdk/lib-storage`，3.1145.0），云厂商待定（香港节点）。配置 `S3_ENDPOINT`、`S3_REGION`、`S3_BUCKET`、`S3_FORCE_PATH_STYLE`、`S3_ACCESS_KEY_ID`、`S3_SECRET_ACCESS_KEY`（或 `_FILE`）；未设置 `S3_BUCKET` 时文件接口返回 503。生产环境 endpoint 必须是 https。SDK 的校验和设为“仅接口要求时”（多家 S3 兼容服务不支持 aws-chunked 尾部校验和），内容完整性由上传时计算的 SHA-256 保证。
 - **本地 S3 兼容服务**：MinIO 社区版已进入维护状态、不再提供官方镜像（第 1 节待核实的事项），选用 **SeaweedFS 4.48**（Apache-2.0，`weed mini` 单进程模式，按 digest 固定）。`docker-compose.yml` 的 `s3` 服务只把 S3 端口映射到 `127.0.0.1:8333`；必须设置访问密钥（不设置时 SeaweedFS 接受任意密钥），并关闭默认开启的遥测、管理界面、WebDAV 和 Iceberg / Lance 接口。CI 中以 `docker run` 启动同一镜像（服务容器不能指定启动命令）。
-- **`files` 表**（迁移 `0006_files`）：`org_id NOT NULL`，启用并强制 RLS，应用角色只能读写当前组织的行、`created_by` 必须是当前用户。对象键是**生成列** `org/{org_id}/files/{id}`，`id` 是数据库生成的随机 UUID，任何角色都不能写入；用户的文件名只进 `display_name`。应用角色只有列级的 INSERT / UPDATE 授权，只能物理删除 `uploading` 状态的行。暂不含 `project_id`（`projects` 表在第 5 步建立）。
+- **`files` 表**（迁移 `0006_files`）：`org_id NOT NULL`，启用并强制 RLS，应用角色只能读写当前组织的行、`created_by` 必须是当前用户。对象键是**生成列** `org/{org_id}/files/{id}`，`id` 是数据库生成的随机 UUID，任何角色都不能写入；用户的文件名只进 `display_name`。应用角色只有列级的 INSERT / UPDATE 授权，只能物理删除 `uploading` 状态的行。`project_id` 由迁移 `0007_projects`（#7）加上，见第 2.8 节。
 - **上传**：`POST /api/files?purpose=…&name=…`，请求体是文件原始字节（`Content-Type: application/octet-stream`），**偏离**第 6.1 节的 multipart：没有 multipart 解析器的攻击面；`octet-stream` 不是跨站表单能发送的类型，CSRF 钩子只对声明了 `config.uploadBody` 的路由放开它，其他接口仍只接受 JSON。流程：按用途检查扩展名 → 按 `Content-Length` 和剩余配额预检 → 登记 `uploading` 行 → 流式写入对象存储（8 MiB 分片），同时用 `InspectionStream` 校验：
   - 真实类型：文件头魔数（PDF、ZIP、OLE、PNG、JPEG、GIF、WebP、BMP）必须与扩展名一致，不符在前 16 字节到达时就中断；docx / xlsx 解析 ZIP 中央目录（保留末尾 4 MiB），必须含 `[Content_Types].xml` 和 `word/document.xml` / `xl/workbook.xml`；`.doc/.wps/.xls` 接受 OLE 或改了扩展名的 OOXML（与桌面版查重一致），`.docx` 也接受 OLE（记为 `application/msword`）；没有魔数的文本类格式只对 `.doc/.wps/.xls` 放行（#6）：`.doc/.wps` 接受 RTF、HTML、MHT、Word 2003 XML，`.xls` 接受 HTML 表格和 SpreadsheetML 2003 XML，MIME 按真实内容记录（`application/rtf`、`text/html`、`message/rfc822`、`application/xml`），`.html/.mht` 等扩展名不开放；PDF 在前 1024 字节内查找 `%PDF-`（与 pdfjs 一致），开头是上述文本类格式的不算；这些都只在文件头不是已知二进制格式时才再看前 1024 字节，详见路线图第 4 步“上传白名单补充”；`.txt/.md` 必须是合法 UTF-8 或 GB18030（含 GBK）、不含 NUL，**按原样存储**并在 MIME 中记录编码（第 6.1 节原写“转成 UTF-8”，改为由解析阶段按记录的编码读取）。记录的 MIME 由内容决定，浏览器给的 Content-Type 不被采信；
   - 大小：文档 100 MiB、图片 10 MiB（第 9 节第 15 项），超过即中断；
@@ -412,7 +419,7 @@ Markdown 中远程图片的下载（`docs/EXTERNAL_SERVICES.md` §2.9）URL 来�
 - **配额**：每组织 20 GiB，常量写在迁移中，改配额需要新迁移。计入的是已上传、未删除或仍在 7 天恢复期内的文件（回收站中的文件仍占配额，防止“上传—删除”循环无限占用存储）；`uploading` 行（含进程崩溃遗留的）不计入。触发器用事务级 advisory lock 串行同一组织的检查，并发上传合计不会越过配额。
 - **下载**：`GET /api/files/:fileId/content` 由 api 从对象存储**流式转发，不签发预签名链接**（无法撤销）；**一律** `Content-Disposition: attachment`（第 6.4 节原计划图片预览用 `inline`，改为一律附件，图片预览等需要时再单独设计），另加 `X-Content-Type-Options: nosniff`、`Content-Security-Policy: default-src 'none'; sandbox`、`Cache-Control: private, no-store`。其他组织的 `fileId` 与不存在的一样返回 404。
 - **删除**：`DELETE /api/files/:fileId` 软删除（`deleted_at`），7 天内可经 `POST /api/files/:fileId/restore` 恢复（第 9 节第 17 项），过期后不可访问、不可恢复、不计入配额；恢复期由触发器保证（过期恢复抛 `FS002`）。组织内成员都可以上传、删除（组织内共享，第 9 节第 2 项）。另有 `GET /api/files`（`?deleted=true` 为回收站）、`GET /api/files/:fileId`、`GET /api/files/usage`。
-- **留给后续**：过期文件和遗留 `uploading` 行的物理清理（跨组织的后台任务，第 6 步 worker 建成后实现）；`project_id`；ZIP 炸弹、PDF 页数等解析阶段的防护（第 6.2 节，在沙箱中解析时实现）；生成产物（`artifacts`）；前端接入。
+- **留给后续**：过期文件和遗留 `uploading` 行的物理清理（跨组织的后台任务，第 6 步 worker 建成后实现）；`project_id`（已由 #7 加上）；ZIP 炸弹、PDF 页数等解析阶段的防护（第 6.2 节，在沙箱中解析时实现）；生成产物（`artifacts`）；前端接入。
 
 ## 7. Agent 执行命令的沙箱隔离
 
