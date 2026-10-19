@@ -5,7 +5,7 @@ using DocumentFormat.OpenXml;
 using DocumentFormat.OpenXml.Packaging;
 using Wp = DocumentFormat.OpenXml.Wordprocessing;
 
-namespace Yibiao.OpenXmlHelper.Jobs;
+namespace ZhiBiao.OpenXmlHelper.Jobs;
 
 sealed class ExtractChapterSpec
 {

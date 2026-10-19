@@ -24,16 +24,16 @@ function WorkspaceDatabaseGate({ children }: WorkspaceDatabaseGateProps) {
 
   // 未配置更新源时没有下载地址，改为提示用户从发布渠道自行获取新版。
   const openReleasePage = async () => {
-    const url = await window.yibiao?.getUpdateDownloadUrl().catch(() => '');
+    const url = await window.appBridge?.getUpdateDownloadUrl().catch(() => '');
     if (url) {
-      await window.yibiao?.openExternal(url);
+      await window.appBridge?.openExternal(url);
       return;
     }
     setReleaseUrlMissing(true);
   };
 
   useEffect(() => {
-    const database = window.yibiao?.database;
+    const database = window.appBridge?.database;
     if (!database) {
       setStatus({ phase: 'ready', ready: true, message: '本地数据库已就绪' });
       return;

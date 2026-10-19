@@ -345,8 +345,8 @@ function BidAnalysisPage({
   const saveConfig = async (nextTaskIds = draftSelectedTaskIds, closeDialog = true, nextBidSectionMode = draftBidSectionMode) => {
     const normalizedTaskIds = normalizeSelectedTaskIds(nextTaskIds);
     const nextMode = getModeForSelection(normalizedTaskIds);
-    await window.yibiao?.technicalPlan.saveBidAnalysisConfig({ mode: nextMode, selectedTaskIds: normalizedTaskIds, bidSectionMode: nextBidSectionMode });
-    const saved = await window.yibiao?.technicalPlan.loadState();
+    await window.appBridge?.technicalPlan.saveBidAnalysisConfig({ mode: nextMode, selectedTaskIds: normalizedTaskIds, bidSectionMode: nextBidSectionMode });
+    const saved = await window.appBridge?.technicalPlan.loadState();
     if (saved) onConfigSaved(saved);
     syncProgressForSelection(normalizedTaskIds);
     if (closeDialog) {
@@ -375,7 +375,7 @@ function BidAnalysisPage({
         setFullRerunLocked(true);
       }
       const configState = await saveConfig(normalizedTaskIds, false, nextBidSectionMode);
-      await window.yibiao?.tasks.startBidAnalysis({
+      await window.appBridge?.tasks.startBidAnalysis({
         mode: configState.mode,
         selected_task_ids: configState.selectedTaskIds,
         task_ids: taskIds,
@@ -405,7 +405,7 @@ function BidAnalysisPage({
 
     if (!options.skipCheck) {
       try {
-        const detection = await window.yibiao?.technicalPlan.checkBidSections();
+        const detection = await window.appBridge?.technicalPlan.checkBidSections();
         if (nextBidSectionMode === 'single' && detection?.hasMultiple) {
           setSectionModeWarning({ type: 'single-suspected-multiple', taskIds, nextTaskIds: normalizedTaskIds });
           return;
@@ -430,7 +430,7 @@ function BidAnalysisPage({
           return;
         }
         setSettingsOpen(false);
-        await window.yibiao?.tasks.startBidSectionExtraction({});
+        await window.appBridge?.tasks.startBidSectionExtraction({});
         showToast('多标段识别任务已在后台启动', 'success');
       } catch (error) {
         setPendingAnalysisAfterSection(null);
@@ -467,7 +467,7 @@ function BidAnalysisPage({
     try {
       await saveConfig(draftSelectedTaskIds, false, 'multiple');
       setSettingsOpen(false);
-      await window.yibiao?.tasks.startBidSectionExtraction({});
+      await window.appBridge?.tasks.startBidSectionExtraction({});
       showToast('多标段识别任务已在后台启动', 'success');
     } catch (error) {
       showToast(error instanceof Error ? error.message : '启动多标段识别失败', 'error');
@@ -482,12 +482,12 @@ function BidAnalysisPage({
     }
     try {
       setSelectingSection(true);
-      const result = await window.yibiao?.technicalPlan.selectBidSection(selectedSection);
+      const result = await window.appBridge?.technicalPlan.selectBidSection(selectedSection);
       if (!result?.success) {
         showToast(result?.message || '投标范围选择失败', 'error');
         return;
       }
-      onConfigSaved(await window.yibiao.technicalPlan.loadState());
+      onConfigSaved(await window.appBridge.technicalPlan.loadState());
       setSectionSelectorOpen(false);
       showToast(result.message || '已选择投标范围', 'success');
       if (pendingAnalysisAfterSection) {

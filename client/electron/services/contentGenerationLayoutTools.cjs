@@ -110,7 +110,7 @@ async function supplementLayoutGaps({ aiService, workspaceDir, signal, onActivit
       const html = fs.readFileSync(file, 'utf8');
       const target = locateGap(html, item.gap);
       if (!target) throw new Error('图片块在补写期间已变化，未写回');
-      if (!target.inserted) writeHtml(file, spliceHtml(html, [{ start: target.insertAt, end: target.insertAt, text: `<!-- yibiao:block -->\n<p id="${target.leadId}">${escapeHtml(text)}</p>\n\n` }]));
+      if (!target.inserted) writeHtml(file, spliceHtml(html, [{ start: target.insertAt, end: target.insertAt, text: `<!-- app:block -->\n<p id="${target.leadId}">${escapeHtml(text)}</p>\n\n` }]));
       settle(item, 'success');
     },
     onError(item, error, { cancelled }) {

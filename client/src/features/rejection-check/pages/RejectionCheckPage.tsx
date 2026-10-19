@@ -315,7 +315,7 @@ function createDocumentSignature(document: RejectionDocumentContent | null) {
     content.length,
     content.slice(0, 800),
     content.slice(-800),
-  ].join('\n---yibiao-rejection-signature---\n');
+  ].join('\n---app-rejection-signature---\n');
 }
 
 function createRejectionCheckInputSignature(
@@ -323,7 +323,7 @@ function createRejectionCheckInputSignature(
   invalidBidAndRejectionItems: string,
   customCheckItems: string,
 ) {
-  const bidSignature = bidDocuments.map(createDocumentSignature).filter(Boolean).join('\n---yibiao-rejection-bid-document---\n');
+  const bidSignature = bidDocuments.map(createDocumentSignature).filter(Boolean).join('\n---app-rejection-bid-document---\n');
   const analysis = invalidBidAndRejectionItems.trim();
   if (!bidSignature || !analysis) {
     return '';
@@ -338,7 +338,7 @@ function createRejectionCheckInputSignature(
     custom.length,
     custom.slice(0, 800),
     custom.slice(-800),
-  ].join('\n---yibiao-rejection-check-input---\n');
+  ].join('\n---app-rejection-check-input---\n');
 }
 
 function getBidDocumentLabel(bidDocuments: RejectionDocumentContent[], documentId: string) {
@@ -359,7 +359,7 @@ function resolveImportToastType(message: string, success: boolean) {
 }
 
 function createBidDocumentsSignature(bidDocuments: RejectionDocumentContent[]) {
-  return bidDocuments.map(createDocumentSignature).filter(Boolean).join('\n---yibiao-rejection-bid-signature---\n');
+  return bidDocuments.map(createDocumentSignature).filter(Boolean).join('\n---app-rejection-bid-signature---\n');
 }
 
 function stripTripleQuoteWrapper(content: string) {
@@ -772,7 +772,7 @@ function RejectionCheckPage() {
   }
 
   function persistRejectionState(partial: RejectionCheckWorkspacePatch, fallbackMessage: string) {
-    void window.yibiao?.rejectionCheck.updateState(partial)
+    void window.appBridge?.rejectionCheck.updateState(partial)
       .catch((error) => {
         showToast(error instanceof Error ? error.message : fallbackMessage, 'error');
       });
@@ -781,7 +781,7 @@ function RejectionCheckPage() {
   useEffect(() => {
     let canceled = false;
 
-    void window.yibiao?.rejectionCheck.loadState()
+    void window.appBridge?.rejectionCheck.loadState()
       .then((state) => {
         if (canceled || !state) return;
         applyWorkspaceState(state);
@@ -806,7 +806,7 @@ function RejectionCheckPage() {
   useEffect(() => {
     if (!hydratedRef.current) return;
 
-    void window.yibiao?.rejectionCheck.saveUiState({
+    void window.appBridge?.rejectionCheck.saveUiState({
       activeDocumentTab,
       step,
       activeResultTab,
@@ -819,11 +819,11 @@ function RejectionCheckPage() {
   }, [activeCheckResultTab, activeDocumentTab, activeResultTab, checkOptions, showToast, step]);
 
   useEffect(() => {
-    if (!window.yibiao?.tasks) {
+    if (!window.appBridge?.tasks) {
       return;
     }
 
-    const unsubscribe = window.yibiao.tasks.onTaskEvent<unknown, RejectionCheckWorkspaceState>((event) => {
+    const unsubscribe = window.appBridge.tasks.onTaskEvent<unknown, RejectionCheckWorkspaceState>((event) => {
       if (event.rejectionCheck) {
         applyWorkspaceState(event.rejectionCheck, { syncViewState: false });
       }
@@ -832,7 +832,7 @@ function RejectionCheckPage() {
       }
     });
 
-    void window.yibiao.tasks.getActiveTasks()
+    void window.appBridge.tasks.getActiveTasks()
       .then((tasks) => {
         const activeTypes = new Set((Array.isArray(tasks) ? tasks : [])
           .map((task) => {
@@ -870,7 +870,7 @@ function RejectionCheckPage() {
   }, [extractionRunning, invalidBidAndRejectionItems.content, invalidBidAndRejectionItems.source, invalidBidAndRejectionItems.tenderSignature, step, tenderDocument, tenderSignature]);
 
   const resolveDroppedFilePaths = (files: FileList) =>
-    Array.from(files).map((file) => window.yibiao?.file.getPathForFile(file) || '').filter(Boolean);
+    Array.from(files).map((file) => window.appBridge?.file.getPathForFile(file) || '').filter(Boolean);
 
   async function importParsedDocument(role: RejectionDocumentRole, filePaths?: string[]) {
     const documentLabel = documentLabels[role];
@@ -878,7 +878,7 @@ function RejectionCheckPage() {
       return;
     }
     try {
-      const importer = window.yibiao?.rejectionCheck.importDocument;
+      const importer = window.appBridge?.rejectionCheck.importDocument;
       if (typeof importer !== 'function') {
         throw new Error('文件解析接口尚未加载，请重启应用后重试');
       }
@@ -896,7 +896,7 @@ function RejectionCheckPage() {
         return;
       }
 
-      applyWorkspaceState(await window.yibiao.rejectionCheck.loadState());
+      applyWorkspaceState(await window.appBridge.rejectionCheck.loadState());
       const successMessage = result.message || `${documentLabel}已解析`;
       showToast(successMessage, resolveImportToastType(successMessage, true));
     } catch (error) {
@@ -915,20 +915,20 @@ function RejectionCheckPage() {
     if (documentsLocked) {
       return;
     }
-    if (!window.yibiao?.rejectionCheck?.importTenderFromTechnicalPlan) {
+    if (!window.appBridge?.rejectionCheck?.importTenderFromTechnicalPlan) {
       showToast('废标项检查缓存接口尚未加载，请重启应用后重试', 'error');
       return;
     }
 
     try {
       setBusy('technical-plan');
-      const result = await window.yibiao.rejectionCheck.importTenderFromTechnicalPlan();
+      const result = await window.appBridge.rejectionCheck.importTenderFromTechnicalPlan();
       if (!result?.success) {
         showToast(result?.message || '技术方案中暂无可读取的招标文件正文', 'info');
         return;
       }
 
-      applyWorkspaceState(await window.yibiao.rejectionCheck.loadState());
+      applyWorkspaceState(await window.appBridge.rejectionCheck.loadState());
       showToast(result.message || '已从技术方案读取招标文件', 'success');
     } catch (error) {
       showToast(error instanceof Error ? error.message : '读取技术方案招标文件失败', 'error');
@@ -942,8 +942,8 @@ function RejectionCheckPage() {
       return;
     }
     setBusy('remove');
-    void window.yibiao?.rejectionCheck.removeDocument(role, documentId)
-      .then(() => window.yibiao.rejectionCheck.loadState())
+    void window.appBridge?.rejectionCheck.removeDocument(role, documentId)
+      .then(() => window.appBridge.rejectionCheck.loadState())
       .then((state) => {
         applyWorkspaceState({ ...state, step: role === 'tender' && step === 'items' ? 'documents' : state.step });
       })
@@ -1007,7 +1007,7 @@ function RejectionCheckPage() {
     setCheckTask(undefined);
 
     try {
-      const starter = window.yibiao?.tasks.startRejectionItemsExtraction;
+      const starter = window.appBridge?.tasks.startRejectionItemsExtraction;
       if (typeof starter !== 'function') {
         throw new Error('后台任务接口尚未加载，请重启应用后重试');
       }
@@ -1054,7 +1054,7 @@ function RejectionCheckPage() {
     setCheckOptions(defaultCheckOptions);
     setDraftCheckOptions(defaultCheckOptions);
     setCheckConfigDialogOpen(false);
-    void window.yibiao?.rejectionCheck.clear()
+    void window.appBridge?.rejectionCheck.clear()
       .then(() => {
         showToast('已重置废标项检查文件', 'success');
       })
@@ -1087,7 +1087,7 @@ function RejectionCheckPage() {
       return;
     }
 
-    const saveUiState = window.yibiao?.rejectionCheck.saveUiState;
+    const saveUiState = window.appBridge?.rejectionCheck.saveUiState;
     if (typeof saveUiState !== 'function') {
       showToast('废标项检查缓存接口尚未加载，请重启应用后重试', 'error');
       return;
@@ -1213,12 +1213,12 @@ function RejectionCheckPage() {
     setCheckTask(nextCheckTask);
 
     try {
-      const starter = window.yibiao?.tasks.startRejectionCheck;
+      const starter = window.appBridge?.tasks.startRejectionCheck;
       if (typeof starter !== 'function') {
         throw new Error('后台任务接口尚未加载，请重启应用后重试');
       }
 
-      await window.yibiao?.rejectionCheck.saveUiState({
+      await window.appBridge?.rejectionCheck.saveUiState({
         activeCheckResultTab: nextActiveCheckResultTab,
         checkOptions: options,
       });
@@ -1437,13 +1437,13 @@ function RejectionCheckPage() {
   }
 
   async function exportCheckResultsExcel() {
-    if (!window.yibiao?.rejectionCheck?.exportExcel) {
+    if (!window.appBridge?.rejectionCheck?.exportExcel) {
       showToast('废标检查结果导出接口尚未加载，请重启应用后重试', 'error');
       return;
     }
     setExportingExcel(true);
     try {
-      const result = await window.yibiao.rejectionCheck.exportExcel({
+      const result = await window.appBridge.rejectionCheck.exportExcel({
         rejectionInputSignature: currentRejectionCheckInputSignature,
         bidSignature,
       });
@@ -1464,7 +1464,7 @@ function RejectionCheckPage() {
   async function openExportedExcelFile() {
     if (!exportedExcelPath) return;
     try {
-      await window.yibiao.export.openFile(exportedExcelPath);
+      await window.appBridge.export.openFile(exportedExcelPath);
       setExportedExcelPath('');
     } catch (error) {
       showToast(error instanceof Error ? error.message : '打开 Excel 文件失败', 'error');

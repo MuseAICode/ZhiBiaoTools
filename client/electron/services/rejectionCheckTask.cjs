@@ -1618,7 +1618,7 @@ async function runRejectionCheckTask({ aiService, workspaceStore, updateTask, ch
   const invalidBidAndRejectionItems = String(state.invalidBidAndRejectionItems?.content || '');
   const customCheckItems = String(state.customCheckItems ?? '');
   const rejectionInputSignature = String(workspaceStore.createRejectionCheckInputSignature(currentBidDocuments, invalidBidAndRejectionItems, customCheckItems) || '');
-  const bidSignature = currentBidDocuments.map((document) => workspaceStore.createDocumentSignature(document)).filter(Boolean).join('\n---yibiao-rejection-bid-signature---\n');
+  const bidSignature = currentBidDocuments.map((document) => workspaceStore.createDocumentSignature(document)).filter(Boolean).join('\n---app-rejection-bid-signature---\n');
   if (!currentBidDocuments.length || !bidSignature) throw new Error('缺少投标文件内容，无法开始检查');
 
   const enabledTasks = [

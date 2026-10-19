@@ -104,7 +104,7 @@ function FeasibilityReportHome({ registerLeaveGuard }: FeasibilityReportHomeProp
   }, [exportTemplateSearch, exportTemplates]);
 
   useEffect(() => {
-    void window.yibiao?.ui?.setCurrentView({ section: 'feasibility-report', step: state.step });
+    void window.appBridge?.ui?.setCurrentView({ section: 'feasibility-report', step: state.step });
   }, [state.step]);
 
   useEffect(() => {
@@ -136,7 +136,7 @@ function FeasibilityReportHome({ registerLeaveGuard }: FeasibilityReportHomeProp
 
     void (async () => {
       try {
-        const next = await window.yibiao?.feasibilityReport.loadState();
+        const next = await window.appBridge?.feasibilityReport.loadState();
         if (!mounted) return;
         if (next) {
           setState(next);
@@ -149,9 +149,9 @@ function FeasibilityReportHome({ registerLeaveGuard }: FeasibilityReportHomeProp
           showToast(error instanceof Error ? error.message : '读取可研状态失败', 'error');
         }
       }
-      if (!mounted || !window.yibiao?.tasks) return;
-      unsubscribe = window.yibiao.tasks.onTaskEvent(applyTaskPatch);
-      window.yibiao.tasks.getActiveTasks().catch(() => undefined);
+      if (!mounted || !window.appBridge?.tasks) return;
+      unsubscribe = window.appBridge.tasks.onTaskEvent(applyTaskPatch);
+      window.appBridge.tasks.getActiveTasks().catch(() => undefined);
     })();
 
     return () => {
@@ -181,20 +181,20 @@ function FeasibilityReportHome({ registerLeaveGuard }: FeasibilityReportHomeProp
     if (sameProjectInfo(draftProjectInfo, state.projectInfo)) {
       return state;
     }
-    const saved = await window.yibiao!.feasibilityReport.saveProjectInfo(draftProjectInfo);
+    const saved = await window.appBridge!.feasibilityReport.saveProjectInfo(draftProjectInfo);
     applyLoadedState(saved);
     return saved;
   };
 
   const persistAnalysisIfNeeded = async () => {
     if (analysisDraft === state.analysisMarkdown) return;
-    const next = await window.yibiao!.feasibilityReport.saveAnalysis(analysisDraft);
+    const next = await window.appBridge!.feasibilityReport.saveAnalysis(analysisDraft);
     applyLoadedState(next);
   };
 
   const persistParametersIfNeeded = async () => {
     if (parametersDraft === state.keyParametersMarkdown) return;
-    const next = await window.yibiao!.feasibilityReport.saveKeyParameters(parametersDraft);
+    const next = await window.appBridge!.feasibilityReport.saveKeyParameters(parametersDraft);
     applyLoadedState(next);
   };
 
@@ -219,7 +219,7 @@ function FeasibilityReportHome({ registerLeaveGuard }: FeasibilityReportHomeProp
       return;
     }
     setState((prev) => ({ ...prev, step }));
-    window.yibiao?.feasibilityReport.updateStep(step).catch((error) => {
+    window.appBridge?.feasibilityReport.updateStep(step).catch((error) => {
       showToast(error instanceof Error ? error.message : '保存步骤失败', 'error');
     });
   };
@@ -232,12 +232,12 @@ function FeasibilityReportHome({ registerLeaveGuard }: FeasibilityReportHomeProp
   const importSources = async (filePaths?: string[]) => {
     setBusyImport(true);
     try {
-      const result = await window.yibiao!.feasibilityReport.importSourceDocuments(filePaths);
+      const result = await window.appBridge!.feasibilityReport.importSourceDocuments(filePaths);
       if (!result?.success) {
         showToast(result?.message || '未导入文件', result?.message === '已取消选择' ? 'info' : 'error');
         return;
       }
-      applyLoadedState(await window.yibiao!.feasibilityReport.loadState());
+      applyLoadedState(await window.appBridge!.feasibilityReport.loadState());
       showToast(result.message || '资料已导入', 'success');
     } finally {
       setBusyImport(false);
@@ -245,19 +245,19 @@ function FeasibilityReportHome({ registerLeaveGuard }: FeasibilityReportHomeProp
   };
 
   const removeSource = async (sourceId: string) => {
-    const result = await window.yibiao!.feasibilityReport.removeSourceDocument(sourceId);
+    const result = await window.appBridge!.feasibilityReport.removeSourceDocument(sourceId);
     if (!result.success) {
       showToast(result.message || '移除失败', 'error');
       return;
     }
-    applyLoadedState(await window.yibiao!.feasibilityReport.loadState());
+    applyLoadedState(await window.appBridge!.feasibilityReport.loadState());
     showToast(result.message || '已移除资料', 'success');
   };
 
   const startAnalysis = async () => {
     try {
       await persistProjectInfoIfNeeded();
-      await window.yibiao!.tasks.startFeasibilityAnalysis();
+      await window.appBridge!.tasks.startFeasibilityAnalysis();
     } catch (error) {
       showToast(error instanceof Error ? error.message : '启动分析失败', 'error');
     }
@@ -266,7 +266,7 @@ function FeasibilityReportHome({ registerLeaveGuard }: FeasibilityReportHomeProp
   const saveAnalysis = async () => {
     setSaving(true);
     try {
-      const next = await window.yibiao!.feasibilityReport.saveAnalysis(analysisDraft);
+      const next = await window.appBridge!.feasibilityReport.saveAnalysis(analysisDraft);
       applyLoadedState(next);
       showToast('资料分析已保存', 'success');
     } catch (error) {
@@ -282,7 +282,7 @@ function FeasibilityReportHome({ registerLeaveGuard }: FeasibilityReportHomeProp
     referenceDocumentIds: string[];
   }) => {
     try {
-      await window.yibiao!.tasks.startFeasibilityOutline(config);
+      await window.appBridge!.tasks.startFeasibilityOutline(config);
     } catch (error) {
       showToast(error instanceof Error ? error.message : '启动目录生成失败', 'error');
     }
@@ -291,7 +291,7 @@ function FeasibilityReportHome({ registerLeaveGuard }: FeasibilityReportHomeProp
   const saveKeyParameters = async () => {
     setSaving(true);
     try {
-      const next = await window.yibiao!.feasibilityReport.saveKeyParameters(parametersDraft);
+      const next = await window.appBridge!.feasibilityReport.saveKeyParameters(parametersDraft);
       applyLoadedState(next);
       showToast('关键参数已保存', 'success');
     } catch (error) {
@@ -304,7 +304,7 @@ function FeasibilityReportHome({ registerLeaveGuard }: FeasibilityReportHomeProp
   const loadExportTemplates = useCallback(async () => {
     setExportTemplatesLoading(true);
     try {
-      const templates = await window.yibiao?.templates.list();
+      const templates = await window.appBridge?.templates.list();
       const nextTemplates = templates || [];
       setExportTemplates(nextTemplates);
       setSelectedExportTemplateId((prev) => (nextTemplates.some((item) => item.template_id === prev) ? prev : nextTemplates[0]?.template_id || ''));
@@ -343,7 +343,7 @@ function FeasibilityReportHome({ registerLeaveGuard }: FeasibilityReportHomeProp
         progress: 2,
         message: '正在准备导出 Word。',
       });
-      unsubscribe = window.yibiao?.export.onWordExportProgress((event: WordExportProgressEvent) => {
+      unsubscribe = window.appBridge?.export.onWordExportProgress((event: WordExportProgressEvent) => {
         if (event.requestId && event.requestId !== requestId) return;
         setExportProgress((prev) => ({
           ...prev,
@@ -355,7 +355,7 @@ function FeasibilityReportHome({ registerLeaveGuard }: FeasibilityReportHomeProp
           error: event.phase === 'error' ? event.message : '',
         }));
       });
-      const result = await window.yibiao!.export.exportWord({
+      const result = await window.appBridge!.export.exportWord({
         requestId,
         project_name: state.projectInfo.projectName || '可行性研究报告',
         outline: state.outlineData.outline,
@@ -423,19 +423,19 @@ function FeasibilityReportHome({ registerLeaveGuard }: FeasibilityReportHomeProp
   const handleOpenExportedFile = async () => {
     if (!exportProgress.filePath) return;
     try {
-      await window.yibiao?.export.openFile(exportProgress.filePath);
+      await window.appBridge?.export.openFile(exportProgress.filePath);
     } catch (error) {
       showToast(error instanceof Error ? error.message : '打开文件失败', 'error');
     }
   };
 
   const openPetAiChat = useCallback(async () => {
-    await window.yibiao!.plugins.notifyEvent(PET_PLUGIN_ID, 'open-ai-chat');
+    await window.appBridge!.plugins.notifyEvent(PET_PLUGIN_ID, 'open-ai-chat');
   }, []);
 
   const handleAiAdjustClick = useCallback(async () => {
     try {
-      const plugins = await window.yibiao!.plugins.getAvailablePlugins();
+      const plugins = await window.appBridge!.plugins.getAvailablePlugins();
       const pet = plugins.find((plugin) => plugin.id === PET_PLUGIN_ID);
       if (!pet) {
         showToast('插件市场中未找到桌宠插件，请在插件市场刷新后重试', 'error');
@@ -455,15 +455,15 @@ function FeasibilityReportHome({ registerLeaveGuard }: FeasibilityReportHomeProp
   const installPetPluginAndOpenChat = useCallback(async () => {
     setInstallingPetPlugin(true);
     try {
-      const plugins = await window.yibiao!.plugins.getAvailablePlugins();
+      const plugins = await window.appBridge!.plugins.getAvailablePlugins();
       const pet = plugins.find((plugin) => plugin.id === PET_PLUGIN_ID);
       if (!pet) {
         throw new Error('插件市场中未找到桌宠插件');
       }
       if (!pet.installed) {
-        await window.yibiao!.plugins.install(PET_PLUGIN_ID);
+        await window.appBridge!.plugins.install(PET_PLUGIN_ID);
       }
-      await window.yibiao!.plugins.enable(PET_PLUGIN_ID);
+      await window.appBridge!.plugins.enable(PET_PLUGIN_ID);
       setPetInstallDialogOpen(false);
       await openPetAiChat();
       showToast('桌宠已启用，请在桌宠对话框中输入调整要求', 'success');
@@ -604,11 +604,11 @@ function FeasibilityReportHome({ registerLeaveGuard }: FeasibilityReportHomeProp
           locked={contentRunning || contentPaused || reviewRunning || outlineAdjusting}
           hasAnalysis={Boolean(state.analysisMarkdown.trim())}
           onConfigChange={async (config) => {
-            const next = await window.yibiao!.feasibilityReport.saveOutlineConfig(config);
+            const next = await window.appBridge!.feasibilityReport.saveOutlineConfig(config);
             setState(next);
           }}
           onOutlineSaved={async (request) => {
-            const patch = await window.yibiao!.feasibilityReport.saveOutline(request);
+            const patch = await window.appBridge!.feasibilityReport.saveOutline(request);
             setState((prev) => ({ ...prev, ...patch }));
           }}
           onStart={startOutline}
@@ -626,7 +626,7 @@ function FeasibilityReportHome({ registerLeaveGuard }: FeasibilityReportHomeProp
           onSave={saveKeyParameters}
           onStart={async () => {
             try {
-              await window.yibiao!.tasks.startFeasibilityParameters();
+              await window.appBridge!.tasks.startFeasibilityParameters();
             } catch (error) {
               showToast(error instanceof Error ? error.message : '启动关键参数生成失败', 'error');
             }
@@ -643,7 +643,7 @@ function FeasibilityReportHome({ registerLeaveGuard }: FeasibilityReportHomeProp
           locked={contentRunning || contentPaused || reviewRunning}
           hasKeyParameters={Boolean(state.keyParametersMarkdown.trim())}
           onSave={async (item: OutlineItem, content: string) => {
-            const patch = await window.yibiao!.feasibilityReport.saveChapterContent({ nodeId: item.id, content });
+            const patch = await window.appBridge!.feasibilityReport.saveChapterContent({ nodeId: item.id, content });
             setState((prev) => ({ ...prev, ...patch }));
             showToast('章节已保存', 'success');
           }}
@@ -665,9 +665,9 @@ function FeasibilityReportHome({ registerLeaveGuard }: FeasibilityReportHomeProp
               type="button"
               className="danger-action"
               onClick={() => {
-                void window.yibiao!.feasibilityReport.clear().then(async (result) => {
+                void window.appBridge!.feasibilityReport.clear().then(async (result) => {
                   setResetOpen(false);
-                  applyLoadedState(await window.yibiao!.feasibilityReport.loadState());
+                  applyLoadedState(await window.appBridge!.feasibilityReport.loadState());
                   showToast(result.message || '已重置', 'success');
                 }).catch((error) => showToast(error instanceof Error ? error.message : '重置失败', 'error'));
               }}

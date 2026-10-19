@@ -22,7 +22,7 @@ function getWorkspaceTrashDir(app) {
 }
 
 function getWorkspaceDatabasePath(app) {
-  return path.join(getWorkspaceDir(app), 'yibiao.sqlite');
+  return path.join(getWorkspaceDir(app), 'app.sqlite');
 }
 
 function getTechnicalPlanDir(app) {
@@ -128,8 +128,8 @@ function getPlatformArchKey() {
 }
 
 function getBundledAgentToolsBinDir(app) {
-  if (process.env.YIBIAO_AGENT_TOOLS_BIN_DIR) {
-    return process.env.YIBIAO_AGENT_TOOLS_BIN_DIR;
+  if (process.env.ZHIBIAO_AGENT_TOOLS_BIN_DIR) {
+    return process.env.ZHIBIAO_AGENT_TOOLS_BIN_DIR;
   }
 
   const platformArch = getPlatformArchKey();
@@ -163,8 +163,8 @@ function getOpenXmlHelperDebugExecutablePath() {
 
 /** 安装包或本地 vendor 中的自包含助手目录。 */
 function getBundledOpenXmlHelperDir(app) {
-  if (process.env.YIBIAO_OPENXML_HELPER_DIR) {
-    return process.env.YIBIAO_OPENXML_HELPER_DIR;
+  if (process.env.ZHIBIAO_OPENXML_HELPER_DIR) {
+    return process.env.ZHIBIAO_OPENXML_HELPER_DIR;
   }
 
   const platformArch = getPlatformArchKey();

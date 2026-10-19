@@ -1487,7 +1487,7 @@ function describeImageSourceForLog(source) {
   if (/^data:/i.test(value)) return { kind: 'data-url' };
   try {
     const url = new URL(value);
-    if (url.protocol === 'yibiao-asset:') {
+    if (url.protocol === 'app-asset:') {
       return { kind: 'asset', host: url.hostname, extension: path.extname(url.pathname || '').toLowerCase() };
     }
     if (url.protocol === 'http:' || url.protocol === 'https:') {
@@ -1554,7 +1554,7 @@ async function loadImage(source, context = {}) {
     };
   }
 
-  if (/^yibiao-asset:\/\//i.test(url)) {
+  if (/^app-asset:\/\//i.test(url)) {
     const assetPath = resolveAssetImagePath(url);
     if (!assetPath || !fs.existsSync(assetPath)) {
       return null;

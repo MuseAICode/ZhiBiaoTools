@@ -109,7 +109,7 @@ const markdownImagePattern = /!\[(?<alt>[^\]]*)\]\((?<target><[^>]+>|[^)\s]+)(?<
 const htmlImageSrcPattern = /<img\b[^>]*?\bsrc=["'](?<src>[^"']+)["'][^>]*>/gi;
 const htmlImagePattern = /<img\b[^>]*>/gi;
 const htmlTablePattern = /<table\b[\s\S]*?<\/table>/gi;
-const contentTableTokenPrefix = 'YIBIAO_CONTENT_TABLE_';
+const contentTableTokenPrefix = 'APP_CONTENT_TABLE_';
 
 function now() {
   return new Date().toISOString();
@@ -2102,7 +2102,7 @@ async function readImageTargetBuffer(app, target) {
   if (!value) return null;
   const dataMatch = value.match(/^data:image\/[^;]+;base64,(?<data>[A-Za-z0-9+/=\s]+)$/i);
   if (dataMatch?.groups?.data) return Buffer.from(dataMatch.groups.data.replace(/\s+/g, ''), 'base64');
-  if (/^yibiao-asset:\/\//i.test(value)) {
+  if (/^app-asset:\/\//i.test(value)) {
     const filePath = resolveAssetPath(app, value);
     return filePath ? fs.readFile(filePath) : null;
   }

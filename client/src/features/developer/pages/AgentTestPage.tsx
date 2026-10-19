@@ -61,8 +61,8 @@ function formatJson(value: unknown) {
 }
 
 function getBridge() {
-  if (!window.yibiao) throw new Error('当前 preload 未暴露智标客户端 API');
-  return window.yibiao;
+  if (!window.appBridge) throw new Error('当前 preload 未暴露智标客户端 API');
+  return window.appBridge;
 }
 
 function AgentTestPage() {

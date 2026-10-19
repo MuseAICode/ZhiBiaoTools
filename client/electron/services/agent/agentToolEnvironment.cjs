@@ -112,9 +112,9 @@ function writeNodeShim(binDir) {
     writeFileIfChanged(path.join(binDir, 'node.cmd'), [
       '@echo off',
       'setlocal',
-      'if "%YIBIAO_ELECTRON_NODE%"=="" set "YIBIAO_ELECTRON_NODE=node"',
+      'if "%ZHIBIAO_ELECTRON_NODE%"=="" set "ZHIBIAO_ELECTRON_NODE=node"',
       'set "ELECTRON_RUN_AS_NODE=1"',
-      '"%YIBIAO_ELECTRON_NODE%" %*',
+      '"%ZHIBIAO_ELECTRON_NODE%" %*',
       'exit /b %ERRORLEVEL%',
       '',
     ].join('\r\n'));
@@ -123,8 +123,8 @@ function writeNodeShim(binDir) {
 
   writeFileIfChanged(path.join(binDir, 'node'), [
     '#!/bin/sh',
-    ': "${YIBIAO_ELECTRON_NODE:=node}"',
-    'ELECTRON_RUN_AS_NODE=1 exec "$YIBIAO_ELECTRON_NODE" "$@"',
+    ': "${ZHIBIAO_ELECTRON_NODE:=node}"',
+    'ELECTRON_RUN_AS_NODE=1 exec "$ZHIBIAO_ELECTRON_NODE" "$@"',
     '',
   ].join('\n'), 0o755);
 }
@@ -134,9 +134,9 @@ function writeCommandShim(binDir, command, runnerPath) {
     writeFileIfChanged(path.join(binDir, `${command}.cmd`), [
       '@echo off',
       'setlocal',
-      'if "%YIBIAO_ELECTRON_NODE%"=="" set "YIBIAO_ELECTRON_NODE=node"',
+      'if "%ZHIBIAO_ELECTRON_NODE%"=="" set "ZHIBIAO_ELECTRON_NODE=node"',
       'set "ELECTRON_RUN_AS_NODE=1"',
-      `"%YIBIAO_ELECTRON_NODE%" "%~dp0yibiao-tool-runner.cjs" "${command}" %*`,
+      `"%ZHIBIAO_ELECTRON_NODE%" "%~dp0app-tool-runner.cjs" "${command}" %*`,
       'exit /b %ERRORLEVEL%',
       '',
     ].join('\r\n'));
@@ -145,8 +145,8 @@ function writeCommandShim(binDir, command, runnerPath) {
 
   writeFileIfChanged(path.join(binDir, command), [
     '#!/bin/sh',
-    ': "${YIBIAO_ELECTRON_NODE:=node}"',
-    `ELECTRON_RUN_AS_NODE=1 exec "$YIBIAO_ELECTRON_NODE" ${quoteSh(runnerPath)} ${quoteSh(command)} "$@"`,
+    ': "${ZHIBIAO_ELECTRON_NODE:=node}"',
+    `ELECTRON_RUN_AS_NODE=1 exec "$ZHIBIAO_ELECTRON_NODE" ${quoteSh(runnerPath)} ${quoteSh(command)} "$@"`,
     '',
   ].join('\n'), 0o755);
 }
@@ -929,7 +929,7 @@ function toolRunnerMain() {
 }
 
 function writeToolRunner(binDir) {
-  const runnerPath = path.join(binDir, 'yibiao-tool-runner.cjs');
+  const runnerPath = path.join(binDir, 'app-tool-runner.cjs');
   const source = `'use strict';\n(${toolRunnerMain.toString()})();\n`;
   writeFileIfChanged(runnerPath, source);
   return runnerPath;
@@ -956,7 +956,7 @@ function prependPathEntries(env, entries) {
   const nextPath = [...entries, existingPath].filter(Boolean).join(path.delimiter);
   env.PATH = nextPath;
   if (process.platform === 'win32') env.Path = nextPath;
-  env.YIBIAO_ELECTRON_NODE = process.execPath;
+  env.ZHIBIAO_ELECTRON_NODE = process.execPath;
   return env;
 }
 

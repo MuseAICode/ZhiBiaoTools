@@ -100,7 +100,7 @@ export {
 } from './exportFormat';
 export type { TechnicalPlanOutlineItem, TechnicalPlanOutlineData, OutlineContentMode, OutlineData, OutlineExpansionMode, OutlineItem, OutlineMode, OutlineWordControlOptions } from './outline';
 export { DEFAULT_OUTLINE_WORD_CONTROL_OPTIONS, OUTLINE_CONTENT_MODE_LABELS } from './outline';
-export type { AgentDiagnosticSection, AgentMonitorEvent, AgentMonitorEventType, AgentMonitorSnapshot, AgentQuestion, AgentQuestionAnswerPayload, AgentQuestionAnswerResult, AgentQuestionOption, AgentRetryAttempt, AgentRunFile, AgentRunPayload, AgentRunResult, AgentRuntimeActiveTask, AgentRuntimePhase, AgentRuntimeStatus, AgentSelfCheckReportExportResult, AgentSelfCheckResult, AgentSelfCheckStatus, AgentSelfCheckStep, AgentSelfCheckStepStatus, AutoConfirmationState, GpuHardwareAccelerationStatus, LatestReleaseInfo, UpdateCheckResult, WordExportProgressEvent, WordExportResult, WorkspaceDatabasePhase, WorkspaceDatabaseStatus, YibiaoBridge } from './ipc';
+export type { AgentDiagnosticSection, AgentMonitorEvent, AgentMonitorEventType, AgentMonitorSnapshot, AgentQuestion, AgentQuestionAnswerPayload, AgentQuestionAnswerResult, AgentQuestionOption, AgentRetryAttempt, AgentRunFile, AgentRunPayload, AgentRunResult, AgentRuntimeActiveTask, AgentRuntimePhase, AgentRuntimeStatus, AgentSelfCheckReportExportResult, AgentSelfCheckResult, AgentSelfCheckStatus, AgentSelfCheckStep, AgentSelfCheckStepStatus, AutoConfirmationState, GpuHardwareAccelerationStatus, LatestReleaseInfo, UpdateCheckResult, WordExportProgressEvent, WordExportResult, WorkspaceDatabasePhase, WorkspaceDatabaseStatus, PreloadBridge } from './ipc';
 export type {
   RejectionCheckFinding,
   RejectionCheckResultState,

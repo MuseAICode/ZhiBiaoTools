@@ -21,7 +21,7 @@ function App() {
   const leaveGuardRef = useRef<((nextSection?: string) => Promise<boolean>) | null>(null);
 
   useEffect(() => {
-    void window.yibiao?.config.load()
+    void window.appBridge?.config.load()
       .then((config) => {
         setDeveloperMode(Boolean(config?.developer_mode));
       })
@@ -30,7 +30,7 @@ function App() {
 
   useEffect(() => {
     if (isManagedWorkbenchSection(activeSection)) return;
-    void window.yibiao?.ui?.setCurrentView({ section: activeSection });
+    void window.appBridge?.ui?.setCurrentView({ section: activeSection });
   }, [activeSection]);
 
   useEffect(() => {

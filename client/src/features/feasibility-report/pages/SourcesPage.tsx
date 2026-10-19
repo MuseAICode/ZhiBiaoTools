@@ -10,7 +10,7 @@ interface SourcesPageProps {
 }
 
 function resolveDroppedFilePaths(files: FileList) {
-  return Array.from(files).map((file) => window.yibiao?.file.getPathForFile(file) || '').filter(Boolean);
+  return Array.from(files).map((file) => window.appBridge?.file.getPathForFile(file) || '').filter(Boolean);
 }
 
 function SourcesPage({ sourceFiles, busy, onImport, onRemove }: SourcesPageProps) {
@@ -23,7 +23,7 @@ function SourcesPage({ sourceFiles, busy, onImport, onRemove }: SourcesPageProps
   const hasDocumentTabs = sourceFiles.length > 1;
 
   useEffect(() => {
-    void window.yibiao?.config.load().then((config) => {
+    void window.appBridge?.config.load().then((config) => {
       const provider = config.components?.file_parser?.provider;
       setParserLabel(provider === 'local' || !provider ? '本地解析' : provider);
     }).catch(() => undefined);
@@ -39,7 +39,7 @@ function SourcesPage({ sourceFiles, busy, onImport, onRemove }: SourcesPageProps
       setSourceMarkdown('');
       return undefined;
     }
-    window.yibiao?.feasibilityReport.readSourceMarkdown(activeFile.id).then((markdown) => {
+    window.appBridge?.feasibilityReport.readSourceMarkdown(activeFile.id).then((markdown) => {
       if (mounted) setSourceMarkdown(markdown || '');
     }).catch((error) => {
       if (mounted) showToast(error instanceof Error ? error.message : '读取资料失败', 'error');

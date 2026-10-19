@@ -57,12 +57,12 @@ function DocumentAnalysisPage({
     let mounted = true;
 
     const loadParserConfig = async () => {
-      if (!window.yibiao) {
+      if (!window.appBridge) {
         return;
       }
 
       try {
-        const config = await window.yibiao.config.load();
+        const config = await window.appBridge.config.load();
         if (mounted) {
           setConfiguredParserLabel(parserLabels[config.components?.file_parser?.provider] || parserLabels.local);
         }
@@ -95,7 +95,7 @@ function DocumentAnalysisPage({
     if (!sourceId || tenderSourceMarkdowns[sourceId] !== undefined) return;
     let mounted = true;
     setLoadingTenderSourceId(sourceId);
-    window.yibiao?.technicalPlan.readTenderSourceMarkdown(sourceId).then((markdown) => {
+    window.appBridge?.technicalPlan.readTenderSourceMarkdown(sourceId).then((markdown) => {
       if (mounted) {
         setTenderSourceMarkdowns((prev) => ({ ...prev, [sourceId]: markdown || '' }));
       }
@@ -110,12 +110,12 @@ function DocumentAnalysisPage({
   }, [activeDocumentTab, showToast, tenderSourceMarkdowns]);
 
   const resolveDroppedFilePaths = (files: FileList) =>
-    Array.from(files).map((file) => window.yibiao?.file.getPathForFile(file) || '').filter(Boolean);
+    Array.from(files).map((file) => window.appBridge?.file.getPathForFile(file) || '').filter(Boolean);
 
   const importTenderDocument = async (filePaths?: string[]) => {
     try {
       setBusy('tender');
-      const result = await window.yibiao?.technicalPlan.importTenderDocument(filePaths);
+      const result = await window.appBridge?.technicalPlan.importTenderDocument(filePaths);
 
       if (!result?.success) {
         const message = result?.message || '未导入文件';
@@ -132,7 +132,7 @@ function DocumentAnalysisPage({
         return;
       }
 
-      const state = await window.yibiao.technicalPlan.loadState();
+      const state = await window.appBridge.technicalPlan.loadState();
       onFileImported(state, result.markdown);
       const lastSource = state.tenderFiles?.[state.tenderFiles.length - 1];
       if (lastSource) {
@@ -156,12 +156,12 @@ function DocumentAnalysisPage({
   const removeTenderDocument = async (sourceId: string) => {
     try {
       setBusy('tender');
-      const result = await window.yibiao?.technicalPlan.removeTenderDocument(sourceId);
+      const result = await window.appBridge?.technicalPlan.removeTenderDocument(sourceId);
       if (!result?.success) {
         showToast(result?.message || '移除招标文件失败', 'error');
         return;
       }
-      const state = await window.yibiao.technicalPlan.loadState();
+      const state = await window.appBridge.technicalPlan.loadState();
       onFileImported(state, result.markdown || '');
       const firstSource = state.tenderFiles?.[0];
       if (firstSource) {

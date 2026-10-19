@@ -120,8 +120,8 @@ function Sidebar({ activeSection, developerMode, onSectionChange }: SidebarProps
 async function openExternalUrl(url: string) {
   if (!url) return;
 
-  if (window.yibiao?.openExternal) {
-    await window.yibiao.openExternal(url);
+  if (window.appBridge?.openExternal) {
+    await window.appBridge.openExternal(url);
     return;
   }
 

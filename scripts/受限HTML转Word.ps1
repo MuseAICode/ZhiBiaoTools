@@ -57,7 +57,7 @@ function Get-OutlineHtml($Nodes, $Sections, [int]$Level, [string]$Root, $Visited
         if ($body -or $children) {
             if ($Level -gt 6) { throw "当前转换器最多支持六级章节标题：$id" }
             $title = [Net.WebUtility]::HtmlEncode([string]$node.title)
-            "<!-- yibiao:block -->`n<h$Level>$title</h$Level>`n$body`n$children"
+            "<!-- app:block -->`n<h$Level>$title</h$Level>`n$body`n$children"
         }
     }
 }
@@ -171,9 +171,9 @@ function Test-Conversion([string]$Exe) {
         [void][IO.Directory]::CreateDirectory((Join-Path $fixture '图片'))
         $bitmap = New-Object Drawing.Bitmap(16, 16)
         try { $bitmap.Save((Join-Path $fixture '图片/示意.png'), [Drawing.Imaging.ImageFormat]::Png) } finally { $bitmap.Dispose() }
-        $first = '<!-- yibiao:block --><p id="p1">先读正文甲</p><!-- yibiao:block --><table id="t1" data-yb-preset="plain"><tbody><tr><td>表格验证</td></tr></tbody></table><!-- yibiao:block --><figure id="f1" data-yb-generation="htmlImage" data-yb-size="square"><template data-yb-role="prompt">不进入正文的配图提示词</template><img alt="示意" data-yb-asset-ref="图片/示意.png"><figcaption>示意图注</figcaption></figure>'
+        $first = '<!-- app:block --><p id="p1">先读正文甲</p><!-- app:block --><table id="t1" data-yb-preset="plain"><tbody><tr><td>表格验证</td></tr></tbody></table><!-- app:block --><figure id="f1" data-yb-generation="htmlImage" data-yb-size="square"><template data-yb-role="prompt">不进入正文的配图提示词</template><img alt="示意" data-yb-asset-ref="图片/示意.png"><figcaption>示意图注</figcaption></figure>'
         [IO.File]::WriteAllText((Join-Path $fixture '正文/f0000000-0000-4000-8000-000000000012.html'), $first, $utf8)
-        [IO.File]::WriteAllText((Join-Path $fixture '正文/a0000000-0000-4000-8000-000000000010.html'), '<!-- yibiao:block --><p id="p2">后读正文乙</p>', $utf8)
+        [IO.File]::WriteAllText((Join-Path $fixture '正文/a0000000-0000-4000-8000-000000000010.html'), '<!-- app:block --><p id="p2">后读正文乙</p>', $utf8)
         [IO.File]::WriteAllText((Join-Path $fixture '图片/不应读取.html'), '不应进入Word的配图源代码', $utf8)
         [IO.File]::WriteAllText((Join-Path $fixture '正文生成结果.json'), '{"sections":[{"section_id":"a0000000-0000-4000-8000-000000000010","file":"正文/a0000000-0000-4000-8000-000000000010.html"},{"section_id":"f0000000-0000-4000-8000-000000000012","file":"正文/f0000000-0000-4000-8000-000000000012.html"}]}', $utf8)
         [IO.File]::WriteAllText((Join-Path $fixture '正文编排决策.json'), '{"outline":[{"id":"10000000-0000-4000-8000-000000000001","number":"1","title":"父章节","children":[{"id":"f0000000-0000-4000-8000-000000000012","number":"1.1","title":"前小节"},{"id":"a0000000-0000-4000-8000-000000000010","number":"1.2","title":"后小节"}]},{"id":"20000000-0000-4000-8000-000000000002","number":"2","title":"未生成章节"}]}', $utf8)

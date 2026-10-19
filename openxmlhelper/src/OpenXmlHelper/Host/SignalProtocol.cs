@@ -1,7 +1,7 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
 
-namespace Yibiao.OpenXmlHelper.Host;
+namespace ZhiBiao.OpenXmlHelper.Host;
 
 /// <summary>管道上的开工 / 做完信号。</summary>
 sealed class SignalMessage

@@ -2,7 +2,7 @@ using System.Text.Json.Serialization;
 using DocumentFormat.OpenXml;
 using Wp = DocumentFormat.OpenXml.Wordprocessing;
 
-namespace Yibiao.OpenXmlHelper.Jobs;
+namespace ZhiBiao.OpenXmlHelper.Jobs;
 
 sealed class TemplateFieldCandidateFile
 {

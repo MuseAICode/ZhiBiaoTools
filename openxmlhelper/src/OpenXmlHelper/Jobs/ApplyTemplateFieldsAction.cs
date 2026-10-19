@@ -5,7 +5,7 @@ using DocumentFormat.OpenXml.Packaging;
 using DocumentFormat.OpenXml.Validation;
 using Wp = DocumentFormat.OpenXml.Wordprocessing;
 
-namespace Yibiao.OpenXmlHelper.Jobs;
+namespace ZhiBiao.OpenXmlHelper.Jobs;
 
 /// <summary>按 Agent 的候选分类生成带内容控件的最终模板及精简字段清单。</summary>
 static class ApplyTemplateFieldsAction

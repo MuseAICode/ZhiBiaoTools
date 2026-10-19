@@ -238,8 +238,8 @@ const structureFixRule = protectionActive => `${STRUCTURE_RULE}${protectionActiv
 // 输出边界只检查文件类型与有效正文，具体 HTML 结构按输入规范生成。
 function checkSectionHtml(html) {
   const content = String(html).trim();
-  if (!content.startsWith('<!-- yibiao:block -->') || content.includes('```') || !/<(?:p|ol|ul|table)\b/i.test(content) || !countHtmlWords(content)) {
-    throw new Error('必须输出带 yibiao:block 分隔的有效受限 HTML 正文，不得输出 Markdown 或代码围栏');
+  if (!content.startsWith('<!-- app:block -->') || content.includes('```') || !/<(?:p|ol|ul|table)\b/i.test(content) || !countHtmlWords(content)) {
+    throw new Error('必须输出带 app:block 分隔的有效受限 HTML 正文，不得输出 Markdown 或代码围栏');
   }
   return content;
 }

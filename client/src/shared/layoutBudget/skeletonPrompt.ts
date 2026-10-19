@@ -90,7 +90,7 @@ export function buildSkeletonSystemPrompt() {
   return `你是投标文件正文撰写助手，只输出受限 HTML 正文流。
 
 输出格式：
-- 每个块前面单独一行 <!-- yibiao:block --> 注释，块与块之间空一行。
+- 每个块前面单独一行 <!-- app:block --> 注释，块与块之间空一行。
 - 只允许这些标签：p、ol、ul、li、figure、img、figcaption、template、table、caption、thead、tbody、tr、th、td；
   行内只允许 strong、em、u、sup、sub、br。
 - 不输出 style、class、CSS、宽高、颜色、对齐、分页信息，不输出 markdown 代码围栏。
@@ -98,7 +98,7 @@ export function buildSkeletonSystemPrompt() {
 - 不要输出任何标题（h1-h6）。本节标题由程序用目录里的小节标题直接拼出来，你只写正文。
 
 配图块的写法：
-<!-- yibiao:block -->
+<!-- app:block -->
 <figure id="fig1" data-yb-generation="生成方式" data-yb-size="画框">
   <template data-yb-role="prompt">这里写配图生成提示词，说清楚画什么、有哪些节点和关系</template>
   <img alt="图片内容的简短描述">
@@ -115,7 +115,7 @@ data-yb-size 从块清单为该图列出的可选画框里挑一个，按内容�
 自上而下的长流程用竖版，左右流向或并列对比用横版，闭环和矩阵用方形。
 
 图文混排块（左图右文）的写法：
-<!-- yibiao:block -->
+<!-- app:block -->
 <table id="mix1" data-yb-preset="imageText">
   <caption>这一块的小标题</caption>
   <tbody>
@@ -127,7 +127,7 @@ data-yb-size 从块清单为该图列出的可选画框里挑一个，按内容�
 </table>
 
 并列图组块的写法（三列用 threeImages，四宫格用 fourImages，四宫格写两行两列）：
-<!-- yibiao:block -->
+<!-- app:block -->
 <table id="grp1" data-yb-preset="threeImages">
   <caption>这一组图的总标题</caption>
   <tbody>
@@ -143,7 +143,7 @@ data-yb-size 从块清单为该图列出的可选画框里挑一个，按内容�
 图文混排块的左图不需要 figcaption。
 
 数据表格块的写法（preset 用块清单指定的那个）：
-<!-- yibiao:block -->
+<!-- app:block -->
 <table id="tbl1" data-yb-preset="headerRow">
   <caption>表题</caption>
   <thead><tr><th scope="col">列名</th>…</tr></thead>
@@ -183,7 +183,7 @@ export function extractHtml(raw: string) {
   const text = String(raw || '').trim();
   const fenced = text.match(/```(?:html)?\s*([\s\S]*?)```/i);
   const body = (fenced ? fenced[1] : text).trim();
-  const first = body.search(/<(?:!--\s*yibiao:block|h[1-6]|p|ol|ul|figure|table)\b/i);
+  const first = body.search(/<(?:!--\s*app:block|h[1-6]|p|ol|ul|figure|table)\b/i);
   return first > 0 ? body.slice(first).trim() : body;
 }
 
@@ -312,15 +312,15 @@ export function assembleRestrictedHtml(
     patched += 1;
   });
 
-  // 渲染器按 <!-- yibiao:block --> 分块，AI 偶尔会漏写，这里按顶层元素补齐。
+  // 渲染器按 <!-- app:block --> 分块，AI 偶尔会漏写，这里按顶层元素补齐。
   const bodyBlocks = Array.from(document.body.children)
-    .map((element) => `<!-- yibiao:block -->\n${element.outerHTML}`);
+    .map((element) => `<!-- app:block -->\n${element.outerHTML}`);
 
   // 标题块由程序用小节标题拼出来，放在正文最前面。
   const headingSpec = plan.blocks.find((block) => block.kind === 'heading') as
     Extract<SkeletonBlock, { kind: 'heading' }> | undefined;
   const headingHtml = headingSpec
-    ? `<!-- yibiao:block -->\n<h${headingSpec.level} id="${headingSpec.id}">${escapeText(headingSpec.text)}</h${headingSpec.level}>`
+    ? `<!-- app:block -->\n<h${headingSpec.level} id="${headingSpec.id}">${escapeText(headingSpec.text)}</h${headingSpec.level}>`
     : '';
 
   const serialized = [headingHtml, ...bodyBlocks].filter(Boolean).join('\n\n');

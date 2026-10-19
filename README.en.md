@@ -35,7 +35,7 @@ See [AGENTS.md](AGENTS.md) and [client/开发说明.md](client/开发说明.md) 
 
 ## Architecture
 
-- **Desktop**: Electron Main / Preload provide local capabilities; the Renderer calls them through `window.yibiao`
+- **Desktop**: Electron Main / Preload provide local capabilities; the Renderer calls them through `window.appBridge`
 - **UI**: Vite + React + TypeScript with global CSS and Radix UI
 - **Data and tasks**: configuration in a local file, business state in SQLite; long-running tasks run in Main and can resume
 - **AI and Agent**: an AI service manages all model requests; Pi Agent runs agent tasks in its own runtime / session

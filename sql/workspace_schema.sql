@@ -1,7 +1,7 @@
 -- 工作区 SQLite 目标完整数据结构（设计说明）
 --
 -- 说明：
--- 1. 本文件用于开源开发者阅读、评审和排查问题，展示 workspace/yibiao.sqlite 的目标完整表结构。
+-- 1. 本文件用于开源开发者阅读、评审和排查问题，展示 workspace/app.sqlite 的目标完整表结构。
 -- 2. 用户运行客户端时不需要手动执行本文件。
 -- 3. 客户端运行时建表和升级以 Electron Main 侧 migration 代码为准。
 -- 4. 当前运行代码已落地 technical_plan_* v1、duplicate_check_* / rejection_check_* v2、knowledge_* v3、technical_plan_global_fact_groups v4、标段兼容 v5/v6、标段选择 v7、旧待选择标段兼容字段 v8、工作流类型和原方案文件状态 v9、招标解析项选择配置 v10、知识库排序 v11、废标项检查多投标文件 v12、已有方案目录配置 v13、多标段优化状态 v14、导出模板库 v15、多招标文件 v16、全文图片编排 v17、目录字数控制 v18、全局事实补全模式 v22、可行性研究报告 v23、官方 API 开票信息 v24、统一生成配置 v25、单企业资信库 v26、导出模板样式范围 v32 目标结构。

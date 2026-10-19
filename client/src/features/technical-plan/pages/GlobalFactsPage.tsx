@@ -92,7 +92,7 @@ function GlobalFactsPage({
     }
     try {
       setStarting(true);
-      await window.yibiao?.tasks.startGlobalFactsGeneration({ globalFactsMode });
+      await window.appBridge?.tasks.startGlobalFactsGeneration({ globalFactsMode });
       showToast('全局事实设定任务已在后台启动', 'success');
     } catch (error) {
       showToast(error instanceof Error ? error.message : '启动全局事实设定失败', 'error');

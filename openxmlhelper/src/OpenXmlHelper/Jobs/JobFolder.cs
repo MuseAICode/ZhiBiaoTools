@@ -3,7 +3,7 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
 
-namespace Yibiao.OpenXmlHelper.Jobs;
+namespace ZhiBiao.OpenXmlHelper.Jobs;
 
 /// <summary>任务请求。</summary>
 sealed class JobRequest

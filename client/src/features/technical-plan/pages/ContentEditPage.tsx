@@ -429,7 +429,7 @@ function ContentEditPage({
   }, [firstLeafId, outlineData, selectedItemId]);
 
   useEffect(() => {
-    window.yibiao?.config.load()
+    window.appBridge?.config.load()
       .then((config) => {
         setDeveloperMode(Boolean(config.developer_mode));
         if (config.export_format) {
@@ -464,7 +464,7 @@ function ContentEditPage({
 
     setPausePending(true);
     try {
-      await window.yibiao?.tasks.pauseContentGeneration();
+      await window.appBridge?.tasks.pauseContentGeneration();
       showToast('正在暂停正文生成，当前 AI 请求完成后会停止调度新任务', 'info');
     } catch (error) {
       setPausePending(false);
@@ -479,7 +479,7 @@ function ContentEditPage({
 
     if (developerStageGate) setDeveloperStageActionPending('continue');
     try {
-      await window.yibiao?.tasks.startContentGeneration({
+      await window.appBridge?.tasks.startContentGeneration({
         resume: true,
         ...(developerStageGate ? { developerStageAction: 'continue', developerStage: developerStageGate } : {}),
       });
@@ -493,7 +493,7 @@ function ContentEditPage({
 
   // 新建正文会话前确认“长嘛样”中保存的模板仍然存在。
   const ensureValidContentTemplate = async () => {
-    const template = exportTemplateId ? await window.yibiao?.templates.get(exportTemplateId) : null;
+    const template = exportTemplateId ? await window.appBridge?.templates.get(exportTemplateId) : null;
     if (template) return true;
     setTemplateRequiredDialogOpen(true);
     return false;
@@ -508,7 +508,7 @@ function ContentEditPage({
       setEditingItemId(null);
       setIsPreviewing(false);
       setDraftContent('');
-      await window.yibiao?.tasks.startContentGeneration({ developerRestart: true, regenerate: true });
+      await window.appBridge?.tasks.startContentGeneration({ developerRestart: true, regenerate: true });
       showToast('已从正文编排重新执行全部阶段', 'success');
     } catch (error) {
       showToast(error instanceof Error ? error.message : '重新执行正文生成失败', 'error');
@@ -539,7 +539,7 @@ function ContentEditPage({
   const retryFailedSections = async () => {
     if (taskBlocksGeneration || (!retryingWordConversion && !retryingConsistency && !retryingSectionModification && !retryingBodyGeneration && !retryingTableCleanup && !retryingLayoutCheck && !retryingExportRepair)) return;
     try {
-      await window.yibiao?.tasks.startContentGeneration({ retryFailedSections: true });
+      await window.appBridge?.tasks.startContentGeneration({ retryFailedSections: true });
       showToast(retryingExportRepair ? '导出修复已从原会话继续' : retryingLayoutCheck ? '格式自检已从原进度继续' : retryingTableCleanup ? '去表格已从原会话继续' : retryingSectionModification ? '小节修改已从原会话继续' : retryingBodyGeneration ? '正文生成已从原会话继续' : retryingConsistency ? '一致性审计已从原会话继续' : retryingWordConversion ? 'Word 转换重试已在后台启动' : '失败小节重试任务已在后台启动', 'success');
     } catch (error) {
       showToast(error instanceof Error ? error.message : '启动失败小节重试失败', 'error');
@@ -581,7 +581,7 @@ function ContentEditPage({
       setDraftContent('');
     }
 
-    await window.yibiao?.tasks.startContentGeneration({
+    await window.appBridge?.tasks.startContentGeneration({
       regenerate,
       generationOptions: savedGenerationOptions,
     });
@@ -619,7 +619,7 @@ function ContentEditPage({
     if (confirmedConcurrency) setConcurrencyWarning('');
     try {
       if (!await ensureValidContentTemplate()) return;
-      const config = await window.yibiao?.config.load();
+      const config = await window.appBridge?.config.load();
       if (config && !confirmedConcurrency && (config.concurrency_limit < 50 || config.image_model.concurrency_limit < 50)) {
         setConcurrencyWarning(`当前设置的文本模型并发${config.concurrency_limit}，生图模型并发${config.image_model.concurrency_limit}，建议设置50或更高，否则生成速度会比较慢`);
         return;
@@ -650,7 +650,7 @@ function ContentEditPage({
 
     setSectionSubmitting(true);
     try {
-      const config = await window.yibiao?.config.load();
+      const config = await window.appBridge?.config.load();
       const nextImageModelStatus = config?.image_model?.status || 'untested';
       const nextImageModelAvailable = nextImageModelStatus === 'available';
       const savedGenerationOptions = await resolveAiImageOptions(
@@ -660,7 +660,7 @@ function ContentEditPage({
         disableAiImages,
       );
       if (!savedGenerationOptions) return;
-      await window.yibiao?.tasks.startContentGeneration({
+      await window.appBridge?.tasks.startContentGeneration({
         regenerate: true,
         targetItemId: requirementItem.id,
         requirement: regenerateRequirement,

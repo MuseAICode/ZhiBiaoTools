@@ -1,5 +1,5 @@
 {
-  "name": "yibiao-client",
+  "name": "zhibiao-client",
   "version": "0.1.0",
   "private": true,
   "description": "智标投标工具箱独立桌面客户端",
@@ -22,8 +22,8 @@
     "start": "electron ."
   },
   "build": {
-    "appId": "com.yibiao.client",
-    "productName": "易标投标工具箱",
+    "appId": "com.zhibiao.client",
+    "productName": "智标",
     "asar": true,
     "directories": {
       "output": "release"
@@ -141,7 +141,7 @@
         }
       ]
     },
-    "artifactName": "Yibiao-${version}-${os}-${arch}.${ext}"
+    "artifactName": "ZhiBiao-${version}-${os}-${arch}.${ext}"
   },
   "dependencies": {
     "@docx-editor.dev/core": "2.15.0",

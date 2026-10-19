@@ -6,17 +6,17 @@
 
 ## 基础块
 
-- 每个顶层块前单独一行 `<!-- yibiao:block -->`，块间空一行。
+- 每个顶层块前单独一行 `<!-- app:block -->`，块间空一行。
 - 顶层仅使用 p、ol、ul、figure、table。每个顶层块有唯一 id，必须以英文字母开头，其后仅含英文字母、数字、下划线或连字符，长度不超过64。使用小节编号前缀避免跨小节重复，例如 s_1_2_p001。
 - 行内仅使用 strong、em、u、sup、sub、br。列表使用 li；有序列表可用 start 属性。
 - 不使用 div、section、style、class、CSS、脚本、SVG、宽高、颜色、对齐或分页属性。字体、纸张、间距等由所选模板配置管理。
 - 普通段落可用无编号加粗引导语。有序列表仅用于步骤、流程、时间顺序等连续内容。
 
 ```html
-<!-- yibiao:block -->
+<!-- app:block -->
 <p id="s_1_2_p001"><strong>实施要点：</strong>结合当前项目写具体内容。</p>
 
-<!-- yibiao:block -->
+<!-- app:block -->
 <ul id="s_1_2_ul001"><li>第一项措施。</li><li>第二项措施。</li></ul>
 ```
 
@@ -32,7 +32,7 @@
 - 单元格允许文字、行内标签、段落或列表，不嵌套数据表格；rowspan/colspan 仅使用正整数。避免在一格内堆砌长文。
 
 ```html
-<!-- yibiao:block -->
+<!-- app:block -->
 <table id="s_1_2_tbl001" data-yb-preset="headerRow">
   <caption>阶段成果</caption>
   <thead><tr><th scope="col">阶段</th><th scope="col">成果</th></tr></thead>
@@ -69,7 +69,7 @@ image_needed 表示本节是否进入新增配图范围：为 false 时不新增
 - 配图块之间用正文衔接，不连续堆图。不要照抄模板示例的配图内容。
 
 ```html
-<!-- yibiao:block -->
+<!-- app:block -->
 <figure id="s_1_2_fig001" data-yb-generation="mermaid" data-yb-size="wide" data-yb-fit="contain">
   <template data-yb-role="prompt">本项目实施阶段及交接关系。</template>
   <img alt="实施阶段及交接关系示意图" data-yb-asset-ref="图片/实施阶段.png">
@@ -82,7 +82,7 @@ image_needed 表示本节是否进入新增配图范围：为 false 时不新增
 原图复用示例（asset_ref 必须取自本节原图对应关系）：
 
 ```html
-<!-- yibiao:block -->
+<!-- app:block -->
 <figure id="original_fig_001" data-yb-generation="aiImage" data-yb-size="wide" data-yb-fit="contain">
   <template data-yb-role="prompt">复用原方案现场图片，不重新生成。</template>
   <img alt="现场图片" data-yb-asset-ref="原图/xxx.png">

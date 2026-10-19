@@ -46,7 +46,7 @@ function parseBody(html: string) {
 
 function serializeBody(body: HTMLElement) {
   return Array.from(body.children)
-    .map((element) => `<!-- yibiao:block -->\n${element.outerHTML}`)
+    .map((element) => `<!-- app:block -->\n${element.outerHTML}`)
     .join('\n\n');
 }
 

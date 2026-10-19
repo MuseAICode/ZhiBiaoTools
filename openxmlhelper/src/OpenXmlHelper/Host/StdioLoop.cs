@@ -1,7 +1,7 @@
 using System.Text;
-using Yibiao.OpenXmlHelper.Jobs;
+using ZhiBiao.OpenXmlHelper.Jobs;
 
-namespace Yibiao.OpenXmlHelper.Host;
+namespace ZhiBiao.OpenXmlHelper.Host;
 
 /// <summary>按行读取 stdin，写出 stdout，驱动任务。</summary>
 static class StdioLoop

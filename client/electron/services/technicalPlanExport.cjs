@@ -105,7 +105,7 @@ function createTechnicalPlanExport({ technicalPlanStore, templateStore, agentSer
       const mark = (html, source) => {
         const name = `yb_layout_${layoutSources.length}`;
         layoutSources.push({ name, ...source });
-        return `<p>YIBIAOLAYOUT:${name}</p>\n${html}`;
+        return `<p>APPMARKLAYOUT:${name}</p>\n${html}`;
       };
       // 合并相邻同样式范围，完整章节只排版一次；混合父标题跟随首个子节点的页面。
       const append = (html, useTemplate, sectionTemplate) => {

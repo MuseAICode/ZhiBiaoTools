@@ -19,7 +19,7 @@ const WORD_ADJUST_MAX_ROUNDS = 2;
 // 单节结果与目标的允许偏差：调整量的比例与最小字数取大者，超出时追问一次。
 const WORD_ADJUST_TOLERANCE = 0.25;
 const WORD_ADJUST_MIN_TOLERANCE = 80;
-const KEEP_PATTERN = /<!--\s*yibiao:keep-(\d+)\s*-->/g;
+const KEEP_PATTERN = /<!--\s*app:keep-(\d+)\s*-->/g;
 const WORD_ADJUST_TOOL = 'adjust-word-count';
 // 字数校正阶段主 Agent 只调用校正工具。
 const WORD_ADJUST_TOOLS = [WORD_ADJUST_TOOL, 'report-failure'];
@@ -76,7 +76,7 @@ function protectBlocks(html) {
     const element = $(node);
     if (!element.is('figure, img, table') && !element.find('figure, img, table').length) return;
     blocks.push($.html(node));
-    element.replaceWith(`<!-- yibiao:keep-${blocks.length} -->`);
+    element.replaceWith(`<!-- app:keep-${blocks.length} -->`);
   });
   return { text: $.html(), blocks };
 }
@@ -158,8 +158,8 @@ function buildAdjustSystem(direction) {
 字数口径：每个汉字计 1 字，连续的英文字母或数字计 1 字；标点、空白、HTML 标签和注释不计入。结果尽量接近目标字数。
 ${rules}
 保留原有实质信息、事实参数和承诺，不改变原有结论；事实冲突以全局事实设定为准。
-格式要求：输出受限 HTML 片段，以 <!-- yibiao:block --> 开头，每个顶层块前单独一行 <!-- yibiao:block -->。顶层只使用 p、ol、ul；原有块沿用原 id，新增块使用本节相同的 id 前缀续编，不与已有 id 重复。除空元素外每个元素都写出结束标签。不使用 h1～h6、Markdown、代码围栏或解释文字。不使用 LaTeX，公式、参数和单位使用普通文字、Unicode 数学符号及 <sup>、<sub> 表达，例如 22 ℃ ± 2 ℃、≥30 m<sup>3</sup>/(h·人)。
-形如 <!-- yibiao:keep-1 --> 的注释代表本节已有的图片或表格，不可修改：每个占位注释必须原样保留一次并保持原有先后顺序，不删除、不复制、不改写，其前面同样保留 <!-- yibiao:block -->；可以在占位前后增删或改写文字段落。
+格式要求：输出受限 HTML 片段，以 <!-- app:block --> 开头，每个顶层块前单独一行 <!-- app:block -->。顶层只使用 p、ol、ul；原有块沿用原 id，新增块使用本节相同的 id 前缀续编，不与已有 id 重复。除空元素外每个元素都写出结束标签。不使用 h1～h6、Markdown、代码围栏或解释文字。不使用 LaTeX，公式、参数和单位使用普通文字、Unicode 数学符号及 <sup>、<sub> 表达，例如 22 ℃ ± 2 ℃、≥30 m<sup>3</sup>/(h·人)。
+形如 <!-- app:keep-1 --> 的注释代表本节已有的图片或表格，不可修改：每个占位注释必须原样保留一次并保持原有先后顺序，不删除、不复制、不改写，其前面同样保留 <!-- app:block -->；可以在占位前后增删或改写文字段落。
 只输出调整后的完整 HTML。`;
 }
 

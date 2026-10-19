@@ -31,7 +31,7 @@ function MyTemplatesPage() {
   const loadTemplates = useCallback(async () => {
     setLoading(true);
     try {
-      const items = await window.yibiao?.templates.list();
+      const items = await window.appBridge?.templates.list();
       const nextTemplates = items || [];
       setTemplates(nextTemplates);
       setSelectedId((prev) => nextTemplates.some((template) => template.template_id === prev) ? prev : nextTemplates[0]?.template_id || '');
@@ -58,7 +58,7 @@ function MyTemplatesPage() {
 
     setDuplicatingId(template.template_id);
     try {
-      const copy = await window.yibiao?.templates.duplicate(template.template_id);
+      const copy = await window.appBridge?.templates.duplicate(template.template_id);
       if (!copy) {
         throw new Error('复制模板失败');
       }
@@ -77,7 +77,7 @@ function MyTemplatesPage() {
 
     setDeleting(true);
     try {
-      const result = await window.yibiao?.templates.delete(deleteTarget.template_id);
+      const result = await window.appBridge?.templates.delete(deleteTarget.template_id);
       if (result?.success === false) {
         showToast(result.message || '模板未删除', 'info');
         setDeleteTarget(null);

@@ -271,7 +271,7 @@ function createId(prefix) {
 /** 将相对路径转换为资信库本地资源地址。 */
 function buildAssetUrl(relativePath) {
   const encodedPath = String(relativePath || '').split('/').filter(Boolean).map(encodeURIComponent).join('/');
-  return `yibiao-asset://credential-library/${encodedPath}`;
+  return `app-asset://credential-library/${encodedPath}`;
 }
 
 /** 把数据库图片行转换为 Renderer 使用的结构。 */

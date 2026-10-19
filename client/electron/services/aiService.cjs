@@ -416,7 +416,7 @@ function saveGeneratedImage(app, image) {
   const filePath = path.join(imagesDir, fileName);
   fs.writeFileSync(filePath, compressed.buffer);
   return {
-    asset_url: `yibiao-asset://generated-images/${encodeURIComponent(fileName)}`,
+    asset_url: `app-asset://generated-images/${encodeURIComponent(fileName)}`,
     file_path: filePath,
     mime_type: compressed.extension === 'jpg' ? 'image/jpeg' : image.mime_type,
   };
@@ -2001,7 +2001,7 @@ function buildComfyUICheckpointWorkflow(objectInfo) {
     '4': { class_type: 'EmptyLatentImage', inputs: { width: 1024, height: 1024, batch_size: 1 } },
     '5': { class_type: 'KSampler', inputs: { model: ['1', 0], positive: ['2', 0], negative: ['3', 0], latent_image: ['4', 0], seed: 0, steps: 20, cfg: 7.0, sampler_name: 'euler', scheduler: 'normal', denoise: 1.0 } },
     '6': { class_type: 'VAEDecode', inputs: { samples: ['5', 0], vae: ['1', 2] } },
-    '7': { class_type: 'SaveImage', inputs: { images: ['6', 0], filename_prefix: 'yibiao' } },
+    '7': { class_type: 'SaveImage', inputs: { images: ['6', 0], filename_prefix: 'app' } },
   };
 }
 
@@ -2085,7 +2085,7 @@ function buildComfyUIImageWorkflow(baseWorkflow, prompt, size) {
   }
 
   if (saveNode) {
-    saveNode.inputs = { ...saveNode.inputs, filename_prefix: 'yibiao' };
+    saveNode.inputs = { ...saveNode.inputs, filename_prefix: 'app' };
   }
 
   return workflow;

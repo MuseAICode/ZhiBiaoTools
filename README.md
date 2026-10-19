@@ -35,7 +35,7 @@ npm run dist:mac    # macOS Intel / Apple Silicon DMG 和 ZIP
 
 ## 技术架构
 
-- **桌面端**：Electron Main / Preload 提供本地能力，Renderer 通过 `window.yibiao` 调用
+- **桌面端**：Electron Main / Preload 提供本地能力，Renderer 通过 `window.appBridge` 调用
 - **界面层**：Vite + React + TypeScript，全局 CSS 和 Radix UI
 - **数据与任务**：配置保存在本地文件，业务状态存入 SQLite；耗时任务在 Main 后台运行并支持恢复
 - **AI 与 Agent**：AI Service 统一管理模型请求，Pi Agent 使用独立 Runtime / Session 执行智能体任务

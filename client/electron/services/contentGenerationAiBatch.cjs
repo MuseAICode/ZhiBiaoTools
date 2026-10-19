@@ -50,13 +50,13 @@ async function requestWithFollowUp({ aiService, guard, logTitle, messages, evalu
   throw new Error(reason);
 }
 
-// 顶层元素和 yibiao:block 分隔注释及其源码偏移，按位置拼接时不重新序列化正文。
+// 顶层元素和 app:block 分隔注释及其源码偏移，按位置拼接时不重新序列化正文。
 function topLevelNodes(html) {
   const $ = load(html, { sourceCodeLocationInfo: true }, false);
   const nodes = $.root().contents().toArray().flatMap(node => {
     const location = node.sourceCodeLocation;
     if (!location) return [];
-    if (node.type === 'comment') return /^\s*yibiao:block\s*$/.test(node.data) ? [{ kind: 'marker', node, start: location.startOffset, end: location.endOffset }] : [];
+    if (node.type === 'comment') return /^\s*app:block\s*$/.test(node.data) ? [{ kind: 'marker', node, start: location.startOffset, end: location.endOffset }] : [];
     return node.type === 'tag' ? [{ kind: 'element', node, start: location.startOffset, end: location.endOffset }] : [];
   });
   return { $, nodes };

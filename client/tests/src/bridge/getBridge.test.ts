@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { BridgeNotImplementedError, detectBridgeKind, getBridge, type AppBridge } from '../../../src/shared/bridge';
 import { createElectronBridge } from '../../../src/shared/bridge/electronBridge';
 import { createWebBridge } from '../../../src/shared/bridge/webBridge';
-import type { YibiaoBridge } from '../../../src/shared/types/ipc';
+import type { PreloadBridge } from '../../../src/shared/types/ipc';
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -19,10 +19,10 @@ describe('detectBridgeKind', () => {
 });
 
 describe('getBridge', () => {
-  it('Electron 下返回的就是 window.yibiao 本身，调用行为不变', () => {
+  it('Electron 下返回的就是 window.appBridge 本身，调用行为不变', () => {
     const load = vi.fn().mockResolvedValue({});
     const source = { config: { load } };
-    vi.stubGlobal('window', { yibiao: source });
+    vi.stubGlobal('window', { appBridge: source });
 
     const bridge = getBridge();
     expect(bridge).toBe(source);
@@ -30,16 +30,16 @@ describe('getBridge', () => {
     expect(load).toHaveBeenCalledTimes(1);
   });
 
-  it('每次调用都重新读取 window.yibiao，不缓存旧对象', () => {
+  it('每次调用都重新读取 window.appBridge，不缓存旧对象', () => {
     const first = {};
     const second = {};
-    vi.stubGlobal('window', { yibiao: first });
+    vi.stubGlobal('window', { appBridge: first });
     expect(getBridge()).toBe(first);
-    vi.stubGlobal('window', { yibiao: second });
+    vi.stubGlobal('window', { appBridge: second });
     expect(getBridge()).toBe(second);
   });
 
-  it('浏览器中没有 window.yibiao 时返回 WebBridge，且只创建一次', () => {
+  it('浏览器中没有 window.appBridge 时返回 WebBridge，且只创建一次', () => {
     vi.stubGlobal('window', {});
     const bridge = getBridge();
     expect(bridge.platform).toBe('web');
@@ -54,7 +54,7 @@ describe('getBridge', () => {
 
 describe('createElectronBridge', () => {
   it('不复制、不包装 preload 对象', () => {
-    const source = {} as YibiaoBridge;
+    const source = {} as PreloadBridge;
     expect(createElectronBridge(source)).toBe(source);
   });
 });

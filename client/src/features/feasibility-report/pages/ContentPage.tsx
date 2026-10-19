@@ -169,7 +169,7 @@ function ContentPage({
   }, [leaves, selectedItemId]);
 
   useEffect(() => {
-    window.yibiao?.config.load()
+    window.appBridge?.config.load()
       .then((config) => {
         if (config?.export_format) setExportFormat(config.export_format);
       })
@@ -189,7 +189,7 @@ function ContentPage({
 
   const startContentGeneration = async (payload: { onlyMissing?: boolean; resume?: boolean }) => {
     try {
-      await window.yibiao!.tasks.startFeasibilityContent(payload);
+      await window.appBridge!.tasks.startFeasibilityContent(payload);
       showToast(payload.resume
         ? '已继续正文生成任务'
         : payload.onlyMissing
@@ -205,7 +205,7 @@ function ContentPage({
   const pauseContentGeneration = async () => {
     setPausePending(true);
     try {
-      await window.yibiao!.tasks.pauseFeasibilityContent();
+      await window.appBridge!.tasks.pauseFeasibilityContent();
       showToast('正在暂停正文生成，当前 AI 请求完成后会停止调度新任务', 'info');
     } catch (error) {
       setPausePending(false);

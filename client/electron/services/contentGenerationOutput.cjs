@@ -63,7 +63,7 @@ async function previewContentSection({ sectionId, agentService, openXmlHelperSer
   // 其余结构问题（如图片被加粗或链接包裹）再在副本中修复，已生成的图片不会误显示为占位。
   const html = convertibleHtml(replacedImages ? $.html() : closed).html;
   const temporaryRoot = path.resolve(os.tmpdir());
-  const temporaryDir = fs.mkdtempSync(path.join(temporaryRoot, 'yibiao-content-preview-'));
+  const temporaryDir = fs.mkdtempSync(path.join(temporaryRoot, 'app-content-preview-'));
   try {
     const rendered = await openXmlHelperService.createRestrictedHtmlDocx(html, template.config, {
       assetRoot: workspaceDir, copyAssets: true,
@@ -72,7 +72,7 @@ async function previewContentSection({ sectionId, agentService, openXmlHelperSer
     fs.writeFileSync(file, rendered.bytes);
     return new Uint8Array(fs.readFileSync(file));
   } finally {
-    if (path.dirname(temporaryDir) === temporaryRoot && path.basename(temporaryDir).startsWith('yibiao-content-preview-')) {
+    if (path.dirname(temporaryDir) === temporaryRoot && path.basename(temporaryDir).startsWith('app-content-preview-')) {
       fs.rmSync(temporaryDir, { recursive: true, force: true });
     }
   }

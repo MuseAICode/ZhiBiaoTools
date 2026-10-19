@@ -11,7 +11,7 @@
 - 开发启动：`npm run dev`，固定 Vite `127.0.0.1:5173 --strictPort` 后再启动 Electron。
 - 打包：`npm run dist:win` / `npm run dist:mac`，配置在 `client/package.json` 的 `build` 字段，产物在 `client/release/`。
 - Electron Main 和 preload 是 CommonJS：`client/electron/**/*.cjs`；Renderer 是 ESM TypeScript：`client/src/**/*.ts(x)`。
-- Renderer 不直接访问 Node、`fs`、`path`、`ipcRenderer`，只通过 `window.yibiao`；改 preload API 时同步 `client/src/shared/types/ipc.ts`。
+- Renderer 不直接访问 Node、`fs`、`path`、`ipcRenderer`，只通过 `window.appBridge`；改 preload API 时同步 `client/src/shared/types/ipc.ts`。
 - 新业务 IPC 默认只注册/转发，业务逻辑放 `electron/services/*.cjs`；数据库生命周期装配和现有插件编排是例外，不作为普通功能模板。
 - Main 侧文件读写显式使用 UTF-8，并把 Windows 中文路径当默认场景处理。
 
@@ -25,7 +25,7 @@
 - 页面根容器保持 `height: 100%`/`min-height: 0`，长内容在页面内部滚动；不要依赖 `body` 全局滚动或为 `FloatingToolbar` 额外留大空白。
 
 ## 数据与流程
-- 配置存到 Electron `userData/user_config.json`；业务工作区存到 `userData/workspace/`；结构化业务状态的权威存储是 `userData/workspace/yibiao.sqlite`。运行时 schema/migration 以 `electron/services/sqliteDatabase.cjs` 为准，改表时同步根目录 `sql/workspace_schema.sql`；技术方案旧 `technical_plan.json` 仅是启动清理对象，不得继续读写。
+- 配置存到 Electron `userData/user_config.json`；业务工作区存到 `userData/workspace/`；结构化业务状态的权威存储是 `userData/workspace/app.sqlite`。运行时 schema/migration 以 `electron/services/sqliteDatabase.cjs` 为准，改表时同步根目录 `sql/workspace_schema.sql`；技术方案旧 `technical_plan.json` 仅是启动清理对象，不得继续读写。
 - Renderer 只用 `localStorage` 存轻量 UI 偏好；草稿、API Key、流程状态以及业务正文都走 Main 侧存储/IPC。
 - 技术方案除文件导入/展示外，标书分析、目录、全局事实和正文等耗时流程都在 Electron Main 后台任务中运行，并持续写入对应 SQLite Store；页面卸载不应取消任务。
 - 技术方案目录与正文以 `technical_plan_outline_nodes`（Renderer 对应 `outlineData.outline[*].content`）为权威。`saveOutline()` 的 `reason` 是持久化协议：`replace` 清空全部旧正文，`edit` / `delete` / `add-*` 只使受影响节点失效，`sort` 只改变顺序和显示编号，保持节点 ID、正文文件名和相关状态不变；不要在 Renderer 复制清理规则。

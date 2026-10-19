@@ -1,6 +1,6 @@
 using System.Text.Json;
 
-namespace Yibiao.OpenXmlHelper.Jobs;
+namespace ZhiBiao.OpenXmlHelper.Jobs;
 
 /// <summary>页眉/页脚文字的完整区域，单位 cm，相对纸张左上角。</summary>
 sealed record ChromeTextBox(double StartCm, double EndCm, double TopCm, double HeightCm);

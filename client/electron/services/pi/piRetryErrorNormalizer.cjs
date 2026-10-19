@@ -1,6 +1,6 @@
 const RETRYABLE_ERROR_PREFIX = 'Provider returned error: ';
 const UPSTREAM_TEMPORARILY_UNAVAILABLE_PATTERN = /\bupstream service temporarily unavailable\b/i;
-const PI_RETRY_ERROR_NORMALIZER_NAME = 'yibiao-retry-error-normalizer';
+const PI_RETRY_ERROR_NORMALIZER_NAME = 'app-retry-error-normalizer';
 const PI_RETRY_ERROR_NORMALIZER_PATH = `<inline:${PI_RETRY_ERROR_NORMALIZER_NAME}>`;
 
 // 将已知网关瞬时错误转换为 Pi 原生重试能够识别的错误表达。
@@ -27,7 +27,7 @@ function createPiRetryErrorNormalizer() {
       pi.on('message_end', (event, context) => {
         const message = event.message;
         if (message?.role !== 'assistant' || message.stopReason !== 'error') return undefined;
-        if (message.provider !== 'yibiao' && context.model?.provider !== 'yibiao') return undefined;
+        if (message.provider !== 'app' && context.model?.provider !== 'app') return undefined;
         const normalized = normalizePiRetryableErrorMessage(message.errorMessage);
         if (!normalized || normalized === message.errorMessage) return undefined;
         return { message: { ...message, errorMessage: normalized } };

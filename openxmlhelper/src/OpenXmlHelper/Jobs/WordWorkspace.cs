@@ -3,7 +3,7 @@ using DocumentFormat.OpenXml;
 using DocumentFormat.OpenXml.Packaging;
 using Wp = DocumentFormat.OpenXml.Wordprocessing;
 
-namespace Yibiao.OpenXmlHelper.Jobs;
+namespace ZhiBiao.OpenXmlHelper.Jobs;
 
 sealed record SourceDocument(string Path, string RelativePath, WordprocessingDocument Document, MainDocumentPart Part, List<BlockInfo> Blocks) : IDisposable
 {

@@ -335,7 +335,7 @@ function TechnicalPlanHome({ registerLeaveGuard }: TechnicalPlanHomeProps) {
   useEffect(() => {
     if (!hydrated) return;
 
-    void window.yibiao?.ui?.setCurrentView({ section: 'technical-plan', step: state.step });
+    void window.appBridge?.ui?.setCurrentView({ section: 'technical-plan', step: state.step });
   }, [hydrated, state.step]);
 
   useEffect(() => {
@@ -383,7 +383,7 @@ function TechnicalPlanHome({ registerLeaveGuard }: TechnicalPlanHomeProps) {
     }
 
     if (state.step === 'outline-generation' && step === 'global-facts') {
-      const latestState = await window.yibiao!.technicalPlan.loadState();
+      const latestState = await window.appBridge!.technicalPlan.loadState();
       setState((prev) => ({ ...prev, ...latestState }));
       const finalOutlineData = latestState.outlineData;
       const snapshot = latestState.outlineWordControlSnapshot;
@@ -403,7 +403,7 @@ function TechnicalPlanHome({ registerLeaveGuard }: TechnicalPlanHomeProps) {
     }
 
     setState((prev) => ({ ...prev, step }));
-    window.yibiao?.technicalPlan.updateStep(step).catch((error) => {
+    window.appBridge?.technicalPlan.updateStep(step).catch((error) => {
       showToast(error instanceof Error ? error.message : '保存技术方案步骤失败', 'error');
     });
   };
@@ -418,11 +418,11 @@ function TechnicalPlanHome({ registerLeaveGuard }: TechnicalPlanHomeProps) {
   };
 
   useEffect(() => {
-    if (!window.yibiao?.tasks) {
+    if (!window.appBridge?.tasks) {
       return;
     }
 
-    const unsubscribe = window.yibiao.tasks.onTaskEvent<typeof state>((event) => {
+    const unsubscribe = window.appBridge.tasks.onTaskEvent<typeof state>((event) => {
       const taskType = (event.task as { type?: string } | undefined)?.type;
       const latestTask = trimTaskLogs(event.task as BackgroundTaskState | undefined);
       const technicalPlan = event.technicalPlanPatch || event.technicalPlan;
@@ -598,7 +598,7 @@ function TechnicalPlanHome({ registerLeaveGuard }: TechnicalPlanHomeProps) {
         return prev;
       });
     });
-    window.yibiao.tasks.getActiveTasks().catch((error) => {
+    window.appBridge.tasks.getActiveTasks().catch((error) => {
       console.warn('获取后台任务状态失败', error);
     });
 
@@ -614,7 +614,7 @@ function TechnicalPlanHome({ registerLeaveGuard }: TechnicalPlanHomeProps) {
       return;
     }
     let mounted = true;
-    window.yibiao?.technicalPlan.readTenderMarkdown().then((markdown) => {
+    window.appBridge?.technicalPlan.readTenderMarkdown().then((markdown) => {
       if (mounted) setTenderMarkdown(markdown || '');
     }).catch((error) => {
       if (mounted) showToast(error instanceof Error ? error.message : '读取招标文件 Markdown 失败', 'error');
@@ -627,7 +627,7 @@ function TechnicalPlanHome({ registerLeaveGuard }: TechnicalPlanHomeProps) {
   const loadExportTemplates = useCallback(async () => {
     setExportTemplatesLoading(true);
     try {
-      const templates = await window.yibiao?.templates.list();
+      const templates = await window.appBridge?.templates.list();
       const nextTemplates = templates || [];
       setExportTemplates(nextTemplates);
     } catch (error) {
@@ -661,7 +661,7 @@ function TechnicalPlanHome({ registerLeaveGuard }: TechnicalPlanHomeProps) {
         warnings: [],
       });
 
-      unsubscribe = window.yibiao?.export.onWordExportProgress((event: WordExportProgressEvent) => {
+      unsubscribe = window.appBridge?.export.onWordExportProgress((event: WordExportProgressEvent) => {
         if (event.requestId && event.requestId !== requestId) {
           return;
         }
@@ -677,7 +677,7 @@ function TechnicalPlanHome({ registerLeaveGuard }: TechnicalPlanHomeProps) {
         }));
       });
 
-      const result = await window.yibiao?.export.exportWord({
+      const result = await window.appBridge?.export.exportWord({
         requestId,
         source: 'technical-plan',
       });
@@ -722,7 +722,7 @@ function TechnicalPlanHome({ registerLeaveGuard }: TechnicalPlanHomeProps) {
     if (!exportProgress.filePath) return;
 
     try {
-      await window.yibiao?.export.openFile(exportProgress.filePath);
+      await window.appBridge?.export.openFile(exportProgress.filePath);
     } catch (error) {
       const message = error instanceof Error ? error.message : '打开文件失败';
       showToast(message, 'error');
@@ -769,7 +769,7 @@ function TechnicalPlanHome({ registerLeaveGuard }: TechnicalPlanHomeProps) {
       outlineData: updatedOutlineData,
       contentGenerationSections: updatedSections,
     }));
-    const saved = await window.yibiao?.technicalPlan.saveChapterContent({ nodeId: item.id, content });
+    const saved = await window.appBridge?.technicalPlan.saveChapterContent({ nodeId: item.id, content });
     if (saved) setState((prev) => ({ ...prev, ...saved }));
   };
 
@@ -783,7 +783,7 @@ function TechnicalPlanHome({ registerLeaveGuard }: TechnicalPlanHomeProps) {
       throw error;
     } finally {
       try {
-        const latestState = await window.yibiao!.technicalPlan.loadState();
+        const latestState = await window.appBridge!.technicalPlan.loadState();
         setState(latestState);
       } catch (error) {
         const message = `刷新技术方案状态失败：${error instanceof Error ? error.message : String(error)}`;
@@ -805,7 +805,7 @@ function TechnicalPlanHome({ registerLeaveGuard }: TechnicalPlanHomeProps) {
     showToast('正在重置技术方案，将停止后台任务并清理工作区文件，请稍候…', 'info');
     try {
       const result = await runAndRefreshTechnicalPlan(async () => {
-        const response = await window.yibiao!.technicalPlan.clear();
+        const response = await window.appBridge!.technicalPlan.clear();
         if (!response.success) throw new Error(response.message || '重置技术方案失败');
         return response;
       });
@@ -818,62 +818,62 @@ function TechnicalPlanHome({ registerLeaveGuard }: TechnicalPlanHomeProps) {
   };
 
   const saveContentGenerationOptions = async (contentGenerationOptions: ContentGenerationOptions) => {
-    const saved = await window.yibiao?.technicalPlan.saveContentGenerationOptions(contentGenerationOptions);
+    const saved = await window.appBridge?.technicalPlan.saveContentGenerationOptions(contentGenerationOptions);
     setState((prev) => ({ ...prev, ...(saved || {}), contentGenerationOptions }));
   };
 
   // 重置正文阶段；清理报错后也同步已提交的正文状态。
   const resetContentGeneration = async () => {
-    await runAndRefreshTechnicalPlan(() => window.yibiao!.technicalPlan.resetContentGeneration());
+    await runAndRefreshTechnicalPlan(() => window.appBridge!.technicalPlan.resetContentGeneration());
   };
 
   // 保存全局事实后同步快照，包含已失效的正文与任务。
   const saveGlobalFacts = async (globalFacts: GlobalFactGroupState[]) => {
-    await runAndRefreshTechnicalPlan(() => window.yibiao!.technicalPlan.saveGlobalFacts(globalFacts));
+    await runAndRefreshTechnicalPlan(() => window.appBridge!.technicalPlan.saveGlobalFacts(globalFacts));
   };
 
   // 保存目录后同步快照，不用提交前的目录覆盖后台实际结果。
   const saveOutline = async (request: SaveOutlineRequest) => {
-    await runAndRefreshTechnicalPlan(() => window.yibiao!.technicalPlan.saveOutline(request));
+    await runAndRefreshTechnicalPlan(() => window.appBridge!.technicalPlan.saveOutline(request));
   };
 
   const saveOutlineSelection = async (request: SaveOutlineSelectionRequest) => {
-    await window.yibiao?.technicalPlan.saveOutlineSelection(request);
+    await window.appBridge?.technicalPlan.saveOutlineSelection(request);
   };
 
   const saveGenerationOutlineMode = async (outlineMode: TechnicalPlanState['outlineMode']) => {
-    const saved = await window.yibiao!.technicalPlan.saveGenerationConfig({ outlineMode });
+    const saved = await window.appBridge!.technicalPlan.saveGenerationConfig({ outlineMode });
     setState((prev) => ({ ...prev, outlineMode: saved.outlineMode }));
   };
 
   const saveGenerationOutlineExpansionMode = async (outlineExpansionMode: TechnicalPlanState['outlineExpansionMode']) => {
-    const saved = await window.yibiao!.technicalPlan.saveGenerationConfig({ outlineExpansionMode });
+    const saved = await window.appBridge!.technicalPlan.saveGenerationConfig({ outlineExpansionMode });
     setState((prev) => ({ ...prev, outlineExpansionMode: saved.outlineExpansionMode }));
   };
 
   const saveGenerationWordControlOptions = async (outlineWordControlOptions: OutlineWordControlOptions) => {
-    const saved = await window.yibiao!.technicalPlan.saveGenerationConfig({ outlineWordControlOptions });
+    const saved = await window.appBridge!.technicalPlan.saveGenerationConfig({ outlineWordControlOptions });
     setState((prev) => ({ ...prev, outlineWordControlOptions: saved.outlineWordControlOptions }));
   };
 
   const saveGenerationReferenceKnowledge = async (referenceKnowledgeDocumentIds: string[]) => {
-    const saved = await window.yibiao!.technicalPlan.saveGenerationConfig({ referenceKnowledgeDocumentIds });
+    const saved = await window.appBridge!.technicalPlan.saveGenerationConfig({ referenceKnowledgeDocumentIds });
     setState((prev) => ({ ...prev, referenceKnowledgeDocumentIds: saved.referenceKnowledgeDocumentIds }));
   };
 
   const saveGenerationGlobalFactsMode = async (globalFactsMode: GlobalFactsMode) => {
-    const saved = await window.yibiao!.technicalPlan.saveGenerationConfig({ globalFactsMode });
+    const saved = await window.appBridge!.technicalPlan.saveGenerationConfig({ globalFactsMode });
     setState((prev) => ({ ...prev, globalFactsMode: saved.globalFactsMode }));
   };
 
   const saveGenerationExportTemplate = async (exportTemplateId: string) => {
-    const saved = await window.yibiao!.technicalPlan.saveGenerationConfig({ exportTemplateId });
+    const saved = await window.appBridge!.technicalPlan.saveGenerationConfig({ exportTemplateId });
     setState((prev) => ({ ...prev, exportTemplateId: saved.exportTemplateId }));
   };
 
   // 独立保存模板样式范围，只合并本字段，避免覆盖同时保存的模板和任务状态。
   const saveGenerationExportTemplateScope = async (exportTemplateScope: ExportTemplateScope) => {
-    const saved = await window.yibiao!.technicalPlan.saveGenerationConfig({ exportTemplateScope });
+    const saved = await window.appBridge!.technicalPlan.saveGenerationConfig({ exportTemplateScope });
     setState((prev) => ({ ...prev, exportTemplateScope: saved.exportTemplateScope }));
   };
 
@@ -887,7 +887,7 @@ function TechnicalPlanHome({ registerLeaveGuard }: TechnicalPlanHomeProps) {
   };
 
   const openBidTemplate = async () => {
-    const result = await window.yibiao?.technicalPlan.openBidTemplate();
+    const result = await window.appBridge?.technicalPlan.openBidTemplate();
     if (!result?.success) {
       showToast(result?.message || '无法打开投标模版', 'error');
     }
@@ -922,12 +922,12 @@ function TechnicalPlanHome({ registerLeaveGuard }: TechnicalPlanHomeProps) {
           : '通过桌宠 AI 对话调整当前目录');
 
   const openPetAiChat = useCallback(async () => {
-    await window.yibiao!.plugins.notifyEvent(PET_PLUGIN_ID, 'open-ai-chat');
+    await window.appBridge!.plugins.notifyEvent(PET_PLUGIN_ID, 'open-ai-chat');
   }, []);
 
   const handleAiAdjustClick = useCallback(async () => {
     try {
-      const plugins = await window.yibiao!.plugins.getAvailablePlugins();
+      const plugins = await window.appBridge!.plugins.getAvailablePlugins();
       const pet = plugins.find((plugin) => plugin.id === PET_PLUGIN_ID);
       if (!pet) {
         showToast('插件市场中未找到桌宠插件，请在插件市场刷新后重试', 'error');
@@ -947,15 +947,15 @@ function TechnicalPlanHome({ registerLeaveGuard }: TechnicalPlanHomeProps) {
   const installPetPluginAndOpenChat = useCallback(async () => {
     setInstallingPetPlugin(true);
     try {
-      const plugins = await window.yibiao!.plugins.getAvailablePlugins();
+      const plugins = await window.appBridge!.plugins.getAvailablePlugins();
       const pet = plugins.find((plugin) => plugin.id === PET_PLUGIN_ID);
       if (!pet) {
         throw new Error('插件市场中未找到桌宠插件');
       }
       if (!pet.installed) {
-        await window.yibiao!.plugins.install(PET_PLUGIN_ID);
+        await window.appBridge!.plugins.install(PET_PLUGIN_ID);
       }
-      await window.yibiao!.plugins.enable(PET_PLUGIN_ID);
+      await window.appBridge!.plugins.enable(PET_PLUGIN_ID);
       setPetInstallDialogOpen(false);
       await openPetAiChat();
       showToast('桌宠已启用，请在桌宠对话框中输入调整要求', 'success');

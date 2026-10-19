@@ -649,7 +649,7 @@ function DuplicateCheckPage() {
   useEffect(() => {
     let canceled = false;
 
-    void window.yibiao?.duplicateCheck.loadState()
+    void window.appBridge?.duplicateCheck.loadState()
       .then((state) => {
         if (canceled || !state) return;
         applyDuplicateCheckState(state);
@@ -671,14 +671,14 @@ function DuplicateCheckPage() {
   useEffect(() => {
     if (!hydratedRef.current) return;
 
-    void window.yibiao?.duplicateCheck.saveUiState({ step, activeAnalysisTab })
+    void window.appBridge?.duplicateCheck.saveUiState({ step, activeAnalysisTab })
       .catch((error) => {
         showToast(error instanceof Error ? error.message : '保存标书查重页面状态失败', 'error');
       });
   }, [activeAnalysisTab, showToast, step]);
 
   useEffect(() => {
-    const unsubscribe = window.yibiao?.tasks?.onTaskEvent<unknown, unknown, DuplicateCheckWorkspaceState>((event) => {
+    const unsubscribe = window.appBridge?.tasks?.onTaskEvent<unknown, unknown, DuplicateCheckWorkspaceState>((event) => {
       const state = event?.duplicateCheck;
       const patch = event?.duplicateCheckPatch;
       if (!state && !patch) return;
@@ -725,7 +725,7 @@ function DuplicateCheckPage() {
       }
       if (patch && Object.prototype.hasOwnProperty.call(patch, 'analysisTask')) setAnalysisTask(patch.analysisTask);
     });
-    window.yibiao?.tasks?.getActiveTasks().catch((error) => {
+    window.appBridge?.tasks?.getActiveTasks().catch((error) => {
       console.warn('获取标书查重后台任务状态失败', error);
     });
     return () => unsubscribe?.();
@@ -757,7 +757,7 @@ function DuplicateCheckPage() {
     }
     startedMetadataSignatureRef.current = currentAnalysisSignature;
     setStartingAnalysis(true);
-    void window.yibiao?.tasks?.startDuplicateAnalysis({ tenderFile: tenderFiles[0] || null, tenderFiles, bidFiles, force })
+    void window.appBridge?.tasks?.startDuplicateAnalysis({ tenderFile: tenderFiles[0] || null, tenderFiles, bidFiles, force })
       .then(() => {
         showToast(force ? '标书查重重新分析任务已在后台启动' : '标书查重分析任务已在后台启动', 'success');
       })
@@ -785,7 +785,7 @@ function DuplicateCheckPage() {
   }, [bidFiles, contentAnalysis?.status, currentAnalysisSignature, imageAnalysis?.status, metadataAnalysis?.signature, metadataAnalysis?.status, outlineAnalysis?.status, showToast, step, tenderFiles]);
 
   const selectFiles = async (multiple: boolean, filePaths?: string[]) => {
-    const selector = window.yibiao?.file?.selectDuplicateCheckFiles;
+    const selector = window.appBridge?.file?.selectDuplicateCheckFiles;
     if (typeof selector !== 'function') {
       throw new Error('文件选择接口尚未加载，请重启应用后重试');
     }
@@ -793,15 +793,15 @@ function DuplicateCheckPage() {
   };
 
   const resolveDroppedFilePaths = (files: FileList) =>
-    Array.from(files).map((file) => window.yibiao?.file.getPathForFile(file) || '').filter(Boolean);
+    Array.from(files).map((file) => window.appBridge?.file.getPathForFile(file) || '').filter(Boolean);
 
   const persistSelectedFiles = async (nextTenderFiles: LocalFileSelection[], nextBidFiles: LocalFileSelection[], nextStep: DuplicateCheckStep = step) => {
-    const saver = window.yibiao?.duplicateCheck?.saveFiles;
+    const saver = window.appBridge?.duplicateCheck?.saveFiles;
     if (typeof saver !== 'function') {
       throw new Error('标书查重缓存接口尚未加载，请重启应用后重试');
     }
     await saver({ tenderFile: nextTenderFiles[0] || null, tenderFiles: nextTenderFiles, bidFiles: nextBidFiles, step: nextStep, activeAnalysisTab });
-    const state = await window.yibiao.duplicateCheck.loadState();
+    const state = await window.appBridge.duplicateCheck.loadState();
     applyDuplicateCheckState(state);
     setStartingAnalysis(false);
     startedMetadataSignatureRef.current = null;
@@ -886,13 +886,13 @@ function DuplicateCheckPage() {
   };
 
   async function exportDuplicateResultsExcel() {
-    if (!window.yibiao?.duplicateCheck?.exportExcel) {
+    if (!window.appBridge?.duplicateCheck?.exportExcel) {
       showToast('标书查重结果导出接口尚未加载，请重启应用后重试', 'error');
       return;
     }
     setExportingExcel(true);
     try {
-      const result = await window.yibiao.duplicateCheck.exportExcel({ signature: currentAnalysisSignature });
+      const result = await window.appBridge.duplicateCheck.exportExcel({ signature: currentAnalysisSignature });
       if (result.canceled) return;
       if (!result.success || !result.path) {
         showToast(result.message || '标书查重结果导出失败', 'error');
@@ -910,7 +910,7 @@ function DuplicateCheckPage() {
   async function openExportedExcelFile() {
     if (!exportedExcelPath) return;
     try {
-      await window.yibiao.export.openFile(exportedExcelPath);
+      await window.appBridge.export.openFile(exportedExcelPath);
       setExportedExcelPath('');
     } catch (error) {
       showToast(error instanceof Error ? error.message : '打开 Excel 文件失败', 'error');
@@ -922,7 +922,7 @@ function DuplicateCheckPage() {
       showToast('标书查重分析正在运行，请完成后再重置文件', 'info');
       return;
     }
-    void window.yibiao?.duplicateCheck.clear()
+    void window.appBridge?.duplicateCheck.clear()
       .then(() => {
         applyDuplicateCheckState({
           tenderFile: null,

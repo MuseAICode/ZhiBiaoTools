@@ -119,7 +119,7 @@ async function runContentLayoutCheck({ exporter, snapshot, result, signal, layou
   if (!layout.get()) layout.save({ status: 'checking', jobs: [], completed_section_ids: [], failures: {}, failed_gaps: [], remaining_gaps: [] });
   const state = layout.get();
   if (state.status === 'completed' || state.status === 'supplementing') return state;
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'yibiao-content-layout-'));
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'app-content-layout-'));
   const targetIds = new Set(result.sections.map(section => section.section_id));
   // 每次复查重新导出当前 HTML，但同一轮使用相同模板，避免检测口径变化。
   const inspect = async () => {

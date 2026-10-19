@@ -1,4 +1,4 @@
-namespace Yibiao.OpenXmlHelper.Jobs;
+namespace ZhiBiao.OpenXmlHelper.Jobs;
 
 /// <summary>回路探测：只回写成功结果。</summary>
 static class PingAction

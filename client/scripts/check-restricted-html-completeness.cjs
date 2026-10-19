@@ -10,7 +10,7 @@ const { createContentGenerationTools } = require('../electron/services/contentGe
 const sectionDir = process.argv[2];
 if (!sectionDir) throw new Error('请传入需要验证的正文目录；脚本只读取该目录。');
 const incidentFile = 'd7d9af0b-37d5-4e9d-aa0b-9c8f24a24b90.html';
-const prefix = '<!-- yibiao:block -->\n<p>完整的中文正文。</p>\n';
+const prefix = '<!-- app:block -->\n<p>完整的中文正文。</p>\n';
 
 const validCases = [
   ['中文正文片段', prefix],
@@ -36,7 +36,7 @@ const truncatedCases = [
   ['只写了左尖括号', '<'],
   ['只写了结束标签前缀', '</'],
   ['结束标签未写完', '<ul><li>项目</li></ul'],
-  ['注释未结束', '<!-- yibiao:block'],
+  ['注释未结束', '<!-- app:block'],
   ['注释结束符未写完', '<!-- 中文 --'],
   ['图片空元素未写完', '<figure data-yb-size="wide"><img alt="图" /'],
 ];
