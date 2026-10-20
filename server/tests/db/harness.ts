@@ -1,4 +1,4 @@
-// 数据库集成测试的环境：每个测试文件新建一个独立的库，结束时删除。
+// 数据库集成测试的环境：每个测试文件新建一个独立的库，结束时等库上的连接全部断开后删除。
 // 需要 TEST_DATABASE_ADMIN_URL 指向一个超级用户连接（CI 中是 PostgreSQL 服务容器，见 .github/workflows/ci.yml）。
 // 角色的创建方式与开发环境 server/db/init/10-provision.sh 一致，修改时两边同步。
 import { randomBytes } from 'node:crypto';
@@ -6,6 +6,12 @@ import { Kysely, PostgresDialect } from 'kysely';
 import pg from 'pg';
 import type { DatabaseConfig } from '../../src/config.ts';
 import { APP_ROLE, AUTH_ROLE, BILLING_ROLE, OWNER_ROLE, STORAGE_ROLE } from '../../src/db/roles.ts';
+
+/** 删除测试库前等待其上连接全部断开的上限。 */
+const DISCONNECT_TIMEOUT_MS = 10_000;
+
+/** 按库名登记 connect() 建的连接池，drop() 时关闭测试文件漏关的池。 */
+const poolsByDatabase = new Map<string, Set<pg.Pool>>();
 
 export interface TestDatabase {
   readonly name: string;
@@ -15,6 +21,10 @@ export interface TestDatabase {
   readonly appConfig: DatabaseConfig;
   /** 超级用户连接到测试库，用于准备数据和检查系统目录，绕过 RLS。 */
   readonly admin: Kysely<any>;
+  /**
+   * 关闭本库上剩余的 connect() 连接池，等到库上没有任何连接后再删除库。
+   * 调用前应先关闭自己用 createDatabase() 建的连接（等待超时会报错并列出剩余连接）。
+   */
   drop(): Promise<void>;
 }
 
@@ -66,6 +76,27 @@ async function ensureFunctionOwnerRole(client: pg.Pool, role: string): Promise<v
   await client.query(`GRANT ${quoteIdent(role)} TO ${quoteIdent(OWNER_ROLE)} WITH INHERIT FALSE, SET TRUE`);
 }
 
+/**
+ * 等到库上没有其他连接。pg 连接池的 end() 在连接还没真正断开时就返回，
+ * 此时 DROP DATABASE ... WITH (FORCE) 会终止这些正在退出的后端，客户端收到 57P01，
+ * 以未处理的 error 事件抛出，测试文件在收尾时偶发失败。
+ */
+async function waitForDisconnect(maintenance: pg.Pool, name: string): Promise<void> {
+  const deadline = Date.now() + DISCONNECT_TIMEOUT_MS;
+  for (;;) {
+    const { rows } = await maintenance.query<{ pid: number; usename: string | null; application_name: string; state: string | null }>(
+      'SELECT pid, usename, application_name, state FROM pg_stat_activity WHERE datname = $1 AND pid <> pg_backend_pid()',
+      [name],
+    );
+    if (rows.length === 0) return;
+    if (Date.now() >= deadline) {
+      const list = rows.map((row) => `pid=${row.pid} user=${row.usename} app=${row.application_name} state=${row.state}`).join('; ');
+      throw new Error(`测试库 ${name} 上仍有 ${rows.length} 个连接未关闭（${list}），请在 drop() 前关闭所有连接池`);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+}
+
 export async function createTestDatabase(): Promise<TestDatabase> {
   const url = adminUrl();
   const name = `bidtools_test_${randomBytes(6).toString('hex')}`;
@@ -86,6 +117,8 @@ export async function createTestDatabase(): Promise<TestDatabase> {
     await maintenance.end();
   }
 
+  const pools = new Set<pg.Pool>();
+  poolsByDatabase.set(name, pools);
   const adminPool = poolFor(url, name);
   await adminPool.query('REVOKE ALL ON SCHEMA public FROM PUBLIC');
   await adminPool.query(`GRANT USAGE ON SCHEMA public TO ${quoteIdent(APP_ROLE)}`);
@@ -99,10 +132,22 @@ export async function createTestDatabase(): Promise<TestDatabase> {
     admin,
     async drop() {
       await admin.destroy();
-      if (!adminPool.ended) await adminPool.end();
+      if (!adminPool.ending) await adminPool.end();
+      for (const pool of pools) {
+        if (!pool.ending) await pool.end();
+      }
+      poolsByDatabase.delete(name);
       const pool = poolFor(url, decodeURIComponent(url.pathname.slice(1)) || 'postgres');
       try {
+        let leftover: unknown;
+        try {
+          await waitForDisconnect(pool, name);
+        } catch (error) {
+          leftover = error;
+        }
+        // 等待超时时仍然删除库（FORCE 终止剩余连接），避免留下测试库，再报告漏关的连接。
         await pool.query(`DROP DATABASE IF EXISTS ${quoteIdent(name)} WITH (FORCE)`);
+        if (leftover) throw leftover;
       } finally {
         await pool.end();
       }
@@ -112,16 +157,14 @@ export async function createTestDatabase(): Promise<TestDatabase> {
 
 /** 用指定角色连接测试库的 Kysely 实例。 */
 export function connect<T = any>(config: DatabaseConfig, maxConnections = 2): Kysely<T> {
-  return new Kysely<T>({
-    dialect: new PostgresDialect({
-      pool: new pg.Pool({
-        host: config.host,
-        port: config.port,
-        database: config.name,
-        user: config.user,
-        password: config.password,
-        max: maxConnections,
-      }),
-    }),
+  const pool = new pg.Pool({
+    host: config.host,
+    port: config.port,
+    database: config.name,
+    user: config.user,
+    password: config.password,
+    max: maxConnections,
   });
+  poolsByDatabase.get(config.name)?.add(pool);
+  return new Kysely<T>({ dialect: new PostgresDialect({ pool }) });
 }
