@@ -12,6 +12,12 @@ const APPLICATION_TABLES = [
   'artifacts',
   'auth_tokens',
   'billing_ledger',
+  'credential_library_certificates',
+  'credential_library_employees',
+  'credential_library_images',
+  'credential_library_other_materials',
+  'credential_library_profile',
+  'credential_library_projects',
   'export_templates',
   'files',
   'invitations',
@@ -61,6 +67,7 @@ const APP_FUNCTIONS = [
   'billing_reject_change',
   'billing_require_platform_admin',
   'billing_upstream_cost',
+  'credential_library_guard',
   'export_templates_guard',
   'files_guard',
   'files_org_usage_bytes',
@@ -160,6 +167,7 @@ describe('迁移升级与回滚', () => {
       (await sql<{ prosrc: string }>`SELECT prosrc FROM pg_proc WHERE proname = 'ai_usage_begin'`.execute(testDb.admin)).rows.map((row) => row.prosrc);
     expectSuccess(await migrateToLatest(owner));
     expect((await source())[0]).toContain('ai_model_price');
+    expect(expectSuccess(await migrateDown(owner))).toEqual(['Down:0011_credential_library']);
     expect(expectSuccess(await migrateDown(owner))).toEqual(['Down:0010_export_templates']);
     expect(expectSuccess(await migrateDown(owner))).toEqual(['Down:0009_settings']);
     expect(expectSuccess(await migrateDown(owner))).toEqual(['Down:0008_artifacts']);
