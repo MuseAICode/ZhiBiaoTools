@@ -2,6 +2,11 @@
 import type { ColumnType, Generated } from 'kysely';
 import type { ArtifactKind } from '../artifacts/store.ts';
 import type { FilePurpose } from '../files/policy.ts';
+import type {
+  CREDENTIAL_PROFILE_TEXT_COLUMNS,
+  CREDENTIAL_RECORD_TABLES,
+  CredentialOwnerType,
+} from './migrations/0011_credential_library.ts';
 import type { ProjectKind } from '../projects/store.ts';
 
 type Timestamp = ColumnType<Date, Date | string, Date | string>;
@@ -325,6 +330,53 @@ export interface ExportTemplatesTable {
   updated_at: ColumnType<Date, never, never>;
 }
 
+/** 资信库的文本列（迁移 0011_credential_library）：不可空，默认空字符串，长度由 CHECK 约束限制。 */
+type CredentialTextColumns<T> = { [K in keyof T]: ColumnType<string, string | undefined, string> };
+
+/** 企业信息，每个组织一行。组织内成员都可以读写（RLS），updated_by 必须是当前用户；不能删除。 */
+export type CredentialLibraryProfileTable = CredentialTextColumns<typeof CREDENTIAL_PROFILE_TEXT_COLUMNS> & {
+  org_id: ColumnType<string, string, never>;
+  watermark_enabled: ColumnType<boolean, boolean | undefined, boolean>;
+  updated_by: ColumnType<string, string, string>;
+  created_at: ColumnType<Date, never, never>;
+  updated_at: ColumnType<Date, never, never>;
+};
+
+/** 资信库的记录表（证书、人员、业绩、其他资料）的公共列。 */
+interface CredentialRecordColumns {
+  id: Generated<string>;
+  org_id: ColumnType<string, string, never>;
+  created_by: ColumnType<string, string, never>;
+  updated_by: ColumnType<string, string, string>;
+  created_at: ColumnType<Date, never, never>;
+  updated_at: ColumnType<Date, never, never>;
+}
+
+type CredentialRecordTable<K extends keyof typeof CREDENTIAL_RECORD_TABLES> = CredentialTextColumns<
+  (typeof CREDENTIAL_RECORD_TABLES)[K]['textColumns']
+> &
+  CredentialRecordColumns;
+
+/**
+ * 资信库图片（迁移 0011_credential_library）。原图是 credential-image 文件，所引用的文件已删除时行不可见（RLS）；
+ * 归属列与 file_id 写入后不能改，应用角色不能删除行（删除图片即软删除文件）。
+ */
+export interface CredentialLibraryImagesTable {
+  id: Generated<string>;
+  org_id: ColumnType<string, string, never>;
+  owner_type: ColumnType<CredentialOwnerType, CredentialOwnerType, never>;
+  certificate_id: ColumnType<string | null, string | null | undefined, never>;
+  employee_id: ColumnType<string | null, string | null | undefined, never>;
+  credential_project_id: ColumnType<string | null, string | null | undefined, never>;
+  material_id: ColumnType<string | null, string | null | undefined, never>;
+  field_key: ColumnType<string, string, never>;
+  file_id: ColumnType<string, string, never>;
+  custom_name: ColumnType<string, string | undefined, string>;
+  sort_order: ColumnType<number, number | undefined, number>;
+  created_by: ColumnType<string, string, never>;
+  created_at: ColumnType<Date, never, never>;
+}
+
 export interface Database {
   organizations: OrganizationsTable;
   users: UsersTable;
@@ -344,4 +396,10 @@ export interface Database {
   org_settings: OrgSettingsTable;
   user_settings: UserSettingsTable;
   export_templates: ExportTemplatesTable;
+  credential_library_profile: CredentialLibraryProfileTable;
+  credential_library_certificates: CredentialRecordTable<'certificate'>;
+  credential_library_employees: CredentialRecordTable<'employee'>;
+  credential_library_projects: CredentialRecordTable<'project'>;
+  credential_library_other_materials: CredentialRecordTable<'other'>;
+  credential_library_images: CredentialLibraryImagesTable;
 }

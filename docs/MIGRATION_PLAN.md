@@ -13,7 +13,7 @@
 | 2 | 服务端骨架 | 进行中 | 旧仓库 PR #25（设计文档 `docs/SERVER_DESIGN.md`）、旧仓库 PR #26（决定 18 项事项，新增计费与合规章节）、旧仓库 PR #27（`server/` 基础设施：配置、日志、`/healthz`、错误处理、安全响应头、Docker、CI）、旧仓库 PR #28（数据库层：PostgreSQL 17、Kysely 迁移、身份与租户表、RLS、`TenantContext`、`/readyz`）、旧仓库 PR #29（鉴权：登录前查询的 `SECURITY DEFINER` 函数、argon2id、服务端会话与 CSRF、邀请注册、找回密码、限流、平台管理员命令行）、旧仓库 PR #30（限流的客户端 IP：新增 `TRUSTED_PROXIES`，只采信可信代理附加的 `X-Forwarded-For`） |
 | 3 | 配置与 AI 网关 | 进行中 | 旧仓库 PR #31（计费账本：组织余额、只追加的账本、带版本的价格表、幂等扣费、管理员手动充值与冲正，不调用 AI）、旧仓库 PR #32（AI 网关：调用前预扣冻结、按实际用量结算、冻结超时自动释放、`usage_records`、平台 Key 信封加密、DeepSeek / 通义千问流式适配、`POST /api/ai/chat`）、旧仓库 PR #33（平台模型白名单 `platform_models`：只有登记且启用、并有生效价格的模型能调用，免费须显式标记；管理员登记 / 启用 / 停用接口；用户断开时中止上游请求的端到端测试） |
 | 4 | 文件上传 / 下载 / 资源协议 | 进行中 | 旧仓库 PR #34（文件存储：S3 兼容对象存储、本地 SeaweedFS、`files` 表与强制 RLS、按内容校验类型、大小上限与组织配额、附件方式下载、7 天恢复期）、#6（上传白名单补齐桌面版能导入的内容：OLE 内容的 `.docx`，`.doc/.wps` 的 RTF / HTML / MHT / Word 2003 XML，`.xls` 的 HTML 表格 / SpreadsheetML，`%PDF-` 前有多余字节的 PDF） |
-| 5 | 数据层迁移（按业务逐个） | 进行中 | 旧仓库 PR #35（拆分计划，见“第 5 步说明”；记录上传白名单与桌面版的差距）、#7（5.1 项目：`projects` 表、`files.project_id`、项目接口、路由层归属校验、项目级表的迁移与测试模板）、#8（5.2 生成产物存储：`artifacts` 表、Store、只读接口；项目软删除与其下文件、产物联动，由 RLS 强制）、#9（5.3 配置：`org_settings`、`user_settings`、`GET/PATCH /api/settings`；写权限与删除可见性由 RLS 强制）、#10（5.4 导出模板：`export_templates`、`/api/export-templates` 增删改查与复制；系统模板只读、修改删除权限由 RLS 强制，迁移命令同步系统模板） |
+| 5 | 数据层迁移（按业务逐个） | 进行中 | 旧仓库 PR #35（拆分计划，见“第 5 步说明”；记录上传白名单与桌面版的差距）、#7（5.1 项目：`projects` 表、`files.project_id`、项目接口、路由层归属校验、项目级表的迁移与测试模板）、#8（5.2 生成产物存储：`artifacts` 表、Store、只读接口；项目软删除与其下文件、产物联动，由 RLS 强制）、#9（5.3 配置：`org_settings`、`user_settings`、`GET/PATCH /api/settings`；写权限与删除可见性由 RLS 强制）、#10（5.4 导出模板：`export_templates`、`/api/export-templates` 增删改查与复制；系统模板只读、修改删除权限由 RLS 强制，迁移命令同步系统模板）、#11（5.5 资信库：6 张表、`/api/credential-library`；权限与删除可见性由 RLS 强制，图片随所引用文件的生命周期） |
 | 6 | 任务队列与 worker | 未开始 | — |
 | 7 | OpenXmlHelper 容器化与离屏渲染（前置：CI 新增 .NET 编译与 OpenXmlHelper 测试，见“第 9 步说明”的品牌改名第三部分） | 未开始 | — |
 | 8 | Agent 沙箱 | 未开始 | — |
@@ -422,7 +422,7 @@ AI 网关加固，做法见 `docs/SERVER_DESIGN.md` 第 10.9 节。`client/` 未
 | 5.2 | 生成产物存储：解析出的 Markdown、提取的图片等派生文件（对象键 `org/{org_id}/artifacts/{id}`，可挂 `project_id`，记来源 `file_id`，计入组织配额），只读接口；写入方是第 6 步的解析任务，本步只提供 Store 函数和测试。另补上项目删除与文件的联动（5.1 留下）：项目软删除时，其下的文件（`files.project_id`）和生成产物同步不可访问；恢复项目时一起恢复；过期后与项目一起由清理任务物理删除（清理任务本身在第 6 步） | 5.1 | 已完成 | #8 |
 | 5.3 | B 配置：`org_settings`、`user_settings` | — | 已完成 | #9 |
 | 5.4 | I 模板库：`export_templates` | — | 已完成 | #10 |
-| 5.5 | H 资信库：6 张表 | — | 未开始 | — |
+| 5.5 | H 资信库：6 张表 | — | 已完成 | #11 |
 | 5.6 | H 知识库（一）：`knowledge_folders`、`_documents`、`_document_steps`、文件夹与文档管理接口 | 5.2 | 未开始 | — |
 | 5.7 | H 知识库（二）：`_blocks`、`_candidate_items`、`_items`、`_item_blocks`、`_discarded_groups`、`_reports`、`_match_batches`、检索与读取接口 | 5.6 | 未开始 | — |
 | 5.8 | G 标书查重：13 张表与接口、`exportExcel` | 5.1、5.2 | 未开始 | — |
@@ -524,6 +524,31 @@ AI 网关加固，做法见 `docs/SERVER_DESIGN.md` 第 10.9 节。`client/` 未
 - 系统模板的内容在服务端另存一份（`systemTemplates.ts`），由测试核对与桌面版一致；同步放在迁移命令中而不是 api 启动时，理由见上；
 - 新增每组织 100 个模板的上限（拆分计划未列出），避免单个组织无限写入大配置；
 - 技术方案生成设置引用模板（`export_template_id`）随 5.11：组织模板可用复合外键 `(org_id, export_template_id)`，系统模板 `org_id` 为空不能这样引用，届时另行设计（例如单列外键加 RLS，或分两列）。
+
+#### 资信库（#11，5.5）
+
+只改 `server/`，不改 `client/`，没有新增依赖，没有新增数据库角色。
+
+- **迁移 `0011_credential_library`**：取代桌面版 SQLite 的 `credential_library_*` 六张表，全部是组织级表（组织内共享，第 9 节第 2 项）。
+  - `credential_library_profile`：每个组织一行（主键 `org_id`，取代桌面版的 `id = 1`），企业基础信息、介绍、财务、开户行和水印配置，`updated_by`、`timestamptz` 时间；不授予 DELETE。
+  - `credential_library_certificates`、`_employees`、`_projects`、`_other_materials`：主键改为 UUID（取代桌面版的 `cert-*` 等文本 id），`created_by` / `updated_by`，`UNIQUE (org_id, id)` 供图片的复合外键引用；与桌面版相同物理删除。
+  - 文本列一律 `NOT NULL DEFAULT ''`，单行字段不超过 500 字、介绍 / 经营范围 / 备注不超过 20000 字（CHECK）；`validity_mode`、`id_validity_mode`、`project_type` 用 CHECK 限定为桌面版 Renderer 类型中的取值。
+  - `credential_library_images`：`relative_path` 改为 `file_id`，复合外键 `(org_id, file_id) → files` 级联删除（文件被清理任务物理删除时图片行随之删除；图片行不引用对象存储，没有孤儿对象），每个文件只能挂一次（`UNIQUE (file_id)`）。桌面版的多态 `owner_type` / `owner_id` 拆成 `certificate_id`、`employee_id`、`credential_project_id`、`material_id` 四个可空列，各自以复合外键指向本组织的记录、随记录级联删除；CHECK 约束 `credential_library_images_owner_shape` 绑定归属类型、哪一列有值和允许的图片栏目（与桌面版 `importImageFieldKeys` 相同）。`original_name` 不再单独存，取 `files.display_name`。
+  - 每个组织每类记录最多 1000 条、图片最多 5000 张（触发器 `credential_library_guard`，`CL001` → `409 CREDENTIAL_LIMIT_REACHED`，同一组织同一张表的插入用 advisory lock 串行）。
+- **权限与删除可见性由 RLS 强制**，应用代码不判断：
+  - 六张表都只对应用角色建策略：只能看到、写入本组织的行，未设置上下文时什么都看不到；`created_by` / `updated_by` 必须是当前用户；`org_id`、`created_by`、图片的归属列和 `file_id` 没有列级 UPDATE 授权，写入后不能改挂。组织内成员都可以编辑。
+  - 图片的 INSERT 策略要求所挂文件在应用角色下可见（本组织）、已上传、未删除、用途是 `credential-image`、不属于任何项目；其他组织的、上传中的、已删除的、其他用途的、挂在项目下的文件都被拒绝（→ `400 CREDENTIAL_IMAGE_UNAVAILABLE`）。
+  - **图片随文件的生命周期**：所引用的文件已删除（进入回收站）时，图片查不到、改不了，包括不带条件的全表查询；恢复文件（`POST /api/files/:fileId/restore`）即一起恢复。应用角色没有图片的 DELETE 授权：删除图片就是软删除它的文件；删除记录时 Store 先软删除其图片的文件、再物理删除记录（图片行由外键级联删除），文件按自己的 7 天恢复期处理。
+  - 隔离测试：六张表各调用一次 `describeProjectTable`（`scope: 'org'`）；另测了上面的规则。分别去掉 SELECT 策略的文件条件、INSERT 策略的用途与项目条件、INSERT 策略的文件条件、记录 INSERT / UPDATE 策略的当前用户条件、给图片授予 DELETE、去掉数量上限、去掉归属 CHECK，各有 3、2、2、1、1、4、1、1 个用例失败。去掉图片 UPDATE 策略的文件条件没有用例失败：UPDATE 同样受 SELECT 策略约束，该条件是双重保险。
+- **接口**（`src/routes/credentialLibrary.ts`、`src/credentialLibrary/store.ts`）：`GET /api/credential-library`（完整快照）、`PATCH .../profile`（按 patch 保存）、`POST .../profile/images`（`{ fieldKey, images: [{ fileId, customName? }] }`）、`DELETE .../images/:imageId`、`POST .../{certificates|employees|projects|other-materials}`、`PUT/DELETE .../{类型}/:recordId`，对应桌面版 `load`、`saveProfile`、`addProfileImages`、`deleteImage` 和四类记录的 `save*` / `delete*`。`PUT` 与桌面版 `saveRecord` 相同整份保存（未给出的字段存为空字符串），并在同一事务中提交 `newImages`、`removedImageIds`、`imageNameUpdates`；只处理属于这条记录的图片 id，其他的忽略。每次修改后在同一事务中重新读取完整快照返回。请求体拒绝未声明字段；含 `\u0000` 时返回 `400 CREDENTIAL_INVALID`。其他组织的 id 与不存在的一样 404（`CREDENTIAL_RECORD_NOT_FOUND` / `CREDENTIAL_IMAGE_NOT_FOUND`）。响应带 `cache-control: no-store`。图片内容经 `GET /api/files/:fileId/content` 读取。
+
+与路线图、设计的偏离：
+
+- 接口字段与桌面版 Renderer 的差异：记录统一用 `id`（不再是 `certificateId` / `employeeId` / `projectId` / `materialId`），图片返回 `fileId`（不再是 `relativePath` / `assetUrl`），修改记录不再返回 `fileDeleteFailures`（文件删除与数据库在同一事务中完成）；前端接入时由第 9 步的 bridge 适配；
+- 删除图片改为软删除文件、可从文件回收站恢复，桌面版是立即删除原图；
+- 新增每组织的记录数、图片数上限（拆分计划未列出），理由同 5.4：快照接口一次返回全部内容，避免单个组织无限写入；
+- 身份证号、银行账号等敏感字段按原样明文存储，加密或脱敏随第 9 节合规事项“个人信息出境”（上线前必须完成）一并决定；
+- `importTestData`（开发者功能）按拆分计划不迁移。
 
 
 
