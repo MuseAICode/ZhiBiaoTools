@@ -10,7 +10,7 @@
 |---|---|---|---|
 | 0 | 前置：处理高危依赖漏洞，确定 AGPL 第 13 条源码链接方案，新增 PR CI，移除原作者的发布与镜像 workflow，梳理外部服务 | 已完成 | 旧仓库 PR #3、旧仓库 PR #4、旧仓库 PR #5、旧仓库 PR #6、旧仓库 PR #7、旧仓库 PR #8、旧仓库 PR #9、旧仓库 PR #10、旧仓库 PR #11、旧仓库 PR #12、旧仓库 PR #13、旧仓库 PR #14、旧仓库 PR #15、旧仓库 PR #16、旧仓库 PR #17、旧仓库 PR #18、旧仓库 PR #19、旧仓库 PR #20 |
 | 1 | 抽象 bridge | 进行中 | 旧仓库 PR #21（决定记录）、旧仓库 PR #22（Vitest）、旧仓库 PR #23（修复 output_token_limit）、旧仓库 PR #24（新建 `src/shared/bridge`） |
-| 2 | 服务端骨架 | 进行中 | 旧仓库 PR #25（设计文档 `docs/SERVER_DESIGN.md`）、旧仓库 PR #26（决定 18 项事项，新增计费与合规章节）、旧仓库 PR #27（`server/` 基础设施：配置、日志、`/healthz`、错误处理、安全响应头、Docker、CI）、旧仓库 PR #28（数据库层：PostgreSQL 17、Kysely 迁移、身份与租户表、RLS、`TenantContext`、`/readyz`）、旧仓库 PR #29（鉴权：登录前查询的 `SECURITY DEFINER` 函数、argon2id、服务端会话与 CSRF、邀请注册、找回密码、限流、平台管理员命令行）、旧仓库 PR #30（限流的客户端 IP：新增 `TRUSTED_PROXIES`，只采信可信代理附加的 `X-Forwarded-For`） |
+| 2 | 服务端骨架 | 进行中 | 旧仓库 PR #25（设计文档 `docs/SERVER_DESIGN.md`）、旧仓库 PR #26（决定 18 项事项，新增计费与合规章节）、旧仓库 PR #27（`server/` 基础设施：配置、日志、`/healthz`、错误处理、安全响应头、Docker、CI）、旧仓库 PR #28（数据库层：PostgreSQL 17、Kysely 迁移、身份与租户表、RLS、`TenantContext`、`/readyz`）、旧仓库 PR #29（鉴权：登录前查询的 `SECURITY DEFINER` 函数、argon2id、服务端会话与 CSRF、邀请注册、找回密码、限流、平台管理员命令行）、旧仓库 PR #30（限流的客户端 IP：新增 `TRUSTED_PROXIES`，只采信可信代理附加的 `X-Forwarded-For`）、#13（测试 harness：删除测试库前等连接全部断开，修复收尾时偶发的 57P01；同 PR 在 `CLAUDE.md` 新增自动合并规则） |
 | 3 | 配置与 AI 网关 | 进行中 | 旧仓库 PR #31（计费账本：组织余额、只追加的账本、带版本的价格表、幂等扣费、管理员手动充值与冲正，不调用 AI）、旧仓库 PR #32（AI 网关：调用前预扣冻结、按实际用量结算、冻结超时自动释放、`usage_records`、平台 Key 信封加密、DeepSeek / 通义千问流式适配、`POST /api/ai/chat`）、旧仓库 PR #33（平台模型白名单 `platform_models`：只有登记且启用、并有生效价格的模型能调用，免费须显式标记；管理员登记 / 启用 / 停用接口；用户断开时中止上游请求的端到端测试） |
 | 4 | 文件上传 / 下载 / 资源协议 | 进行中 | 旧仓库 PR #34（文件存储：S3 兼容对象存储、本地 SeaweedFS、`files` 表与强制 RLS、按内容校验类型、大小上限与组织配额、附件方式下载、7 天恢复期）、#6（上传白名单补齐桌面版能导入的内容：OLE 内容的 `.docx`，`.doc/.wps` 的 RTF / HTML / MHT / Word 2003 XML，`.xls` 的 HTML 表格 / SpreadsheetML，`%PDF-` 前有多余字节的 PDF） |
 | 5 | 数据层迁移（按业务逐个） | 进行中 | 旧仓库 PR #35（拆分计划，见“第 5 步说明”；记录上传白名单与桌面版的差距）、#7（5.1 项目：`projects` 表、`files.project_id`、项目接口、路由层归属校验、项目级表的迁移与测试模板）、#8（5.2 生成产物存储：`artifacts` 表、Store、只读接口；项目软删除与其下文件、产物联动，由 RLS 强制）、#9（5.3 配置：`org_settings`、`user_settings`、`GET/PATCH /api/settings`；写权限与删除可见性由 RLS 强制）、#10（5.4 导出模板：`export_templates`、`/api/export-templates` 增删改查与复制；系统模板只读、修改删除权限由 RLS 强制，迁移命令同步系统模板）、#11（5.5 资信库：6 张表、`/api/credential-library`；权限与删除可见性由 RLS 强制，图片随所引用文件的生命周期）、#12（5.6 知识库（一）：`knowledge_folders`、`_documents`、`_document_steps`、`/api/knowledge-base` 文件夹与文档管理；权限与删除可见性由 RLS 强制，文档随原件的生命周期） |
@@ -271,6 +271,13 @@
 - **新配置 `TRUSTED_PROXIES`**：逗号分隔的 IP 或 CIDR，默认空（不信任任何代理，行为与修复前相同）；不接受前缀为 0 的网段和 `loopback` 等别名，错误信息不回显值。非空时作为地址列表交给 Fastify 的 `trustProxy`：只有对端在列表中才读 `X-Forwarded-For`，从右往左取第一个不可信地址，客户端在左侧伪造的部分不被采信；`X-Forwarded-Host` / `Proto` 同样只在对端可信时采信，CSRF 和邮件链接用的是 `PUBLIC_ORIGIN`，不受影响；
 - **部署**：`edge` 网络固定子网，`caddy` 固定地址，`TRUSTED_PROXIES` 只填这一个地址，`api` 不映射端口（设计文档第 8.1 节）；开发用 `docker-compose.yml` 显式设为空并加了说明；
 - **测试**：未配置时伪造 `X-Forwarded-For`（包括来自代理地址的请求）仍按对端地址计数；配置后经代理的不同客户端分别计数，经代理时在左侧伪造的值不影响计数，绕过代理直连时不采信该头，CIDR 和 IPv4 映射的 IPv6 对端地址都能匹配。把 `trustProxy` 改成 `true` 有 4 个用例失败，改成 `false` 有 2 个失败。
+
+#### 测试库收尾（#13）
+
+- **问题**：`billing.test.ts` 收尾时偶发失败，错误码 57P01（`terminating connection due to administrator command`）。原因是 pg 连接池的 `end()` 在连接列表清空时就返回，并不等各连接真正断开；测试 harness 的 `drop()` 随即执行 `DROP DATABASE ... WITH (FORCE)`，终止仍在退出的后端，客户端收到 57P01，以未处理的 `error` 事件抛出。连接池越大越容易出现（`billing.test.ts` 的应用连接池为 10）。本地复现：连续 10 次关闭 10 连接的池后立刻查 `pg_stat_activity`，累计仍有 31 个后端存活；
+- **修复**（`server/tests/db/harness.ts`，所有数据库测试共用，各测试文件不用改）：`connect()` 建的连接池按库名登记，`drop()` 先关闭测试文件漏关的池，再轮询 `pg_stat_activity`，等库上没有任何连接后才删除库；10 秒后仍有连接时照样删除库（不留下测试库），然后报错并列出剩余连接的用户、`application_name` 和状态，便于定位漏关的 `createDatabase()` 连接；
+- **检查其他测试**：各数据库测试文件在 `afterAll` 中都先关闭自己的连接（`createDatabase()` 句柄、`connect()` 实例）再调用 `drop()`，用例内临时建的连接都在 `finally` 中关闭，没有漏关；它们都经 `drop()` 删除测试库，同一问题由本次修复一并覆盖；
+- **自动合并规则**：`CLAUDE.md` 新增“自动合并”一节：最新提交上三项 CI 全部通过后可自行 squash 合并；存在需要用户决定的事项，涉及计费、鉴权与权限、Agent 沙箱，修改已有的 RLS 策略或数据库角色（按 `describeProjectTable` 模板新建表的 RLS 除外），或偏离路线图较大时，须等待用户确认；合并后发送总结并写明偏离路线图之处。分支保护目前不强制生效（第 9 步上线检查），合并前须自行核对 CI 结果。
 
 ### 第 3 步说明
 
