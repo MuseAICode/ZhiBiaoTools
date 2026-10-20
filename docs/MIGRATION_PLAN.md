@@ -13,7 +13,7 @@
 | 2 | 服务端骨架 | 进行中 | 旧仓库 PR #25（设计文档 `docs/SERVER_DESIGN.md`）、旧仓库 PR #26（决定 18 项事项，新增计费与合规章节）、旧仓库 PR #27（`server/` 基础设施：配置、日志、`/healthz`、错误处理、安全响应头、Docker、CI）、旧仓库 PR #28（数据库层：PostgreSQL 17、Kysely 迁移、身份与租户表、RLS、`TenantContext`、`/readyz`）、旧仓库 PR #29（鉴权：登录前查询的 `SECURITY DEFINER` 函数、argon2id、服务端会话与 CSRF、邀请注册、找回密码、限流、平台管理员命令行）、旧仓库 PR #30（限流的客户端 IP：新增 `TRUSTED_PROXIES`，只采信可信代理附加的 `X-Forwarded-For`）、#13（测试 harness：删除测试库前等连接全部断开，修复收尾时偶发的 57P01；同 PR 在 `CLAUDE.md` 新增自动合并规则） |
 | 3 | 配置与 AI 网关 | 进行中 | 旧仓库 PR #31（计费账本：组织余额、只追加的账本、带版本的价格表、幂等扣费、管理员手动充值与冲正，不调用 AI）、旧仓库 PR #32（AI 网关：调用前预扣冻结、按实际用量结算、冻结超时自动释放、`usage_records`、平台 Key 信封加密、DeepSeek / 通义千问流式适配、`POST /api/ai/chat`）、旧仓库 PR #33（平台模型白名单 `platform_models`：只有登记且启用、并有生效价格的模型能调用，免费须显式标记；管理员登记 / 启用 / 停用接口；用户断开时中止上游请求的端到端测试） |
 | 4 | 文件上传 / 下载 / 资源协议 | 进行中 | 旧仓库 PR #34（文件存储：S3 兼容对象存储、本地 SeaweedFS、`files` 表与强制 RLS、按内容校验类型、大小上限与组织配额、附件方式下载、7 天恢复期）、#6（上传白名单补齐桌面版能导入的内容：OLE 内容的 `.docx`，`.doc/.wps` 的 RTF / HTML / MHT / Word 2003 XML，`.xls` 的 HTML 表格 / SpreadsheetML，`%PDF-` 前有多余字节的 PDF） |
-| 5 | 数据层迁移（按业务逐个） | 进行中 | 旧仓库 PR #35（拆分计划，见“第 5 步说明”；记录上传白名单与桌面版的差距）、#7（5.1 项目：`projects` 表、`files.project_id`、项目接口、路由层归属校验、项目级表的迁移与测试模板）、#8（5.2 生成产物存储：`artifacts` 表、Store、只读接口；项目软删除与其下文件、产物联动，由 RLS 强制）、#9（5.3 配置：`org_settings`、`user_settings`、`GET/PATCH /api/settings`；写权限与删除可见性由 RLS 强制）、#10（5.4 导出模板：`export_templates`、`/api/export-templates` 增删改查与复制；系统模板只读、修改删除权限由 RLS 强制，迁移命令同步系统模板）、#11（5.5 资信库：6 张表、`/api/credential-library`；权限与删除可见性由 RLS 强制，图片随所引用文件的生命周期）、#12（5.6 知识库（一）：`knowledge_folders`、`_documents`、`_document_steps`、`/api/knowledge-base` 文件夹与文档管理；权限与删除可见性由 RLS 强制，文档随原件的生命周期） |
+| 5 | 数据层迁移（按业务逐个） | 进行中 | 旧仓库 PR #35（拆分计划，见“第 5 步说明”；记录上传白名单与桌面版的差距）、#7（5.1 项目：`projects` 表、`files.project_id`、项目接口、路由层归属校验、项目级表的迁移与测试模板）、#8（5.2 生成产物存储：`artifacts` 表、Store、只读接口；项目软删除与其下文件、产物联动，由 RLS 强制）、#9（5.3 配置：`org_settings`、`user_settings`、`GET/PATCH /api/settings`；写权限与删除可见性由 RLS 强制）、#10（5.4 导出模板：`export_templates`、`/api/export-templates` 增删改查与复制；系统模板只读、修改删除权限由 RLS 强制，迁移命令同步系统模板）、#11（5.5 资信库：6 张表、`/api/credential-library`；权限与删除可见性由 RLS 强制，图片随所引用文件的生命周期）、#12（5.6 知识库（一）：`knowledge_folders`、`_documents`、`_document_steps`、`/api/knowledge-base` 文件夹与文档管理；权限与删除可见性由 RLS 强制，文档随原件的生命周期）、#14（5.7 知识库（二）：切块、条目、匹配结果等 7 张表，检索与读取条目 / 分析 / Markdown 接口；删除可见性与写权限由 RLS 强制，随文档可见） |
 | 6 | 任务队列与 worker | 未开始 | — |
 | 7 | OpenXmlHelper 容器化与离屏渲染（前置：CI 新增 .NET 编译与 OpenXmlHelper 测试，见“第 9 步说明”的品牌改名第三部分） | 未开始 | — |
 | 8 | Agent 沙箱 | 未开始 | — |
@@ -431,7 +431,7 @@ AI 网关加固，做法见 `docs/SERVER_DESIGN.md` 第 10.9 节。`client/` 未
 | 5.4 | I 模板库：`export_templates` | — | 已完成 | #10 |
 | 5.5 | H 资信库：6 张表 | — | 已完成 | #11 |
 | 5.6 | H 知识库（一）：`knowledge_folders`、`_documents`、`_document_steps`、文件夹与文档管理接口 | 5.2 | 已完成 | #12 |
-| 5.7 | H 知识库（二）：`_blocks`、`_candidate_items`、`_items`、`_item_blocks`、`_discarded_groups`、`_reports`、`_match_batches`、检索与读取接口 | 5.6 | 未开始 | — |
+| 5.7 | H 知识库（二）：`_blocks`、`_candidate_items`、`_items`、`_item_blocks`、`_discarded_groups`、`_reports`、`_match_batches`、检索与读取接口 | 5.6 | 已完成 | #14 |
 | 5.8 | G 标书查重：13 张表与接口、`exportExcel` | 5.1、5.2 | 未开始 | — |
 | 5.9 | G 废标检查：7 张表与接口、`exportExcel`（不含 `importTenderFromTechnicalPlan`） | 5.1、5.2 | 未开始 | — |
 | 5.10 | F 可研报告：2 张表与接口 | 5.1、5.2 | 未开始 | — |
@@ -561,7 +561,7 @@ AI 网关加固，做法见 `docs/SERVER_DESIGN.md` 第 10.9 节。`client/` 未
 
 只改 `server/`，不改 `client/`，没有新增依赖，没有新增数据库角色。
 
-- **迁移 `0012_knowledge_base`**：取代桌面版 SQLite 的 `knowledge_folders`、`knowledge_documents`、`knowledge_document_steps`，全部是组织级表（组织内共享，第 9 节第 2 项）。其余七张表随 5.7。
+- **迁移 `0012_knowledge_base`**：取代桌面版 SQLite 的 `knowledge_folders`、`knowledge_documents`、`knowledge_document_steps`，全部是组织级表（组织内共享，第 9 节第 2 项）。其余七张表随 5.7（已由 #14 补上，见下节）。
   - `knowledge_folders`：主键改为 UUID（取代桌面版的 `folder-*`），名称 1~200 字、首尾无空白，`sort_order`，`created_by` / `updated_by`，`UNIQUE (org_id, id)` 供文档的复合外键引用；与桌面版相同物理删除，其中的文档行由外键级联删除。
   - `knowledge_documents`：`document_dir`、`source_path` 改为 `file_id`，复合外键 `(org_id, file_id) → files` 级联删除（原件被清理任务物理删除时文档行随之删除），每个文件只能挂一次（`UNIQUE (file_id)`）；`markdown_path` 改为 `markdown_artifact_id`，复合外键指向 `artifacts`，产物被清理任务删除时只清空这一列（PostgreSQL 15 起的列级 `ON DELETE SET NULL (markdown_artifact_id)`）。`file_name`、`source_extension` 不再单独存，取 `files.display_name` / `extension`；`markdown_hash`、`markdown_chars` 删去（桌面版只在 Store 内部使用，产物自带 `sha256` 和大小）。状态、步骤键、步骤状态的取值与桌面版相同（CHECK）；进度 0~100，计数非负，进度说明 ≤ 2000 字、错误信息 ≤ 20000 字。
   - `knowledge_document_steps`：主键 `(document_id, step_key)`，复合外键 `(org_id, document_id)` 随文档级联删除；`result_json` 改为 `jsonb` 对象（≤ 16 MiB）；状态与开始 / 完成时间、错误信息的组合由 CHECK 约束 `knowledge_document_steps_status_shape` 绑定，与桌面版 `saveDocumentStep` 的规则相同。
@@ -573,7 +573,7 @@ AI 网关加固，做法见 `docs/SERVER_DESIGN.md` 第 10.9 节。`client/` 未
   - **文档随原件的生命周期**：原件已删除（进入回收站）时，文档和它的步骤查不到、改不了，也不能新写步骤，包括不带条件的全表查询；恢复文件（`POST /api/files/:fileId/restore`）即一起恢复。应用角色没有文档的 DELETE 授权：删除文档就是软删除原件；删除文件夹时 Store 先软删除其中文档的原件、再物理删除文件夹（文档行由外键级联删除），原件按自己的 7 天恢复期处理。步骤随文档可见（策略以文档在应用角色下可见为条件）。
   - 隔离测试：三张表各调用一次 `describeProjectTable`（`scope: 'org'`）；另测了上面的规则。分别去掉文档 SELECT 策略的文件条件、INSERT 策略的用途与项目条件、INSERT 策略的文件条件、UPDATE 策略的 Markdown 条件、步骤 SELECT / INSERT 策略的文档条件、文件夹 / 文档 INSERT 策略的当前用户条件，给文档授予 DELETE、给 `status` 授予 INSERT，去掉数量上限、步骤状态 CHECK 的 running 分支，把产物外键改为级联删除，各有 4、3、3、2、1、1、1、1、1、1、1、1、1 个用例失败。
 - **接口**（`src/routes/knowledgeBase.ts`、`src/knowledgeBase/store.ts`）：`GET /api/knowledge-base`（文件夹与文档的完整列表，顺序与桌面版 `list` 相同）、`POST .../folders`、`PATCH/DELETE .../folders/:folderId`、`POST .../folders/:folderId/reorder`（`{ targetFolderId, position }`）、`POST .../folders/:folderId/documents`（`{ fileIds }`，一次最多 50 个，取代桌面版 `uploadDocuments` 的“选文件并复制”）、`POST .../documents/:documentId/move`（`{ targetFolderId, targetDocumentId?, position? }`）、`DELETE .../documents/:documentId`，对应桌面版 `list`、`createFolder`、`renameFolder`、`reorderFolder`、`deleteFolder`、`uploadDocuments`、`moveDocument`、`deleteDocument`。文件夹名称做 NFC 归一化、去掉 Unicode Cc / Cf 字符和首尾空白（与项目名称相同），为空时用“未命名”（与桌面版相同），超过 200 字返回 `400 KNOWLEDGE_INVALID`。排序与桌面版相同：新建的排在末尾，拖动时整组重排 `sort_order`，跨文件夹移动时原文件夹重新编号；同一组织的排序类操作用事务级 advisory lock 串行。其他组织的 id 与不存在的一样 404（`KNOWLEDGE_FOLDER_NOT_FOUND` / `KNOWLEDGE_DOCUMENT_NOT_FOUND`），文件不可用 `400 KNOWLEDGE_FILE_UNAVAILABLE`。响应带 `cache-control: no-store`。
-- **给第 6 步解析任务用的 Store 函数**（已直接测试）：`updateDocumentState`（只写给出的字段，进度取整并限制在 0~100，文本去掉 `\u0000`、超长时截短）、`setDocumentMarkdown`（产物不合规时抛 `TypeError`）、`saveDocumentStep` / `listDocumentSteps`（时间与错误的规则与桌面版相同）、`clearDocumentProcessingFromStep`（删除该步及之后的步骤，按起始步骤清除 Markdown 引用、解析器标签和计数；切块、条目等表的清除随 5.7 加入）。
+- **给第 6 步解析任务用的 Store 函数**（已直接测试）：`updateDocumentState`（只写给出的字段，进度取整并限制在 0~100，文本去掉 `\u0000`、超长时截短）、`setDocumentMarkdown`（产物不合规时抛 `TypeError`）、`saveDocumentStep` / `listDocumentSteps`（时间与错误的规则与桌面版相同）、`clearDocumentProcessingFromStep`（删除该步及之后的步骤，按起始步骤清除 Markdown 引用、解析器标签和计数；切块、条目等表的清除随 5.7 加入，已由 #14 补上）。
 
 与路线图、设计的偏离：
 
@@ -582,6 +582,33 @@ AI 网关加固，做法见 `docs/SERVER_DESIGN.md` 第 10.9 节。`client/` 未
 - 移动文档不再要求文档先处理完：桌面版的限制是因为移动要重命名本地文档目录，Web 版只改一列。桌面版“处理中不能删除”的限制由第 6 步处理（任务发现文档不可见即停止，写入影响 0 行）；
 - 新增每组织的文件夹数、文档数上限（拆分计划未列出），理由同 5.4、5.5：列表接口一次返回全部内容；
 - `recoverInterruptedDocuments`（启动时把中断的文档标为失败）不迁移，由第 6 步的任务队列负责中断恢复。
+
+#### 知识库（二）（#14，5.7）
+
+只改 `server/`，不改 `client/`，没有新增依赖，没有新增数据库角色。
+
+- **迁移 `0013_knowledge_base_items`**：取代桌面版 SQLite 的 `knowledge_blocks`、`_candidate_items`、`_items`、`_item_blocks`、`_discarded_groups`、`_reports`、`_match_batches`，全部是组织级表，以复合外键 `(org_id, document_id) → knowledge_documents` 挂在文档下、随文档级联删除（删除文件夹、清理任务物理删除原件时一并删除）。
+  - 字段与桌面版相同，主键改为 UUID（块、候选条目、最终条目、舍弃块组）或沿用桌面版的复合主键（来源块、报告、匹配批次）；`heading_path_json`、`block_ids_json`、`item_ids_json`、`matches_json` 改为 `jsonb`（类型由 CHECK 约束限定，≤ 64 KiB / 16 MiB），时间改为 `timestamptz`；块的 `is_filtered` 改为 `boolean`，筛除原因只属于筛除块（CHECK）。
+  - 块 id、条目 id、块类型、候选条目来源 1~64 字，标题 ≤ 2000 字，摘要 ≤ 20000 字，块与条目正文 ≤ 1000 万字，报告的覆盖率、匹配率在 0~1000 之间（同时挡住 `NaN` 和 `Infinity`）；舍弃块组的来源只能是 `ai` / `system`；匹配批次的状态与开始 / 完成时间、错误信息的组合与 `knowledge_document_steps` 相同（CHECK）。
+  - 来源块以复合外键 `(org_id, document_id, item_id)` 指向本文档的条目、随条目删除（桌面版没有这条外键）；`block_id` 与桌面版相同不设外键。
+- **删除可见性与写权限由 RLS 强制**，应用代码不判断：
+  - 七张表都只对应用角色建策略：只能看到、写入本组织的行，未设置上下文时什么都看不到；策略另以文档在应用角色下可见为条件，所以原件已删除（进入回收站）时七张表的行查不到、改不了、删不掉，也不能新写，包括不带条件的全表查询；恢复文件即一起恢复。
+  - 写法与桌面版相同“整体替换”：块、候选条目、最终条目、来源块、舍弃块组、报告只授予 SELECT、INSERT、DELETE，不授予 UPDATE；只有匹配批次按批更新状态（列级 UPDATE 授权，`org_id`、`document_id`、`batch_index` 写入后不能改，`updated_at` 由 `app_touch_updated_at()` 维护）。
+  - 隔离测试：七张表各调用一次 `describeProjectTable`（`scope: 'org'`）；另测了上面的规则。分别去掉 SELECT、INSERT、DELETE、UPDATE 策略的文档条件，给替换表授予 UPDATE，去掉来源块的条目外键、筛除原因 CHECK、文档外键的级联，`clearDocumentProcessingFromStep` 不删切块、不删最终结果，检索不限已完成的文档，各有 1、1、1、1、25、3、1、1、1、1、1 个用例失败。
+- **接口**（`src/routes/knowledgeBase.ts`、`src/knowledgeBase/content.ts`）：`GET /api/knowledge-base/search?keyword=&page=`、`GET .../documents/:documentId/items`、`GET .../documents/:documentId/analysis`、`GET .../documents/:documentId/markdown`，对应桌面版 `search`、`readItems`、`readAnalysis`、`readMarkdown`。
+  - 检索与桌面版相同：只检索已处理完成（`success`）的文档的最终条目，文件名、标题、摘要、正文不区分大小写包含关键词即命中（关键词作为参数传给 `strpos`，`%` / `_` 按字面匹配），按命中字段（标题 → 摘要 → 正文 → 文件名）、文档最近更新、条目顺序排序，每页 100 条，页码超出时取最后一页，摘录 180 字；正文命中时只从数据库取命中位置前后各 1000 字生成摘录。关键词去掉首尾空白后不超过 200 字（`400 KNOWLEDGE_INVALID`）。
+  - Markdown 与 `/api/artifacts/:artifactId/content` 相同流式转发、一律附件、`nosniff`、`sandbox` CSP；还没有解析出 Markdown 时与桌面版相同返回空内容。分析快照的 Markdown 字数（去掉空白后的字数，与桌面版相同按 UTF-16 码元计）流式读取对象存储统计，不整体读入内存；文档有 Markdown 但未配置对象存储时 `503 FILE_STORAGE_DISABLED`。
+  - 其他组织的、原件已删除的文档一律 `404 KNOWLEDGE_DOCUMENT_NOT_FOUND`。响应带 `cache-control: no-store`。
+- **给第 6 步解析任务用的 Store 函数**（已直接测试）：`saveBlocks` / `readBlocks`、`saveCandidateItems` / `readCandidateItems`、`saveMatchResult`（同一事务整体替换候选条目、最终条目及来源块、舍弃块组和报告，并写入文档计数）、`readItems`、`saveMatchBatch` / `getMatchBatch` / `readMatchBatches` / `clearMatchBatches`（时间与错误的规则与桌面版相同）。默认 id（`P000001` / `F000001`）、跳过没有 id 的条目、计数按传入条数等细节与桌面版相同；id 为空、超长或重复，正文超长是调用方的程序错误，抛 `TypeError`；AI 生成的标题、摘要、原因超长时截短，所有文本和 JSON 去掉 `jsonb` / `text` 不接受的 `\u0000`；行数多时分批插入。`clearDocumentProcessingFromStep`（5.6）按起始步骤一并清除切块、候选条目、匹配批次和最终结果。
+- **隔离模板扩展**：`describeProjectTable` 的 `update` 改为可选：不授予 UPDATE 的表省略它，模板改为检查应用角色对该表没有任何 UPDATE 权限、各用例中的更新一律被拒绝。
+
+与路线图、设计的偏离：
+
+- 接口字段与桌面版 Renderer 的差异：响应改为 camelCase（`documentId`、`matchField`、`sourceBlockIds`、`coverageRateVsMarkdown` 等）；`readMarkdown` 改为下载 Markdown 原文（bridge 用 `fetch().text()`）；分析快照不再有开发者模式的 `debug_log_path`（Web 版没有本地调试日志）；前端接入时由第 9 步的 bridge 适配；
+- 桌面版的 `readReferences` / `getOutlineReferences` 给技术方案生成用，随 5.11（`_generation_reference_docs`）迁移；
+- 新增来源块指向条目的外键和各列的长度上限（桌面版没有），没有新增每文档的行数上限：行数由解析任务按原件（≤ 100 MiB）生成，不经用户接口写入；
+- 检索按行扫描本组织已完成文档的条目，与桌面版相同；数据量增长后再考虑 `pg_trgm` 索引或全文检索；
+- 本地验证用的是 PostgreSQL 16（开发容器无法拉取 17 的镜像），CI 用 17；迁移只用到 15 起的特性。
 
 
 
