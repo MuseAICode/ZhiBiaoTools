@@ -10,6 +10,9 @@
 // org_id 可空，并检查系统行两个组织都能读、未设置上下文时读不到、应用角色改不到删不到也不能新写或改出系统行，
 // 以及维护系统行的角色（迁移角色）只看得到、只改得到系统行。
 //
+// 5.7 起只整体替换、不授予 UPDATE 的表（如知识库的切块、条目）省略 update：模板改为检查应用角色对该表没有任何
+// UPDATE 权限，原来“更新影响 0 行”的用例一律改为更新被拒绝。
+//
 // 每次调用自己建两个组织、各自的用户和项目，数据只经应用角色在各自的上下文中写入，不与调用方的数据混在一起。
 import { randomUUID } from 'node:crypto';
 import { sql, type Kysely, type Transaction } from 'kysely';
@@ -35,8 +38,11 @@ export interface ProjectTableSpec {
   idColumn: string;
   /** 在当前上下文中插入一行，返回主键值。scope 中的 projectId 可能故意属于别的组织。 */
   insert(trx: Transaction<any>, scope: ProjectRowScope): Promise<string>;
-  /** 应用角色有权执行的一个普通更新（不改 org_id / project_id），用来验证跨组织更新影响 0 行。 */
-  update: Record<string, unknown>;
+  /**
+   * 应用角色有权执行的一个普通更新（不改 org_id / project_id），用来验证跨组织更新影响 0 行。
+   * 不授予 UPDATE 的表省略，模板改为检查应用角色没有 UPDATE 权限、任何更新都被拒绝。
+   */
+  update?: Record<string, unknown>;
   /** 项目被物理删除（清理任务）时：子表随之删除，还是挡住删除（引用对象存储内容的表）。项目级表必填，组织级表不填。 */
   onProjectDelete?: 'cascade' | 'restrict';
   /** project_id 可空（只有 files：不属于项目的文件）。项目级表一律不可空。 */
@@ -138,6 +144,23 @@ export function describeProjectTable(spec: ProjectTableSpec, env: ProjectTableEn
       if (systemRows) systemRow = await systemRows.insert(env.admin());
     });
 
+    /**
+     * 执行 spec.update，断言影响 0 行；不授予 UPDATE 的表（省略 update）断言被拒绝（改不到任何行）。
+     * where 给出时只更新匹配的行。
+     */
+    const expectNoRowUpdated = async (db: Kysely<any>, where?: (query: any) => any) => {
+      const values = spec.update ?? { [idColumn]: sql.ref(idColumn) };
+      let query = db.updateTable(table).set(values);
+      if (where) query = where(query);
+      const result = await query.executeTakeFirst().catch((error: unknown) => error);
+      if (spec.update) {
+        expect((result as { numUpdatedRows: bigint }).numUpdatedRows).toBe(0n);
+      } else {
+        expect(result).toBeInstanceOf(Error);
+        expect((result as Error).message).toMatch(/permission denied/);
+      }
+    };
+
     /** 组织的行（系统行除外）。 */
     const orgRows = <T extends { where: (...args: any[]) => any }>(query: T): T => (systemRows ? query.where('org_id', 'is not', null) : query);
 
@@ -149,6 +172,12 @@ export function describeProjectTable(spec: ProjectTableSpec, env: ProjectTableEn
       expect(result.rows).toEqual([
         { relrowsecurity: true, relforcerowsecurity: true, roles: policyRoles },
       ]);
+      if (!spec.update) {
+        const privilege = await sql<{ table: boolean; columns: boolean }>`
+          SELECT has_table_privilege(${APP_ROLE}, ${table}::regclass, 'UPDATE') AS table,
+                 has_any_column_privilege(${APP_ROLE}, ${table}::regclass, 'UPDATE') AS columns`.execute(env.admin());
+        expect(privilege.rows).toEqual([{ table: false, columns: false }]);
+      }
       for (const role of spec.definerRoles ?? []) {
         const attributes = await sql<{ rolcanlogin: boolean; rolbypassrls: boolean; rolsuper: boolean }>`
           SELECT rolcanlogin, rolbypassrls, rolsuper FROM pg_roles WHERE rolname = ${role}`.execute(env.admin());
@@ -180,8 +209,7 @@ export function describeProjectTable(spec: ProjectTableSpec, env: ProjectTableEn
       expect(await count(env.admin(), a.context.orgId)).toBe(1);
       expect(await count(env.app())).toBe(0);
       expect(await env.app().selectFrom(table).selectAll().where(idColumn, '=', rowA).execute()).toEqual([]);
-      const updated = await env.app().updateTable(table).set(spec.update).executeTakeFirst();
-      expect(updated.numUpdatedRows).toBe(0n);
+      await expectNoRowUpdated(env.app());
       const deleted = await env.app().deleteFrom(table).executeTakeFirst().catch((error: unknown) => error);
       // 不授予 DELETE 的表直接报权限错误，同样删不到任何行。
       if (deleted instanceof Error) expect(deleted.message).toMatch(/permission denied/);
@@ -200,10 +228,7 @@ export function describeProjectTable(spec: ProjectTableSpec, env: ProjectTableEn
     });
 
     it('组织 A 改不到、删不到组织 B 的行', async () => {
-      await withTenantAny(env.app(), a.context, async (trx) => {
-        const updated = await trx.updateTable(table).set(spec.update).where(idColumn, '=', rowB).executeTakeFirst();
-        expect(updated.numUpdatedRows).toBe(0n);
-      });
+      await withTenantAny(env.app(), a.context, (trx) => expectNoRowUpdated(trx, (query) => query.where(idColumn, '=', rowB)));
       const deleted = await withTenantAny(env.app(), a.context, (trx) =>
         trx.deleteFrom(table).where(idColumn, '=', rowB).executeTakeFirst(),
       ).catch((error: unknown) => error);
@@ -229,9 +254,8 @@ export function describeProjectTable(spec: ProjectTableSpec, env: ProjectTableEn
       it('同组织的其他成员看不到、改不到该行，也不能以该成员的身份写入', async () => {
         await withTenantAny(env.app(), peer, async (trx) => {
           expect(await trx.selectFrom(table).selectAll().execute()).toEqual([]);
-          const updated = await trx.updateTable(table).set(spec.update).where(userColumn, '=', a.context.userId).executeTakeFirst();
-          expect(updated.numUpdatedRows).toBe(0n);
         });
+        await withTenantAny(env.app(), peer, (trx) => expectNoRowUpdated(trx, (query) => query.where(userColumn, '=', a.context.userId)));
         await expect(
           withTenantAny(env.app(), peer, (trx) => spec.insert(trx, scopeOf(a))),
         ).rejects.toThrow(/row-level security/);
@@ -265,10 +289,7 @@ export function describeProjectTable(spec: ProjectTableSpec, env: ProjectTableEn
 
       it('系统行：应用角色改不到、删不到，不能新写系统行，也不能把本组织的行改成系统行', async () => {
         const before = await env.admin().selectFrom(table).selectAll().where(idColumn, '=', systemRow).executeTakeFirstOrThrow();
-        await withTenantAny(env.app(), a.context, async (trx) => {
-          const updated = await trx.updateTable(table).set(spec.update).where(idColumn, '=', systemRow).executeTakeFirst();
-          expect(updated.numUpdatedRows).toBe(0n);
-        });
+        await withTenantAny(env.app(), a.context, (trx) => expectNoRowUpdated(trx, (query) => query.where(idColumn, '=', systemRow)));
         const deleted = await withTenantAny(env.app(), a.context, (trx) =>
           trx.deleteFrom(table).where(idColumn, '=', systemRow).executeTakeFirst(),
         ).catch((error: unknown) => error);
@@ -289,8 +310,7 @@ export function describeProjectTable(spec: ProjectTableSpec, env: ProjectTableEn
         const visible = await writer.selectFrom(table).select(['org_id']).execute();
         expect(visible.length).toBeGreaterThan(0);
         expect(visible.every((row: { org_id: string | null }) => row.org_id === null)).toBe(true);
-        const updated = await writer.updateTable(table).set(spec.update).where(idColumn, 'in', [rowA, rowB]).executeTakeFirst();
-        expect(updated.numUpdatedRows).toBe(0n);
+        await expectNoRowUpdated(writer, (query) => query.where(idColumn, 'in', [rowA, rowB]));
         const deleted = await writer.deleteFrom(table).where(idColumn, 'in', [rowA, rowB]).executeTakeFirst();
         expect(deleted.numDeletedRows).toBe(0n);
         await expect(

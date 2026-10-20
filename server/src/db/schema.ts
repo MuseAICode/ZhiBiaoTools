@@ -12,6 +12,7 @@ import type {
   KNOWLEDGE_STEP_KEYS,
   KNOWLEDGE_STEP_STATUSES,
 } from './migrations/0012_knowledge_base.ts';
+import type { KNOWLEDGE_DISCARD_SOURCES } from './migrations/0013_knowledge_base_items.ts';
 import type { ProjectKind } from '../projects/store.ts';
 
 type Timestamp = ColumnType<Date, Date | string, Date | string>;
@@ -441,6 +442,100 @@ export interface KnowledgeDocumentStepsTable {
   updated_at: ColumnType<Date, never, never>;
 }
 
+/** 知识库文档准备的产物（迁移 0013_knowledge_base_items），随文档可见，整体替换，没有 UPDATE 授权（匹配批次除外）。 */
+export interface KnowledgeBlocksTable {
+  id: Generated<string>;
+  org_id: ColumnType<string, string, never>;
+  document_id: ColumnType<string, string, never>;
+  block_id: ColumnType<string, string, never>;
+  type: ColumnType<string, string, never>;
+  heading_path: ColumnType<string[], string, never>;
+  content: ColumnType<string, string, never>;
+  content_chars: ColumnType<number, number, never>;
+  is_filtered: ColumnType<boolean, boolean, never>;
+  filter_reason: ColumnType<string | null, string | null, never>;
+  sort_order: ColumnType<number, number, never>;
+}
+
+export interface KnowledgeCandidateItemsTable {
+  id: Generated<string>;
+  org_id: ColumnType<string, string, never>;
+  document_id: ColumnType<string, string, never>;
+  item_id: ColumnType<string, string, never>;
+  title: ColumnType<string, string, never>;
+  summary: ColumnType<string, string, never>;
+  source: ColumnType<string | null, string | null, never>;
+  sort_order: ColumnType<number, number, never>;
+  created_at: ColumnType<Date, never, never>;
+}
+
+export interface KnowledgeItemsTable {
+  id: Generated<string>;
+  org_id: ColumnType<string, string, never>;
+  document_id: ColumnType<string, string, never>;
+  item_id: ColumnType<string, string, never>;
+  title: ColumnType<string, string, never>;
+  resume: ColumnType<string, string, never>;
+  content: ColumnType<string, string, never>;
+  source_file: ColumnType<string | null, string | null, never>;
+  content_chars: ColumnType<number, number, never>;
+  sort_order: ColumnType<number, number, never>;
+  created_at: ColumnType<Date, never, never>;
+}
+
+export interface KnowledgeItemBlocksTable {
+  org_id: ColumnType<string, string, never>;
+  document_id: ColumnType<string, string, never>;
+  item_id: ColumnType<string, string, never>;
+  block_id: ColumnType<string, string, never>;
+  sort_order: ColumnType<number, number, never>;
+}
+
+export type KnowledgeDiscardSource = (typeof KNOWLEDGE_DISCARD_SOURCES)[number];
+
+export interface KnowledgeDiscardedGroupsTable {
+  id: Generated<string>;
+  org_id: ColumnType<string, string, never>;
+  document_id: ColumnType<string, string, never>;
+  source: ColumnType<KnowledgeDiscardSource, KnowledgeDiscardSource, never>;
+  reason: ColumnType<string, string, never>;
+  block_ids: ColumnType<string[], string, never>;
+  sort_order: ColumnType<number, number, never>;
+}
+
+type KnowledgeReportCount = ColumnType<number, number, never>;
+
+export interface KnowledgeReportsTable {
+  document_id: ColumnType<string, string, never>;
+  org_id: ColumnType<string, string, never>;
+  total_blocks: KnowledgeReportCount;
+  filtered_blocks_count: KnowledgeReportCount;
+  candidate_items_count: KnowledgeReportCount;
+  final_items_count: KnowledgeReportCount;
+  matched_blocks_count: KnowledgeReportCount;
+  discarded_blocks_count: KnowledgeReportCount;
+  system_discarded_after_retry_count: KnowledgeReportCount;
+  new_items_from_recovery_count: KnowledgeReportCount;
+  recovery_attempt_count: KnowledgeReportCount;
+  batch_size: KnowledgeReportCount;
+  coverage_rate: KnowledgeReportCount;
+  matched_rate: KnowledgeReportCount;
+  created_at: ColumnType<Date, never, never>;
+}
+
+export interface KnowledgeMatchBatchesTable {
+  org_id: ColumnType<string, string, never>;
+  document_id: ColumnType<string, string, never>;
+  batch_index: ColumnType<number, number, never>;
+  status: ColumnType<KnowledgeStepStatus, KnowledgeStepStatus | undefined, KnowledgeStepStatus>;
+  item_ids: ColumnType<unknown, string | undefined, string>;
+  matches: ColumnType<unknown[] | null, string | null | undefined, string | null>;
+  error: ColumnType<string | null, string | null | undefined, string | null>;
+  started_at: ColumnType<Date | null, Date | null | undefined, Date | null>;
+  completed_at: ColumnType<Date | null, Date | null | undefined, Date | null>;
+  updated_at: ColumnType<Date, never, never>;
+}
+
 export interface Database {
   organizations: OrganizationsTable;
   users: UsersTable;
@@ -469,4 +564,11 @@ export interface Database {
   knowledge_folders: KnowledgeFoldersTable;
   knowledge_documents: KnowledgeDocumentsTable;
   knowledge_document_steps: KnowledgeDocumentStepsTable;
+  knowledge_blocks: KnowledgeBlocksTable;
+  knowledge_candidate_items: KnowledgeCandidateItemsTable;
+  knowledge_items: KnowledgeItemsTable;
+  knowledge_item_blocks: KnowledgeItemBlocksTable;
+  knowledge_discarded_groups: KnowledgeDiscardedGroupsTable;
+  knowledge_reports: KnowledgeReportsTable;
+  knowledge_match_batches: KnowledgeMatchBatchesTable;
 }

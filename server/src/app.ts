@@ -118,7 +118,7 @@ export async function buildApp(config: AppConfig, options: BuildAppOptions): Pro
   await app.register(registerSettingsRoutes, { prefix: '/api/settings', db });
   await app.register(registerTemplateRoutes, { prefix: '/api/export-templates', db });
   await app.register(registerCredentialLibraryRoutes, { prefix: '/api/credential-library', db });
-  await app.register(registerKnowledgeBaseRoutes, { prefix: '/api/knowledge-base', db });
+  await app.register(registerKnowledgeBaseRoutes, { prefix: '/api/knowledge-base', db, objectStore: options.objectStore ?? null });
 
   return app;
 }

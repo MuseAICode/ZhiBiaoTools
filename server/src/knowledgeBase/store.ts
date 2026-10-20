@@ -8,7 +8,7 @@
 // 用事务级 advisory lock 串行，并发的拖动不会交错写出重复或跳号的顺序。
 //
 // 给第 6 步解析任务用的写函数（updateDocumentState、setDocumentMarkdown、saveDocumentStep、clearDocumentProcessingFromStep）
-// 在本步一并实现；切块、条目等其余表的清理随 5.7 加入 clearDocumentProcessingFromStep。
+// 在本步一并实现；切块、条目、匹配结果等其余七张表的读写在 content.ts（5.7）。
 import { sql, type Kysely, type Selectable, type Transaction } from 'kysely';
 import {
   KNOWLEDGE_DOCUMENTS_PER_ORG_MAX,
@@ -161,7 +161,7 @@ export function normalizeFolderName(raw: string): string {
 }
 
 /** 任务写入的文本：去掉 PostgreSQL text 不接受的 \u0000，超长时截短（进度说明、错误信息不应让任务失败）。 */
-function taskText(value: string, max: number): string {
+export function taskText(value: string, max: number): string {
   const text = value.replaceAll('\u0000', '');
   const chars = [...text];
   return chars.length > max ? chars.slice(0, max).join('') : text;
@@ -226,7 +226,8 @@ function documentBody(row: DocumentRow): KnowledgeDocument {
   };
 }
 
-async function readDocument(trx: Transaction<Database>, documentId: string): Promise<KnowledgeDocument> {
+/** 在已设置上下文的事务中读取文档，不可见时 404。 */
+export async function readDocument(trx: Transaction<Database>, documentId: string): Promise<KnowledgeDocument> {
   const row = await documents(trx).where('d.id', '=', documentId).executeTakeFirst();
   if (!row) throw documentNotFound();
   return documentBody(row);
@@ -544,6 +545,13 @@ export async function setDocumentMarkdown(
   });
 }
 
+/** 删除最终条目（来源块随条目级联删除）、舍弃块组和报告。 */
+export async function clearFinalResult(trx: Transaction<Database>, documentId: string): Promise<void> {
+  await trx.deleteFrom('knowledge_items').where('document_id', '=', documentId).execute();
+  await trx.deleteFrom('knowledge_discarded_groups').where('document_id', '=', documentId).execute();
+  await trx.deleteFrom('knowledge_reports').where('document_id', '=', documentId).execute();
+}
+
 function stepBody(row: Selectable<KnowledgeDocumentStepsTable>): KnowledgeDocumentStep {
   return {
     documentId: row.document_id,
@@ -652,8 +660,8 @@ export async function saveDocumentStep(
 
 /**
  * 从某一步起清除处理结果（重试、重新匹配时用），与桌面版 clearDocumentProcessingFromStep 相同：删除该步及之后的步骤记录，
- * 清除 error、last_batch_size，并按起始步骤清除 Markdown 产物的引用、解析器标签和相应的计数。
- * 切块、候选条目、匹配批次、最终条目等表随 5.7 在这里一并清除。
+ * 清除 error、last_batch_size，并按起始步骤清除 Markdown 产物的引用、解析器标签、切块、候选条目、匹配批次、
+ * 最终条目（含来源块、舍弃块组和报告）以及相应的计数。
  */
 export async function clearDocumentProcessingFromStep(
   db: Kysely<Database>,
@@ -671,6 +679,10 @@ export async function clearDocumentProcessingFromStep(
       .where('document_id', '=', documentId)
       .where('step_key', 'in', KNOWLEDGE_STEP_KEYS.slice(start))
       .execute();
+    if (from('build_blocks')) await trx.deleteFrom('knowledge_blocks').where('document_id', '=', documentId).execute();
+    if (from('merge_candidates')) await trx.deleteFrom('knowledge_candidate_items').where('document_id', '=', documentId).execute();
+    if (from('match_batches')) await trx.deleteFrom('knowledge_match_batches').where('document_id', '=', documentId).execute();
+    if (from('save_result')) await clearFinalResult(trx, documentId);
     await trx
       .updateTable('knowledge_documents')
       .set({
