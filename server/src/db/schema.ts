@@ -311,6 +311,20 @@ export interface UserSettingsTable {
   updated_at: ColumnType<Date, never, never>;
 }
 
+/** 迁移 0010_export_templates。org_id 为空的是系统模板，只由迁移命令同步（src/templates/system.ts）。 */
+export interface ExportTemplatesTable {
+  id: Generated<string>;
+  org_id: ColumnType<string | null, string | null, never>;
+  system_key: ColumnType<string | null, string | null | undefined, string | null>;
+  name: ColumnType<string, string, string>;
+  config: ColumnType<Record<string, unknown>, string, string>;
+  sort_order: ColumnType<number, number | undefined, number>;
+  created_by: ColumnType<string | null, string | null | undefined, never>;
+  updated_by: ColumnType<string | null, string | null | undefined, string | null>;
+  created_at: ColumnType<Date, never, never>;
+  updated_at: ColumnType<Date, never, never>;
+}
+
 export interface Database {
   organizations: OrganizationsTable;
   users: UsersTable;
@@ -329,4 +343,5 @@ export interface Database {
   artifacts: ArtifactsTable;
   org_settings: OrgSettingsTable;
   user_settings: UserSettingsTable;
+  export_templates: ExportTemplatesTable;
 }

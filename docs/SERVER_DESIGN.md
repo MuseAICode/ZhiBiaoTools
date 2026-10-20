@@ -101,7 +101,7 @@ organizations（组织，数据隔离的边界）
 | 任务日志 | `task_logs` | 1 | `org_id` + `project_id` + `job_id` |
 | 知识库（组织级共享） | `knowledge_folders`、`_documents`、`_blocks`、`_candidate_items`、`_items`、`_item_blocks`、`_discarded_groups`、`_reports`、`_document_steps`、`_match_batches` | 10 | `org_id` |
 | 资信库（组织级共享） | `credential_library_profile`、`_certificates`、`_employees`、`_projects`、`_other_materials`、`_images` | 6 | `org_id`；`profile` 的 `id = 1` 改为每组织一行（主键 `org_id`） |
-| 导出模板 | `export_templates` | 1 | `org_id`；`is_system = 1` 的系统模板 `org_id` 为空，全体只读 |
+| 导出模板 | `export_templates` | 1 | `org_id`；系统模板 `org_id` 为空（以 `system_key` 标识，取代 `is_system`），全体只读（#10） |
 | 已停用 | `official_invoice_info` | 1 | **不迁移**（0.17 起程序不再读写） |
 
 结论：**除 `official_invoice_info` 和系统模板外，53 张表都要隔离**，没有可以全局共享的业务表。
@@ -171,6 +171,8 @@ organizations（组织，数据隔离的边界）
 **实现（#8）**：存储配额新增第五个角色 `bidtools_storage`，属性同上，是配额函数 `files_org_usage_bytes` 的属主，只对 `files`、`artifacts`、`projects` 有只读策略和列级 `SELECT`。配额需要统计应用角色在 RLS 下看不到的行（已删除项目下、仍在恢复期内的文件和产物），详见路线图第 5 步“生成产物（#8，5.2）”。
 
 **实现（#9）**：`org_settings`、`user_settings`（迁移 `0009_settings`）不新增角色。组织设置的写权限按 `org_memberships` 中的实际角色（owner / admin）由 RLS 判断，不信任 `TenantContext.role`；用户设置只对本人可见，且要求成员关系仍存在，移出组织后不可见并随外键级联删除。详见路线图第 5 步“配置（#9，5.3）”。
+
+**实现（#10）**：`export_templates`（迁移 `0010_export_templates`）不新增角色，是唯一一张 `org_id` 可空的业务表：系统模板 `org_id` 为空，应用角色只读（修改、删除影响 0 行，不能新写或改出系统模板），组织模板组织内成员都可以增删改；系统模板只由迁移角色同步，它在本表上的策略只覆盖 `org_id` 为空的行。详见路线图第 5 步“导出模板（#10，5.4）”。
 
 ### 2.7 桌面数据导入
 

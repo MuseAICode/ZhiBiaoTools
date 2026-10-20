@@ -17,11 +17,12 @@ import {
 import type { BillingProvider, Database, MemberRole, OrgSettingsTable, UserSettingsTable } from '../db/schema.ts';
 import { withTenant, type TenantContext } from '../db/tenant.ts';
 import { AppError } from '../errors.ts';
+import { JSON_OBJECT_MAX_DEPTH, serializeJsonObject } from '../jsonObject.ts';
 
 export { CONCURRENCY_LIMIT_MAX, CONCURRENCY_LIMIT_MIN, DEFAULT_CONCURRENCY_LIMIT, EXPORT_FORMAT_MAX_BYTES, UI_PREFERENCES_MAX_BYTES };
 
-/** JSON 对象的最大嵌套深度；超过时不再往下遍历，也不交给 JSON.stringify，避免深层嵌套耗尽调用栈。 */
-export const SETTINGS_JSON_MAX_DEPTH = 32;
+/** JSON 对象的最大嵌套深度。 */
+export const SETTINGS_JSON_MAX_DEPTH = JSON_OBJECT_MAX_DEPTH;
 
 export interface PlatformModelSummary {
   id: string;
@@ -77,17 +78,11 @@ function settingsInvalid(message: string, cause?: unknown): AppError {
   return new AppError(400, 'SETTINGS_INVALID', message, cause === undefined ? undefined : { cause });
 }
 
-function depthWithin(value: unknown, depth: number): boolean {
-  if (value === null || typeof value !== 'object') return true;
-  if (depth > SETTINGS_JSON_MAX_DEPTH) return false;
-  return Object.values(value).every((child) => depthWithin(child, depth + 1));
-}
-
 /** 校验 JSON 对象的深度和大小，返回序列化结果。数据库的 CHECK 约束是最后一道检查。 */
 function serializeObject(value: Record<string, unknown>, maxBytes: number, label: string): string {
-  if (!depthWithin(value, 1)) throw settingsInvalid(`${label}嵌套层级过深`);
-  const json = JSON.stringify(value);
-  if (Buffer.byteLength(json, 'utf8') > maxBytes) throw settingsInvalid(`${label}过大`);
+  const json = serializeJsonObject(value, maxBytes);
+  if (json === 'too-deep') throw settingsInvalid(`${label}嵌套层级过深`);
+  if (json === 'too-large') throw settingsInvalid(`${label}过大`);
   return json;
 }
 

@@ -6,6 +6,10 @@
 // 改为检查表中没有 project_id 列。只属于某个成员的行（如 user_settings）另声明 userColumn：模板再检查同组织的
 // 其他成员看不到、改不到、不能代写，以及成员关系删除后行随之删除。
 //
+// 5.4 起组织级表中另有 org_id 为空、所有组织只读的系统行时（如系统导出模板），声明 systemRows：模板改为检查
+// org_id 可空，并检查系统行两个组织都能读、未设置上下文时读不到、应用角色改不到删不到也不能新写或改出系统行，
+// 以及维护系统行的角色（迁移角色）只看得到、只改得到系统行。
+//
 // 每次调用自己建两个组织、各自的用户和项目，数据只经应用角色在各自的上下文中写入，不与调用方的数据混在一起。
 import { randomUUID } from 'node:crypto';
 import { sql, type Kysely, type Transaction } from 'kysely';
@@ -49,6 +53,17 @@ export interface ProjectTableSpec {
    * 必须显式列出；模板另外检查这些角色不能登录、没有 BYPASSRLS，且对本表只有 SELECT 策略。
    */
   definerRoles?: readonly string[];
+  /** org_id 为空、所有组织只读的系统行。只用于组织级表。 */
+  systemRows?: SystemRowsSpec;
+}
+
+export interface SystemRowsSpec {
+  /** 用超级用户写入一行系统行，返回主键值。 */
+  insert(admin: Kysely<any>): Promise<string>;
+  /** 维护系统行的角色（有策略但不是函数属主，可以登录，例如迁移角色）。 */
+  writerRole: string;
+  /** 以 writerRole 登录的连接。 */
+  writer(): Kysely<any>;
 }
 
 export interface ProjectTableEnv {
@@ -98,12 +113,16 @@ export function describeProjectTable(spec: ProjectTableSpec, env: ProjectTableEn
   const { table, idColumn } = spec;
   const orgScoped = spec.scope === 'org';
   if (orgScoped === (spec.onProjectDelete !== undefined)) throw new TypeError(`${table}：onProjectDelete 项目级表必填，组织级表不填`);
+  if (spec.systemRows && !orgScoped) throw new TypeError(`${table}：systemRows 只用于组织级表`);
+  const systemRows = spec.systemRows;
+  const policyRoles = [APP_ROLE, ...(spec.definerRoles ?? []), ...(systemRows ? [systemRows.writerRole] : [])].sort();
 
   describe(`${orgScoped ? '组织级表' : '项目级表'} ${table}`, () => {
     let a: Tenant;
     let b: Tenant;
     let rowA: string;
     let rowB: string;
+    let systemRow: string;
 
     const count = async (db: Kysely<any>, orgId?: string) => {
       let query = db.selectFrom(table).select((eb) => eb.fn.countAll<string>().as('n'));
@@ -116,15 +135,19 @@ export function describeProjectTable(spec: ProjectTableSpec, env: ProjectTableEn
       b = await createTenant(env.admin());
       rowA = await withTenantAny(env.app(), a.context, (trx) => spec.insert(trx, scopeOf(a)));
       rowB = await withTenantAny(env.app(), b.context, (trx) => spec.insert(trx, scopeOf(b)));
+      if (systemRows) systemRow = await systemRows.insert(env.admin());
     });
 
-    it(spec.definerRoles ? '启用并强制 RLS，策略只授予应用角色和声明的函数属主' : '启用并强制 RLS，策略只授予应用角色', async () => {
+    /** 组织的行（系统行除外）。 */
+    const orgRows = <T extends { where: (...args: any[]) => any }>(query: T): T => (systemRows ? query.where('org_id', 'is not', null) : query);
+
+    it(policyRoles.length > 1 ? '启用并强制 RLS，策略只授予应用角色和声明的角色' : '启用并强制 RLS，策略只授予应用角色', async () => {
       const result = await sql<{ relrowsecurity: boolean; relforcerowsecurity: boolean; roles: string[] }>`
         SELECT c.relrowsecurity, c.relforcerowsecurity,
                array(SELECT DISTINCT pg_get_userbyid(r)::text FROM pg_policy p, unnest(p.polroles) r WHERE p.polrelid = c.oid ORDER BY 1) AS roles
         FROM pg_class c WHERE c.oid = ${table}::regclass`.execute(env.admin());
       expect(result.rows).toEqual([
-        { relrowsecurity: true, relforcerowsecurity: true, roles: [APP_ROLE, ...(spec.definerRoles ?? [])].sort() },
+        { relrowsecurity: true, relforcerowsecurity: true, roles: policyRoles },
       ]);
       for (const role of spec.definerRoles ?? []) {
         const attributes = await sql<{ rolcanlogin: boolean; rolbypassrls: boolean; rolsuper: boolean }>`
@@ -137,7 +160,9 @@ export function describeProjectTable(spec: ProjectTableSpec, env: ProjectTableEn
     });
 
     const columnsTitle = orgScoped
-      ? 'org_id 不可空，没有 project_id 列'
+      ? systemRows
+        ? 'org_id 可空（系统行），没有 project_id 列'
+        : 'org_id 不可空，没有 project_id 列'
       : spec.projectIdNullable
         ? 'org_id 不可空，project_id 可空'
         : '有 org_id、project_id 两列且都不可空';
@@ -146,7 +171,7 @@ export function describeProjectTable(spec: ProjectTableSpec, env: ProjectTableEn
         SELECT attname, attnotnull FROM pg_attribute
         WHERE attrelid = ${table}::regclass AND attname IN ('org_id', 'project_id') AND NOT attisdropped ORDER BY attname`.execute(env.admin());
       expect(result.rows).toEqual([
-        { attname: 'org_id', attnotnull: true },
+        { attname: 'org_id', attnotnull: !systemRows },
         ...(orgScoped ? [] : [{ attname: 'project_id', attnotnull: !spec.projectIdNullable }]),
       ]);
     });
@@ -169,7 +194,7 @@ export function describeProjectTable(spec: ProjectTableSpec, env: ProjectTableEn
 
     it('组织 A 只看到自己的行，按主键查不到组织 B 的行', async () => {
       await withTenantAny(env.app(), a.context, async (trx) => {
-        expect(await trx.selectFrom(table).select(idColumn).execute()).toEqual([{ [idColumn]: rowA }]);
+        expect(await orgRows(trx.selectFrom(table).select(idColumn)).execute()).toEqual([{ [idColumn]: rowA }]);
         expect(await trx.selectFrom(table).selectAll().where(idColumn, '=', rowB).execute()).toEqual([]);
       });
     });
@@ -225,6 +250,56 @@ export function describeProjectTable(spec: ProjectTableSpec, env: ProjectTableEn
         ),
       ).rejects.toThrow(/row-level security|permission denied/);
     });
+
+    if (systemRows) {
+      it('系统行：两个组织都能读到，未设置上下文时读不到', async () => {
+        for (const tenant of [a, b]) {
+          await withTenantAny(env.app(), tenant.context, async (trx) => {
+            expect(await trx.selectFrom(table).select(['org_id', idColumn]).where(idColumn, '=', systemRow).execute()).toEqual([
+              { org_id: null, [idColumn]: systemRow },
+            ]);
+          });
+        }
+        expect(await env.app().selectFrom(table).selectAll().where(idColumn, '=', systemRow).execute()).toEqual([]);
+      });
+
+      it('系统行：应用角色改不到、删不到，不能新写系统行，也不能把本组织的行改成系统行', async () => {
+        const before = await env.admin().selectFrom(table).selectAll().where(idColumn, '=', systemRow).executeTakeFirstOrThrow();
+        await withTenantAny(env.app(), a.context, async (trx) => {
+          const updated = await trx.updateTable(table).set(spec.update).where(idColumn, '=', systemRow).executeTakeFirst();
+          expect(updated.numUpdatedRows).toBe(0n);
+        });
+        const deleted = await withTenantAny(env.app(), a.context, (trx) =>
+          trx.deleteFrom(table).where(idColumn, '=', systemRow).executeTakeFirst(),
+        ).catch((error: unknown) => error);
+        if (deleted instanceof Error) expect(deleted.message).toMatch(/permission denied/);
+        else expect((deleted as { numDeletedRows: bigint }).numDeletedRows).toBe(0n);
+        await expect(
+          withTenantAny(env.app(), a.context, (trx) => spec.insert(trx, { ...scopeOf(a), orgId: null as unknown as string })),
+        ).rejects.toThrow(/row-level security/);
+        await expect(
+          withTenantAny(env.app(), a.context, (trx) => trx.updateTable(table).set({ org_id: null }).where(idColumn, '=', rowA).execute()),
+        ).rejects.toThrow(/row-level security|permission denied/);
+        expect(await env.admin().selectFrom(table).selectAll().where(idColumn, '=', systemRow).executeTakeFirstOrThrow()).toEqual(before);
+        expect(await count(env.admin(), a.context.orgId)).toBe(1);
+      });
+
+      it('维护系统行的角色只看得到、只改得到系统行', async () => {
+        const writer = systemRows.writer();
+        const visible = await writer.selectFrom(table).select(['org_id']).execute();
+        expect(visible.length).toBeGreaterThan(0);
+        expect(visible.every((row: { org_id: string | null }) => row.org_id === null)).toBe(true);
+        const updated = await writer.updateTable(table).set(spec.update).where(idColumn, 'in', [rowA, rowB]).executeTakeFirst();
+        expect(updated.numUpdatedRows).toBe(0n);
+        const deleted = await writer.deleteFrom(table).where(idColumn, 'in', [rowA, rowB]).executeTakeFirst();
+        expect(deleted.numDeletedRows).toBe(0n);
+        await expect(
+          writer.updateTable(table).set({ org_id: a.context.orgId }).where(idColumn, '=', systemRow).execute(),
+        ).rejects.toThrow(/row-level security/);
+        expect(await count(env.admin(), a.context.orgId)).toBe(1);
+        expect(await count(env.admin(), b.context.orgId)).toBe(1);
+      });
+    }
 
     if (orgScoped) {
       if (spec.userColumn) {
