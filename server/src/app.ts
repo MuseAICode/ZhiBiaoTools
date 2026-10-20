@@ -19,6 +19,7 @@ import { registerAuthRoutes } from './routes/auth.ts';
 import { registerFileRoutes, type FileRouteDependencies } from './routes/files.ts';
 import { registerHealthRoutes } from './routes/health.ts';
 import { registerProjectRoutes } from './routes/projects.ts';
+import { registerSettingsRoutes } from './routes/settings.ts';
 
 export interface BuildAppOptions {
   /** 数据库由调用方创建和关闭（src/server.ts），测试中可以替换为桩。 */
@@ -111,6 +112,7 @@ export async function buildApp(config: AppConfig, options: BuildAppOptions): Pro
   await app.register(registerFileRoutes, { prefix: '/api/files', db, objectStore: options.objectStore ?? null, ...options.uploadLimits });
   await app.register(registerProjectRoutes, { prefix: '/api/projects', db });
   await app.register(registerArtifactRoutes, { prefix: '/api/artifacts', db, objectStore: options.objectStore ?? null });
+  await app.register(registerSettingsRoutes, { prefix: '/api/settings', db });
 
   return app;
 }

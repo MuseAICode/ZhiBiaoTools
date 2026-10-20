@@ -2,6 +2,10 @@
 // 证明 RLS 强制生效、未设置上下文时返回 0 行、组织之间读写互相隔离、复合外键挡住跨组织的 project_id。
 // 迁移的写法见 tests/db/fixtures/exampleProjectTable.ts。
 //
+// 5.3 起组织级表（没有 project_id，如 org_settings）同样调用本模板，声明 scope: 'org'：跳过与项目有关的用例，
+// 改为检查表中没有 project_id 列。只属于某个成员的行（如 user_settings）另声明 userColumn：模板再检查同组织的
+// 其他成员看不到、改不到、不能代写，以及成员关系删除后行随之删除。
+//
 // 每次调用自己建两个组织、各自的用户和项目，数据只经应用角色在各自的上下文中写入，不与调用方的数据混在一起。
 import { randomUUID } from 'node:crypto';
 import { sql, type Kysely, type Transaction } from 'kysely';
@@ -29,10 +33,17 @@ export interface ProjectTableSpec {
   insert(trx: Transaction<any>, scope: ProjectRowScope): Promise<string>;
   /** 应用角色有权执行的一个普通更新（不改 org_id / project_id），用来验证跨组织更新影响 0 行。 */
   update: Record<string, unknown>;
-  /** 项目被物理删除（清理任务）时：子表随之删除，还是挡住删除（引用对象存储内容的表）。 */
-  onProjectDelete: 'cascade' | 'restrict';
+  /** 项目被物理删除（清理任务）时：子表随之删除，还是挡住删除（引用对象存储内容的表）。项目级表必填，组织级表不填。 */
+  onProjectDelete?: 'cascade' | 'restrict';
   /** project_id 可空（只有 files：不属于项目的文件）。项目级表一律不可空。 */
   projectIdNullable?: boolean;
+  /** 'org'：组织级表，没有 project_id，insert 忽略 scope.projectId。默认 'project'。 */
+  scope?: 'project' | 'org';
+  /**
+   * 行只属于一个成员时的用户列（如 user_settings.user_id）：insert 按 scope.userId 写入该列，
+   * 并由复合外键 (org_id, <列>) → org_memberships 级联删除。
+   */
+  userColumn?: string;
   /**
    * 除应用角色外另有策略的 SECURITY DEFINER 函数属主（例如配额函数的 bidtools_storage）。
    * 必须显式列出；模板另外检查这些角色不能登录、没有 BYPASSRLS，且对本表只有 SELECT 策略。
@@ -52,6 +63,14 @@ interface Tenant {
   projectId: string;
   /** 本组织第二个项目，没有任何子记录。 */
   emptyProjectId: string;
+}
+
+/** 在已有组织中加一个普通成员。 */
+async function addMember(admin: Kysely<any>, orgId: string): Promise<TenantContext> {
+  const userId = randomUUID();
+  await admin.insertInto('users').values({ id: userId, email: `${userId}@example.com`, password_hash: 'x' }).execute();
+  await admin.insertInto('org_memberships').values({ org_id: orgId, user_id: userId, role: 'member' }).execute();
+  return { orgId, userId, role: 'member' };
 }
 
 async function createTenant(admin: Kysely<any>): Promise<Tenant> {
@@ -77,8 +96,10 @@ function scopeOf(tenant: Tenant, projectId = tenant.projectId): ProjectRowScope 
 
 export function describeProjectTable(spec: ProjectTableSpec, env: ProjectTableEnv): void {
   const { table, idColumn } = spec;
+  const orgScoped = spec.scope === 'org';
+  if (orgScoped === (spec.onProjectDelete !== undefined)) throw new TypeError(`${table}：onProjectDelete 项目级表必填，组织级表不填`);
 
-  describe(`项目级表 ${table}`, () => {
+  describe(`${orgScoped ? '组织级表' : '项目级表'} ${table}`, () => {
     let a: Tenant;
     let b: Tenant;
     let rowA: string;
@@ -115,13 +136,18 @@ export function describeProjectTable(spec: ProjectTableSpec, env: ProjectTableEn
       }
     });
 
-    it(spec.projectIdNullable ? 'org_id 不可空，project_id 可空' : '有 org_id、project_id 两列且都不可空', async () => {
+    const columnsTitle = orgScoped
+      ? 'org_id 不可空，没有 project_id 列'
+      : spec.projectIdNullable
+        ? 'org_id 不可空，project_id 可空'
+        : '有 org_id、project_id 两列且都不可空';
+    it(columnsTitle, async () => {
       const result = await sql<{ attname: string; attnotnull: boolean }>`
         SELECT attname, attnotnull FROM pg_attribute
-        WHERE attrelid = ${table}::regclass AND attname IN ('org_id', 'project_id') ORDER BY attname`.execute(env.admin());
+        WHERE attrelid = ${table}::regclass AND attname IN ('org_id', 'project_id') AND NOT attisdropped ORDER BY attname`.execute(env.admin());
       expect(result.rows).toEqual([
         { attname: 'org_id', attnotnull: true },
-        { attname: 'project_id', attnotnull: !spec.projectIdNullable },
+        ...(orgScoped ? [] : [{ attname: 'project_id', attnotnull: !spec.projectIdNullable }]),
       ]);
     });
 
@@ -167,18 +193,30 @@ export function describeProjectTable(spec: ProjectTableSpec, env: ProjectTableEn
       ).rejects.toThrow(/row-level security/);
     });
 
-    it('复合外键：组织 A 不能把行挂到组织 B 的项目上（插入和改挂都拒绝）', async () => {
-      await expect(
-        withTenantAny(env.app(), a.context, (trx) => spec.insert(trx, scopeOf(a, b.emptyProjectId))),
-      ).rejects.toThrow(/foreign key constraint/);
-      await expect(
-        withTenantAny(env.app(), a.context, (trx) =>
-          trx.updateTable(table).set({ project_id: b.emptyProjectId }).where(idColumn, '=', rowA).execute(),
-        ),
-      ).rejects.toThrow(/foreign key constraint|permission denied/);
-      const rows = await env.admin().selectFrom(table).select(['org_id', 'project_id']).where('org_id', '=', a.context.orgId).execute();
-      expect(rows).toEqual([{ org_id: a.context.orgId, project_id: a.projectId }]);
-    });
+    if (spec.userColumn) {
+      const userColumn = spec.userColumn;
+      let peer: TenantContext;
+
+      beforeAll(async () => {
+        peer = await addMember(env.admin(), a.context.orgId);
+      });
+
+      it('同组织的其他成员看不到、改不到该行，也不能以该成员的身份写入', async () => {
+        await withTenantAny(env.app(), peer, async (trx) => {
+          expect(await trx.selectFrom(table).selectAll().execute()).toEqual([]);
+          const updated = await trx.updateTable(table).set(spec.update).where(userColumn, '=', a.context.userId).executeTakeFirst();
+          expect(updated.numUpdatedRows).toBe(0n);
+        });
+        await expect(
+          withTenantAny(env.app(), peer, (trx) => spec.insert(trx, scopeOf(a))),
+        ).rejects.toThrow(/row-level security/);
+        await expect(
+          withTenantAny(env.app(), peer, (trx) => trx.updateTable(table).set({ [userColumn]: peer.userId }).where(userColumn, '=', a.context.userId).execute()),
+        ).rejects.toThrow(/permission denied/);
+        const rows = await env.admin().selectFrom(table).select(userColumn).where('org_id', '=', a.context.orgId).execute();
+        expect(rows).toEqual([{ [userColumn]: a.context.userId }]);
+      });
+    }
 
     it('不能把行改到组织 B（改 org_id 被 RLS 拒绝）', async () => {
       await expect(
@@ -188,17 +226,41 @@ export function describeProjectTable(spec: ProjectTableSpec, env: ProjectTableEn
       ).rejects.toThrow(/row-level security|permission denied/);
     });
 
-    if (spec.onProjectDelete === 'cascade') {
-      it('项目被物理删除时，子表的行随之删除', async () => {
-        await env.admin().deleteFrom('projects').where('id', '=', b.projectId).execute();
-        expect(await count(env.admin(), b.context.orgId)).toBe(0);
-        expect(await count(env.admin(), a.context.orgId)).toBe(1);
-      });
+    if (orgScoped) {
+      if (spec.userColumn) {
+        const userColumn = spec.userColumn;
+        it('成员关系删除（移出组织）后，该成员的行随之删除', async () => {
+          await env.admin().deleteFrom('org_memberships').where('org_id', '=', b.context.orgId).where('user_id', '=', b.context.userId).execute();
+          expect(await env.admin().selectFrom(table).select(userColumn).where('org_id', '=', b.context.orgId).execute()).toEqual([]);
+          expect(await count(env.admin(), a.context.orgId)).toBe(1);
+        });
+      }
     } else {
-      it('项目还有子记录时不能物理删除（先由清理任务处理子记录）', async () => {
-        await expect(env.admin().deleteFrom('projects').where('id', '=', b.projectId).execute()).rejects.toThrow(/foreign key constraint/);
-        expect(await count(env.admin(), b.context.orgId)).toBe(1);
+      it('复合外键：组织 A 不能把行挂到组织 B 的项目上（插入和改挂都拒绝）', async () => {
+        await expect(
+          withTenantAny(env.app(), a.context, (trx) => spec.insert(trx, scopeOf(a, b.emptyProjectId))),
+        ).rejects.toThrow(/foreign key constraint/);
+        await expect(
+          withTenantAny(env.app(), a.context, (trx) =>
+            trx.updateTable(table).set({ project_id: b.emptyProjectId }).where(idColumn, '=', rowA).execute(),
+          ),
+        ).rejects.toThrow(/foreign key constraint|permission denied/);
+        const rows = await env.admin().selectFrom(table).select(['org_id', 'project_id']).where('org_id', '=', a.context.orgId).execute();
+        expect(rows).toEqual([{ org_id: a.context.orgId, project_id: a.projectId }]);
       });
+
+      if (spec.onProjectDelete === 'cascade') {
+        it('项目被物理删除时，子表的行随之删除', async () => {
+          await env.admin().deleteFrom('projects').where('id', '=', b.projectId).execute();
+          expect(await count(env.admin(), b.context.orgId)).toBe(0);
+          expect(await count(env.admin(), a.context.orgId)).toBe(1);
+        });
+      } else {
+        it('项目还有子记录时不能物理删除（先由清理任务处理子记录）', async () => {
+          await expect(env.admin().deleteFrom('projects').where('id', '=', b.projectId).execute()).rejects.toThrow(/foreign key constraint/);
+          expect(await count(env.admin(), b.context.orgId)).toBe(1);
+        });
+      }
     }
   });
 }

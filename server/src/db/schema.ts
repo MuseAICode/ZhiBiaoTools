@@ -287,6 +287,30 @@ export interface ArtifactsTable {
   completed_at: ColumnType<Date | null, never, never>;
 }
 
+/**
+ * 组织设置（迁移 0009_settings），每个组织一行。所有成员可读，只有 owner / admin 能写（RLS）；
+ * platform_model_id 必须指向已启用的平台模型（触发器 org_settings_guard，ST001）。updated_at 由触发器维护。
+ */
+export interface OrgSettingsTable {
+  org_id: ColumnType<string, string, never>;
+  platform_model_id: ColumnType<string | null, string | null | undefined, string | null>;
+  concurrency_limit: ColumnType<number, number | undefined, number>;
+  export_format: ColumnType<Record<string, unknown>, string | undefined, string>;
+  updated_by: ColumnType<string, string, string>;
+  created_at: ColumnType<Date, never, never>;
+  updated_at: ColumnType<Date, never, never>;
+}
+
+/** 用户设置（迁移 0009_settings），每个组织的每个成员一行，只有本人可见、可写；成员关系删除后随之删除。 */
+export interface UserSettingsTable {
+  org_id: ColumnType<string, string, never>;
+  user_id: ColumnType<string, string, never>;
+  agent_auto_answer_enabled: ColumnType<boolean, boolean | undefined, boolean>;
+  ui_preferences: ColumnType<Record<string, unknown>, string | undefined, string>;
+  created_at: ColumnType<Date, never, never>;
+  updated_at: ColumnType<Date, never, never>;
+}
+
 export interface Database {
   organizations: OrganizationsTable;
   users: UsersTable;
@@ -303,4 +327,6 @@ export interface Database {
   files: FilesTable;
   projects: ProjectsTable;
   artifacts: ArtifactsTable;
+  org_settings: OrgSettingsTable;
+  user_settings: UserSettingsTable;
 }

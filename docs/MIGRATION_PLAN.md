@@ -13,7 +13,7 @@
 | 2 | 服务端骨架 | 进行中 | 旧仓库 PR #25（设计文档 `docs/SERVER_DESIGN.md`）、旧仓库 PR #26（决定 18 项事项，新增计费与合规章节）、旧仓库 PR #27（`server/` 基础设施：配置、日志、`/healthz`、错误处理、安全响应头、Docker、CI）、旧仓库 PR #28（数据库层：PostgreSQL 17、Kysely 迁移、身份与租户表、RLS、`TenantContext`、`/readyz`）、旧仓库 PR #29（鉴权：登录前查询的 `SECURITY DEFINER` 函数、argon2id、服务端会话与 CSRF、邀请注册、找回密码、限流、平台管理员命令行）、旧仓库 PR #30（限流的客户端 IP：新增 `TRUSTED_PROXIES`，只采信可信代理附加的 `X-Forwarded-For`） |
 | 3 | 配置与 AI 网关 | 进行中 | 旧仓库 PR #31（计费账本：组织余额、只追加的账本、带版本的价格表、幂等扣费、管理员手动充值与冲正，不调用 AI）、旧仓库 PR #32（AI 网关：调用前预扣冻结、按实际用量结算、冻结超时自动释放、`usage_records`、平台 Key 信封加密、DeepSeek / 通义千问流式适配、`POST /api/ai/chat`）、旧仓库 PR #33（平台模型白名单 `platform_models`：只有登记且启用、并有生效价格的模型能调用，免费须显式标记；管理员登记 / 启用 / 停用接口；用户断开时中止上游请求的端到端测试） |
 | 4 | 文件上传 / 下载 / 资源协议 | 进行中 | 旧仓库 PR #34（文件存储：S3 兼容对象存储、本地 SeaweedFS、`files` 表与强制 RLS、按内容校验类型、大小上限与组织配额、附件方式下载、7 天恢复期）、#6（上传白名单补齐桌面版能导入的内容：OLE 内容的 `.docx`，`.doc/.wps` 的 RTF / HTML / MHT / Word 2003 XML，`.xls` 的 HTML 表格 / SpreadsheetML，`%PDF-` 前有多余字节的 PDF） |
-| 5 | 数据层迁移（按业务逐个） | 进行中 | 旧仓库 PR #35（拆分计划，见“第 5 步说明”；记录上传白名单与桌面版的差距）、#7（5.1 项目：`projects` 表、`files.project_id`、项目接口、路由层归属校验、项目级表的迁移与测试模板）、#8（5.2 生成产物存储：`artifacts` 表、Store、只读接口；项目软删除与其下文件、产物联动，由 RLS 强制） |
+| 5 | 数据层迁移（按业务逐个） | 进行中 | 旧仓库 PR #35（拆分计划，见“第 5 步说明”；记录上传白名单与桌面版的差距）、#7（5.1 项目：`projects` 表、`files.project_id`、项目接口、路由层归属校验、项目级表的迁移与测试模板）、#8（5.2 生成产物存储：`artifacts` 表、Store、只读接口；项目软删除与其下文件、产物联动，由 RLS 强制）、#9（5.3 配置：`org_settings`、`user_settings`、`GET/PATCH /api/settings`；写权限与删除可见性由 RLS 强制） |
 | 6 | 任务队列与 worker | 未开始 | — |
 | 7 | OpenXmlHelper 容器化与离屏渲染（前置：CI 新增 .NET 编译与 OpenXmlHelper 测试，见“第 9 步说明”的品牌改名第三部分） | 未开始 | — |
 | 8 | Agent 沙箱 | 未开始 | — |
@@ -420,7 +420,7 @@ AI 网关加固，做法见 `docs/SERVER_DESIGN.md` 第 10.9 节。`client/` 未
 | 5.0 | 拆分计划（本文档）、上传白名单差距记录 | — | 已完成 | 旧仓库 PR #35 |
 | 5.1 | `projects`（`org_id`、`kind`：technical-plan / feasibility-report / rejection-check / duplicate-check、名称、`created_by`、软删除与 7 天恢复期）；`files` 加可空 `project_id`（复合外键 `(org_id, project_id)`）；项目接口 `GET/POST /api/projects`、`GET/PATCH/DELETE /api/projects/:id`、恢复；路由层的项目归属校验（按 `projectId` 查项目并核对 `org_id` 与 `kind`）；项目级表的迁移与测试模板（复合外键、RLS、`timestamptz` / `jsonb` 约定） | — | 已完成 | #7 |
 | 5.2 | 生成产物存储：解析出的 Markdown、提取的图片等派生文件（对象键 `org/{org_id}/artifacts/{id}`，可挂 `project_id`，记来源 `file_id`，计入组织配额），只读接口；写入方是第 6 步的解析任务，本步只提供 Store 函数和测试。另补上项目删除与文件的联动（5.1 留下）：项目软删除时，其下的文件（`files.project_id`）和生成产物同步不可访问；恢复项目时一起恢复；过期后与项目一起由清理任务物理删除（清理任务本身在第 6 步） | 5.1 | 已完成 | #8 |
-| 5.3 | B 配置：`org_settings`、`user_settings` | — | 未开始 | — |
+| 5.3 | B 配置：`org_settings`、`user_settings` | — | 已完成 | #9 |
 | 5.4 | I 模板库：`export_templates` | — | 未开始 | — |
 | 5.5 | H 资信库：6 张表 | — | 未开始 | — |
 | 5.6 | H 知识库（一）：`knowledge_folders`、`_documents`、`_document_steps`、文件夹与文档管理接口 | 5.2 | 未开始 | — |
@@ -466,7 +466,7 @@ AI 网关加固，做法见 `docs/SERVER_DESIGN.md` 第 10.9 节。`client/` 未
 - **只读接口**：`GET /api/artifacts?projectId=…` 或 `?sourceFileId=…`（二选一，可加 `kind`、`limit`）、`GET /api/artifacts/:artifactId`、`GET /api/artifacts/:artifactId/content`。下载与文件相同：api 流式转发、一律附件、`nosniff`、`sandbox` CSP、`private, no-store`。其他组织的、写入中的、不可访问的产物一律 `404 ARTIFACT_NOT_FOUND`。
 - **项目软删除联动**（5.1 留下），**由 RLS 强制**：重建应用角色在 `files` 上的四条策略，并在 `artifacts` 的策略中加入同样的条件。所属项目已删除的文件，以及所属项目已删除或来源文件不可访问（未上传完成、已删除，或所在项目已删除）的产物，在应用角色下查不到、改不了、删不掉，也不能新写到已删除的项目或来源文件下。任何查询都绕不过这条规则，包括不带条件的全表查询和以后新写的接口；Store 中不再重复判断。删除状态不复制到文件和产物上：恢复项目即一起恢复；项目删除前就单独删除的文件仍留在回收站，按自己的恢复期处理。项目条件写成“不存在同 id 的已删除项目”，跨组织的 `project_id` 仍由复合外键报错。删除项目前已登记、删除后才完成的产物无法完成，留下的 `writing` 行不计配额，由清理任务删除。
 - **配额**：`files_org_usage_bytes` 改为统计文件和产物合计（`/api/files/usage` 与上传预检随之包含产物）。文件另要求所属项目未删除或仍在恢复期内；产物要求所属项目同上，且来源文件仍计入配额。已删除项目下的行在恢复期内仍要计入，否则“删除项目 → 继续上传 → 恢复项目”可以越过配额，所以函数改为 `SECURITY DEFINER`。属主是新角色 `bidtools_storage`：`NOLOGIN`、无 `BYPASSRLS`，只有为它单独建的只读策略和列级 `SELECT` 授权。函数只允许统计当前上下文的组织（`AR004`）。项目超过恢复期后，其下文件和产物不再计入配额，由第 6 步的清理任务与项目一起物理删除（外键保证清理顺序：产物 → 文件 → 项目）。
-- 新角色 `bidtools_storage` 已加入 `server/db/init/10-provision.sh` 和测试 harness。**已有的开发数据卷不会重跑初始化脚本**：要么 `docker compose down -v` 重建，要么按脚本手工建角色；生产环境同样由管理员创建（第 9 步上线检查）。
+- 新角色 `bidtools_storage` 已加入 `server/db/init/10-provision.sh` 和测试 harness。**已有的开发数据卷不会重跑初始化脚本**：要么 `docker compose down -v` 重建，要么按脚本手工建角色；生产环境同样由管理员创建（第 9 步上线检查的“数据库角色”一条，#9 补上）。
 - `describeProjectTable` 新增 `definerRoles`：除应用角色外另有策略的函数属主必须显式声明，模板检查它们不能登录、没有 `BYPASSRLS`、对该表只有 `SELECT` 策略。
 - **性能**：策略按行做主键查找（`projects.id`，产物另查 `files.id`，其中又带 `files` 自身的项目条件）。接口都按 id 或带上限的列表查询，代价是每行一两次索引查找；配额函数与之前一样按组织汇总。数据量增长后若列表变慢，再加按 `(org_id, project_id)` 的部分索引或改写为 join。
 
@@ -477,6 +477,28 @@ AI 网关加固，做法见 `docs/SERVER_DESIGN.md` 第 10.9 节。`client/` 未
 - 产物本身没有单独的软删除和删除接口：重新解析时如何替换旧产物，随第 6 步的解析任务设计；
 - 测试中对象存储用内存实现（`tests/db/artifacts.test.ts`），S3 兼容服务本身由 `files.test.ts` 覆盖；
 - 新增集群级角色 `bidtools_storage`（拆分计划未列出），理由见上方“配额”。
+
+#### 配置（#9，5.3）
+
+只改 `server/`，不改 `client/`，没有新增依赖，没有新增数据库角色。
+
+- **迁移 `0009_settings`**：由桌面版 `user_config.json` 拆出两张表，都不存任何 Key、Base URL 或服务商配置（平台统一提供 AI）。
+  - `org_settings`：每个组织一行（主键 `org_id`）。`platform_model_id`（外键指向 `platform_models`，可空）、`concurrency_limit`（1~20，默认 10，与桌面版文本模型默认值相同）、`export_format`（导出偏好，`jsonb` 对象，≤ 64 KiB）、`updated_by`、`timestamptz` 时间，`updated_at` 由 `app_touch_updated_at()` 维护。
+  - `user_settings`：每个组织的每个成员一行（主键 `(org_id, user_id)`）。`agent_auto_answer_enabled`（默认 false）、`ui_preferences`（界面偏好，`jsonb` 对象，≤ 16 KiB）。用户可属于多个组织，设置按组织分开，符合“每张业务表都有 `org_id`”。复合外键 `(org_id, user_id) → org_memberships` 级联删除。
+  - 两张表都不授予 DELETE；`org_id`、`user_id` 没有列级 UPDATE 授权。
+- **权限与删除可见性由 RLS 强制**，应用代码不判断：
+  - 组织设置全体成员可读；INSERT / UPDATE 策略要求 `org_memberships` 中当前用户的角色是 owner 或 admin，且 `updated_by` 是当前用户。数据库不信任 `TenantContext.role`：伪造上下文角色直接写库、管理员降级后用旧上下文写入都被拒绝。Store 在写之前按 `context.role` 提前返回 `403 SETTINGS_FORBIDDEN`，只为给出明确的错误；RLS 拒绝（`42501`）同样映射为 403。
+  - 用户设置只有本人可见、可写；策略另要求成员关系仍然存在，所以移出组织或注销后，即使行因故还在（测试中跳过级联来验证）也查不到、改不了、不能新写；正常情况下由外键级联物理删除，会话也随成员关系删除而失效。
+- **平台模型选择**：触发器 `org_settings_guard` 只允许选已登记且启用的模型（`ST001` → `400 PLATFORM_MODEL_UNAVAILABLE`），只在选择发生变化时检查。选择后才停用的模型照常保留，接口返回其 `enabled: false` 供设置页提示重新选择，调用时由 `ai_model_price` 拒绝（`BL012`）；`platform_models` 不能删除。Store 先 `INSERT ... ON CONFLICT DO NOTHING` 再 `UPDATE`，不用 `ON CONFLICT DO UPDATE`：后者对拟插入的行也触发 `BEFORE INSERT`，会把“保持已停用的旧选择不变”误判为新选择。
+- **接口**（`src/routes/settings.ts`、`src/settings/store.ts`）：`GET /api/settings` 返回 `{ org, user, canEditOrg }`，没写过时返回默认值，不预先插入行；`PATCH /api/settings` 接受 `{ org?, user? }` 部分更新，同一事务写入，组织部分被拒时用户部分也不写入。JSON Schema 拒绝未声明字段（包括 `apiKey`、`baseUrl`）；导出偏好、界面偏好只要求是对象，深度 ≤ 32、序列化后不超过上限，含 `\u0000` 等 `jsonb` 不接受的字符时返回 `400 SETTINGS_INVALID`，内容的归一化仍由前端完成（与桌面版相同）。响应带 `cache-control: no-store`。
+- **隔离测试**：`describeProjectTable` 新增 `scope: 'org'`（组织级表：检查没有 `project_id` 列，跳过与项目有关的用例）和 `userColumn`（只属于一个成员的行：同组织其他成员看不到、改不到、不能代写、不能改挂，成员关系删除后行随之删除）。两张表各调用一次；另测了上面的 RLS 规则，去掉策略中的角色条件、成员关系条件或触发器的启用检查，分别有 2、1、1 个用例失败。
+
+与路线图、设计的偏离：
+
+- `describeProjectTable` 原只适用于项目级表，本 PR 按上面的方式扩展到组织级表，没有另写模板；
+- `user_settings` 按 (组织, 用户) 而不是按用户存储，理由见上；
+- 拆分计划写的“并发”只做了一个组织级 `concurrency_limit`，第 6 步的队列和 AI 网关按它与平台上限取较小值；桌面版生图、Mermaid、HTML 渲染各自的并发上限随相应功能迁移时再定；
+- 桌面版的 GPU 加速、开发者模式、Token 统计 / Agent 监视器自动打开、`storage_cleanup_version` 不迁移（第 5 步 A、K 模块：Web 端空实现或改为管理员页面）。
 
 
 
@@ -686,8 +708,9 @@ AI 网关加固，做法见 `docs/SERVER_DESIGN.md` 第 10.9 节。`client/` 未
      - 模型服务商对中国大陆用户的条款限制：逐家确认，确定 `platform_models` 上架清单；
      - 第一版线下收款的主体、方式与币种；
    - 发信服务选定并完成 QQ / 163 等邮箱的送达率实测（`docs/EXTERNAL_SERVICES.md` §7）；**首个真实用户注册前必须完成**（旧仓库 PR #31），不必等到上线；
-   - 鉴权上线前提（旧仓库 PR #29）：生产数据库按开发环境同样的属性创建 `bidtools_owner`、`bidtools_app`、`bidtools_auth` 三个角色（`bidtools_auth` 为 `NOLOGIN`，迁移角色以 `INHERIT FALSE, SET TRUE` 加入），写进部署文档；发信接口换成正式发信服务的实现；登录、注册、找回密码的限流从进程内存换成 Redis（多实例部署前必须完成）；按反向代理拓扑设置 `TRUSTED_PROXIES`（旧仓库 PR #30，只填 Caddy 的固定地址），用两个不同出口的客户端确认限流和会话中的 IP 是真实客户端地址；用 `npm run admin:create` 创建首个平台管理员后，确认平台管理员已开启 TOTP（设计文档第 3.4 节，TOTP 尚未实现）；
-   - 计费核对：价格表已录入并公示，计价函数测试通过，余额不足拒绝新任务和运行中耗尽暂停已实测，管理员充值的 TOTP 和双人复核已启用；旧仓库 PR #31 暂用重新输入密码做二次验证并禁用 1,000 元以上的单笔充值，TOTP 和双人复核实现后再用新迁移放开大额充值；生产数据库按开发环境同样的属性创建 `bidtools_billing` 角色（`NOLOGIN`，迁移角色以 `INHERIT FALSE, SET TRUE` 加入），写进部署文档；
+   - 数据库角色（#9 汇总）：生产数据库按 `server/db/init/10-provision.sh` 同样的属性创建**全部**角色，写进部署文档：迁移角色 `bidtools_owner`、应用角色 `bidtools_app`，以及全部 `SECURITY DEFINER` 函数属主（定义者角色）`bidtools_auth`（旧仓库 PR #29）、`bidtools_billing`（旧仓库 PR #31）、`bidtools_storage`（#8）。定义者角色一律 `NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS NOINHERIT`，迁移角色以 `INHERIT FALSE, SET TRUE` 加入；缺任何一个，迁移在 `SET ROLE` 时失败。执行迁移前对照 `server/src/db/roles.ts` 逐个核对 `pg_roles` 中的属性和 `pg_auth_members` 中的成员关系；以后新增定义者角色时同步加到本条、`10-provision.sh` 和测试 harness；
+   - 鉴权上线前提（旧仓库 PR #29）：数据库角色见上一条；发信接口换成正式发信服务的实现；登录、注册、找回密码的限流从进程内存换成 Redis（多实例部署前必须完成）；按反向代理拓扑设置 `TRUSTED_PROXIES`（旧仓库 PR #30，只填 Caddy 的固定地址），用两个不同出口的客户端确认限流和会话中的 IP 是真实客户端地址；用 `npm run admin:create` 创建首个平台管理员后，确认平台管理员已开启 TOTP（设计文档第 3.4 节，TOTP 尚未实现）；
+   - 计费核对：价格表已录入并公示，计价函数测试通过，余额不足拒绝新任务和运行中耗尽暂停已实测，管理员充值的 TOTP 和双人复核已启用；旧仓库 PR #31 暂用重新输入密码做二次验证并禁用 1,000 元以上的单笔充值，TOTP 和双人复核实现后再用新迁移放开大额充值；`bidtools_billing` 角色见“数据库角色”一条；
    - AI 网关（旧仓库 PR #32）：主密钥从 `AI_KEK_FILE` 换成云 KMS 的 `KeyWrapper` 实现（第 9 节第 8 项），开启删除保护和调用审计；生产环境 `AI_UPSTREAM_PRIVATE_HOSTS` 为空；确定通义千问使用国内站还是国际站并在管理后台填写对应 Base URL；用真实 Key 在预发环境核对两家服务商流式响应中的用量字段与控制台账单一致；
    - 从大陆主要省份和运营商实测访问香港服务器的延迟和可用性（`docs/SERVER_DESIGN.md` 第 8.0 节）。
    - 文件存储（旧仓库 PR #34）：选定云厂商对象存储（与 KMS 同一家、香港地域），bucket 私有、禁止公开读和列目录，开启服务端加密（默认加密或 KMS 密钥），配置生命周期规则清理未完成的分片上传；api 使用只能访问该 bucket 的最小权限访问密钥；用真实服务跑一遍 `tests/db/files.test.ts` 确认 S3 兼容性；过期文件和遗留 `uploading` 记录的物理清理任务已上线（否则对象只增不减）；Caddy 层设置请求体上限（略大于 100 MB）；`S3_ENDPOINT` 为 https。
