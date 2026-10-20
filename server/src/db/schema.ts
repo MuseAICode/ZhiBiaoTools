@@ -7,6 +7,11 @@ import type {
   CREDENTIAL_RECORD_TABLES,
   CredentialOwnerType,
 } from './migrations/0011_credential_library.ts';
+import type {
+  KNOWLEDGE_DOCUMENT_STATUSES,
+  KNOWLEDGE_STEP_KEYS,
+  KNOWLEDGE_STEP_STATUSES,
+} from './migrations/0012_knowledge_base.ts';
 import type { ProjectKind } from '../projects/store.ts';
 
 type Timestamp = ColumnType<Date, Date | string, Date | string>;
@@ -377,6 +382,65 @@ export interface CredentialLibraryImagesTable {
   created_at: ColumnType<Date, never, never>;
 }
 
+/** 知识库文件夹（迁移 0012_knowledge_base）。组织内成员都可以读写（RLS），updated_by 必须是当前用户。 */
+export interface KnowledgeFoldersTable {
+  id: Generated<string>;
+  org_id: ColumnType<string, string, never>;
+  name: ColumnType<string, string, string>;
+  sort_order: ColumnType<number, number | undefined, number>;
+  created_by: ColumnType<string, string, never>;
+  updated_by: ColumnType<string, string, string>;
+  created_at: ColumnType<Date, never, never>;
+  updated_at: ColumnType<Date, never, never>;
+}
+
+export type KnowledgeDocumentStatus = (typeof KNOWLEDGE_DOCUMENT_STATUSES)[number];
+export type KnowledgeStepKey = (typeof KNOWLEDGE_STEP_KEYS)[number];
+export type KnowledgeStepStatus = (typeof KNOWLEDGE_STEP_STATUSES)[number];
+
+type KnowledgeCount = ColumnType<number, never, number>;
+
+/**
+ * 知识库文档（迁移 0012_knowledge_base）。原件是 knowledge 文件，原件已删除时行不可见（RLS）；
+ * file_id 写入后不能改，新文档一律是 pending，应用角色不能删除行（删除文档即软删除原件）。
+ */
+export interface KnowledgeDocumentsTable {
+  id: Generated<string>;
+  org_id: ColumnType<string, string, never>;
+  folder_id: ColumnType<string, string, string>;
+  file_id: ColumnType<string, string, never>;
+  status: ColumnType<KnowledgeDocumentStatus, never, KnowledgeDocumentStatus>;
+  progress: ColumnType<number, never, number>;
+  message: ColumnType<string, never, string>;
+  error: ColumnType<string | null, never, string | null>;
+  item_count: KnowledgeCount;
+  block_count: KnowledgeCount;
+  filtered_block_count: KnowledgeCount;
+  candidate_item_count: KnowledgeCount;
+  discarded_block_count: KnowledgeCount;
+  system_discarded_after_retry_count: KnowledgeCount;
+  last_batch_size: ColumnType<number | null, never, number | null>;
+  markdown_artifact_id: ColumnType<string | null, never, string | null>;
+  parser_label: ColumnType<string | null, never, string | null>;
+  sort_order: ColumnType<number, number | undefined, number>;
+  created_by: ColumnType<string, string, never>;
+  created_at: ColumnType<Date, never, never>;
+  updated_at: ColumnType<Date, never, never>;
+}
+
+/** 知识库文档的处理步骤（迁移 0012_knowledge_base），随文档可见。 */
+export interface KnowledgeDocumentStepsTable {
+  org_id: ColumnType<string, string, never>;
+  document_id: ColumnType<string, string, never>;
+  step_key: ColumnType<KnowledgeStepKey, KnowledgeStepKey, never>;
+  status: ColumnType<KnowledgeStepStatus, KnowledgeStepStatus | undefined, KnowledgeStepStatus>;
+  result: ColumnType<Record<string, unknown> | null, string | null | undefined, string | null>;
+  error: ColumnType<string | null, string | null | undefined, string | null>;
+  started_at: ColumnType<Date | null, Date | null | undefined, Date | null>;
+  completed_at: ColumnType<Date | null, Date | null | undefined, Date | null>;
+  updated_at: ColumnType<Date, never, never>;
+}
+
 export interface Database {
   organizations: OrganizationsTable;
   users: UsersTable;
@@ -402,4 +466,7 @@ export interface Database {
   credential_library_projects: CredentialRecordTable<'project'>;
   credential_library_other_materials: CredentialRecordTable<'other'>;
   credential_library_images: CredentialLibraryImagesTable;
+  knowledge_folders: KnowledgeFoldersTable;
+  knowledge_documents: KnowledgeDocumentsTable;
+  knowledge_document_steps: KnowledgeDocumentStepsTable;
 }

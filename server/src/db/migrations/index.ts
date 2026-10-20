@@ -12,6 +12,7 @@ import * as artifacts from './0008_artifacts.ts';
 import * as settings from './0009_settings.ts';
 import * as exportTemplates from './0010_export_templates.ts';
 import * as credentialLibrary from './0011_credential_library.ts';
+import * as knowledgeBase from './0012_knowledge_base.ts';
 
 export const migrations: Readonly<Record<string, Migration>> = Object.freeze({
   '0001_identity': identity,
@@ -25,4 +26,5 @@ export const migrations: Readonly<Record<string, Migration>> = Object.freeze({
   '0009_settings': settings,
   '0010_export_templates': exportTemplates,
   '0011_credential_library': credentialLibrary,
+  '0012_knowledge_base': knowledgeBase,
 });

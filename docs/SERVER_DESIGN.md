@@ -99,7 +99,7 @@ organizations（组织，数据隔离的边界）
 | 废标检查（项目级） | `rejection_check_meta`、`_documents`、`_tasks`、`_extraction`、`_results`、`_risk_findings`、`_typo_findings`、`_logic_findings` | 8 | 同上 |
 | 可研报告（项目级） | `feasibility_report_meta`、`_tasks`、`_outline_nodes` | 3 | 同上 |
 | 任务日志 | `task_logs` | 1 | `org_id` + `project_id` + `job_id` |
-| 知识库（组织级共享） | `knowledge_folders`、`_documents`、`_blocks`、`_candidate_items`、`_items`、`_item_blocks`、`_discarded_groups`、`_reports`、`_document_steps`、`_match_batches` | 10 | `org_id` |
+| 知识库（组织级共享） | `knowledge_folders`、`_documents`、`_blocks`、`_candidate_items`、`_items`、`_item_blocks`、`_discarded_groups`、`_reports`、`_document_steps`、`_match_batches` | 10 | `org_id`；`_documents` 的 `document_dir` / `source_path` 改为 `file_id`（`knowledge` 文件），`markdown_path` 改为 `markdown_artifact_id`，文档随原件的生命周期（迁移 0012） |
 | 资信库（组织级共享） | `credential_library_profile`、`_certificates`、`_employees`、`_projects`、`_other_materials`、`_images` | 6 | `org_id`；`profile` 的 `id = 1` 改为每组织一行（主键 `org_id`）；`_images` 的 `relative_path` 改为 `file_id`（`credential-image` 文件），图片随文件的生命周期（迁移 0011） |
 | 导出模板 | `export_templates` | 1 | `org_id`；系统模板 `org_id` 为空（以 `system_key` 标识，取代 `is_system`），全体只读（#10） |
 | 已停用 | `official_invoice_info` | 1 | **不迁移**（0.17 起程序不再读写） |

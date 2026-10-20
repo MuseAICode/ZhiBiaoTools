@@ -19,6 +19,7 @@ import { registerAuthRoutes } from './routes/auth.ts';
 import { registerCredentialLibraryRoutes } from './routes/credentialLibrary.ts';
 import { registerFileRoutes, type FileRouteDependencies } from './routes/files.ts';
 import { registerHealthRoutes } from './routes/health.ts';
+import { registerKnowledgeBaseRoutes } from './routes/knowledgeBase.ts';
 import { registerProjectRoutes } from './routes/projects.ts';
 import { registerSettingsRoutes } from './routes/settings.ts';
 import { registerTemplateRoutes } from './routes/templates.ts';
@@ -117,6 +118,7 @@ export async function buildApp(config: AppConfig, options: BuildAppOptions): Pro
   await app.register(registerSettingsRoutes, { prefix: '/api/settings', db });
   await app.register(registerTemplateRoutes, { prefix: '/api/export-templates', db });
   await app.register(registerCredentialLibraryRoutes, { prefix: '/api/credential-library', db });
+  await app.register(registerKnowledgeBaseRoutes, { prefix: '/api/knowledge-base', db });
 
   return app;
 }
