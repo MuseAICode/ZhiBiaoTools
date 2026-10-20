@@ -21,6 +21,9 @@ const APPLICATION_TABLES = [
   'export_templates',
   'files',
   'invitations',
+  'knowledge_document_steps',
+  'knowledge_documents',
+  'knowledge_folders',
   'model_prices',
   'org_balances',
   'org_memberships',
@@ -71,6 +74,7 @@ const APP_FUNCTIONS = [
   'export_templates_guard',
   'files_guard',
   'files_org_usage_bytes',
+  'knowledge_base_guard',
   'org_settings_guard',
   'projects_guard',
 ];
@@ -167,6 +171,7 @@ describe('迁移升级与回滚', () => {
       (await sql<{ prosrc: string }>`SELECT prosrc FROM pg_proc WHERE proname = 'ai_usage_begin'`.execute(testDb.admin)).rows.map((row) => row.prosrc);
     expectSuccess(await migrateToLatest(owner));
     expect((await source())[0]).toContain('ai_model_price');
+    expect(expectSuccess(await migrateDown(owner))).toEqual(['Down:0012_knowledge_base']);
     expect(expectSuccess(await migrateDown(owner))).toEqual(['Down:0011_credential_library']);
     expect(expectSuccess(await migrateDown(owner))).toEqual(['Down:0010_export_templates']);
     expect(expectSuccess(await migrateDown(owner))).toEqual(['Down:0009_settings']);
