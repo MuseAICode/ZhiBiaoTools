@@ -45,6 +45,7 @@
 | 0.18 第 0 步收尾：删除设置页金龙“获取 Key”推广链接 `s.markup.com.cn/jl`，并整体移除“金龙中转站”预置服务商（文本和生图），旧配置迁移为“自定义”；删除侧边栏“加群”按钮、内置的原作者用户群二维码和远程二维码查询；删除 `文章/` 目录；记录 0.4、0.5 和“不自建 analytics Worker”的决定 | 已完成 | 旧仓库 PR #18 |
 | 0.19 清理原作者的非归属类信息（`LICENSE`、`NOTICE`、署名和原仓库链接不动）：删除 `analytics/` 目录和客户端中只为它服务的埋点、安装标识与内容服务代码（公告、更新日志、资源页、模型信息）；删除原作者的历史更新日志、使用说明中的原作者内容和 `screenshots/` 中的赞助商图片；README 改写为中性说明；删除 `configStore` 中“官方”“金龙”旧配置的迁移代码；删除失效的 `check:docx`（连同同样失效的 `check:chrome`、`check`）；全局搜索剩余引用并分类 | 已完成 | 旧仓库 PR #19 |
 | 0.20 继续清理原作者的非归属类信息（`LICENSE`、`NOTICE`、署名和原仓库链接不动）：删除 `.github/FUNDING.yml` 和 AtomGit 发布工具；删除 原用户手册技能目录 `.agents/skills/`、`assets/star-history/` 和 `screenshots/`；删除打赏功能；“给作者点 star”提示改为“功能开发中”；删除 `html图片.md` 中的 `mt.agnet.top` 一段；问题反馈模板、`SECURITY.md`、`CODE_OF_CONDUCT.md` 的联系邮箱改为占位符，`CONTRIBUTING.md` 改写；隐私声明第 01、02 条改为中性表述 | 已完成 | 旧仓库 PR #20 |
+| 0.21 依赖漏洞（2026-10 新公告，lockfile 内升级、不改 `package.json`）：`server/` 的 `vite` 8.3.2 → 8.3.3（vitest 的开发依赖，launch-editor 命令注入，CI 的 `--audit-level=high` 因此失败），`client/` 的 `follow-redirects` 1.16.0 → 1.16.1（开发依赖 `wait-on` → `axios` 传递引入，跨域时凭据头未剥离）；两个版本都按依赖规则发布满两周 | 已完成 | #15 |
 
 0.2 的实际做法与原方案 B 的差异：没有另起 worker 线程，也没有调整调用顺序（Electron 主进程里多次转换时，只调顺序不够），而是在 `convert.mjs` 加载时用 pdfjs 6 自己的 worker 建一个专用 `PDFWorker` 传给 `getDocument`，然后清掉 `globalThis.pdfjsWorker`，让 pdf-parse 照常加载自己的 5.4.296。同一 PR 还补了 `cMapUrl` / `standardFontDataUrl`（非嵌入中文字体），并修了 `constructPath` 遇到空路径（`null`）时抛错的问题。之前因为版本冲突，这条路径从来没有跑到，所以这个问题一直没暴露。
 
