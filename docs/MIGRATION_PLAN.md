@@ -13,7 +13,7 @@
 | 2 | 服务端骨架 | 进行中 | 旧仓库 PR #25（设计文档 `docs/SERVER_DESIGN.md`）、旧仓库 PR #26（决定 18 项事项，新增计费与合规章节）、旧仓库 PR #27（`server/` 基础设施：配置、日志、`/healthz`、错误处理、安全响应头、Docker、CI）、旧仓库 PR #28（数据库层：PostgreSQL 17、Kysely 迁移、身份与租户表、RLS、`TenantContext`、`/readyz`）、旧仓库 PR #29（鉴权：登录前查询的 `SECURITY DEFINER` 函数、argon2id、服务端会话与 CSRF、邀请注册、找回密码、限流、平台管理员命令行）、旧仓库 PR #30（限流的客户端 IP：新增 `TRUSTED_PROXIES`，只采信可信代理附加的 `X-Forwarded-For`） |
 | 3 | 配置与 AI 网关 | 进行中 | 旧仓库 PR #31（计费账本：组织余额、只追加的账本、带版本的价格表、幂等扣费、管理员手动充值与冲正，不调用 AI）、旧仓库 PR #32（AI 网关：调用前预扣冻结、按实际用量结算、冻结超时自动释放、`usage_records`、平台 Key 信封加密、DeepSeek / 通义千问流式适配、`POST /api/ai/chat`）、旧仓库 PR #33（平台模型白名单 `platform_models`：只有登记且启用、并有生效价格的模型能调用，免费须显式标记；管理员登记 / 启用 / 停用接口；用户断开时中止上游请求的端到端测试） |
 | 4 | 文件上传 / 下载 / 资源协议 | 进行中 | 旧仓库 PR #34（文件存储：S3 兼容对象存储、本地 SeaweedFS、`files` 表与强制 RLS、按内容校验类型、大小上限与组织配额、附件方式下载、7 天恢复期）、#6（上传白名单补齐桌面版能导入的内容：OLE 内容的 `.docx`，`.doc/.wps` 的 RTF / HTML / MHT / Word 2003 XML，`.xls` 的 HTML 表格 / SpreadsheetML，`%PDF-` 前有多余字节的 PDF） |
-| 5 | 数据层迁移（按业务逐个） | 进行中 | 旧仓库 PR #35（拆分计划，见“第 5 步说明”；记录上传白名单与桌面版的差距）、#7（5.1 项目：`projects` 表、`files.project_id`、项目接口、路由层归属校验、项目级表的迁移与测试模板）、#8（5.2 生成产物存储：`artifacts` 表、Store、只读接口；项目软删除与其下文件、产物联动，由 RLS 强制）、#9（5.3 配置：`org_settings`、`user_settings`、`GET/PATCH /api/settings`；写权限与删除可见性由 RLS 强制） |
+| 5 | 数据层迁移（按业务逐个） | 进行中 | 旧仓库 PR #35（拆分计划，见“第 5 步说明”；记录上传白名单与桌面版的差距）、#7（5.1 项目：`projects` 表、`files.project_id`、项目接口、路由层归属校验、项目级表的迁移与测试模板）、#8（5.2 生成产物存储：`artifacts` 表、Store、只读接口；项目软删除与其下文件、产物联动，由 RLS 强制）、#9（5.3 配置：`org_settings`、`user_settings`、`GET/PATCH /api/settings`；写权限与删除可见性由 RLS 强制）、#10（5.4 导出模板：`export_templates`、`/api/export-templates` 增删改查与复制；系统模板只读、修改删除权限由 RLS 强制，迁移命令同步系统模板） |
 | 6 | 任务队列与 worker | 未开始 | — |
 | 7 | OpenXmlHelper 容器化与离屏渲染（前置：CI 新增 .NET 编译与 OpenXmlHelper 测试，见“第 9 步说明”的品牌改名第三部分） | 未开始 | — |
 | 8 | Agent 沙箱 | 未开始 | — |
@@ -421,7 +421,7 @@ AI 网关加固，做法见 `docs/SERVER_DESIGN.md` 第 10.9 节。`client/` 未
 | 5.1 | `projects`（`org_id`、`kind`：technical-plan / feasibility-report / rejection-check / duplicate-check、名称、`created_by`、软删除与 7 天恢复期）；`files` 加可空 `project_id`（复合外键 `(org_id, project_id)`）；项目接口 `GET/POST /api/projects`、`GET/PATCH/DELETE /api/projects/:id`、恢复；路由层的项目归属校验（按 `projectId` 查项目并核对 `org_id` 与 `kind`）；项目级表的迁移与测试模板（复合外键、RLS、`timestamptz` / `jsonb` 约定） | — | 已完成 | #7 |
 | 5.2 | 生成产物存储：解析出的 Markdown、提取的图片等派生文件（对象键 `org/{org_id}/artifacts/{id}`，可挂 `project_id`，记来源 `file_id`，计入组织配额），只读接口；写入方是第 6 步的解析任务，本步只提供 Store 函数和测试。另补上项目删除与文件的联动（5.1 留下）：项目软删除时，其下的文件（`files.project_id`）和生成产物同步不可访问；恢复项目时一起恢复；过期后与项目一起由清理任务物理删除（清理任务本身在第 6 步） | 5.1 | 已完成 | #8 |
 | 5.3 | B 配置：`org_settings`、`user_settings` | — | 已完成 | #9 |
-| 5.4 | I 模板库：`export_templates` | — | 未开始 | — |
+| 5.4 | I 模板库：`export_templates` | — | 已完成 | #10 |
 | 5.5 | H 资信库：6 张表 | — | 未开始 | — |
 | 5.6 | H 知识库（一）：`knowledge_folders`、`_documents`、`_document_steps`、文件夹与文档管理接口 | 5.2 | 未开始 | — |
 | 5.7 | H 知识库（二）：`_blocks`、`_candidate_items`、`_items`、`_item_blocks`、`_discarded_groups`、`_reports`、`_match_batches`、检索与读取接口 | 5.6 | 未开始 | — |
@@ -499,6 +499,31 @@ AI 网关加固，做法见 `docs/SERVER_DESIGN.md` 第 10.9 节。`client/` 未
 - `user_settings` 按 (组织, 用户) 而不是按用户存储，理由见上；
 - 拆分计划写的“并发”只做了一个组织级 `concurrency_limit`，第 6 步的队列和 AI 网关按它与平台上限取较小值；桌面版生图、Mermaid、HTML 渲染各自的并发上限随相应功能迁移时再定；
 - 桌面版的 GPU 加速、开发者模式、Token 统计 / Agent 监视器自动打开、`storage_cleanup_version` 不迁移（第 5 步 A、K 模块：Web 端空实现或改为管理员页面）。
+
+#### 导出模板（#10，5.4）
+
+只改 `server/`，不改 `client/`，没有新增依赖，没有新增数据库角色。
+
+- **迁移 `0010_export_templates`**：取代桌面版 SQLite 的 `export_templates`。`id`（UUID）、`org_id`（可空，外键级联删除）、`system_key`、`name`（1~200 字、首尾无空白）、`config`（完整的导出格式配置，`jsonb` 对象，≤ 64 KiB，与 `org_settings.export_format` 相同）、`sort_order`、`created_by` / `updated_by`、`timestamptz` 时间（`app_touch_updated_at()` 维护 `updated_at`），`UNIQUE (org_id, id)` 供以后的复合外键引用。
+  - 组织模板：`org_id` 为本组织，`system_key` 为空，`created_by` / `updated_by` 必填；系统模板：`org_id` 为空，`system_key` 必填（稳定标识，取代桌面版的 `is_system` 和 `tpl-system-*` id），没有创建者。形状由 CHECK 约束 `export_templates_owner_shape` 绑定；`name` 必须等于 `config.template_name`（CHECK），与桌面版“名称取自配置”的约定一致，二者不会分叉。
+  - 每个组织最多 100 个模板（触发器 `export_templates_guard`，`ET001` → `409 TEMPLATE_LIMIT_REACHED`，同一组织的插入用 advisory lock 串行），系统模板不计。
+  - 删除是物理删除，与桌面版相同：模板是随时可以复制的配置，不设回收站。
+- **修改、删除权限与可见性由 RLS 强制**，应用代码不判断：
+  - 应用角色 SELECT：设置了组织上下文时，看到本组织的模板和系统模板；未设置上下文什么都看不到。INSERT / UPDATE / DELETE 只对 `org_id = 当前组织` 的行生效，`created_by` / `updated_by` 必须是当前用户：系统模板和其他组织的模板修改、删除都影响 0 行，不能新写 `org_id` 为空的行，也不能把组织模板改成系统模板（`org_id`、`system_key` 没有列级写授权）。组织内成员都可以增删改（组织内共享，第 9 节第 2 项）。
+  - Store 只在影响 0 行时回头查一次，区分“系统模板不可编辑 / 不可删除”（`403 TEMPLATE_READ_ONLY`）和“不存在”（`404 TEMPLATE_NOT_FOUND`），只为给出明确的错误；其他组织的模板与不存在的一样 404。
+  - 系统模板只由迁移角色写入：表属主在 `FORCE ROW LEVEL SECURITY` 下同样受策略约束，它在本表上只有一条策略 `USING (org_id IS NULL) WITH CHECK (org_id IS NULL)`，看不到也写不了任何组织的模板。
+- **系统模板同步**（`src/templates/system.ts`）：定义在 `src/templates/systemTemplates.ts`，内容与桌面版 `client/electron/services/systemExportTemplates.cjs` 生成的配置逐字段相同（单元测试 `tests/templates/systemTemplates.test.ts` 直接加载桌面版文件核对，改预设样式时两边同步），`key` 取桌面版 `template_id` 去掉 `tpl-system-` 前缀。`npm run db:migrate`（镜像中 `node dist/db/migrate.js latest`，即 `docker-compose.yml` 的 migrate 服务）迁移到最新后幂等同步：存在则整份覆盖（id 不变），不存在则插入，定义中没有的旧系统模板删除，输出一行 `system export templates synced`。与桌面版“每次启动同步”相同，改预设样式不需要写迁移；api 进程没有写系统模板的权限，所以改在迁移命令中执行。
+- **接口**（`src/routes/templates.ts`、`src/templates/store.ts`）：`GET /api/export-templates`（系统模板在前按定义顺序，组织模板按最近修改，返回完整配置，每组织最多 100 个所以不分页）、`POST /api/export-templates`、`GET/PUT/DELETE /api/export-templates/:templateId`、`POST /api/export-templates/:templateId/duplicate`，对应桌面版 `templates.list/get/create/update/delete/duplicate`。请求体 `{ config }`，拒绝未声明字段；名称取自 `config.template_name`，NFC 归一化、去掉 Unicode Cc / Cf 字符和首尾空白（与项目名称相同），为空时用“未命名模板”，超过 200 字返回 `400 TEMPLATE_INVALID`，并写回 `config`。`PUT` 整份替换配置（与桌面版相同）。复制任意可见模板（含系统模板）为本组织模板，名称加“ 副本”，超长时截短原名称。配置只要求是对象，深度 ≤ 32、序列化后 ≤ 64 KiB，含 `\u0000` 等 `jsonb` 不接受的字符时返回 `400 TEMPLATE_INVALID`；内容的归一化仍由前端完成。响应带 `cache-control: no-store`。
+- **重构**：组织设置中检查 JSON 对象深度和大小的代码抽到 `src/jsonObject.ts`，设置和模板共用，行为不变（`settings.test.ts` 全部通过）。
+- **隔离测试**：`describeProjectTable` 新增 `systemRows`（组织级表中 `org_id` 为空、所有组织只读的系统行）：检查 `org_id` 可空；系统行两个组织都能读、未设置上下文时读不到；应用角色改不到、删不到系统行，不能新写系统行，也不能把本组织的行改成系统行；声明的维护角色只看得到、只改得到系统行。`export_templates` 调用一次；另测了同步、约束、上限和接口。分别去掉 SELECT 策略的上下文条件、放开 UPDATE / DELETE / INSERT 策略到系统模板、放开迁移角色的策略、去掉数量上限，各有 2、3、8、1、2、1 个用例失败。
+
+与路线图、设计的偏离：
+
+- 设计第 2.4 节的“每张业务表都加 `org_id NOT NULL`”对系统模板不成立，拆分计划和设计第 2.3 节已写明系统模板 `org_id` 为空；本 PR 是唯一的例外，`describeProjectTable` 按上面的方式扩展，没有另写模板；
+- 桌面版的 `is_system` 列由 `org_id IS NULL` 表示，另加 `system_key` 作稳定标识；桌面版文本 id `tpl-*` 改为 UUID（不做 `app.sqlite` 导入，第 9 节第 18 项）；
+- 系统模板的内容在服务端另存一份（`systemTemplates.ts`），由测试核对与桌面版一致；同步放在迁移命令中而不是 api 启动时，理由见上；
+- 新增每组织 100 个模板的上限（拆分计划未列出），避免单个组织无限写入大配置；
+- 技术方案生成设置引用模板（`export_template_id`）随 5.11：组织模板可用复合外键 `(org_id, export_template_id)`，系统模板 `org_id` 为空不能这样引用，届时另行设计（例如单列外键加 RLS，或分两列）。
 
 
 

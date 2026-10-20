@@ -5,12 +5,14 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { migrations } from '../../src/db/migrations/index.ts';
 import { migrateDown, migrateDownAll, migrateToLatest } from '../../src/db/migrator.ts';
 import { OWNER_ROLE } from '../../src/db/roles.ts';
+import { SYSTEM_EXPORT_TEMPLATES } from '../../src/templates/systemTemplates.ts';
 import { connect, createTestDatabase, type TestDatabase } from './harness.ts';
 
 const APPLICATION_TABLES = [
   'artifacts',
   'auth_tokens',
   'billing_ledger',
+  'export_templates',
   'files',
   'invitations',
   'model_prices',
@@ -59,6 +61,7 @@ const APP_FUNCTIONS = [
   'billing_reject_change',
   'billing_require_platform_admin',
   'billing_upstream_cost',
+  'export_templates_guard',
   'files_guard',
   'files_org_usage_bytes',
   'org_settings_guard',
@@ -157,6 +160,7 @@ describe('迁移升级与回滚', () => {
       (await sql<{ prosrc: string }>`SELECT prosrc FROM pg_proc WHERE proname = 'ai_usage_begin'`.execute(testDb.admin)).rows.map((row) => row.prosrc);
     expectSuccess(await migrateToLatest(owner));
     expect((await source())[0]).toContain('ai_model_price');
+    expect(expectSuccess(await migrateDown(owner))).toEqual(['Down:0010_export_templates']);
     expect(expectSuccess(await migrateDown(owner))).toEqual(['Down:0009_settings']);
     expect(expectSuccess(await migrateDown(owner))).toEqual(['Down:0008_artifacts']);
     expect(expectSuccess(await migrateDown(owner))).toEqual(['Down:0007_projects']);
@@ -212,15 +216,22 @@ describe('迁移命令', () => {
 
     const first = runCli(['latest']);
     expect(first.status, first.stderr).toBe(0);
-    expect(lines(first.stdout)).toEqual(
-      Object.keys(migrations).map((name) =>
+    expect(lines(first.stdout)).toEqual([
+      ...Object.keys(migrations).map((name) =>
         expect.objectContaining({ msg: 'migration', migration: name, direction: 'Up', status: 'Success' }),
       ),
-    );
+      expect.objectContaining({ msg: 'system export templates synced', upserted: SYSTEM_EXPORT_TEMPLATES.length, removed: 0 }),
+    ]);
 
+    // 迁移到最新后每次都同步系统模板，重复执行不新增、不删除。
     const second = runCli(['latest']);
     expect(second.status, second.stderr).toBe(0);
-    expect(lines(second.stdout)).toEqual([expect.objectContaining({ msg: 'already up to date' })]);
+    expect(lines(second.stdout)).toEqual([
+      expect.objectContaining({ msg: 'already up to date' }),
+      expect.objectContaining({ msg: 'system export templates synced', upserted: SYSTEM_EXPORT_TEMPLATES.length, removed: 0 }),
+    ]);
+    const system = await sql<{ n: number }>`SELECT count(*)::int AS n FROM export_templates WHERE org_id IS NULL`.execute(testDb.admin);
+    expect(system.rows).toEqual([{ n: SYSTEM_EXPORT_TEMPLATES.length }]);
 
     const down = runCli(['down']);
     expect(down.status, down.stderr).toBe(0);
