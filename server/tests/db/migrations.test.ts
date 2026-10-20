@@ -16,12 +16,14 @@ const APPLICATION_TABLES = [
   'model_prices',
   'org_balances',
   'org_memberships',
+  'org_settings',
   'organizations',
   'platform_models',
   'projects',
   'provider_credentials',
   'sessions',
   'usage_records',
+  'user_settings',
   'users',
 ];
 const APP_FUNCTIONS = [
@@ -59,6 +61,7 @@ const APP_FUNCTIONS = [
   'billing_upstream_cost',
   'files_guard',
   'files_org_usage_bytes',
+  'org_settings_guard',
   'projects_guard',
 ];
 
@@ -154,6 +157,7 @@ describe('迁移升级与回滚', () => {
       (await sql<{ prosrc: string }>`SELECT prosrc FROM pg_proc WHERE proname = 'ai_usage_begin'`.execute(testDb.admin)).rows.map((row) => row.prosrc);
     expectSuccess(await migrateToLatest(owner));
     expect((await source())[0]).toContain('ai_model_price');
+    expect(expectSuccess(await migrateDown(owner))).toEqual(['Down:0009_settings']);
     expect(expectSuccess(await migrateDown(owner))).toEqual(['Down:0008_artifacts']);
     expect(expectSuccess(await migrateDown(owner))).toEqual(['Down:0007_projects']);
     expect(expectSuccess(await migrateDown(owner))).toEqual(['Down:0006_files']);
