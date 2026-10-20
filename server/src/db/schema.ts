@@ -13,6 +13,15 @@ import type {
   KNOWLEDGE_STEP_STATUSES,
 } from './migrations/0012_knowledge_base.ts';
 import type { KNOWLEDGE_DISCARD_SOURCES } from './migrations/0013_knowledge_base_items.ts';
+import type {
+  DUPLICATE_CHECK_FILE_ROLES,
+  DUPLICATE_CHECK_GROUP_TYPES,
+  DUPLICATE_CHECK_OUTLINE_SOURCES,
+  DUPLICATE_CHECK_RISKS,
+  DUPLICATE_CHECK_SECTIONS,
+  DUPLICATE_CHECK_STATUSES,
+  DUPLICATE_CHECK_STEPS,
+} from './migrations/0014_duplicate_check.ts';
 import type { ProjectKind } from '../projects/store.ts';
 
 type Timestamp = ColumnType<Date, Date | string, Date | string>;
@@ -536,6 +545,183 @@ export interface KnowledgeMatchBatchesTable {
   updated_at: ColumnType<Date, never, never>;
 }
 
+export type DuplicateCheckStep = (typeof DUPLICATE_CHECK_STEPS)[number];
+export type DuplicateCheckSection = (typeof DUPLICATE_CHECK_SECTIONS)[number];
+export type DuplicateCheckStatus = (typeof DUPLICATE_CHECK_STATUSES)[number];
+export type DuplicateCheckFileRole = (typeof DUPLICATE_CHECK_FILE_ROLES)[number];
+export type DuplicateCheckOutlineSource = (typeof DUPLICATE_CHECK_OUTLINE_SOURCES)[number];
+export type DuplicateCheckGroupType = (typeof DUPLICATE_CHECK_GROUP_TYPES)[number];
+export type DuplicateCheckRisk = (typeof DUPLICATE_CHECK_RISKS)[number];
+
+/** 写入后不能改的列（org_id、project_id、整体替换的结果列）。 */
+type Fixed<T> = ColumnType<T, T, never>;
+/** jsonb 列：读出是解析后的值，写入是 JSON 字符串。 */
+type FixedJson<T> = ColumnType<T, string | undefined, never>;
+
+/** 标书查重的页面状态（迁移 0014_duplicate_check），每个项目一行，不能删除。 */
+export interface DuplicateCheckMetaTable {
+  project_id: Fixed<string>;
+  org_id: Fixed<string>;
+  step: ColumnType<DuplicateCheckStep, DuplicateCheckStep | undefined, DuplicateCheckStep>;
+  active_analysis_tab: ColumnType<DuplicateCheckSection, DuplicateCheckSection | undefined, DuplicateCheckSection>;
+  created_at: ColumnType<Date, never, never>;
+  updated_at: ColumnType<Date, never, never>;
+}
+
+/** 标书查重选中的文件（迁移 0014_duplicate_check），原件已删除或已不属于本项目时不可见（RLS）。 */
+export interface DuplicateCheckFilesTable {
+  file_id: Fixed<string>;
+  org_id: Fixed<string>;
+  project_id: Fixed<string>;
+  role: Fixed<DuplicateCheckFileRole>;
+  sort_order: Fixed<number>;
+  content_hash: ColumnType<string | null, never, string | null>;
+  created_at: ColumnType<Date, never, never>;
+  updated_at: ColumnType<Date, never, never>;
+}
+
+export interface DuplicateCheckAnalysisSectionsTable {
+  org_id: Fixed<string>;
+  project_id: Fixed<string>;
+  section: Fixed<DuplicateCheckSection>;
+  status: ColumnType<DuplicateCheckStatus, DuplicateCheckStatus, DuplicateCheckStatus>;
+  progress: ColumnType<number, number, number>;
+  message: ColumnType<string, string, string>;
+  signature: ColumnType<string | null, string | null, string | null>;
+  stats: ColumnType<Record<string, unknown>, string, string>;
+  started_at: ColumnType<Date | null, Date | null, Date | null>;
+  updated_at: ColumnType<Date, never, never>;
+}
+
+/** 以下是四类分析的结果（迁移 0014_duplicate_check），整体替换，没有 UPDATE 授权。 */
+export interface DuplicateCheckContentFilesTable {
+  file_id: Fixed<string>;
+  org_id: Fixed<string>;
+  project_id: Fixed<string>;
+  status: Fixed<DuplicateCheckStatus>;
+  content_artifact_id: Fixed<string | null>;
+  content_length: Fixed<number>;
+  parser_label: Fixed<string | null>;
+  error: Fixed<string | null>;
+  updated_at: ColumnType<Date, never, never>;
+}
+
+export interface DuplicateCheckMetadataItemsTable {
+  id: Generated<string>;
+  org_id: Fixed<string>;
+  project_id: Fixed<string>;
+  file_id: Fixed<string>;
+  key: Fixed<string>;
+  label: Fixed<string>;
+  value: Fixed<string>;
+  normalized: Fixed<string | null>;
+  date_day: Fixed<string | null>;
+  comparable: Fixed<boolean>;
+  date_comparable: Fixed<boolean>;
+  sort_order: Fixed<number>;
+}
+
+export interface DuplicateCheckOutlineItemsTable {
+  id: Generated<string>;
+  org_id: Fixed<string>;
+  project_id: Fixed<string>;
+  file_id: Fixed<string>;
+  item_id: Fixed<string>;
+  parent_item_id: Fixed<string | null>;
+  level: Fixed<number>;
+  number: Fixed<string | null>;
+  title: Fixed<string>;
+  normalized_title: Fixed<string>;
+  path_titles: FixedJson<string[]>;
+  normalized_path: Fixed<string>;
+  source: Fixed<DuplicateCheckOutlineSource>;
+  confidence: Fixed<number>;
+  sort_order: Fixed<number>;
+  from_tender: Fixed<boolean>;
+  matched_tender_sentence: Fixed<string | null>;
+}
+
+export interface DuplicateCheckOutlineGroupsTable {
+  id: Generated<string>;
+  org_id: Fixed<string>;
+  project_id: Fixed<string>;
+  group_id: Fixed<string>;
+  type: Fixed<DuplicateCheckGroupType>;
+  title: Fixed<string>;
+  score: Fixed<number>;
+  file_ids: FixedJson<string[]>;
+  item_ids: FixedJson<Record<string, string[]>>;
+  paths: FixedJson<Record<string, string[]>>;
+  sort_order: Fixed<number>;
+}
+
+export interface DuplicateCheckOutlinePairwiseTable {
+  id: Generated<string>;
+  org_id: Fixed<string>;
+  project_id: Fixed<string>;
+  file_a_id: Fixed<string>;
+  file_b_id: Fixed<string>;
+  score: Fixed<number>;
+  title_overlap: Fixed<number>;
+  path_overlap: Fixed<number>;
+  order_similarity: Fixed<number>;
+  shared_count: Fixed<number>;
+  risk: Fixed<DuplicateCheckRisk>;
+  sort_order: Fixed<number>;
+}
+
+export interface DuplicateCheckContentDuplicatesTable {
+  id: Generated<string>;
+  org_id: Fixed<string>;
+  project_id: Fixed<string>;
+  duplicate_id: Fixed<string>;
+  sentence: Fixed<string>;
+  normalized: Fixed<string>;
+  file_ids: FixedJson<string[]>;
+  first_order: Fixed<number>;
+}
+
+export interface DuplicateCheckContentOccurrencesTable {
+  id: Generated<string>;
+  org_id: Fixed<string>;
+  project_id: Fixed<string>;
+  duplicate_id: Fixed<string>;
+  file_id: Fixed<string>;
+  occurrence_count: Fixed<number>;
+}
+
+export interface DuplicateCheckImageFilesTable {
+  file_id: Fixed<string>;
+  org_id: Fixed<string>;
+  project_id: Fixed<string>;
+  status: Fixed<DuplicateCheckStatus>;
+  image_count: Fixed<number>;
+  unique_image_count: Fixed<number>;
+  error: Fixed<string | null>;
+  updated_at: ColumnType<Date, never, never>;
+}
+
+export interface DuplicateCheckDuplicateImagesTable {
+  id: Generated<string>;
+  org_id: Fixed<string>;
+  project_id: Fixed<string>;
+  image_id: Fixed<string>;
+  hash: Fixed<string>;
+  preview_artifact_id: Fixed<string | null>;
+  file_ids: FixedJson<string[]>;
+  sort_order: Fixed<number>;
+}
+
+export interface DuplicateCheckImageOccurrencesTable {
+  id: Generated<string>;
+  org_id: Fixed<string>;
+  project_id: Fixed<string>;
+  image_id: Fixed<string>;
+  file_id: Fixed<string>;
+  occurrence_count: Fixed<number>;
+  locations: FixedJson<unknown[]>;
+}
+
 export interface Database {
   organizations: OrganizationsTable;
   users: UsersTable;
@@ -571,4 +757,17 @@ export interface Database {
   knowledge_discarded_groups: KnowledgeDiscardedGroupsTable;
   knowledge_reports: KnowledgeReportsTable;
   knowledge_match_batches: KnowledgeMatchBatchesTable;
+  duplicate_check_meta: DuplicateCheckMetaTable;
+  duplicate_check_files: DuplicateCheckFilesTable;
+  duplicate_check_analysis_sections: DuplicateCheckAnalysisSectionsTable;
+  duplicate_check_content_files: DuplicateCheckContentFilesTable;
+  duplicate_check_metadata_items: DuplicateCheckMetadataItemsTable;
+  duplicate_check_outline_items: DuplicateCheckOutlineItemsTable;
+  duplicate_check_outline_groups: DuplicateCheckOutlineGroupsTable;
+  duplicate_check_outline_pairwise: DuplicateCheckOutlinePairwiseTable;
+  duplicate_check_content_duplicates: DuplicateCheckContentDuplicatesTable;
+  duplicate_check_content_occurrences: DuplicateCheckContentOccurrencesTable;
+  duplicate_check_image_files: DuplicateCheckImageFilesTable;
+  duplicate_check_duplicate_images: DuplicateCheckDuplicateImagesTable;
+  duplicate_check_image_occurrences: DuplicateCheckImageOccurrencesTable;
 }

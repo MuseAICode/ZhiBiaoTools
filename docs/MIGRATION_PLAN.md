@@ -13,7 +13,7 @@
 | 2 | 服务端骨架 | 进行中 | 旧仓库 PR #25（设计文档 `docs/SERVER_DESIGN.md`）、旧仓库 PR #26（决定 18 项事项，新增计费与合规章节）、旧仓库 PR #27（`server/` 基础设施：配置、日志、`/healthz`、错误处理、安全响应头、Docker、CI）、旧仓库 PR #28（数据库层：PostgreSQL 17、Kysely 迁移、身份与租户表、RLS、`TenantContext`、`/readyz`）、旧仓库 PR #29（鉴权：登录前查询的 `SECURITY DEFINER` 函数、argon2id、服务端会话与 CSRF、邀请注册、找回密码、限流、平台管理员命令行）、旧仓库 PR #30（限流的客户端 IP：新增 `TRUSTED_PROXIES`，只采信可信代理附加的 `X-Forwarded-For`）、#13（测试 harness：删除测试库前等连接全部断开，修复收尾时偶发的 57P01；同 PR 在 `CLAUDE.md` 新增自动合并规则） |
 | 3 | 配置与 AI 网关 | 进行中 | 旧仓库 PR #31（计费账本：组织余额、只追加的账本、带版本的价格表、幂等扣费、管理员手动充值与冲正，不调用 AI）、旧仓库 PR #32（AI 网关：调用前预扣冻结、按实际用量结算、冻结超时自动释放、`usage_records`、平台 Key 信封加密、DeepSeek / 通义千问流式适配、`POST /api/ai/chat`）、旧仓库 PR #33（平台模型白名单 `platform_models`：只有登记且启用、并有生效价格的模型能调用，免费须显式标记；管理员登记 / 启用 / 停用接口；用户断开时中止上游请求的端到端测试） |
 | 4 | 文件上传 / 下载 / 资源协议 | 进行中 | 旧仓库 PR #34（文件存储：S3 兼容对象存储、本地 SeaweedFS、`files` 表与强制 RLS、按内容校验类型、大小上限与组织配额、附件方式下载、7 天恢复期）、#6（上传白名单补齐桌面版能导入的内容：OLE 内容的 `.docx`，`.doc/.wps` 的 RTF / HTML / MHT / Word 2003 XML，`.xls` 的 HTML 表格 / SpreadsheetML，`%PDF-` 前有多余字节的 PDF） |
-| 5 | 数据层迁移（按业务逐个） | 进行中 | 旧仓库 PR #35（拆分计划，见“第 5 步说明”；记录上传白名单与桌面版的差距）、#7（5.1 项目：`projects` 表、`files.project_id`、项目接口、路由层归属校验、项目级表的迁移与测试模板）、#8（5.2 生成产物存储：`artifacts` 表、Store、只读接口；项目软删除与其下文件、产物联动，由 RLS 强制）、#9（5.3 配置：`org_settings`、`user_settings`、`GET/PATCH /api/settings`；写权限与删除可见性由 RLS 强制）、#10（5.4 导出模板：`export_templates`、`/api/export-templates` 增删改查与复制；系统模板只读、修改删除权限由 RLS 强制，迁移命令同步系统模板）、#11（5.5 资信库：6 张表、`/api/credential-library`；权限与删除可见性由 RLS 强制，图片随所引用文件的生命周期）、#12（5.6 知识库（一）：`knowledge_folders`、`_documents`、`_document_steps`、`/api/knowledge-base` 文件夹与文档管理；权限与删除可见性由 RLS 强制，文档随原件的生命周期）、#14（5.7 知识库（二）：切块、条目、匹配结果等 7 张表，检索与读取条目 / 分析 / Markdown 接口；删除可见性与写权限由 RLS 强制，随文档可见） |
+| 5 | 数据层迁移（按业务逐个） | 进行中 | 旧仓库 PR #35（拆分计划，见“第 5 步说明”；记录上传白名单与桌面版的差距）、#7（5.1 项目：`projects` 表、`files.project_id`、项目接口、路由层归属校验、项目级表的迁移与测试模板）、#8（5.2 生成产物存储：`artifacts` 表、Store、只读接口；项目软删除与其下文件、产物联动，由 RLS 强制）、#9（5.3 配置：`org_settings`、`user_settings`、`GET/PATCH /api/settings`；写权限与删除可见性由 RLS 强制）、#10（5.4 导出模板：`export_templates`、`/api/export-templates` 增删改查与复制；系统模板只读、修改删除权限由 RLS 强制，迁移命令同步系统模板）、#11（5.5 资信库：6 张表、`/api/credential-library`；权限与删除可见性由 RLS 强制，图片随所引用文件的生命周期）、#12（5.6 知识库（一）：`knowledge_folders`、`_documents`、`_document_steps`、`/api/knowledge-base` 文件夹与文档管理；权限与删除可见性由 RLS 强制，文档随原件的生命周期）、#14（5.7 知识库（二）：切块、条目、匹配结果等 7 张表，检索与读取条目 / 分析 / Markdown 接口；删除可见性与写权限由 RLS 强制，随文档可见）、#15（5.8 标书查重：13 张项目级表、`/api/projects/:projectId/duplicate-check` 状态 / 文件选择 / 页面状态 / 清空 / Excel 导出；删除可见性与写权限由 RLS 强制，随项目和所选原件可见） |
 | 6 | 任务队列与 worker | 未开始 | — |
 | 7 | OpenXmlHelper 容器化与离屏渲染（前置：CI 新增 .NET 编译与 OpenXmlHelper 测试，见“第 9 步说明”的品牌改名第三部分） | 未开始 | — |
 | 8 | Agent 沙箱 | 未开始 | — |
@@ -432,7 +432,7 @@ AI 网关加固，做法见 `docs/SERVER_DESIGN.md` 第 10.9 节。`client/` 未
 | 5.5 | H 资信库：6 张表 | — | 已完成 | #11 |
 | 5.6 | H 知识库（一）：`knowledge_folders`、`_documents`、`_document_steps`、文件夹与文档管理接口 | 5.2 | 已完成 | #12 |
 | 5.7 | H 知识库（二）：`_blocks`、`_candidate_items`、`_items`、`_item_blocks`、`_discarded_groups`、`_reports`、`_match_batches`、检索与读取接口 | 5.6 | 已完成 | #14 |
-| 5.8 | G 标书查重：13 张表与接口、`exportExcel` | 5.1、5.2 | 未开始 | — |
+| 5.8 | G 标书查重：13 张表与接口、`exportExcel` | 5.1、5.2 | 已完成 | #15 |
 | 5.9 | G 废标检查：7 张表与接口、`exportExcel`（不含 `importTenderFromTechnicalPlan`） | 5.1、5.2 | 未开始 | — |
 | 5.10 | F 可研报告：2 张表与接口 | 5.1、5.2 | 未开始 | — |
 | 5.11 | E 技术方案（一）：`technical_plan_meta`、`_generation_config`、`_generation_bid_tasks`、`_generation_reference_docs`、`_bid_items`，状态、配置、招标文件 / 原方案、标段接口 | 5.1、5.2、5.6 | 未开始 | — |
@@ -609,6 +609,40 @@ AI 网关加固，做法见 `docs/SERVER_DESIGN.md` 第 10.9 节。`client/` 未
 - 新增来源块指向条目的外键和各列的长度上限（桌面版没有），没有新增每文档的行数上限：行数由解析任务按原件（≤ 100 MiB）生成，不经用户接口写入；
 - 检索按行扫描本组织已完成文档的条目，与桌面版相同；数据量增长后再考虑 `pg_trgm` 索引或全文检索；
 - 本地验证用的是 PostgreSQL 16（开发容器无法拉取 17 的镜像），CI 用 17；迁移只用到 15 起的特性。
+
+#### 标书查重（#15，5.8）
+
+只改 `server/`，不改 `client/`，没有新增依赖，没有新增数据库角色。
+
+- **迁移 `0014_duplicate_check`**：取代桌面版 SQLite 的 `duplicate_check_*` 十三张表（`_tasks` 按拆分计划不迁移），全部是项目级表，挂在 `kind = 'duplicate-check'` 的项目下（取代桌面版的单例 `id = 1`），照 `exampleProjectTable` 模板写：`org_id`、`project_id` 不可空，复合外键 `(org_id, project_id) → projects` 级联，`timestamptz` / `jsonb`，索引以 `org_id, project_id` 开头。
+  - `duplicate_check_meta`：每个项目一行（主键 `project_id`），步骤与分析页签；不授予 DELETE，清空时恢复默认值。桌面版的 `current_signature` 不再存：文件选择的签名按当前可见的文件（id、大小、上传完成时间）现算，接口返回 `signature`。
+  - `duplicate_check_files`：`file_path` 改为 `file_id`（复合外键指向 `files`，原件被清理任务物理删除时级联），文件名、扩展名、大小取 `files`；每个文件只能被选一次。分析结果中引用文件的八张表以复合外键 `(org_id, project_id, file_id) → duplicate_check_files` 随文件行级联删除（两两相似度两列都引用）。
+  - 正文提取的 `content_path` 改为 `content_artifact_id`、重复图片的 `preview_url` 改为 `preview_artifact_id`（生成产物，被清理时列级 `SET NULL`）；`*_json` 列改为 `jsonb`（顶层类型与大小由 CHECK 限定），布尔列改为 `boolean`；状态、目录来源、组类型、风险等级的取值与桌面版 Renderer 类型相同（CHECK），相似度、置信度在 0~1000 之间（挡住 `NaN` / `Infinity`），各文本列有长度上限。
+  - 目录项的 `file_id::item_id` 拼接 id 改为 `(project_id, file_id, item_id)` 唯一，父目录项由复合外键指向同一文件的目录项，`DEFERRABLE INITIALLY DEFERRED`（同一次整体替换中子项可以先于父项写入，包括跨批插入）。
+- **删除可见性与写权限由 RLS 强制**，应用代码不判断：
+  - 十三张表都只对应用角色建策略：只能看到、写入本组织的行，未设置上下文时什么都看不到；条件另含“不存在同 id 的已删除或其他 kind 的项目”，所以项目软删除后十三张表的行查不到、改不了、删不掉，也不能新写，恢复项目即一起恢复；其他 kind 的项目下写不进任何一张表。跨组织的 `project_id` 仍由复合外键报错（与 `artifacts` 相同的写法）。
+  - **选中的文件随原件的生命周期**：原件已删除（进入回收站）、未上传完成或已不属于本项目时，文件行和引用它的八张结果表的行都不可见，恢复文件即一起恢复；与文件无关的结果（分析状态、目录组、重复句、重复图片）不受影响。INSERT 策略只允许选本组织已上传、未删除、用途是 `duplicate-check`、已挂到本项目（`files.project_id`）的文件。
+  - 正文产物只能是本组织已写完、来源文件就是该文件的 Markdown；预览图只能是本组织已写完、属于本项目的图片（INSERT 策略）。
+  - 写法与桌面版相同“整体替换”：十张结果表只授予 SELECT、INSERT、DELETE；页面状态、分析状态按列更新，文件行只能改 `content_hash`；`org_id`、`project_id`、`file_id`、`section` 等没有列级 UPDATE 授权。
+  - 隔离测试：十三张表各调用一次 `describeProjectTable`（`projectKind: 'duplicate-check'`；引用选中文件的八张表 `onProjectDelete: 'restrict'`，因为项目被 `files.project_id` 挡住，要先由清理任务删除文件）；另测了上面的规则。分别去掉项目条件中的已删除判断、kind 判断，文件行的原件条件、INSERT 的用途条件，结果表的文件条件，正文产物、预览图条件，给结果表授予 UPDATE、给页面状态授予 DELETE，去掉父目录项外键的延迟检查，各有 1、1、1、1、4、1、1、51、1、1 个用例失败。
+- **接口**（`src/routes/duplicateCheck.ts`、`src/duplicateCheck/store.ts`），先经 `requireProject(..., 'duplicate-check')`：`GET /api/projects/:projectId/duplicate-check`（完整状态，任务状态 `analysisTask` 先返回 `null`）、`PUT .../files`（`{ tenderFileIds, bidFileIds, step?, activeAnalysisTab? }`，招标文件最多 20 个、投标文件最多 50 个）、`PATCH .../ui-state`、`DELETE`（清空）、`GET .../export`，对应桌面版 `loadState`、`saveFiles`（取代 `selectDuplicateCheckFiles`）、`saveUiState`、`clear`、`exportExcel`。
+  - 选择文件与桌面版相同整体替换并清空全部分析结果；文件挂到本项目（只挂还不属于任何项目或已属于本项目的文件），从选择中去掉的文件和清空时的全部文件软删除（进回收站，按文件自己的 7 天恢复期处理）。文件不可用时整体失败，`400 DUPLICATE_CHECK_FILE_UNAVAILABLE`。同一项目的选择、清空和任务写入用事务级 advisory lock 串行。
+  - 导出与桌面版相同：六个工作表、列和文案不变，只导出签名与当前文件选择一致的结果（其余标“结果已失效”），没有可导出的当前结果时 `409 DUPLICATE_CHECK_NOTHING_TO_EXPORT`。服务端同步生成 xlsx，附件下载（`nosniff`、`sandbox` CSP、`no-store`），文件名 `标书查重结果_YYYYMMDD_HHMMSS.xlsx`。
+  - 其他组织的、已删除的、kind 不符的项目一律 `404 PROJECT_NOT_FOUND`。响应带 `cache-control: no-store`。
+- **给第 6 步查重任务用的 Store 函数**（已直接测试）：`saveAnalysisSection(section, analysis | null)`，取代桌面版 `updateState` 中的四类分析：状态、进度、说明、签名、开始时间只写给出的字段，统计按字段合并，结果字段（`files`、`contentFiles`、`duplicateGroups`、`pairwiseSimilarities`、`duplicateSentences`、`duplicateImages`）给出时整体替换，`null` 删除这一类；元数据对比表、目录项所在的组由读出时现算（与桌面版相同）。默认 id（`C000001` / `I000001`）、跳过没有 id 的条目等细节与桌面版相同；id 为空、超长或重复、父目录项不存在是调用方的程序错误，抛 `TypeError`；说明、错误等文本超长时截短，去掉 `\u0000`；行数多时分批插入。引用未选中文件的写入被 RLS 拒绝（文件选择已变化时任务的写入整体失败）。
+- **xlsx 写出器**（`src/xlsx/writer.ts`）：桌面版用 SheetJS，npm 上的 `xlsx` 0.18.5 有未修复的 high 漏洞，新版只在 SheetJS 自己的 CDN 发布，所以不引入依赖，用 Node 自带的 zlib 写出最小的 xlsx（内联字符串、数字、百分比格式、列宽、表头筛选、标题与创建时间）。文本一律写成内联字符串，不会被当作公式求值；控制字符去掉、超长截断（与桌面版相同）。单元测试解包核对结构和 CRC，本地另用 openpyxl 和 LibreOffice 打开验证过。5.9 废标检查的导出复用它。
+- **隔离模板扩展**：`describeProjectTable` 新增 `projectKind`：模板建的项目改为这种 kind（策略只允许某一种项目的表用）。
+
+与路线图、设计的偏离：
+
+- 接口字段与桌面版 Renderer 的差异：响应改为 camelCase（`fileId`、`fileName`、`duplicateFileIds`、`contentArtifactId` 等，与服务端其他接口一致）；文件不再有 `file_path`、`modified_at`，改为 `id`（`files.id`）、`uploadedAt`；不再有单独的 `tenderFile`（取 `tenderFiles[0]`）；正文与预览图改为产物 id，经 `/api/artifacts/:artifactId/content` 读取；前端接入时由第 9 步的 bridge 适配；
+- 拆分计划列出的 `updateState` 只给任务用（Renderer 不调用，桌面版由 Main 的任务服务写入），实现为 Store 函数 `saveAnalysisSection`，不开放为接口：分析结果不应由客户端写入；
+- 导出不再接收客户端传来的 `signature`，由服务端按当前文件选择现算；导出时间与文件名按北京时间（桌面版用本机时区）；
+- 从选择中去掉的文件、清空时的文件改为软删除（桌面版只是不再引用本地文件）：Web 版的原件由服务端保存、计入配额，不删除会一直占用；
+- 新增招标文件 20 个、投标文件 50 个的上限（桌面版没有），避免两两相似度等结果无限增长；
+- `files.project_id` 的改挂仍由 `files` 的既有策略（0008）决定，应用角色可以改；“只挂还不属于任何项目的文件”是 Store 的条件，不在本 PR 修改已有的 `files` 策略。组织内成员本来就能编辑所有项目，这只关系到数据一致性，不涉及越权；如需由数据库强制，另开 PR 修改 `files` 的 UPDATE 策略；
+- 用自写的 xlsx 写出器代替 SheetJS，理由见上；
+- 本地验证用的是 PostgreSQL 16，CI 用 17；`tests/db/files.test.ts` 需要 S3 兼容服务，本地无法启动，只在 CI 中运行（本 PR 未改动文件存储）。
 
 
 
