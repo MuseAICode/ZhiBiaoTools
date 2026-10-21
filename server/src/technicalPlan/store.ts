@@ -1,9 +1,11 @@
-// 技术方案的读写（迁移 0018_technical_plan、0019_technical_plan_outline）：页面状态、招标文件与原方案、统一生成配置（含选中的
-// 招标解析项、引用的知识库文档和导出模板）、招标解析项的结果、多标段识别与投标范围选择（5.11），目录与全局事实（5.12）。
+// 技术方案的读写（迁移 0018_technical_plan、0019_technical_plan_outline、0020_technical_plan_content）：页面状态、招标文件与原方案、
+// 统一生成配置（含选中的招标解析项、引用的知识库文档和导出模板）、招标解析项的结果、多标段识别与投标范围选择（5.11），目录与
+// 全局事实（5.12），各节正文、正文生成状态、编排与运行进度（5.13）。
 // 组织和用户一律来自 TenantContext，所有查询都经 withTenant；项目由路由先经 requireProject 校验（kind = technical-plan）。
 //
 // 可见性、写权限和删除可见性由 RLS 保证，这里不判断：所属项目已删除时八张表的行都查不到、改不了；文档随原件的生命周期，
-// 原件已删除（进入回收站）时文档行不可见；引用的知识库文档不可见时引用行同样不可见；导出模板只能是本组织的或系统模板。
+// 原件已删除（进入回收站）时文档行不可见；引用的知识库文档不可见时引用行同样不可见；导出模板只能是本组织的或系统模板；
+// 正文生成状态与编排只能挂在本项目的目录节点上，节点删除时随之删除（外键）。
 // 导入招标文件、上传原方案就是把已上传的 tender 文件挂到本项目（files.project_id，设置后不能再改，由迁移 0015 的触发器
 // 保证）并登记到 technical_plan_documents，文档停在待解析；移除和清空时软删除原件（进回收站，按文件自己的恢复期处理），
 // 应用角色没有文档的 DELETE 授权。
@@ -11,17 +13,19 @@
 // 与桌面版 technicalPlanStore.cjs（经 taskService 调用的版本）相同：导入或移除招标文件时清空招标解析结果、多标段识别结果和
 // 投标范围，生成配置恢复默认值，步骤回到 document-analysis（clearDownstreamFromTender）；切换单 / 多标段或选择投标范围时
 // 清空招标解析结果、引用的知识库文档和正文生成选项，步骤回到 bid-analysis（clearDownstreamFromBidSectionChange）；移除原方案
-// 时目录扩展方式恢复为 ai-complement。两个函数都清空目录（含各节正文）、全局事实和目录的项目名称、概述与字数控制快照；
-// 正文生成状态（5.13）的清空随对应的 PR 加入。
+// 时目录扩展方式恢复为 ai-complement。两个函数都清空目录（含各节正文、生成状态与编排）、全局事实、目录的项目名称、概述与
+// 字数控制快照和正文生成的运行进度。
 //
 // 目录与桌面版 saveOutline 的 reason 协议相同（节点 id 是稳定 UUID，sort_order 是同级顺序，编号读取时现算）：replace 清空
-// 全部正文，delete / add-* 只清空受影响节点（affectedNodeIds 与叶子 / 父节点身份变化的节点）的正文，sort 只改位置，edit 只改
-// 标题与说明。保存全局事实时清空全部正文（与桌面版 clearContentGenerationState 相同）。
+// 全部正文与正文生成状态，delete / add-* 只清空受影响节点（affectedNodeIds 与叶子 / 父节点身份变化的节点）的正文、生成状态与
+// 编排并按桌面版规则保留运行进度（content.ts），sort 只改位置，edit 只改标题与说明。保存全局事实、重置正文阶段时清空全部正文、
+// 生成状态、编排与运行进度（与桌面版 clearContentGenerationState 相同）；手工保存一节正文时该节状态改为 success（正文为空时 idle）。
 //
 // 桌面版合并的招标正文（tender-original.md）和按投标范围裁剪的工作副本（tender.md）不再保存：读取时由各招标文件解析出的
 // Markdown 现算（readTenderMarkdown），投标范围只记 id 和标题。给第 6 步任务用的写函数：saveDocumentParse（文档的解析
 // 结果）、saveBidItems（招标解析项的结果）、prepareBidSectionExtraction / saveBidSectionExtraction（多标段识别）、
-// saveGeneratedOutline（目录生成的结果与字数控制快照）；全局事实生成同样经 saveGlobalFacts 写入。
+// saveGeneratedOutline（目录生成的结果与字数控制快照）、saveContentSections / saveContentPlans / saveContentGenerationItem /
+// saveContentGenerationRuntime（第 8 步的正文生成）；全局事实生成同样经 saveGlobalFacts 写入。
 import { sql, type Kysely, type Transaction } from 'kysely';
 import {
   TECHNICAL_PLAN_BID_SECTION_MODES,
@@ -62,8 +66,10 @@ import type {
 } from '../db/schema.ts';
 import { withTenant, type TenantContext } from '../db/tenant.ts';
 import { AppError } from '../errors.ts';
+import { TECHNICAL_PLAN_CONTENT_MAX } from '../db/migrations/0019_technical_plan_outline.ts';
 import type { ObjectStore } from '../files/objectStore.ts';
 import { storageDisabled } from '../knowledgeBase/content.ts';
+import { collectLeafItems, normalizeContentPlan, retainRuntimeAfterOutlineChange, serializeRuntime, type ContentRuntime } from './content.ts';
 import {
   buildOutline,
   flattenOutline,
@@ -172,6 +178,25 @@ export interface TechnicalPlanGlobalFact {
   updated_at: Date;
 }
 
+/** 一节的正文生成状态（与桌面版 Renderer 的 ContentGenerationSectionState 相同，error 为 null 而不是省略）。 */
+export interface ContentGenerationSection {
+  id: string;
+  title: string;
+  status: TechnicalPlanRunStatus;
+  content: string;
+  error: string | null;
+  /** 没有状态行、由已有正文推出的叶子节点为 null。 */
+  updated_at: Date | null;
+}
+
+/** 一节的正文编排（与桌面版 Renderer 的 ContentGenerationPlanState 相同）。 */
+export interface ContentGenerationPlan {
+  plan_version: number;
+  plan: Record<string, unknown>;
+  table_requirement?: TechnicalPlanTableRequirement;
+  updated_at: Date;
+}
+
 export interface TechnicalPlanState extends TechnicalPlanGenerationConfig {
   step: TechnicalPlanStep;
   /** 招标文件，按导入顺序。 */
@@ -199,6 +224,13 @@ export interface TechnicalPlanState extends TechnicalPlanGenerationConfig {
   outlineAdjustmentTask: null;
   globalFactsTask: null;
   globalFactsAdjustmentTask: null;
+  /** 各节的正文生成状态，按节点 id。 */
+  contentGenerationSections: Record<string, ContentGenerationSection>;
+  /** 各节的正文编排，按节点 id。 */
+  contentGenerationPlans: Record<string, ContentGenerationPlan>;
+  /** 正文生成的运行进度，没有时为 null。 */
+  contentGenerationRuntime: ContentRuntime | null;
+  contentGenerationTask: null;
 }
 
 // ---- 错误 ----
@@ -234,6 +266,10 @@ function outlineInvalid(error: OutlineInputError): AppError {
 
 function outlineChanged(): AppError {
   return new AppError(409, 'TECHNICAL_PLAN_OUTLINE_CHANGED', '目录已变化，请刷新后再调整');
+}
+
+function chapterNotFound(): AppError {
+  return new AppError(404, 'TECHNICAL_PLAN_CHAPTER_NOT_FOUND', '当前目录中未找到该章节');
 }
 
 function markdownTooLarge(): AppError {
@@ -542,13 +578,67 @@ async function readGlobalFacts(trx: Trx, projectId: string): Promise<TechnicalPl
   return rows.map((row) => ({ id: row.group_id, title: row.title, content: row.content, updated_at: row.updated_at }));
 }
 
+/**
+ * 各节的正文生成状态（与桌面版 loadContentSections 相同）：有状态行的节取行中的状态与错误，标题与正文取目录节点；没有状态行
+ * 但已有正文的叶子节点视为 success。
+ */
+async function readContentSections(trx: Trx, projectId: string, rows: OutlineNodeRow[], outline: TechnicalPlanOutlineData | null): Promise<Record<string, ContentGenerationSection>> {
+  const nodes = new Map(rows.map((row) => [row.node_id, row]));
+  const sectionRows = await trx
+    .selectFrom('technical_plan_content_sections')
+    .select(['node_id', 'status', 'error', 'updated_at'])
+    .where('project_id', '=', projectId)
+    .orderBy('node_id')
+    .execute();
+  const sections: Record<string, ContentGenerationSection> = {};
+  for (const row of sectionRows) {
+    const node = nodes.get(row.node_id);
+    sections[row.node_id] = {
+      id: row.node_id,
+      title: node?.title || '未命名章节',
+      status: oneOf(row.status, TECHNICAL_PLAN_RUN_STATUSES, 'idle'),
+      content: node?.content ?? '',
+      error: row.error,
+      updated_at: row.updated_at,
+    };
+  }
+  for (const item of collectLeafItems(outline?.outline ?? [])) {
+    if (!sections[item.id] && item.content?.trim()) {
+      sections[item.id] = { id: item.id, title: item.title || '未命名章节', status: 'success', content: item.content, error: null, updated_at: null };
+    }
+  }
+  return sections;
+}
+
+/** 各节的正文编排（与桌面版 loadContentPlans 相同）。 */
+async function readContentPlans(trx: Trx, projectId: string): Promise<Record<string, ContentGenerationPlan>> {
+  const rows = await trx
+    .selectFrom('technical_plan_content_plans')
+    .select(['node_id', 'plan_version', 'plan', 'table_requirement', 'updated_at'])
+    .where('project_id', '=', projectId)
+    .orderBy('node_id')
+    .execute();
+  return Object.fromEntries(
+    rows.map((row) => [
+      row.node_id,
+      {
+        plan_version: row.plan_version,
+        plan: row.plan,
+        ...(row.table_requirement ? { table_requirement: row.table_requirement } : {}),
+        updated_at: row.updated_at,
+      },
+    ]),
+  );
+}
+
 /** 在已设置上下文的事务中读取完整状态（与桌面版 loadTechnicalPlan 中已迁移的字段相同，任务状态先返回 null）。 */
 export async function readState(trx: Trx, projectId: string): Promise<TechnicalPlanState> {
   const meta = await trx.selectFrom('technical_plan_meta').selectAll().where('project_id', '=', projectId).executeTakeFirst();
   const config = await readGenerationConfig(trx, projectId);
   const documents = await readDocuments(trx, projectId);
   const items = await readBidItems(trx, projectId);
-  const outline = buildOutline(await readOutlineRows(trx, projectId), {
+  const outlineRows = await readOutlineRows(trx, projectId);
+  const outline = buildOutline(outlineRows, {
     name: meta?.outline_project_name ?? null,
     overview: meta?.outline_project_overview ?? null,
   });
@@ -584,6 +674,10 @@ export async function readState(trx: Trx, projectId: string): Promise<TechnicalP
     outlineAdjustmentTask: null,
     globalFactsTask: null,
     globalFactsAdjustmentTask: null,
+    contentGenerationSections: await readContentSections(trx, projectId, outlineRows, outline),
+    contentGenerationPlans: await readContentPlans(trx, projectId),
+    contentGenerationRuntime: meta?.content_generation_runtime ?? null,
+    contentGenerationTask: null,
   };
 }
 
@@ -603,6 +697,7 @@ type MetaPatch = Partial<{
   outline_project_name: string | null;
   outline_project_overview: string | null;
   outline_word_control_snapshot: string | null;
+  content_generation_runtime: string | null;
 }>;
 
 async function writeMeta(trx: Trx, context: TenantContext, projectId: string, set: MetaPatch): Promise<void> {
@@ -622,14 +717,26 @@ const RESET_BID_SECTIONS: MetaPatch = {
   selected_section_title: null,
 };
 
-/** 目录的项目名称、概述与字数控制快照恢复初始状态（目录删除时）。 */
+/** 目录的项目名称、概述、字数控制快照与正文生成的运行进度恢复初始状态（目录删除时）。 */
 const RESET_OUTLINE_META: MetaPatch = {
   outline_project_name: null,
   outline_project_overview: null,
   outline_word_control_snapshot: null,
+  content_generation_runtime: null,
 };
 
-/** 删除目录（含各节正文）和全局事实。 */
+/**
+ * 清空正文阶段（与桌面版 clearContentGenerationState 相同）：各节正文置空，删除正文生成状态与编排，清除运行进度。
+ * 正文生成任务的取消随第 6 步，Agent 持久任务与正文 Word 文件的回收随第 8 步、第 7 步。
+ */
+async function clearContentGeneration(trx: Trx, context: TenantContext, projectId: string): Promise<void> {
+  await trx.updateTable('technical_plan_outline_nodes').set({ content: '' }).where('project_id', '=', projectId).where('content', '<>', '').execute();
+  await trx.deleteFrom('technical_plan_content_sections').where('project_id', '=', projectId).execute();
+  await trx.deleteFrom('technical_plan_content_plans').where('project_id', '=', projectId).execute();
+  await writeMeta(trx, context, projectId, { content_generation_runtime: null });
+}
+
+/** 删除目录（含各节正文；正文生成状态与编排随节点级联删除）和全局事实。 */
 async function deleteOutlineAndFacts(trx: Trx, projectId: string): Promise<void> {
   await trx.deleteFrom('technical_plan_outline_nodes').where('project_id', '=', projectId).execute();
   await trx.deleteFrom('technical_plan_global_fact_groups').where('project_id', '=', projectId).execute();
@@ -1134,14 +1241,14 @@ export interface SaveOutlineInput {
  * 保存目录（与桌面版 saveOutline 相同的 reason 协议，节点 id 是稳定 UUID）：
  * - sort：只改节点的父节点、同级顺序和层级以及目录的项目名称与概述，节点身份、正文不变；
  * - edit：只改标题与说明，正文、处理方式等不变；
- * - delete、add-root、add-child：按新目录写入，affectedNodeIds 中的节点和由叶子变成父节点（或反过来）的节点清空正文，
- *   其余已有节点沿用已保存的正文（忽略请求中的正文），新节点取请求给出的正文；
- * - replace：按新目录写入，清空全部正文。
- * sort、edit 要求请求中的节点与已保存的完全一致（例如其他成员已改过目录时），否则返回 409，不做改动；目录为空时同时清空
- * 字数控制快照。
+ * - delete、add-root、add-child：按新目录写入，affectedNodeIds 中的节点和由叶子变成父节点（或反过来）的节点清空正文、
+ *   生成状态与编排，其余已有节点沿用已保存的正文与状态（忽略请求中的正文），新节点取请求给出的正文；运行进度按
+ *   retainRuntimeAfterOutlineChange 保留；
+ * - replace：按新目录写入，清空全部正文、生成状态与编排和运行进度。
+ * sort、edit 不改正文生成状态。不在新目录中的节点的状态与编排随节点删除。sort、edit 要求请求中的节点与已保存的完全一致
+ * （例如其他成员已改过目录时），否则返回 409，不做改动；目录为空时同时清空字数控制快照。
  *
- * 桌面版“正文生成任务运行或暂停中不能调整目录”的检查随第 6 步的任务队列；正文生成状态（编排、各节状态、运行进度）的保留
- * 与清空随 5.13 加入。
+ * 桌面版“正文生成任务运行或暂停中不能调整目录”的检查和删除正文生成任务记录随第 6 步的任务队列。
  */
 export async function saveOutline(db: Kysely<Database>, context: TenantContext, projectId: string, input: SaveOutlineInput): Promise<TechnicalPlanState> {
   const reason = oneOf(input.reason, TECHNICAL_PLAN_OUTLINE_SAVE_REASONS, 'replace');
@@ -1180,6 +1287,7 @@ export async function saveOutline(db: Kysely<Database>, context: TenantContext, 
       if (previous.has(row.node_id) && previousParents.has(row.node_id) !== nextParents.has(row.node_id)) affected.add(row.node_id);
     }
     const clearAll = reason === 'replace';
+    const meta = await trx.selectFrom('technical_plan_meta').select('content_generation_runtime').where('project_id', '=', projectId).executeTakeFirst();
     await writeOutlineNodes(
       trx,
       context,
@@ -1190,9 +1298,27 @@ export async function saveOutline(db: Kysely<Database>, context: TenantContext, 
         return { ...row, content };
       }),
     );
+    const invalidated = [...affected].filter((id) => UUID.test(id));
+    for (const table of ['technical_plan_content_sections', 'technical_plan_content_plans'] as const) {
+      if (!clearAll && invalidated.length === 0) continue;
+      let removal = trx.deleteFrom(table).where('project_id', '=', projectId);
+      if (!clearAll) removal = removal.where('node_id', 'in', invalidated);
+      await removal.execute();
+    }
+    const runtime = clearAll
+      ? null
+      : serializeRuntime(
+          retainRuntimeAfterOutlineChange(meta?.content_generation_runtime, {
+            rows,
+            previousIds: new Set(previous.keys()),
+            previousParents,
+            affected,
+          }),
+        );
     await writeMeta(trx, context, projectId, {
       outline_project_name: header.name,
       outline_project_overview: header.overview,
+      content_generation_runtime: runtime,
       ...(rows.length === 0 ? { outline_word_control_snapshot: null } : {}),
     });
     return readState(trx, projectId);
@@ -1208,7 +1334,8 @@ export interface GeneratedOutlineInput {
 
 /**
  * 写入目录生成的结果（给第 6 步的目录生成任务用，取代桌面版任务 checkpoint 中的 outlineData 与 outlineWordControlSnapshot）：
- * 与 saveOutline 的 replace 相同整体替换、清空全部正文，同时写入字数控制快照。目录不合法时返回 400（AppError）。
+ * 与 saveOutline 的 replace 相同整体替换、清空全部正文、正文生成状态、编排与运行进度，同时写入字数控制快照。目录不合法时
+ * 返回 400（AppError）。
  */
 export async function saveGeneratedOutline(db: Kysely<Database>, context: TenantContext, projectId: string, input: GeneratedOutlineInput): Promise<void> {
   const { rows, header } = parseOutline(input.outlineData);
@@ -1221,7 +1348,10 @@ export async function saveGeneratedOutline(db: Kysely<Database>, context: Tenant
       projectId,
       rows.map((row) => ({ ...row, content: '' })),
     );
+    await trx.deleteFrom('technical_plan_content_sections').where('project_id', '=', projectId).execute();
+    await trx.deleteFrom('technical_plan_content_plans').where('project_id', '=', projectId).execute();
     await writeMeta(trx, context, projectId, {
+      content_generation_runtime: null,
       outline_project_name: header.name,
       outline_project_overview: header.overview,
       outline_word_control_snapshot: snapshot,
@@ -1230,8 +1360,8 @@ export async function saveGeneratedOutline(db: Kysely<Database>, context: Tenant
 }
 
 /**
- * 保存全局事实（与桌面版 saveGlobalFacts 相同）：按 normalizeGlobalFactGroups 整理后整体替换，同时清空全部正文
- * （clearContentGenerationState；正文生成状态的清空随 5.13 加入）。内容未变的分组沿用原来的 updated_at。第 6 步的全局事实
+ * 保存全局事实（与桌面版 saveGlobalFacts 相同）：按 normalizeGlobalFactGroups 整理后整体替换，同时清空正文阶段
+ * （clearContentGeneration：全部正文、正文生成状态、编排与运行进度）。内容未变的分组沿用原来的 updated_at。第 6 步的全局事实
  * 生成任务同样经它写入。分组过多或超长时返回 400。
  */
 export async function saveGlobalFacts(db: Kysely<Database>, context: TenantContext, projectId: string, groups: unknown): Promise<TechnicalPlanState> {
@@ -1266,7 +1396,54 @@ export async function saveGlobalFacts(db: Kysely<Database>, context: TenantConte
         )
         .execute();
     }
-    await trx.updateTable('technical_plan_outline_nodes').set({ content: '' }).where('project_id', '=', projectId).where('content', '<>', '').execute();
+    await clearContentGeneration(trx, context, projectId);
+    return readState(trx, projectId);
+  });
+}
+
+/**
+ * 手工保存一节正文（与桌面版 saveChapterContent 相同）：写入节点的正文，该节的生成状态改为 success（正文为空时 idle）、清除
+ * 错误；编排与运行进度不变。节点不在目录中时返回 404，正文超长时返回 400。桌面版“正文生成任务运行或暂停中不能手工编辑”的
+ * 检查随第 6 步的任务队列。
+ */
+export async function saveChapterContent(
+  db: Kysely<Database>,
+  context: TenantContext,
+  projectId: string,
+  nodeId: string,
+  content: string,
+): Promise<TechnicalPlanState> {
+  const id = nodeId.trim().toLowerCase();
+  const text = stripNul(String(content ?? ''));
+  if (charLength(text) > TECHNICAL_PLAN_CONTENT_MAX) throw invalid(`章节正文超过 ${TECHNICAL_PLAN_CONTENT_MAX} 字`);
+  if (!UUID.test(id)) throw chapterNotFound();
+  return withTenant(db, context, async (trx) => {
+    await lockProject(trx, projectId);
+    const result = await trx
+      .updateTable('technical_plan_outline_nodes')
+      .set({ content: text })
+      .where('project_id', '=', projectId)
+      .where('node_id', '=', id)
+      .executeTakeFirst();
+    if (Number(result.numUpdatedRows) === 0) throw chapterNotFound();
+    const status = text.trim() ? 'success' : 'idle';
+    await trx
+      .insertInto('technical_plan_content_sections')
+      .values({ org_id: context.orgId, project_id: projectId, node_id: id, status, error: null })
+      .onConflict((oc) => oc.columns(['project_id', 'node_id']).doUpdateSet({ status, error: null }))
+      .execute();
+    return readState(trx, projectId);
+  });
+}
+
+/**
+ * 重置正文阶段（取代桌面版 taskService.resetContentGeneration）：保留目录、全局事实和生成配置，清空全部正文、正文生成状态、
+ * 编排与运行进度。取消正在运行的正文生成任务随第 6 步。
+ */
+export async function resetContentGeneration(db: Kysely<Database>, context: TenantContext, projectId: string): Promise<TechnicalPlanState> {
+  return withTenant(db, context, async (trx) => {
+    await lockProject(trx, projectId);
+    await clearContentGeneration(trx, context, projectId);
     return readState(trx, projectId);
   });
 }
@@ -1437,5 +1614,179 @@ export async function saveBidSectionExtraction(
   await withTenant(db, context, async (trx) => {
     await lockProject(trx, projectId);
     await writeMeta(trx, context, projectId, set);
+  });
+}
+
+export interface ContentSectionInput {
+  status?: TechnicalPlanRunStatus;
+  error?: string | null;
+  /** 给出时同时写入该节的正文。 */
+  content?: string;
+}
+
+/** 本项目目录中存在的节点（ids 已是小写 uuid）。 */
+async function existingNodeIds(trx: Trx, projectId: string, ids: string[]): Promise<Set<string>> {
+  if (ids.length === 0) return new Set();
+  const rows = await trx.selectFrom('technical_plan_outline_nodes').select('node_id').where('project_id', '=', projectId).where('node_id', 'in', ids).execute();
+  return new Set(rows.map((row) => row.node_id));
+}
+
+function sectionValues(context: TenantContext, projectId: string, nodeId: string, section: ContentSectionInput | null | undefined) {
+  return {
+    org_id: context.orgId,
+    project_id: projectId,
+    node_id: nodeId,
+    status: oneOf(section?.status, TECHNICAL_PLAN_RUN_STATUSES, 'idle'),
+    error: optionalText(section?.error, TECHNICAL_PLAN_TEXT_MAX),
+  };
+}
+
+async function upsertSections(trx: Trx, rows: ReturnType<typeof sectionValues>[]): Promise<void> {
+  await insertChunked(rows, (chunk) =>
+    trx
+      .insertInto('technical_plan_content_sections')
+      .values(chunk)
+      .onConflict((oc) => oc.columns(['project_id', 'node_id']).doUpdateSet((eb) => ({ status: eb.ref('excluded.status'), error: eb.ref('excluded.error') })))
+      .execute(),
+  );
+}
+
+/** 写入若干节的正文（任务写入：超长时截短）。 */
+async function writeNodeContents(trx: Trx, projectId: string, contents: { node_id: string; content: string }[]): Promise<void> {
+  if (contents.length === 0) return;
+  await sql`UPDATE technical_plan_outline_nodes n SET content = v.content
+    FROM jsonb_to_recordset(${JSON.stringify(contents)}::jsonb) AS v(node_id uuid, content text)
+    WHERE n.project_id = ${projectId} AND n.node_id = v.node_id AND n.content <> v.content`.execute(trx);
+}
+
+/**
+ * 整体写入各节的正文生成状态（给第 8 步的正文生成任务用，取代桌面版 updateTechnicalPlan 的 contentGenerationSections）：与桌面版
+ * saveContentSections 相同，给出的节逐节写入状态与错误（给出 content 时同时写入正文），其余节的状态删除；null 或空对象删除
+ * 全部。已不在目录中的节点跳过（用户可能已删除）。节点 id 不是 uuid 是调用方的程序错误，抛 TypeError；文本超长时截短。
+ */
+export async function saveContentSections(
+  db: Kysely<Database>,
+  context: TenantContext,
+  projectId: string,
+  sections: Partial<Record<string, ContentSectionInput>> | null,
+): Promise<void> {
+  const entries = Object.entries(sections ?? {}).map(([nodeId, section]) => [uuid(nodeId, '节点 id'), section] as const);
+  await withTenant(db, context, async (trx) => {
+    await lockProject(trx, projectId);
+    const existing = await existingNodeIds(trx, projectId, entries.map(([id]) => id));
+    const kept = entries.filter(([id]) => existing.has(id));
+    let removal = trx.deleteFrom('technical_plan_content_sections').where('project_id', '=', projectId);
+    if (kept.length > 0) removal = removal.where('node_id', 'not in', kept.map(([id]) => id));
+    await removal.execute();
+    await upsertSections(trx, kept.map(([id, section]) => sectionValues(context, projectId, id, section)));
+    await writeNodeContents(
+      trx,
+      projectId,
+      kept.filter(([, section]) => section && hasOwn(section, 'content')).map(([id, section]) => ({ node_id: id, content: taskText(section!.content, TECHNICAL_PLAN_CONTENT_MAX) })),
+    );
+  });
+}
+
+async function upsertPlans(trx: Trx, context: TenantContext, projectId: string, plans: [string, NonNullable<ReturnType<typeof normalizeContentPlan>>][]): Promise<void> {
+  await insertChunked(
+    plans.map(([nodeId, plan]) => ({ org_id: context.orgId, project_id: projectId, node_id: nodeId, ...plan, plan: JSON.stringify(plan.plan) })),
+    (chunk) =>
+      trx
+        .insertInto('technical_plan_content_plans')
+        .values(chunk)
+        .onConflict((oc) =>
+          oc.columns(['project_id', 'node_id']).doUpdateSet((eb) => ({
+            plan_version: eb.ref('excluded.plan_version'),
+            plan: eb.ref('excluded.plan'),
+            table_requirement: eb.ref('excluded.table_requirement'),
+          })),
+        )
+        .execute(),
+  );
+}
+
+/**
+ * 整体写入各节的正文编排（给第 8 步的正文生成任务用，取代桌面版 updateTechnicalPlan 的 contentGenerationPlans）：与桌面版
+ * saveContentPlans 相同，只保存 plan 是对象、plan_version 大于 0 的节，其余节的编排删除；null 或空对象删除全部。已不在目录中的
+ * 节点跳过。节点 id 不是 uuid、编排过大是调用方的程序错误，抛 TypeError。
+ */
+export async function saveContentPlans(
+  db: Kysely<Database>,
+  context: TenantContext,
+  projectId: string,
+  plans: Partial<Record<string, unknown>> | null,
+): Promise<void> {
+  const entries = Object.entries(plans ?? {}).flatMap(([nodeId, value]) => {
+    const id = uuid(nodeId, '节点 id');
+    const plan = normalizeContentPlan(value);
+    return plan ? [[id, plan] as [string, typeof plan]] : [];
+  });
+  await withTenant(db, context, async (trx) => {
+    await lockProject(trx, projectId);
+    const existing = await existingNodeIds(trx, projectId, entries.map(([id]) => id));
+    const kept = entries.filter(([id]) => existing.has(id));
+    let removal = trx.deleteFrom('technical_plan_content_plans').where('project_id', '=', projectId);
+    if (kept.length > 0) removal = removal.where('node_id', 'not in', kept.map(([id]) => id));
+    await removal.execute();
+    await upsertPlans(trx, context, projectId, kept);
+  });
+}
+
+export interface ContentGenerationItemInput {
+  nodeId: string;
+  /** 该节的正文与状态（content 未给出时正文置空，与桌面版相同）。 */
+  section?: ContentSectionInput | null;
+  /** 该节的编排，不合规（plan 不是对象、版本不大于 0）时跳过。 */
+  plan?: unknown;
+  /** 给出时整体替换运行进度，null 清除。 */
+  runtime?: ContentRuntime | null;
+}
+
+/**
+ * 写入一节的生成结果（给第 8 步的正文生成任务用，取代桌面版 updateTechnicalPlan 的 contentGenerationItem）：与桌面版
+ * saveContentGenerationItemFields 相同，给出的部分各自写入。节点已不在目录中时跳过正文、状态与编排，返回 false（运行进度
+ * 照常写入）。参数不合法是调用方的程序错误，抛 TypeError。
+ */
+export async function saveContentGenerationItem(
+  db: Kysely<Database>,
+  context: TenantContext,
+  projectId: string,
+  input: ContentGenerationItemInput,
+): Promise<boolean> {
+  const id = uuid(input.nodeId, '节点 id');
+  const plan = input.plan === undefined ? null : normalizeContentPlan(input.plan);
+  const runtime = hasOwn(input, 'runtime') ? serializeRuntime(input.runtime) : undefined;
+  return withTenant(db, context, async (trx) => {
+    await lockProject(trx, projectId);
+    const exists = (await existingNodeIds(trx, projectId, [id])).has(id);
+    if (exists && input.section) {
+      await trx
+        .updateTable('technical_plan_outline_nodes')
+        .set({ content: taskText(input.section.content, TECHNICAL_PLAN_CONTENT_MAX) })
+        .where('project_id', '=', projectId)
+        .where('node_id', '=', id)
+        .execute();
+      await upsertSections(trx, [sectionValues(context, projectId, id, input.section)]);
+    }
+    if (exists && plan) await upsertPlans(trx, context, projectId, [[id, plan]]);
+    if (runtime !== undefined) await writeMeta(trx, context, projectId, { content_generation_runtime: runtime });
+    return exists;
+  });
+}
+
+/**
+ * 整体写入正文生成的运行进度（给第 8 步的正文生成任务用，取代桌面版 updateTechnicalPlan 的 contentGenerationRuntime），
+ * null 清除。不是对象或过大是调用方的程序错误，抛 TypeError。
+ */
+export async function saveContentGenerationRuntime(
+  db: Kysely<Database>,
+  context: TenantContext,
+  projectId: string,
+  runtime: ContentRuntime | null,
+): Promise<void> {
+  const value = serializeRuntime(runtime);
+  await withTenant(db, context, async (trx) => {
+    await lockProject(trx, projectId);
+    await writeMeta(trx, context, projectId, { content_generation_runtime: value });
   });
 }

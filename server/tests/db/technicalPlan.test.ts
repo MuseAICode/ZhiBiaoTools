@@ -1,8 +1,8 @@
-// 技术方案（迁移 0018_technical_plan、0019_technical_plan_outline）的数据库与接口测试：八张表的隔离模板（describeProjectTable，
-// 项目级），删除可见性与写权限由 RLS 强制（绕过 Store 直接写库同样被拒绝），招标文件与原方案、生成配置（含导出模板、选中的
-// 解析项、引用的知识库文档）、单 / 多标段切换与投标范围、合并的招标正文、目录（reason 协议）与全局事实、下游清空、清空，
-// 给第 6 步任务用的写函数，以及全部接口。
-import { randomUUID } from 'node:crypto';
+// 技术方案（迁移 0018_technical_plan、0019_technical_plan_outline、0020_technical_plan_content）的数据库与接口测试：十张表的隔离
+// 模板（describeProjectTable，项目级），删除可见性与写权限由 RLS 强制（绕过 Store 直接写库同样被拒绝），招标文件与原方案、生成
+// 配置（含导出模板、选中的解析项、引用的知识库文档）、单 / 多标段切换与投标范围、合并的招标正文、目录（reason 协议）与全局
+// 事实、正文与正文生成状态（5.13）、下游清空、清空，给第 6、8 步任务用的写函数，废标检查从技术方案读取招标文件，以及全部接口。
+import { createHash, randomUUID } from 'node:crypto';
 import { Readable } from 'node:stream';
 import type { FastifyInstance } from 'fastify';
 import { sql, type Kysely, type Transaction } from 'kysely';
@@ -12,6 +12,7 @@ import { DEFAULT_AUTH_RATE_LIMITS, type AuthRateLimitSettings } from '../../src/
 import { createDatabase, type DatabaseHandle } from '../../src/db/database.ts';
 import { TECHNICAL_PLAN_BID_ITEM_IDS, TECHNICAL_PLAN_DEFAULT_HTML_IMAGE_TYPES, TECHNICAL_PLAN_TABLES } from '../../src/db/migrations/0018_technical_plan.ts';
 import { TECHNICAL_PLAN_OUTLINE_TABLES } from '../../src/db/migrations/0019_technical_plan_outline.ts';
+import { TECHNICAL_PLAN_CONTENT_TABLES } from '../../src/db/migrations/0020_technical_plan_content.ts';
 import { migrateToLatest } from '../../src/db/migrator.ts';
 import { APP_ROLE } from '../../src/db/roles.ts';
 import type { Database } from '../../src/db/schema.ts';
@@ -27,10 +28,16 @@ import {
   readTenderMarkdown,
   removeOriginalPlan,
   removeTenderFile,
+  resetContentGeneration,
   saveBidAnalysisConfig,
   saveBidItems,
   saveBidSectionExtraction,
+  saveChapterContent,
+  saveContentGenerationItem,
   saveContentGenerationOptions,
+  saveContentGenerationRuntime,
+  saveContentPlans,
+  saveContentSections,
   saveDocumentParse,
   saveGeneratedOutline,
   saveGenerationConfig,
@@ -42,6 +49,12 @@ import {
   TECHNICAL_PLAN_TENDER_FILES_MAX,
   updateStep,
 } from '../../src/technicalPlan/store.ts';
+import {
+  importDocuments as importRejectionDocuments,
+  loadRejectionCheck,
+  saveCheckResult as saveRejectionCheckResult,
+  saveExtraction as saveRejectionExtraction,
+} from '../../src/rejectionCheck/store.ts';
 import { syncSystemTemplates } from '../../src/templates/system.ts';
 import { fastHasher, sameSiteHeaders, testConfig } from '../helpers.ts';
 import { connect, createTestDatabase, type TestDatabase } from './harness.ts';
@@ -49,8 +62,8 @@ import { describeProjectTable, type ProjectRowScope } from './projectTable.ts';
 
 const PASSWORD = 'quiet-harbor-maple-59';
 
-/** 0018 的六张表与 0019 的两张表。 */
-const ALL_TABLES = [...TECHNICAL_PLAN_TABLES, ...TECHNICAL_PLAN_OUTLINE_TABLES] as const;
+/** 0018 的六张表、0019 与 0020 各两张表。 */
+const ALL_TABLES = [...TECHNICAL_PLAN_TABLES, ...TECHNICAL_PLAN_OUTLINE_TABLES, ...TECHNICAL_PLAN_CONTENT_TABLES] as const;
 
 const RELAXED_LIMITS: AuthRateLimitSettings = Object.fromEntries(
   Object.entries(DEFAULT_AUTH_RATE_LIMITS).map(([key, value]) => [
@@ -306,6 +319,16 @@ const ROW_WRITERS: Record<(typeof ALL_TABLES)[number], (trx: Transaction<any>, s
     await trx.insertInto('technical_plan_global_fact_groups').values({ ...base(scope), group_id: groupId, title: '团队', content: '十人' }).execute();
     return groupId;
   },
+  async technical_plan_content_sections(trx, scope) {
+    const nodeId = await ROW_WRITERS.technical_plan_outline_nodes(trx, scope);
+    await trx.insertInto('technical_plan_content_sections').values({ ...base(scope), node_id: nodeId, status: 'success' }).execute();
+    return nodeId;
+  },
+  async technical_plan_content_plans(trx, scope) {
+    const nodeId = await ROW_WRITERS.technical_plan_outline_nodes(trx, scope);
+    await trx.insertInto('technical_plan_content_plans').values({ ...base(scope), node_id: nodeId, plan_version: 1, plan: '{}' }).execute();
+    return nodeId;
+  },
 };
 
 // ---- 接口 ----
@@ -369,6 +392,9 @@ interface Filled {
   /** 目录的节点 id：[第一章, 1.1, 1.2, 第二章]。 */
   nodes: string[];
 }
+
+/** 一节正文编排（与桌面版 Renderer 的 ContentGenerationPlanData 相同）。 */
+const PLAN = { image_suitability_score: 6, image_needed: true, knowledge: { item_ids: ['k1'] }, table: { needed: false, purpose: '' } };
 
 /** 两章四个节点的目录（1.1、1.2 是叶子）。 */
 function outlineOf(nodes: string[], extra: Record<string, unknown> = {}): { outline: any[]; [field: string]: unknown } {
@@ -440,6 +466,9 @@ async function fillProject(member: Member): Promise<Filled> {
     { id: 'schedule', title: '工期', content: '90 天' },
   ]);
   await writeContents(projectId, { [nodes[1]!]: '正文 1.1', [nodes[3]!]: '正文二' });
+  await saveContentSections(appDb, member.context, projectId, { [nodes[1]!]: { status: 'success' } });
+  await saveContentPlans(appDb, member.context, projectId, { [nodes[1]!]: { plan_version: 1, plan: PLAN, table_requirement: 'light' } });
+  await saveContentGenerationRuntime(appDb, member.context, projectId, { generation_started: true, section_words: { [nodes[1]!]: 800 } });
   await updateStep(appDb, member.context, projectId, 'bid-analysis');
   return { projectId, tenders, originalPlan, reference, nodes };
 }
@@ -482,6 +511,8 @@ describe('隔离模板', () => {
     technical_plan_bid_items: 'item_id',
     technical_plan_outline_nodes: 'node_id',
     technical_plan_global_fact_groups: 'group_id',
+    technical_plan_content_sections: 'node_id',
+    technical_plan_content_plans: 'node_id',
   };
   // 页面状态、生成配置、文档的解析结果、解析项的结果、目录节点按字段更新；选中的解析项、引用的知识库文档和全局事实整体替换，
   // 不授予 UPDATE。
@@ -491,6 +522,8 @@ describe('隔离模板', () => {
     technical_plan_generation_config: { outline_mode: 'response-file' },
     technical_plan_bid_items: { status: 'running' },
     technical_plan_outline_nodes: { title: '改过的标题' },
+    technical_plan_content_sections: { status: 'error' },
+    technical_plan_content_plans: { plan_version: 2 },
   };
 
   for (const table of ALL_TABLES) {
@@ -518,7 +551,7 @@ describe('RLS：删除可见性与写权限', () => {
     b = await newMember();
   });
 
-  it('所属项目软删除后八张表都查不到、改不了、删不掉，恢复项目即一起恢复', async () => {
+  it('所属项目软删除后十张表都查不到、改不了、删不掉，恢复项目即一起恢复', async () => {
     const member = await newMember();
     const filled = await fillProject(member);
     const before = await adminCounts(filled.projectId);
@@ -531,6 +564,8 @@ describe('RLS：删除可见性与写权限', () => {
       technical_plan_bid_items: 2,
       technical_plan_outline_nodes: 4,
       technical_plan_global_fact_groups: 2,
+      technical_plan_content_sections: 1,
+      technical_plan_content_plans: 1,
     });
     expect(await visibleCounts(member)).toEqual(before);
 
@@ -548,6 +583,10 @@ describe('RLS：删除可见性与写权限', () => {
       expect((await any.updateTable('technical_plan_outline_nodes').set({ content: '' }).executeTakeFirst()).numUpdatedRows).toBe(0n);
       expect((await any.deleteFrom('technical_plan_outline_nodes').executeTakeFirst()).numDeletedRows).toBe(0n);
       expect((await any.deleteFrom('technical_plan_global_fact_groups').executeTakeFirst()).numDeletedRows).toBe(0n);
+      expect((await any.updateTable('technical_plan_content_sections').set({ status: 'error' }).executeTakeFirst()).numUpdatedRows).toBe(0n);
+      expect((await any.deleteFrom('technical_plan_content_sections').executeTakeFirst()).numDeletedRows).toBe(0n);
+      expect((await any.updateTable('technical_plan_content_plans').set({ plan_version: 9 }).executeTakeFirst()).numUpdatedRows).toBe(0n);
+      expect((await any.deleteFrom('technical_plan_content_plans').executeTakeFirst()).numDeletedRows).toBe(0n);
     });
     // 已删除的项目下不能新写。
     await expect(
@@ -726,6 +765,8 @@ describe('RLS：删除可见性与写权限', () => {
     expect(byTable.technical_plan_bid_items).toMatchObject({ del: true, upd: true });
     expect(byTable.technical_plan_outline_nodes).toMatchObject({ del: true, upd: true });
     expect(byTable.technical_plan_global_fact_groups).toMatchObject({ del: true, upd: false });
+    expect(byTable.technical_plan_content_sections).toMatchObject({ del: true, upd: true });
+    expect(byTable.technical_plan_content_plans).toMatchObject({ del: true, upd: true });
     for (const [table, column] of [
       ['technical_plan_meta', 'project_id'],
       ['technical_plan_meta', 'org_id'],
@@ -739,6 +780,12 @@ describe('RLS：删除可见性与写权限', () => {
       ['technical_plan_outline_nodes', 'org_id'],
       ['technical_plan_outline_nodes', 'project_id'],
       ['technical_plan_outline_nodes', 'node_id'],
+      ['technical_plan_content_sections', 'org_id'],
+      ['technical_plan_content_sections', 'project_id'],
+      ['technical_plan_content_sections', 'node_id'],
+      ['technical_plan_content_plans', 'org_id'],
+      ['technical_plan_content_plans', 'project_id'],
+      ['technical_plan_content_plans', 'node_id'],
     ] as const) {
       const result = await sql<{ ok: boolean }>`SELECT has_column_privilege(${APP_ROLE}, ${table}, ${column}, 'UPDATE') AS ok`.execute(superuser);
       expect(result.rows[0]!.ok, `${table}.${column}`).toBe(false);
@@ -804,6 +851,7 @@ describe('RLS：删除可见性与写权限', () => {
       ['technical_plan_outline_nodes', { node_id: randomUUID(), level: 1, title: 'x', source_requirement_id: '' }],
       ['technical_plan_global_fact_groups', { group_id: 'Team', title: 'x', content: 'y' }],
       ['technical_plan_global_fact_groups', { group_id: 'team', title: 'x', content: '' }],
+      ['technical_plan_meta', { content_generation_runtime: '[]' }],
     ];
     for (const [table, values] of cases) {
       await expect(insert(table, values), `${table} ${JSON.stringify(values)}`).rejects.toThrow(/check constraint/);
@@ -860,6 +908,10 @@ describe('Store', () => {
       outlineAdjustmentTask: null,
       globalFactsTask: null,
       globalFactsAdjustmentTask: null,
+      contentGenerationSections: {},
+      contentGenerationPlans: {},
+      contentGenerationRuntime: null,
+      contentGenerationTask: null,
     });
     expect(await adminCounts(projectId)).toEqual(zeroCounts());
   });
@@ -1642,5 +1694,508 @@ describe('接口', () => {
     await expectError(await call(a, 'GET', tp(projectId, `/tender-files/${original}/markdown`)), 404, 'TECHNICAL_PLAN_DOCUMENT_NOT_FOUND');
     await softDeleteFile(fileId, a.userId);
     await expectError(await call(a, 'GET', tp(projectId, `/tender-files/${fileId}/markdown`)), 404, 'TECHNICAL_PLAN_DOCUMENT_NOT_FOUND');
+  });
+});
+
+describe('正文（5.13）：RLS', () => {
+  it('正文生成状态与编排只能挂在同一项目的目录节点上，节点删除时随之删除；运行进度只能是对象', async () => {
+    const member = await newMember();
+    const projectId = await newProject(member);
+    const other = await newProject(member);
+    const nodeId = randomUUID();
+    await withTenant(appDb, member.context, (trx) =>
+      trx.insertInto('technical_plan_outline_nodes').values({ org_id: member.orgId, project_id: projectId, node_id: nodeId, level: 1, title: '章' }).execute(),
+    );
+    const insert = (table: 'technical_plan_content_sections' | 'technical_plan_content_plans', project: string, node: string) =>
+      withTenant(appDb, member.context, (trx) =>
+        (trx as unknown as Kysely<any>)
+          .insertInto(table)
+          .values({
+            org_id: member.orgId,
+            project_id: project,
+            node_id: node,
+            ...(table === 'technical_plan_content_plans' ? { plan_version: 1, plan: '{}' } : {}),
+          })
+          .execute(),
+      );
+    for (const table of TECHNICAL_PLAN_CONTENT_TABLES) {
+      await expect(insert(table, other, nodeId), table).rejects.toThrow(/foreign key/);
+      await expect(insert(table, projectId, randomUUID()), table).rejects.toThrow(/foreign key/);
+      await insert(table, projectId, nodeId);
+    }
+    expect(await adminCounts(projectId)).toMatchObject({ technical_plan_content_sections: 1, technical_plan_content_plans: 1 });
+    await withTenant(appDb, member.context, (trx) => trx.deleteFrom('technical_plan_outline_nodes').where('node_id', '=', nodeId).execute());
+    expect(await adminCounts(projectId)).toMatchObject({ technical_plan_content_sections: 0, technical_plan_content_plans: 0 });
+
+    const insertAny = (table: string, values: Record<string, unknown>) =>
+      withTenant(appDb, member.context, (trx) =>
+        (trx as unknown as Kysely<any>).insertInto(table).values({ org_id: member.orgId, project_id: projectId, ...values }).execute(),
+      );
+    await insertAny('technical_plan_outline_nodes', { node_id: nodeId, level: 1, title: '章' });
+    const cases: [string, Record<string, unknown>][] = [
+      ['technical_plan_content_sections', { node_id: nodeId, status: 'paused' }],
+      ['technical_plan_content_sections', { node_id: nodeId, error: '' }],
+      ['technical_plan_content_plans', { node_id: nodeId, plan_version: 0, plan: '{}' }],
+      ['technical_plan_content_plans', { node_id: nodeId, plan_version: 1, plan: '[]' }],
+      ['technical_plan_content_plans', { node_id: nodeId, plan_version: 1, plan: '{}', table_requirement: 'all' }],
+      ['technical_plan_meta', { content_generation_runtime: '"x"' }],
+    ];
+    for (const [table, values] of cases) {
+      await expect(insertAny(table, values), `${table} ${JSON.stringify(values)}`).rejects.toThrow(/check constraint/);
+    }
+  });
+});
+
+describe('正文（5.13）：Store', () => {
+  let a: Member;
+  let peer: Member;
+
+  beforeAll(async () => {
+    a = await newMember();
+    peer = await newMember(a.orgId);
+  });
+
+  const sectionRows = async (projectId: string) =>
+    (await superuser.selectFrom('technical_plan_content_sections').select(['node_id', 'status', 'error']).where('project_id', '=', projectId).orderBy('node_id').execute()) as {
+      node_id: string;
+      status: string;
+      error: string | null;
+    }[];
+  const planIds = async (projectId: string) =>
+    ((await superuser.selectFrom('technical_plan_content_plans').select('node_id').where('project_id', '=', projectId).orderBy('node_id').execute()) as { node_id: string }[]).map(
+      (row) => row.node_id,
+    );
+  const runtimeOf = async (projectId: string) =>
+    (await superuser.selectFrom('technical_plan_meta').select('content_generation_runtime').where('project_id', '=', projectId).executeTakeFirstOrThrow()).content_generation_runtime;
+
+  it('完整状态：有状态行的节取行中的状态，没有状态行但有正文的叶子视为 success；编排与运行进度；组织内其他成员看到同样的状态', async () => {
+    const filled = await fillProject(a);
+    const [, n11, , n2] = filled.nodes;
+    const state = await loadTechnicalPlan(appDb, a.context, filled.projectId);
+    expect(state.contentGenerationSections).toEqual({
+      [n11!]: { id: n11, title: '1.1 节', status: 'success', content: '正文 1.1', error: null, updated_at: expect.any(Date) },
+      [n2!]: { id: n2, title: '第二章', status: 'success', content: '正文二', error: null, updated_at: null },
+    });
+    expect(state.contentGenerationPlans).toEqual({ [n11!]: { plan_version: 1, plan: PLAN, table_requirement: 'light', updated_at: expect.any(Date) } });
+    expect(state.contentGenerationRuntime).toEqual({ generation_started: true, section_words: { [n11!]: 800 } });
+    expect(state.contentGenerationTask).toBeNull();
+    expect(await loadTechnicalPlan(appDb, peer.context, filled.projectId)).toEqual(state);
+  });
+
+  it('手工保存一节正文：写入正文，状态改为 success（空正文 idle）并清除错误，编排与运行进度不变；节点不存在 404，超长 400', async () => {
+    const filled = await fillProject(a);
+    const [, n11, n12] = filled.nodes;
+    await saveContentSections(appDb, a.context, filled.projectId, { [n11!]: { status: 'error', error: '生成失败' } });
+    let state = await saveChapterContent(appDb, a.context, filled.projectId, n11!.toUpperCase(), '手写正文');
+    expect(state.contentGenerationSections[n11!]).toMatchObject({ status: 'success', content: '手写正文', error: null });
+    state = await saveChapterContent(appDb, a.context, filled.projectId, n12!, '  ');
+    expect(state.contentGenerationSections[n12!]).toMatchObject({ status: 'idle', content: '  ' });
+    expect(await planIds(filled.projectId)).toEqual([n11]);
+    expect(await runtimeOf(filled.projectId)).toEqual({ generation_started: true, section_words: { [n11!]: 800 } });
+
+    await expectAppError(saveChapterContent(appDb, a.context, filled.projectId, randomUUID(), 'x'), 404, 'TECHNICAL_PLAN_CHAPTER_NOT_FOUND');
+    await expectAppError(saveChapterContent(appDb, a.context, filled.projectId, 'not-a-node', 'x'), 404, 'TECHNICAL_PLAN_CHAPTER_NOT_FOUND');
+    await expectAppError(saveChapterContent(appDb, a.context, filled.projectId, n12!, '字'.repeat(500_001)), 400, 'TECHNICAL_PLAN_INVALID');
+    expect((await contentsOf(filled.projectId))[n12!]).toBe('  ');
+  });
+
+  it('重置正文阶段：清空全部正文、生成状态、编排与运行进度，保留目录、全局事实和生成配置', async () => {
+    const filled = await fillProject(a);
+    const before = await loadTechnicalPlan(appDb, a.context, filled.projectId);
+    const state = await resetContentGeneration(appDb, a.context, filled.projectId);
+    expect(Object.values(await contentsOf(filled.projectId))).toEqual(['', '', '', '']);
+    expect(state.contentGenerationSections).toEqual({});
+    expect(state.contentGenerationPlans).toEqual({});
+    expect(state.contentGenerationRuntime).toBeNull();
+    expect(state.globalFacts).toEqual(before.globalFacts);
+    expect(state.outlineData!.outline.map((item) => item.id)).toEqual(before.outlineData!.outline.map((item) => item.id));
+    expect(state.exportTemplateId).toBe(before.exportTemplateId);
+    expect(await adminCounts(filled.projectId)).toMatchObject({ technical_plan_content_sections: 0, technical_plan_content_plans: 0, technical_plan_global_fact_groups: 2 });
+  });
+
+  it('保存目录 sort / edit 不改正文生成状态、编排与运行进度', async () => {
+    const filled = await fillProject(a);
+    const before = await loadTechnicalPlan(appDb, a.context, filled.projectId);
+    const outline = outlineOf(filled.nodes);
+    outline.outline.reverse();
+    await saveOutline(appDb, a.context, filled.projectId, { outlineData: outline, reason: 'sort' });
+    outline.outline[1].children[0].title = '改过的 1.1';
+    const state = await saveOutline(appDb, a.context, filled.projectId, { outlineData: outline, reason: 'edit' });
+    expect(state.contentGenerationPlans).toEqual(before.contentGenerationPlans);
+    expect(state.contentGenerationRuntime).toEqual(before.contentGenerationRuntime);
+    expect(Object.keys(state.contentGenerationSections).sort()).toEqual(Object.keys(before.contentGenerationSections).sort());
+    expect(state.contentGenerationSections[filled.nodes[1]!]!.title).toBe('改过的 1.1');
+  });
+
+  it('保存目录 add-root / delete：受影响节点的状态与编排删除，运行进度按桌面版规则保留；replace 清空全部', async () => {
+    const filled = await fillProject(a);
+    const [n1, n11, n12, n2] = filled.nodes as [string, string, string, string];
+    const removed = randomUUID();
+    await saveContentGenerationRuntime(appDb, a.context, filled.projectId, {
+      generation_started: true,
+      section_words: { [n11]: 800, [n12]: 300, [removed]: 1 },
+      html_output: { workspace_dir: 'w', word_output_dir: 'o', word_sections: [{ section_id: n11, file: 'a.docx' }, { section_id: n12, file: 'b.docx' }] },
+      phase: 'generating',
+      direct_generation_item_ids: [n11, removed],
+      pending_item_ids: [n11],
+      touched_item_ids: [n11],
+    });
+    // 新增一章（ai-generate 叶子）：已开始生成，新叶子同时进入直接生成与待生成范围。
+    const added = randomUUID();
+    const outline = outlineOf(filled.nodes);
+    outline.outline.push({ id: added, title: '第三章', description: '', content_mode: 'ai-generate' });
+    let state = await saveOutline(appDb, a.context, filled.projectId, { outlineData: outline, reason: 'add-root', affectedNodeIds: [] });
+    expect(Object.keys(state.contentGenerationPlans)).toEqual([n11]);
+    expect(state.contentGenerationSections[n11]).toMatchObject({ status: 'success' });
+    expect(state.contentGenerationRuntime).toEqual({
+      generation_started: true,
+      section_words: { [n11]: 800 },
+      html_output: { workspace_dir: 'w', word_output_dir: 'o', word_sections: [{ section_id: n11, file: 'a.docx' }] },
+      phase: 'planning',
+      direct_generation_item_ids: [n11, added],
+      pending_item_ids: [n11, added],
+    });
+
+    // 删除 1.2 并使 1.1 失效：1.1 的状态与编排删除，范围中去掉 1.1。
+    outline.outline[0].children.pop();
+    state = await saveOutline(appDb, a.context, filled.projectId, { outlineData: outline, reason: 'delete', affectedNodeIds: [n11] });
+    expect(state.contentGenerationPlans).toEqual({});
+    expect(await sectionRows(filled.projectId)).toEqual([]);
+    expect(state.contentGenerationRuntime).toEqual({
+      generation_started: true,
+      section_words: {},
+      html_output: { workspace_dir: 'w', word_output_dir: 'o', word_sections: [] },
+      phase: 'planning',
+      direct_generation_item_ids: [added],
+      pending_item_ids: [added],
+    });
+
+    // 没有运行进度、未开始生成时：新叶子只进入直接生成范围。
+    await saveContentGenerationRuntime(appDb, a.context, filled.projectId, null);
+    const another = randomUUID();
+    outline.outline.push({ id: another, title: '第四章', description: '', content_mode: 'ai-generate' });
+    state = await saveOutline(appDb, a.context, filled.projectId, { outlineData: outline, reason: 'add-root' });
+    expect(state.contentGenerationRuntime).toEqual({
+      generation_started: false,
+      section_words: {},
+      phase: 'planning',
+      direct_generation_item_ids: [another],
+      pending_item_ids: [],
+    });
+
+    await saveContentSections(appDb, a.context, filled.projectId, { [n2]: { status: 'success' }, [n1]: { status: 'idle' } });
+    await saveContentPlans(appDb, a.context, filled.projectId, { [n2]: { plan_version: 1, plan: PLAN } });
+    state = await saveOutline(appDb, a.context, filled.projectId, { outlineData: outline, reason: 'replace' });
+    expect(await sectionRows(filled.projectId)).toEqual([]);
+    expect(await planIds(filled.projectId)).toEqual([]);
+    expect(state.contentGenerationRuntime).toBeNull();
+  });
+
+  it('由叶子变成父节点的节点：状态与编排随正文一起失效', async () => {
+    const filled = await fillProject(a);
+    const [, n11] = filled.nodes as [string, string];
+    const outline = outlineOf(filled.nodes);
+    outline.outline[0].children[0].children = [{ id: randomUUID(), title: '1.1.1', description: '', content_mode: 'ai-generate' }];
+    const state = await saveOutline(appDb, a.context, filled.projectId, { outlineData: outline, reason: 'add-child', affectedNodeIds: [] });
+    expect(state.contentGenerationPlans).toEqual({});
+    expect(state.contentGenerationSections[n11]).toBeUndefined();
+  });
+
+  it('保存全局事实、saveGeneratedOutline 与下游清空、清空技术方案都清空正文生成状态、编排与运行进度', async () => {
+    const check = async (projectId: string) => {
+      expect(await adminCounts(projectId)).toMatchObject({ technical_plan_content_sections: 0, technical_plan_content_plans: 0 });
+      expect(await runtimeOf(projectId)).toBeNull();
+    };
+    let filled = await fillProject(a);
+    await saveGlobalFacts(appDb, a.context, filled.projectId, [{ id: 'team', title: '团队', content: '八人' }]);
+    await check(filled.projectId);
+
+    filled = await fillProject(a);
+    await saveGeneratedOutline(appDb, a.context, filled.projectId, { outlineData: outlineOf(filled.nodes), wordControlSnapshot: null });
+    await check(filled.projectId);
+
+    filled = await fillProject(a);
+    await removeTenderFile(appDb, a.context, filled.projectId, filled.tenders[1]!);
+    await check(filled.projectId);
+
+    filled = await fillProject(a);
+    await saveGenerationConfig(appDb, a.context, filled.projectId, { bidSectionMode: 'single' });
+    await check(filled.projectId);
+
+    filled = await fillProject(a);
+    await clearTechnicalPlan(appDb, a.context, filled.projectId);
+    await check(filled.projectId);
+  });
+
+  it('saveContentSections：整体替换，给出 content 时写入正文；不在目录中的节点跳过；节点 id 不合法抛 TypeError', async () => {
+    const filled = await fillProject(a);
+    const [n1, n11, n12] = filled.nodes as [string, string, string];
+    await saveContentSections(appDb, a.context, filled.projectId, {
+      [n12.toUpperCase()]: { status: 'running', content: '生成中\u0000' },
+      [n1]: { status: 'error', error: 'x'.repeat(30_000) },
+      [randomUUID()]: { status: 'success' },
+    });
+    const rows = await sectionRows(filled.projectId);
+    expect(rows.map((row) => [row.node_id, row.status])).toEqual([[n1, 'error'], [n12, 'running']].sort());
+    expect(rows.find((row) => row.node_id === n1)!.error).toHaveLength(20_000);
+    expect(await contentsOf(filled.projectId)).toMatchObject({ [n11]: '正文 1.1', [n12]: '生成中' });
+    await saveContentSections(appDb, a.context, filled.projectId, null);
+    expect(await sectionRows(filled.projectId)).toEqual([]);
+    await expect(saveContentSections(appDb, a.context, filled.projectId, { 'not-a-node': {} })).rejects.toThrow(TypeError);
+  });
+
+  it('saveContentPlans：整体替换，只保存 plan 是对象、版本大于 0 的节；表格要求不合法时不存；过大抛 TypeError', async () => {
+    const filled = await fillProject(a);
+    const [n1, n11, n12, n2] = filled.nodes as [string, string, string, string];
+    await saveContentPlans(appDb, a.context, filled.projectId, {
+      [n1]: { plan_version: 2.7, plan: PLAN, table_requirement: 'huge' },
+      [n11]: { plan_version: 0, plan: PLAN },
+      [n12]: { plan_version: 1, plan: [] },
+      [n2]: { plan_version: 1 },
+      [randomUUID()]: { plan_version: 1, plan: PLAN },
+    });
+    const state = await loadTechnicalPlan(appDb, a.context, filled.projectId);
+    expect(state.contentGenerationPlans).toEqual({ [n1]: { plan_version: 2, plan: PLAN, updated_at: expect.any(Date) } });
+    await expect(saveContentPlans(appDb, a.context, filled.projectId, { [n1]: { plan_version: 1, plan: { text: 'x'.repeat(200_000) } } })).rejects.toThrow(TypeError);
+    await saveContentPlans(appDb, a.context, filled.projectId, {});
+    expect(await planIds(filled.projectId)).toEqual([]);
+  });
+
+  it('saveContentGenerationItem / saveContentGenerationRuntime：各自写入给出的部分；节点不存在时返回 false 但照常写入运行进度', async () => {
+    const filled = await fillProject(a);
+    const [, , n12] = filled.nodes as [string, string, string];
+    expect(
+      await saveContentGenerationItem(appDb, a.context, filled.projectId, {
+        nodeId: n12,
+        section: { status: 'success', content: '生成的正文' },
+        plan: { plan_version: 3, plan: PLAN, table_requirement: 'none' },
+        runtime: { phase: 'generating' },
+      }),
+    ).toBe(true);
+    const state = await loadTechnicalPlan(appDb, a.context, filled.projectId);
+    expect(state.contentGenerationSections[n12]).toMatchObject({ status: 'success', content: '生成的正文' });
+    expect(state.contentGenerationPlans[n12]).toMatchObject({ plan_version: 3, table_requirement: 'none' });
+    expect(state.contentGenerationRuntime).toEqual({ phase: 'generating' });
+
+    expect(await saveContentGenerationItem(appDb, a.context, filled.projectId, { nodeId: randomUUID(), section: { status: 'success' }, runtime: null })).toBe(false);
+    expect(await runtimeOf(filled.projectId)).toBeNull();
+    await expect(saveContentGenerationItem(appDb, a.context, filled.projectId, { nodeId: 'x' })).rejects.toThrow(TypeError);
+    await expect(saveContentGenerationRuntime(appDb, a.context, filled.projectId, [] as never)).rejects.toThrow(TypeError);
+    await expect(saveContentGenerationRuntime(appDb, a.context, filled.projectId, { words: 'x'.repeat(800_000) })).rejects.toThrow(TypeError);
+  });
+});
+
+describe('正文（5.13）：接口', () => {
+  let member: Member;
+  let outsider: Member;
+
+  beforeAll(async () => {
+    member = await newMember();
+    outsider = await newMember();
+  });
+
+  it('保存一节正文、重置正文阶段：返回完整状态；其他组织 404；请求体校验', async () => {
+    const filled = await fillProject(member);
+    const n12 = filled.nodes[2]!;
+    let response = await call(member, 'PUT', tp(filled.projectId, `/chapters/${n12}`), { content: '手写' });
+    expect(response.statusCode, response.body).toBe(200);
+    expect(response.json().contentGenerationSections[n12]).toMatchObject({ status: 'success', content: '手写' });
+    await expectError(await call(member, 'PUT', tp(filled.projectId, `/chapters/${randomUUID()}`), { content: 'x' }), 404, 'TECHNICAL_PLAN_CHAPTER_NOT_FOUND');
+    await expectError(await call(member, 'PUT', tp(filled.projectId, '/chapters/abc'), { content: 'x' }), 400, 'BAD_REQUEST');
+    await expectError(await call(member, 'PUT', tp(filled.projectId, `/chapters/${n12}`), { content: 'x', status: 'success' }), 400, 'BAD_REQUEST');
+    await expectError(await call(member, 'PUT', tp(filled.projectId, `/chapters/${n12}`), {}), 400, 'BAD_REQUEST');
+    await expectError(await call(outsider, 'PUT', tp(filled.projectId, `/chapters/${n12}`), { content: 'x' }), 404, 'PROJECT_NOT_FOUND');
+    await expectError(await call(outsider, 'DELETE', tp(filled.projectId, '/content-generation')), 404, 'PROJECT_NOT_FOUND');
+
+    response = await call(member, 'DELETE', tp(filled.projectId, '/content-generation'));
+    expect(response.statusCode, response.body).toBe(200);
+    expect(response.json()).toMatchObject({ contentGenerationSections: {}, contentGenerationPlans: {}, contentGenerationRuntime: null, contentGenerationTask: null });
+    expect(response.json().outlineData.outline).toHaveLength(2);
+  });
+});
+
+describe('废标检查从技术方案读取招标文件（5.13）', () => {
+  let member: Member;
+  let outsider: Member;
+
+  beforeAll(async () => {
+    member = await newMember();
+    outsider = await newMember();
+  });
+
+  const sha256 = (content: Buffer) => createHash('sha256').update(content).digest();
+  const rcUrl = (projectId: string) => `/api/projects/${projectId}/rejection-check/tender-from-technical-plan`;
+
+  /** 用超级用户登记一个有真实内容的已上传文件（对象写进内存存储）。 */
+  async function realFile(projectId: string | null, name: string, content: Buffer): Promise<string> {
+    const row = await superuser
+      .insertInto('files')
+      .values({
+        org_id: member.orgId,
+        purpose: 'tender',
+        display_name: name,
+        extension: 'docx',
+        status: 'uploaded',
+        mime: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        size_bytes: content.length,
+        sha256: sha256(content),
+        uploaded_at: new Date(),
+        created_by: member.userId,
+        project_id: projectId,
+      })
+      .returning(['id', 'storage_key'])
+      .executeTakeFirstOrThrow();
+    objects.set(row.storage_key, content);
+    return row.id;
+  }
+
+  /** 登记一个有真实内容与哈希的 Markdown 产物，返回产物 id。 */
+  async function realMarkdown(fileId: string, markdown: string): Promise<string> {
+    const content = Buffer.from(markdown);
+    const row = await superuser
+      .insertInto('artifacts')
+      .values({
+        org_id: member.orgId,
+        source_file_id: fileId,
+        kind: 'markdown',
+        name: 'content.md',
+        mime: 'text/markdown; charset=utf-8',
+        status: 'ready',
+        size_bytes: content.length,
+        sha256: sha256(content),
+        completed_at: new Date(),
+        created_by: member.userId,
+      })
+      .returning(['id', 'storage_key'])
+      .executeTakeFirstOrThrow();
+    objects.set(row.storage_key, content);
+    return row.id;
+  }
+
+  /** 技术方案项目：两份已解析的招标文件、一份未解析的，无效投标与废标项解析成功。 */
+  async function technicalPlan(): Promise<{ projectId: string; files: string[] }> {
+    const projectId = await newProject(member);
+    const files = [
+      await realFile(null, '招标A.docx', Buffer.from('original-a')),
+      await realFile(null, '招标B.docx', Buffer.from('original-b')),
+      await realFile(null, '未解析.docx', Buffer.from('original-c')),
+    ];
+    await importTenderFiles(appDb, member.context, projectId, files);
+    for (const [index, markdown] of ['# 招标 A', '# 招标 B'].entries()) {
+      const artifactId = await realMarkdown(files[index]!, markdown);
+      await saveDocumentParse(appDb, member.context, projectId, files[index]!, {
+        status: 'success',
+        markdownArtifactId: artifactId,
+        contentChars: markdown.length,
+        contentHash: `hash-${index}`,
+        parserLabel: '本地解析',
+      });
+    }
+    await saveBidItems(appDb, member.context, projectId, { discardedBids: { status: 'success', content: "'''\n未按要求盖章\n'''" } });
+    return { projectId, files };
+  }
+
+  /** 废标检查项目：一份招标文件、一份投标文件，带解析结果与检查结果。 */
+  async function rejectionCheck(): Promise<{ projectId: string; tender: string; bid: string }> {
+    const projectId = await newProject(member, 'rejection-check');
+    const tender = await realFile(null, '旧招标.docx', Buffer.from('old'));
+    const bid = await realFile(null, '投标.docx', Buffer.from('bid'));
+    await importRejectionDocuments(appDb, member.context, projectId, { role: 'tender', fileIds: [tender] });
+    await importRejectionDocuments(appDb, member.context, projectId, { role: 'bid', fileIds: [bid] });
+    await saveRejectionExtraction(appDb, member.context, projectId, { status: 'success', content: '旧解析', source: 'ai' });
+    await saveRejectionCheckResult(appDb, member.context, projectId, 'typo', { status: 'success', findings: [{ bidDocumentId: bid, wrongText: '帐号', correctText: '账号' }] });
+    return { projectId, tender, bid };
+  }
+
+  async function contentOfArtifact(artifactId: string): Promise<string> {
+    const row = await superuser.selectFrom('artifacts').select('storage_key').where('id', '=', artifactId).executeTakeFirstOrThrow();
+    return objects.get(row.storage_key)!.toString();
+  }
+
+  it('复制已解析的招标文件（原件与 Markdown）并整体替换招标文件；写入来自技术方案的解析结果，签名与当前招标文件一致', async () => {
+    const source = await technicalPlan();
+    const target = await rejectionCheck();
+    const response = await call(member, 'POST', rcUrl(target.projectId), { technicalPlanProjectId: source.projectId.toUpperCase() });
+    expect(response.statusCode, response.body).toBe(200);
+    const { importedCount, state } = response.json();
+    expect(importedCount).toBe(2);
+    expect(state.tenderDocuments).toHaveLength(2);
+    expect(state.tenderDocuments.map((document: { fileName: string }) => document.fileName)).toEqual(['招标A.docx', '招标B.docx']);
+    for (const [index, document] of state.tenderDocuments.entries()) {
+      expect(source.files).not.toContain(document.id);
+      expect(document).toMatchObject({ status: 'success', contentChars: 6, contentHash: `hash-${index}`, parserLabel: '本地解析', error: null });
+      expect(await contentOfArtifact(document.markdownArtifactId)).toBe(index === 0 ? '# 招标 A' : '# 招标 B');
+      const file = await superuser.selectFrom('files').selectAll().where('id', '=', document.id).executeTakeFirstOrThrow();
+      expect(file).toMatchObject({ project_id: target.projectId, purpose: 'tender', status: 'uploaded', deleted_at: null, created_by: member.userId });
+      expect(objects.get(file.storage_key)!.toString()).toBe(index === 0 ? 'original-a' : 'original-b');
+    }
+    expect(state.bidDocuments.map((document: { id: string }) => document.id)).toEqual([target.bid]);
+    expect(state.invalidBidAndRejectionItems).toMatchObject({ status: 'success', content: '未按要求盖章', source: 'technical-plan', tenderSignature: state.signatures.tender });
+    expect(state.signatures.tender).not.toBe('');
+    expect(state.typoCheckResult.findings).toEqual([]);
+    expect(state.activeDocumentTab).toBe('tender');
+    expect(await fileDeleted(target.tender)).toBe(true);
+    expect(JSON.parse(JSON.stringify(await loadRejectionCheck(appDb, member.context, target.projectId)))).toEqual(state);
+    // 来源不受影响。
+    const plan = await loadTechnicalPlan(appDb, member.context, source.projectId);
+    expect(plan.tenderFiles.map((document) => document.id)).toEqual(source.files);
+    for (const fileId of source.files) expect(await fileDeleted(fileId)).toBe(false);
+  });
+
+  it('没有解析成功的“无效投标与废标项”时不写解析结果', async () => {
+    const source = await technicalPlan();
+    await saveBidItems(appDb, member.context, source.projectId, null);
+    const target = await rejectionCheck();
+    const response = await call(member, 'POST', rcUrl(target.projectId), { technicalPlanProjectId: source.projectId });
+    expect(response.statusCode, response.body).toBe(200);
+    expect(response.json().state.invalidBidAndRejectionItems).toMatchObject({ status: 'idle', content: '', source: null });
+  });
+
+  it('来源不是本组织未删除的技术方案项目时 404；没有已解析的招标文件时 409；未配置对象存储时 503；均不改动招标文件', async () => {
+    const target = await rejectionCheck();
+    const before = await loadRejectionCheck(appDb, member.context, target.projectId);
+    const notPlan = await newProject(member, 'rejection-check');
+    const foreign = await newProject(outsider);
+    const deleted = (await technicalPlan()).projectId;
+    await softDeleteProject(deleted, member.userId);
+    for (const projectId of [notPlan, foreign, deleted, randomUUID()]) {
+      await expectError(await call(member, 'POST', rcUrl(target.projectId), { technicalPlanProjectId: projectId }), 404, 'REJECTION_CHECK_TECHNICAL_PLAN_NOT_FOUND');
+    }
+    const empty = await newProject(member);
+    await importTenderFiles(appDb, member.context, empty, [await realFile(null, '未解析.docx', Buffer.from('x'))]);
+    await expectError(await call(member, 'POST', rcUrl(target.projectId), { technicalPlanProjectId: empty }), 409, 'REJECTION_CHECK_TECHNICAL_PLAN_EMPTY');
+    const source = await technicalPlan();
+    await expectError(
+      await call(member, 'POST', rcUrl(target.projectId), { technicalPlanProjectId: source.projectId }, noStorageApp),
+      503,
+      'FILE_STORAGE_DISABLED',
+    );
+    await expectError(await call(outsider, 'POST', rcUrl(target.projectId), { technicalPlanProjectId: source.projectId }), 404, 'PROJECT_NOT_FOUND');
+    await expectError(await call(member, 'POST', rcUrl(target.projectId), { technicalPlanProjectId: 'x' }), 400, 'BAD_REQUEST');
+    await expectError(await call(member, 'POST', rcUrl(source.projectId), { technicalPlanProjectId: source.projectId }), 404, 'PROJECT_NOT_FOUND');
+    expect(await loadRejectionCheck(appDb, member.context, target.projectId)).toEqual(before);
+  });
+
+  it('复制中途失败（来源对象与登记的哈希不符）时不改动招标文件，已写的副本删除或进回收站，不留上传中的登记', async () => {
+    const source = await technicalPlan();
+    const target = await rejectionCheck();
+    const before = await loadRejectionCheck(appDb, member.context, target.projectId);
+    const filesBefore = new Set(((await superuser.selectFrom('files').select('id').where('org_id', '=', member.orgId).execute()) as { id: string }[]).map((row) => row.id));
+    const objectsBefore = objects.size;
+    // 第二份的 Markdown 对象被改动：第一份已完成复制，第二份的 Markdown 复制失败。
+    const second = (await loadTechnicalPlan(appDb, member.context, source.projectId)).tenderFiles[1]!;
+    const artifact = await superuser.selectFrom('artifacts').select('storage_key').where('id', '=', second.markdownArtifactId).executeTakeFirstOrThrow();
+    objects.set(artifact.storage_key, Buffer.from('# 已损坏'));
+    const response = await call(member, 'POST', rcUrl(target.projectId), { technicalPlanProjectId: source.projectId });
+    expect(response.statusCode).toBe(500);
+    expect(await loadRejectionCheck(appDb, member.context, target.projectId)).toEqual(before);
+    const created = ((await superuser.selectFrom('files').selectAll().where('org_id', '=', member.orgId).execute()) as { id: string; status: string; deleted_at: Date | null }[]).filter(
+      (row) => !filesBefore.has(row.id),
+    );
+    expect(created).toHaveLength(2);
+    for (const row of created) expect(row).toMatchObject({ status: 'uploaded', deleted_at: expect.any(Date) });
+    expect(await superuser.selectFrom('artifacts').select('id').where('status', '=', 'writing').where('org_id', '=', member.orgId).execute()).toEqual([]);
+    // 两份原件、第一份 Markdown 的副本留在（回收站中的文件的）对象中；失败的 Markdown 副本已删除。
+    expect(objects.size).toBe(objectsBefore + 3);
   });
 });
