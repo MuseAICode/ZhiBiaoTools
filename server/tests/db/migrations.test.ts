@@ -18,6 +18,19 @@ const APPLICATION_TABLES = [
   'credential_library_other_materials',
   'credential_library_profile',
   'credential_library_projects',
+  'duplicate_check_analysis_sections',
+  'duplicate_check_content_duplicates',
+  'duplicate_check_content_files',
+  'duplicate_check_content_occurrences',
+  'duplicate_check_duplicate_images',
+  'duplicate_check_files',
+  'duplicate_check_image_files',
+  'duplicate_check_image_occurrences',
+  'duplicate_check_meta',
+  'duplicate_check_metadata_items',
+  'duplicate_check_outline_groups',
+  'duplicate_check_outline_items',
+  'duplicate_check_outline_pairwise',
   'export_templates',
   'files',
   'invitations',
@@ -178,6 +191,7 @@ describe('迁移升级与回滚', () => {
       (await sql<{ prosrc: string }>`SELECT prosrc FROM pg_proc WHERE proname = 'ai_usage_begin'`.execute(testDb.admin)).rows.map((row) => row.prosrc);
     expectSuccess(await migrateToLatest(owner));
     expect((await source())[0]).toContain('ai_model_price');
+    expect(expectSuccess(await migrateDown(owner))).toEqual(['Down:0014_duplicate_check']);
     expect(expectSuccess(await migrateDown(owner))).toEqual(['Down:0013_knowledge_base_items']);
     expect(expectSuccess(await migrateDown(owner))).toEqual(['Down:0012_knowledge_base']);
     expect(expectSuccess(await migrateDown(owner))).toEqual(['Down:0011_credential_library']);

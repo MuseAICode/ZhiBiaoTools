@@ -13,6 +13,9 @@
 // 5.7 起只整体替换、不授予 UPDATE 的表（如知识库的切块、条目）省略 update：模板改为检查应用角色对该表没有任何
 // UPDATE 权限，原来“更新影响 0 行”的用例一律改为更新被拒绝。
 //
+// 5.8 起只能挂在某一种项目下的表（如标书查重的表，策略要求 kind = 'duplicate-check'）声明 projectKind：
+// 模板建的项目改为这种 kind（默认 technical-plan）。
+//
 // 每次调用自己建两个组织、各自的用户和项目，数据只经应用角色在各自的上下文中写入，不与调用方的数据混在一起。
 import { randomUUID } from 'node:crypto';
 import { sql, type Kysely, type Transaction } from 'kysely';
@@ -20,6 +23,7 @@ import { beforeAll, describe, expect, it } from 'vitest';
 import { APP_ROLE } from '../../src/db/roles.ts';
 import type { Database } from '../../src/db/schema.ts';
 import { withTenant, type TenantContext } from '../../src/db/tenant.ts';
+import type { ProjectKind } from '../../src/projects/store.ts';
 
 /** withTenant 的无类型版本：模板表和以后新增的表不一定在 Database 类型中。 */
 export function withTenantAny<T>(db: Kysely<any>, context: TenantContext, fn: (trx: Transaction<any>) => Promise<T>): Promise<T> {
@@ -61,6 +65,8 @@ export interface ProjectTableSpec {
   definerRoles?: readonly string[];
   /** org_id 为空、所有组织只读的系统行。只用于组织级表。 */
   systemRows?: SystemRowsSpec;
+  /** 模板建的项目的 kind（策略只允许某一种项目时声明），默认 technical-plan。只用于项目级表。 */
+  projectKind?: ProjectKind;
 }
 
 export interface SystemRowsSpec {
@@ -94,7 +100,7 @@ async function addMember(admin: Kysely<any>, orgId: string): Promise<TenantConte
   return { orgId, userId, role: 'member' };
 }
 
-async function createTenant(admin: Kysely<any>): Promise<Tenant> {
+async function createTenant(admin: Kysely<any>, kind: ProjectKind): Promise<Tenant> {
   const orgId = randomUUID();
   const userId = randomUUID();
   await admin.insertInto('organizations').values({ id: orgId, name: `org-${orgId}`, kind: 'personal' }).execute();
@@ -103,8 +109,8 @@ async function createTenant(admin: Kysely<any>): Promise<Tenant> {
   const projects = await admin
     .insertInto('projects')
     .values([
-      { org_id: orgId, kind: 'technical-plan', name: '项目', created_by: userId },
-      { org_id: orgId, kind: 'technical-plan', name: '空项目', created_by: userId },
+      { org_id: orgId, kind, name: '项目', created_by: userId },
+      { org_id: orgId, kind, name: '空项目', created_by: userId },
     ])
     .returning('id')
     .execute();
@@ -120,6 +126,8 @@ export function describeProjectTable(spec: ProjectTableSpec, env: ProjectTableEn
   const orgScoped = spec.scope === 'org';
   if (orgScoped === (spec.onProjectDelete !== undefined)) throw new TypeError(`${table}：onProjectDelete 项目级表必填，组织级表不填`);
   if (spec.systemRows && !orgScoped) throw new TypeError(`${table}：systemRows 只用于组织级表`);
+  if (spec.projectKind && orgScoped) throw new TypeError(`${table}：projectKind 只用于项目级表`);
+  const projectKind = spec.projectKind ?? 'technical-plan';
   const systemRows = spec.systemRows;
   const policyRoles = [APP_ROLE, ...(spec.definerRoles ?? []), ...(systemRows ? [systemRows.writerRole] : [])].sort();
 
@@ -137,8 +145,8 @@ export function describeProjectTable(spec: ProjectTableSpec, env: ProjectTableEn
     };
 
     beforeAll(async () => {
-      a = await createTenant(env.admin());
-      b = await createTenant(env.admin());
+      a = await createTenant(env.admin(), projectKind);
+      b = await createTenant(env.admin(), projectKind);
       rowA = await withTenantAny(env.app(), a.context, (trx) => spec.insert(trx, scopeOf(a)));
       rowB = await withTenantAny(env.app(), b.context, (trx) => spec.insert(trx, scopeOf(b)));
       if (systemRows) systemRow = await systemRows.insert(env.admin());
