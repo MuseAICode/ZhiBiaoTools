@@ -1,10 +1,8 @@
 // 标书查重结果导出为 Excel（取代桌面版 checkResultExportService.cjs 的 exportDuplicateExcel）：服务端同步生成 xlsx，
 // 以附件下载，不需要队列。工作表、列、文案与桌面版相同；只导出签名与当前文件选择一致的分析结果，其余标为“结果已失效”。
+import { fileTimestamp, formatDisplayTime } from '../xlsx/displayTime.ts';
 import { writeWorkbook, type CellValue, type WorksheetSpec } from '../xlsx/writer.ts';
 import type { DuplicateCheckState } from './store.ts';
-
-/** 导出时间、文件名中的时间按北京时间显示（桌面版用本机时区）。 */
-const DISPLAY_TIME_ZONE = 'Asia/Shanghai';
 
 const SHEET_NAMES = ['查重概览', '元数据', '目录重复', '文件相似度', '重复句子', '重复图片'] as const;
 
@@ -62,29 +60,9 @@ function resultMessage(descriptor: Descriptor, resultCount: number, emptyMessage
   return source.message;
 }
 
-function timeParts(date: Date): Record<string, string> {
-  const parts = new Intl.DateTimeFormat('en-GB', {
-    timeZone: DISPLAY_TIME_ZONE,
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-    hourCycle: 'h23',
-  }).formatToParts(date);
-  return Object.fromEntries(parts.map((part) => [part.type, part.value]));
-}
-
-export function formatDisplayTime(date: Date): string {
-  const p = timeParts(date);
-  return `${p.year}-${p.month}-${p.day} ${p.hour}:${p.minute}:${p.second}`;
-}
-
 /** 下载文件名：标书查重结果_YYYYMMDD_HHMMSS.xlsx（与桌面版相同）。 */
 export function exportFileName(exportedAt: Date): string {
-  const p = timeParts(exportedAt);
-  return `标书查重结果_${p.year}${p.month}${p.day}_${p.hour}${p.minute}${p.second}.xlsx`;
+  return `标书查重结果_${fileTimestamp(exportedAt)}.xlsx`;
 }
 
 function joinFileNames(fileIds: string[], fileNames: Map<string, string>): string {

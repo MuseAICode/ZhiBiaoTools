@@ -22,6 +22,17 @@ import type {
   DUPLICATE_CHECK_STATUSES,
   DUPLICATE_CHECK_STEPS,
 } from './migrations/0014_duplicate_check.ts';
+import type {
+  REJECTION_CHECK_DOCUMENT_ROLES,
+  REJECTION_CHECK_DOCUMENT_STATUSES,
+  REJECTION_CHECK_EXTRACTION_SOURCES,
+  REJECTION_CHECK_FINDING_TYPES,
+  REJECTION_CHECK_RESULT_TABS,
+  REJECTION_CHECK_RESULT_TYPES,
+  REJECTION_CHECK_RUN_STATUSES,
+  REJECTION_CHECK_SEVERITIES,
+  REJECTION_CHECK_STEPS,
+} from './migrations/0016_rejection_check.ts';
 import type { ProjectKind } from '../projects/store.ts';
 
 type Timestamp = ColumnType<Date, Date | string, Date | string>;
@@ -722,6 +733,109 @@ export interface DuplicateCheckImageOccurrencesTable {
   locations: FixedJson<unknown[]>;
 }
 
+export type RejectionCheckStep = (typeof REJECTION_CHECK_STEPS)[number];
+export type RejectionCheckResultTab = (typeof REJECTION_CHECK_RESULT_TABS)[number];
+export type RejectionCheckResultType = (typeof REJECTION_CHECK_RESULT_TYPES)[number];
+export type RejectionCheckDocumentRole = (typeof REJECTION_CHECK_DOCUMENT_ROLES)[number];
+export type RejectionCheckDocumentStatus = (typeof REJECTION_CHECK_DOCUMENT_STATUSES)[number];
+export type RejectionCheckRunStatus = (typeof REJECTION_CHECK_RUN_STATUSES)[number];
+export type RejectionCheckExtractionSource = (typeof REJECTION_CHECK_EXTRACTION_SOURCES)[number];
+export type RejectionCheckFindingType = (typeof REJECTION_CHECK_FINDING_TYPES)[number];
+export type RejectionCheckSeverity = (typeof REJECTION_CHECK_SEVERITIES)[number];
+
+/** 废标检查的页面状态（迁移 0016_rejection_check），每个项目一行，不能删除。 */
+export interface RejectionCheckMetaTable {
+  project_id: Fixed<string>;
+  org_id: Fixed<string>;
+  step: ColumnType<RejectionCheckStep, RejectionCheckStep | undefined, RejectionCheckStep>;
+  active_document_tab: ColumnType<string, string | undefined, string>;
+  active_result_tab: ColumnType<RejectionCheckResultTab, RejectionCheckResultTab | undefined, RejectionCheckResultTab>;
+  active_check_result_tab: ColumnType<RejectionCheckResultType, RejectionCheckResultType | undefined, RejectionCheckResultType>;
+  custom_check_items: ColumnType<string, string | undefined, string>;
+  typo_check: ColumnType<boolean, boolean | undefined, boolean>;
+  logic_check: ColumnType<boolean, boolean | undefined, boolean>;
+  created_at: ColumnType<Date, never, never>;
+  updated_at: ColumnType<Date, never, never>;
+}
+
+/** 废标检查导入的文档（迁移 0016_rejection_check），原件已删除或已不属于本项目时不可见（RLS），没有 DELETE 授权。 */
+export interface RejectionCheckDocumentsTable {
+  file_id: Fixed<string>;
+  org_id: Fixed<string>;
+  project_id: Fixed<string>;
+  role: Fixed<RejectionCheckDocumentRole>;
+  sort_order: Fixed<number>;
+  status: ColumnType<RejectionCheckDocumentStatus, never, RejectionCheckDocumentStatus>;
+  markdown_artifact_id: ColumnType<string | null, never, string | null>;
+  content_chars: ColumnType<number, never, number>;
+  content_hash: ColumnType<string | null, never, string | null>;
+  parser_label: ColumnType<string | null, never, string | null>;
+  error: ColumnType<string | null, never, string | null>;
+  created_at: ColumnType<Date, never, never>;
+  updated_at: ColumnType<Date, never, never>;
+}
+
+export interface RejectionCheckExtractionTable {
+  project_id: Fixed<string>;
+  org_id: Fixed<string>;
+  status: ColumnType<RejectionCheckRunStatus, RejectionCheckRunStatus, RejectionCheckRunStatus>;
+  content: ColumnType<string, string, string>;
+  source: ColumnType<RejectionCheckExtractionSource | null, RejectionCheckExtractionSource | null, RejectionCheckExtractionSource | null>;
+  tender_signature: ColumnType<string | null, string | null, string | null>;
+  error: ColumnType<string | null, string | null, string | null>;
+  updated_at: ColumnType<Date, never, never>;
+}
+
+export interface RejectionCheckResultsTable {
+  org_id: Fixed<string>;
+  project_id: Fixed<string>;
+  result_type: Fixed<RejectionCheckResultType>;
+  status: ColumnType<RejectionCheckRunStatus, RejectionCheckRunStatus, RejectionCheckRunStatus>;
+  input_signature: ColumnType<string | null, string | null, string | null>;
+  active_finding_id: ColumnType<string | null, string | null, string | null>;
+  progress_message: ColumnType<string | null, string | null, string | null>;
+  error: ColumnType<string | null, string | null, string | null>;
+  updated_at: ColumnType<Date, never, never>;
+}
+
+/** 以下是三类检查的问题（迁移 0016_rejection_check），整体替换，没有 UPDATE 授权。 */
+interface RejectionCheckFindingColumns {
+  id: Generated<string>;
+  org_id: Fixed<string>;
+  project_id: Fixed<string>;
+  finding_id: Fixed<string>;
+  bid_document_id: Fixed<string>;
+  sort_order: Fixed<number>;
+  created_at: ColumnType<Date, never, never>;
+}
+
+export interface RejectionCheckRiskFindingsTable extends RejectionCheckFindingColumns {
+  type: Fixed<RejectionCheckFindingType>;
+  severity: Fixed<RejectionCheckSeverity>;
+  title: Fixed<string>;
+  summary: Fixed<string>;
+  requirement: Fixed<string>;
+  bid_evidence: Fixed<string>;
+  risk_reason: Fixed<string>;
+  suggestion: Fixed<string>;
+}
+
+export interface RejectionCheckTypoFindingsTable extends RejectionCheckFindingColumns {
+  wrong_text: Fixed<string>;
+  correct_text: Fixed<string>;
+  original_excerpt: Fixed<string>;
+  reason: Fixed<string>;
+  location_hint: Fixed<string | null>;
+}
+
+export interface RejectionCheckLogicFindingsTable extends RejectionCheckFindingColumns {
+  title: Fixed<string>;
+  original_text: Fixed<string>;
+  location_hint: Fixed<string>;
+  fallacy_reason: Fixed<string>;
+  suggestion: Fixed<string>;
+}
+
 export interface Database {
   organizations: OrganizationsTable;
   users: UsersTable;
@@ -770,4 +884,11 @@ export interface Database {
   duplicate_check_image_files: DuplicateCheckImageFilesTable;
   duplicate_check_duplicate_images: DuplicateCheckDuplicateImagesTable;
   duplicate_check_image_occurrences: DuplicateCheckImageOccurrencesTable;
+  rejection_check_meta: RejectionCheckMetaTable;
+  rejection_check_documents: RejectionCheckDocumentsTable;
+  rejection_check_extraction: RejectionCheckExtractionTable;
+  rejection_check_results: RejectionCheckResultsTable;
+  rejection_check_risk_findings: RejectionCheckRiskFindingsTable;
+  rejection_check_typo_findings: RejectionCheckTypoFindingsTable;
+  rejection_check_logic_findings: RejectionCheckLogicFindingsTable;
 }
