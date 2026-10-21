@@ -14,7 +14,7 @@
 | 3 | 配置与 AI 网关 | 进行中 | 旧仓库 PR #31（计费账本：组织余额、只追加的账本、带版本的价格表、幂等扣费、管理员手动充值与冲正，不调用 AI）、旧仓库 PR #32（AI 网关：调用前预扣冻结、按实际用量结算、冻结超时自动释放、`usage_records`、平台 Key 信封加密、DeepSeek / 通义千问流式适配、`POST /api/ai/chat`）、旧仓库 PR #33（平台模型白名单 `platform_models`：只有登记且启用、并有生效价格的模型能调用，免费须显式标记；管理员登记 / 启用 / 停用接口；用户断开时中止上游请求的端到端测试） |
 | 4 | 文件上传 / 下载 / 资源协议 | 进行中 | 旧仓库 PR #34（文件存储：S3 兼容对象存储、本地 SeaweedFS、`files` 表与强制 RLS、按内容校验类型、大小上限与组织配额、附件方式下载、7 天恢复期）、#6（上传白名单补齐桌面版能导入的内容：OLE 内容的 `.docx`，`.doc/.wps` 的 RTF / HTML / MHT / Word 2003 XML，`.xls` 的 HTML 表格 / SpreadsheetML，`%PDF-` 前有多余字节的 PDF） |
 | 5 | 数据层迁移（按业务逐个） | 已完成 | 旧仓库 PR #35（拆分计划，见“第 5 步说明”；记录上传白名单与桌面版的差距）、#7（5.1 项目：`projects` 表、`files.project_id`、项目接口、路由层归属校验、项目级表的迁移与测试模板）、#8（5.2 生成产物存储：`artifacts` 表、Store、只读接口；项目软删除与其下文件、产物联动，由 RLS 强制）、#9（5.3 配置：`org_settings`、`user_settings`、`GET/PATCH /api/settings`；写权限与删除可见性由 RLS 强制）、#10（5.4 导出模板：`export_templates`、`/api/export-templates` 增删改查与复制；系统模板只读、修改删除权限由 RLS 强制，迁移命令同步系统模板）、#11（5.5 资信库：6 张表、`/api/credential-library`；权限与删除可见性由 RLS 强制，图片随所引用文件的生命周期）、#12（5.6 知识库（一）：`knowledge_folders`、`_documents`、`_document_steps`、`/api/knowledge-base` 文件夹与文档管理；权限与删除可见性由 RLS 强制，文档随原件的生命周期）、#14（5.7 知识库（二）：切块、条目、匹配结果等 7 张表，检索与读取条目 / 分析 / Markdown 接口；删除可见性与写权限由 RLS 强制，随文档可见）、#16（5.8 标书查重：13 张项目级表、`/api/projects/:projectId/duplicate-check` 状态 / 文件选择 / 页面状态 / 清空 / Excel 导出；删除可见性与写权限由 RLS 强制，随项目和所选原件可见）、#17（5.8 后续：`files.project_id` 设置后不能再改，由触发器强制；xlsx 写出器防公式注入，回车按原样写出）、#18（5.9 废标检查：7 张项目级表、`/api/projects/:projectId/rejection-check` 状态 / 导入与移除文档 / 页面状态 / 切换与删除问题 / 清空 / Excel 导出；删除可见性与写权限由 RLS 强制，文档随原件可见，签名由服务端现算）、#19（5.10 可研报告：4 张项目级表、`/api/projects/:projectId/feasibility-report` 状态 / 步骤 / 项目信息 / 资料分析 / 目录配置 / 目录（`reason` 协议）/ 关键参数 / 正文 / 资料导入与移除 / 资料 Markdown / 清空；删除可见性与写权限由 RLS 强制，资料随原件、引用随知识库文档可见）、#20（5.11 技术方案（一）：6 张项目级表、`/api/projects/:projectId/technical-plan` 状态 / 步骤 / 生成配置 / 招标解析配置 / 正文生成选项 / 招标文件导入与移除 / 招标文件与合并正文的 Markdown / 原方案 / 投标范围选择 / 清空；删除可见性与写权限由 RLS 强制，文档随原件、引用随知识库文档可见，导出模板只能是本组织的或系统模板）、#21（5.12 技术方案（二）：目录与全局事实 2 张项目级表、`PUT .../outline`（`reason` 协议，节点 UUID 稳定、编号现算）与 `PUT .../global-facts`，下游清空扩展到目录与全局事实；删除可见性与写权限由 RLS 强制））、#22（5.13 技术方案（三）：正文生成状态与编排 2 张项目级表、`PUT .../chapters/:nodeId`、`DELETE .../content-generation`，目录保存与全局事实、下游清空扩展到正文生成状态、编排与运行进度；废标检查 `POST .../tender-from-technical-plan` 复制原件与 Markdown；删除可见性与写权限由 RLS 强制） |
-| 6 | 任务队列与 worker | 未开始 | — |
+| 6 | 任务队列与 worker | 进行中 | #23（拆分计划，见“第 6 步说明”） |
 | 7 | OpenXmlHelper 容器化与离屏渲染（前置：CI 新增 .NET 编译与 OpenXmlHelper 测试，见“第 9 步说明”的品牌改名第三部分） | 未开始 | — |
 | 8 | Agent 沙箱 | 未开始 | — |
 | 9 | 收尾与上线 | 进行中 | #1（品牌改名第一部分：用户可见文字和文档）、#2（品牌改名第二部分：代码标识符、数据与协议、打包，新增 CI 禁用词检查）、#5（品牌改名第三部分：原产品名缩写前缀改为中性前缀 `app`，禁用词检查加入该缩写） |
@@ -847,6 +847,145 @@ AI 网关加固，做法见 `docs/SERVER_DESIGN.md` 第 10.9 节。`client/` 未
 - 同一张表被 pdf-parse 和 pdfjs 同时识别、结果又不一样时（比如有合并单元格），`hasSimilarPdfTable` 不会去重，两份都会输出。
 
 
+### 第 6 步说明
+
+#### 拆分计划
+
+只做计划，不改代码。目标设计见 `docs/SERVER_DESIGN.md` 第 5 节（BullMQ + Redis、`jobs` 表为权威状态、SSE 推送、worker 进程）、第 6.2 节（解析阶段的防护）和第 7 节（沙箱）。原则：
+
+- `jobs` 表是任务状态的唯一权威，BullMQ 只负责派发；worker 崩溃后由 stalled 检测转交，从 `jobs.checkpoint` 继续；
+- api 进程只做鉴权、校验、入队、取消和 SSE，不执行长任务、不解析文档；worker 执行全部任务，按 `TenantContext`（取自任务记录，不取自任务参数）经 `withTenant()` 读写业务表，写入一律经第 5 步已测好的 Store 函数（`saveDocumentParse`、`saveAnalysisSection`、`saveCheckResult` 等），不在 worker 中另写 SQL；
+- 所有模型调用经 AI 网关，`source: 'job'`，记 `job_id`；任务参数里只放 id，不放凭据和正文；
+- **上传的文件只在断网沙箱中解析**（见下方“文件解析的隔离”），worker 和 api 进程内不运行 mammoth、pdfjs、SheetJS、LibreOffice、cheerio、`adm-zip`、`cfb` 等解析器；
+- 每个业务模块一个 PR：迁移该模块的任务类型、在 `loadState` 类接口中返回任务状态（第 5 步先返回 `null`）、补上第 5 步登记的“随第 6 步”的检查；桌面版任务逻辑（`taskService.cjs` 中各 `run*Task`）尽量原样搬运，只替换存储、推送和 AI 调用的接口；
+- 新增依赖照 `AGENTS.md`：版本写死、发布超过两周、逐个列出许可证。
+
+**目录生成、全局事实是否用到命令工具（已核实）**：用到，**随第 8 步迁移**。依据：
+- `pi/piSessionFactory.cjs` 的 `withNativeTools` 总是把 `read/write/edit/bash/grep/find/ls` 七个原生工具加进启用列表，`agentService.runTask` 没有关闭它们的参数；
+- 提示词明确要求使用命令：`outlineGenerationTaskV2.cjs`（目录审核：“可使用 grep、read 或 bash 定位相关部分”）、`globalFactsTaskV2.cjs`（“用 grep 定位……可用 node、jq 辅助合并条目”）、`outlineAdjustmentTask.cjs` / `globalFactsAdjustmentTask.cjs`（“可使用 bash 配合 node、jq 处理”）；
+- 可研报告的目录生成 / 调整（`feasibilityOutlineTask.cjs`、`feasibilityOutlineAdjustmentTask.cjs`）同样经 `agentService.runTask`，七个原生工具同样启用；模板提取（`templateExtractionTask.cjs`）也经 `runTask`，随第 7、8 步。
+
+因此第 5 步“第 6 步核实、可能推迟到第 8 步”的三类任务（技术方案目录生成 / 调整、全局事实生成 / 调整，可研目录生成 / 调整）全部定为第 8 步。另外核实了“不带 Agent”的任务：`bidAnalysisTask.cjs`、`bidSectionExtractionTask.cjs`、`rejectionCheckTask.cjs`、`feasibilityReportTasks.cjs`、`knowledgeBaseService.cjs` 只调用 `aiService`，`duplicateCheckService.cjs` 不调用 AI，都可以在第 6 步迁移。其中**可研报告正文生成与自然化审校**（`runFeasibilityContentTask`、`runFeasibilityHumanWritingTask`）也只调用 `aiService`，第 5 步的表写的是“正文生成：第 8 步”，本计划改为第 6 步（偏离，待确认，见“需要决定的事项”第 4 项）。
+
+**PR 拆分顺序**：
+
+| 序号 | 内容 | 依赖 | 需确认后合并 | 状态 | PR |
+|---|---|---|---|---|---|
+| 6.0 | 拆分计划（本节） | — | 是（按本次要求） | 进行中 | #23 |
+| 6.1 | Redis 接入：`docker-compose.yml` 新增 `redis`（发行版见决定事项第 3 项；开启密码和 ACL，只在 `backend` 网络、开发时只绑 `127.0.0.1`）；配置 `REDIS_URL`、`REDIS_PASSWORD[_FILE]`（`init-dev-secrets.sh` 生成）；`/readyz` 加入 Redis 检查；CI 的 `server-checks` 加 Redis 服务容器。不含队列 | — | 否 | 未开始 | — |
+| 6.2 | `jobs` 表与 worker 骨架：迁移新建 `jobs`（`SERVER_DESIGN.md` 第 5.1 节的字段，`project_id` 可空供组织级任务，强制 RLS）和 `job_events`（取代 `task_logs`，只追加）；互斥用部分唯一索引（见下方“互斥”）；`src/jobs/`（入队、取消、暂停、继续、checkpoint、状态机，事务内检查互斥和组织级并发）；BullMQ 生产者与 `src/worker.ts` 消费者（同一镜像、不同入口，compose 新增 `worker` 服务）；stalled 恢复；`GET /api/jobs`、`GET /api/jobs/:jobId`、`POST /api/jobs/:jobId/cancel`。只注册一个测试用任务类型，不迁移业务任务 | 6.1 | 否 | 未开始 | — |
+| 6.3 | SSE 推送：`GET /api/events`，worker 发布到 Redis `events:org:{orgId}` 并追加 Stream，api 按连接的组织和用户过滤后写出；`Last-Event-ID` 补发、超出窗口推 `resync`、25 秒心跳；会话吊销、移出组织后关闭连接（定期重新校验会话）；单用户连接数上限 | 6.2 | 否 | 未开始 | — |
+| 6.4 | worker 接入 AI 网关与余额：网关在 worker 中运行，任务调用记 `job_id` / `job_type`；`usage_records.job_id` 补外键；`jobs.billed_amount` 与结算在同一事务中累加（改 `ai_usage_settle`）；入队前检查最低启动余额（决定事项第 7 项）；运行中冻结失败时暂停为 `paused` / `insufficient_balance`，经 SSE 推送（取代 `onBalanceInsufficient`），充值后继续不重复扣费；AI 网关按组织 + 服务商的并发上限改为 Redis 分布式信号量（取 `org_settings.concurrency_limit` 与平台上限的较小值） | 6.2、6.3 | **是**（计费） | 未开始 | — |
+| 6.5 | 解析沙箱基础设施：`sandbox-runner` 服务、`SandboxDriver` 接口、`parse` 模板、解析镜像（见下方“文件解析的隔离”）；隔离测试 | 6.2 | **是**（沙箱） | 未开始 | — |
+| 6.6 | 解析任务（一）二进制与纯文本格式：`parse` 队列；按记录的 MIME 分派（见下方分派表）；ZIP 炸弹、PDF 页数、超时检查；产出经 `writeArtifact` 写入；重新解析时替换旧产物（第 5 步 #8 留下）；接入技术方案、废标检查、可研报告三个模块的文档解析（`saveDocumentParse` / `saveSourceParse`），导入后自动入队 | 6.5 | 否 | 未开始 | — |
+| 6.7 | 解析任务（二）文本类格式（#6 放行的 RTF、HTML、MHT、Word 2003 XML、SpreadsheetML）：逐项满足“第 6 步解析要求”，用恶意样本测试（XXE、实体膨胀、外链图片 / 样式 / `<iframe>`、RTF `INCLUDEPICTURE` / `INCLUDETEXT`、MHT 外部 `Content-Location`） | 6.6 | 否 | 未开始 | — |
+| 6.8 | 清理任务：过期文件、产物、项目的对象与行的物理删除，遗留 `uploading` 行，按对象键前缀找出的孤儿对象，冻结到期收尾（`expireStaleHolds` 从 api 的定时器移到 worker 的定时任务）；跨组织，用新的 `NOLOGIN` 定义者角色写 `SECURITY DEFINER` 函数（决定事项第 9 项） | 6.2 | **是**（新增数据库角色） | 未开始 | — |
+| 6.9 | 废标检查任务：`rejection-items-extraction`、`rejection-check-run`；任务按招标文件顺序合并正文，经 `computeSignatures` 写签名；`loadState` 返回任务状态 | 6.4、6.6 | 否 | 未开始 | — |
+| 6.10 | 标书查重任务：`duplicate-analysis`。`duplicateCheckService.cjs` 自己用 `adm-zip`、`cfb`、`cheerio`、`pdf-parse` 读原件（正文、元数据、目录、图片），这部分提取放进 `parse` 沙箱，产出正文与图片产物；比对计算在 worker 中进行，经 `saveAnalysisSection` 写入 | 6.5、6.6 | 否 | 未开始 | — |
+| 6.11 | 技术方案任务（一）：招标解析 `bid-analysis`、多标段识别 `bid-section-extraction`；`checkBidSections`（疑似多标段检测）在 worker 中计算并写入状态，改写正则消除平方级回溯（#20 留下）；导入招标文件前取消本项目的技术方案任务（#20 留下） | 6.4、6.6 | 否 | 未开始 | — |
+| 6.12 | 可研报告任务：`feasibility-analysis`、`feasibility-parameters`、`feasibility-content`、`feasibility-human-writing`（后两项待决定事项第 4 项确认）；服务端合并资料（取代 `readCombinedSourceMarkdown`）；正文生成或审校运行、暂停时不能修改目录和手工改正文（`assertContentUnlocked`，#19 留下） | 6.4、6.6 | 否 | 未开始 | — |
+| 6.13 | 知识库任务：文档准备（解析、切块、条目抽取）、`retryDocument`、`startMatching`、`knowledgeBase.onEvent` 改为 SSE；文档在处理中被删除时任务停止（写入影响 0 行即退出，#12 留下）；取代 `recoverInterruptedDocuments` | 6.4、6.6 | 否 | 未开始 | — |
+| 6.14 | 登录、注册、找回密码的限流从进程内存换成 Redis（旧仓库 PR #29 留下，多实例部署前必须完成），接口与参数不变 | 6.1 | **是**（鉴权） | 未开始 | — |
+| 6.15 | MinerU 解析（决定事项第 6 项决定提供时才做） | 6.6 | 视决定 | 未开始 | — |
+
+顺序说明：6.1~6.3 是所有任务的基础；6.4 让任务能调模型；6.5~6.7 让文档能被解析，第 5 步所有“导入后读 Markdown”的模块都依赖它。6.8 只依赖 6.2，可与 6.5~6.7 并行，宜早做：6.6 起重新解析会产生被替换的旧产物。业务任务按路线图第 6 节“先迁无 Agent 的短任务（查重、废标、招标解析）”排在后面，废标检查结构最简单、最先做。6.14 只依赖 6.1，可随时插入。“需确认后合并”按 `CLAUDE.md`“自动合并”判断：涉及计费、鉴权、沙箱、数据库角色的不自行合并。
+
+**第 6 步完成后仍不在服务端的任务**（随第 7、8 步）：技术方案目录生成 / 调整、全局事实生成 / 调整、正文生成、章节重写、原方案还原、格式自检，可研目录生成 / 调整，模板提取、Word 导出与样张；技术方案“正文生成运行或暂停中不能调整目录 / 手工改正文”的检查随第 8 步的正文生成任务一起做（第 6 步中技术方案没有会持有这个锁的任务）。
+
+#### 任务模型的细化
+
+- **互斥**：`SERVER_DESIGN.md` 第 5.3 节写的是 `UNIQUE(project_id, group)`。知识库任务是组织级、按文档互斥（桌面版按文档排队，不是全组互斥），清理任务没有项目，所以改为通用的 `lock_key`（例如 `project:{projectId}:technical-plan`、`knowledge-document:{documentId}`），部分唯一索引 `UNIQUE (org_id, lock_key) WHERE status IN ('queued','running','paused','cancelling')`；`lock_key` 为空的任务不互斥。实现时（6.2）同步改设计第 5.1、5.3 节；
+- **组织级并发**：同时运行的任务数上限（起步 3，决定事项第 8 项），超出的留在 `queued`，按入队时间排队；`org_settings.concurrency_limit` 是模型调用并发，不是任务并发，两者分开；
+- **重启恢复**：桌面版启动时把中断的任务标为失败或从 checkpoint 继续（`taskService.cjs` 的重启恢复），改为 worker 认领 stalled 任务时按任务类型决定：可续跑的从 `jobs.checkpoint` 继续，不可续跑的标为失败并写日志；
+- **任务日志**：`task_logs` 不迁移，改为 `job_events`，经 SSE 推送；不记录文档正文和 AI 输入输出全文（`SERVER_DESIGN.md` 第 8.3 节）；
+- **保留期**：已结束的任务和日志保留期见决定事项第 10 项，由 6.8 的清理任务删除。
+
+#### 文件解析的隔离
+
+**要求**：路线图第 6 节和 #6 的“第 6 步解析要求”规定解析只在**完全断网**（没有任何网络接口）的沙箱中执行；`SERVER_DESIGN.md` 第 6.2、7.1 节规定解析与 Agent 共用同一套沙箱机制（gVisor、只读根文件系统、资源上限、`sandbox-runner` 是唯一持有容器运行时权限的进程）。但 Agent 沙箱排在第 8 步，第 6 步的解析任务需要先有隔离。
+
+**选项对比**：
+
+| | A. 提前实现完整沙箱基础设施 | B. 提前实现沙箱基础设施的公共部分，只做 `parse` 模板 **（建议）** | C. 为解析单独设计隔离 | D. 其他：把解析推迟到第 8 步之后 |
+|---|---|---|---|---|
+| 做法 | 第 6 步建好第 8 步的全部内容：`sandbox-runner`、`SandboxDriver`、gVisor、`parse` 和 `agent` 两个模板、`sandbox-gw` 内部网络、任务令牌、业务工具 RPC、工作区快照 | `sandbox-runner` + `SandboxDriver`（`create / exec / copyIn / copyOut / destroy`）+ 只有一个 `parse` 模板：`--network none`、gVisor（`runsc`）、只读根文件系统、非 root、`cap-drop ALL`、`no-new-privileges`、内存 / CPU / pids / 时长上限、一个解析任务一个沙箱、用完即毁；输入输出经 `copyIn` / `copyOut`，取回时校验（只收普通文件、路径在输出目录内、大小和数量上限、扩展名白名单）。第 8 步只新增 `agent` 模板、内部网络、令牌和 RPC | 不经 `sandbox-runner`：常驻的 `parser` 容器（compose `network_mode: none`，与 worker 共享临时卷，按 OpenXmlHelper 的“任务目录 + 信号”协议），或 worker 容器内用 bubblewrap / nsjail 起断网子进程 | 第 6 步只迁不依赖解析的部分，解析与第 8 步沙箱一起做，或把第 8 步的沙箱基础设施整体调到第 6 步之前 |
+| 隔离强度 | 同 B | 每次解析一个全新的 gVisor 容器，断网，不同组织、不同文件之间不共享任何状态 | 常驻容器：一次被利用的解析可以留在容器里，读到之后经过它的其他组织的文件（共享卷），隔离边界是整个服务而不是单个任务；子进程方案：与 worker 共享内核和容器，worker 本身能访问数据库、Redis、对象存储和 AI 网关，逃出子进程就拿到这些凭据 | — |
+| 与设计的一致性 | 一致 | 一致（第 6.2、7.1 节“共用同一套沙箱”），第 8 步在同一套机制上扩展 | 偏离第 6.2 节；第 8 步要另建一套，解析部分要么重写，要么长期维护两套隔离 | 一致 |
+| 工作量与风险 | 最大；把 Agent 的网络、令牌、RPC 设计提前到还没有 Agent 任务时，无法用真实任务验证，第 6 步明显变长 | 中；`sandbox-runner` 和驱动第 8 步本来就要建，提前建的部分都会沿用 | 起步最快；但 bubblewrap / nsjail 在容器内需要用户命名空间（Docker 默认 seccomp / AppArmor 常拦截，放开又扩大 worker 的权限），常驻容器需要自己处理崩溃、超时和残留文件 | 第 5 步所有“导入后读 Markdown”的功能和第 6 步多数任务（查重、废标、招标解析、可研、知识库都要先有解析结果）一直不可用，第 6 步基本无法验证 |
+| 性能 | 同 B | 每个文件多一次容器启动（gVisor 约 150–500 ms，LibreOffice 冷启动另需 1~2 秒），解析任务本来是秒级到分钟级，可接受；`parse` 队列并发起步 4 | 无额外启动开销 | — |
+
+**建议 B**，理由：第 8 步一定要建 `sandbox-runner` 和 `SandboxDriver`，`parse` 模板是其中最简单的一种（不需要网络、令牌、RPC），提前建不会白做；隔离粒度是单个任务，满足“完全断网”和“不在 worker 进程内解析”；C 的两种做法都会在第 8 步被替换，而且隔离边界明显弱于设计。B 的具体约定（6.5 实现，同步写进 `SERVER_DESIGN.md` 第 7 节）：
+
+- **运行时**：生产环境只允许 `runsc`，启动时检查，配置成 `runc` 时拒绝启动；开发环境（Windows / macOS 的 Docker Desktop 不便安装 gVisor）允许加固的 `runc`，网络、只读、权限等参数完全相同；CI 安装 `runsc`，隔离测试在 `runsc` 下跑（决定事项第 2 项）。设计第 7.2 节预留的“LibreOffice 在 gVisor 下问题过多时改用 A + 严格 seccomp + 完全断网”仍然有效，以 6.5 的实测为准；
+- **镜像**：Node 24 + `doc2markdown/` 所需的 npm 依赖 + LibreOffice + 中文字体，按 digest 固定，不含编译器和网络工具；与第 8 步的 Agent 镜像分开，各自只装自己需要的东西；
+- **输入输出**：worker 从对象存储取出原件，经 `copyIn` 放进沙箱 `/input`；沙箱内只运行解析入口（固定命令，参数只有分派结果，见下表），结果写到 `/output`（Markdown、图片、一个 JSON 清单）；worker 经 `copyOut` 取回、校验后经 `writeArtifact` 写入。沙箱内没有任何凭据、数据库连接串、对象存储地址；
+- **sandbox-runner 的接口**：只接受“模板名 + 任务 id”，模板写死在代码中，调用方不能传镜像、挂载、网络或任意 Docker 参数；worker 和 api 都不挂载 Docker socket（设计第 7.4 节）；
+- **测试**：沙箱内只有 `lo`（或没有任何接口），连接外网、内网、元数据地址、`redis`、`postgres` 全部失败；根文件系统只读；超时、超内存被终止；取回时符号链接、硬链接、设备文件、`..` 路径、超量文件被拒绝；去掉 `--network none`、只读或取回校验时有用例失败。
+
+**按记录的 MIME 分派**（`files.mime` 由上传时的内容检查决定，第 4 步 #6；解析时不再按扩展名或重新嗅探选择解析器）：
+
+| 记录的 MIME | 扩展名 | 解析方式（全部在 `parse` 沙箱中） |
+|---|---|---|
+| `application/pdf` | pdf | pdfjs / pdf-parse（现有 `convert.mjs`），先检查页数上限 |
+| `application/vnd.openxmlformats-officedocument.wordprocessingml.document` | docx（及改了扩展名的 doc / wps） | mammoth，先检查 ZIP 条目数、解压总大小、压缩比 |
+| `application/vnd.openxmlformats-officedocument.spreadsheetml.sheet` | xlsx（及改了扩展名的 xls） | SheetJS，ZIP 检查同上 |
+| `application/msword` | doc、wps、docx（OLE） | LibreOffice 转 docx 后按 docx 处理，转换产物同样做 ZIP 检查 |
+| `application/vnd.ms-excel` | xls（OLE） | SheetJS |
+| `application/rtf` | doc、wps | LibreOffice，先去掉或拒绝 `INCLUDEPICTURE` / `INCLUDETEXT` 等域和 OLE 链接 |
+| `text/html` | doc、wps → LibreOffice；xls → SheetJS | 交给解析器前移除或拒绝一切外部引用（`<img src>`、`<link>`、`<script>`、`<iframe>`、`<object>`、`<embed>`、`<base>`、CSS `url()` / `@import`），只保留 `data:` 内嵌图片 |
+| `message/rfc822`（MHT） | doc、wps | 先在沙箱中解开 MIME，取 `text/html` 部分并按其 `Content-Transfer-Encoding` 与 `charset` 解码，图片只取包内部分，`Content-Location` 指向的外部地址不跟随；之后按 `text/html` 处理 |
+| `application/xml` | doc、wps → Word 2003 XML，LibreOffice；xls → SpreadsheetML，SheetJS | 交给解析器前检查：含 `<!DOCTYPE` 一律拒绝（不尝试安全解析 DTD），没有 DOCTYPE 就不存在外部实体和实体膨胀；有测试 |
+| `text/plain; charset=…`、`text/markdown; charset=…` | txt、md、markdown | 按记录的编码（UTF-8 或 GB18030）解码成 UTF-8，不经任何解析器；也在沙箱中执行，保持“worker 内不处理上传内容”的规则一致 |
+| 其他 | — | 拒绝，记为解析失败（程序错误，写日志） |
+
+两种 Office 2003 XML 都记为 `application/xml`，按扩展名区分（#6 的约定）；这是唯一需要看扩展名的情况，扩展名取上传时登记的值。“禁止加载远程资源”除上表的预处理外，解析器本身也关闭链接更新和远程加载（LibreOffice 的链接更新设为从不、不执行宏），断网是兜底而不是唯一措施。
+
+**资源上限**（起步值，决定事项第 5 项）：ZIP 条目数 10,000、解压后总大小 1 GiB、单条目压缩比 100:1；PDF 页数 3,000；单个文件解析墙钟 10 分钟；沙箱内存 2 GiB、CPU 1 核、`/tmp` 与 `/output` 各 1 GiB；单个文件产出的图片 2,000 张。超限记为解析失败并给出用户可读的原因。
+
+**MinerU**：需要把原件发到 `mineru.net`，不能在断网沙箱中进行。如果提供（决定事项第 6 项），只能由 worker 经出站校验转发原件字节（worker 不解析原件），结果中的 Markdown 只作文本处理，图片压缩包在 `parse` 沙箱中解开，Markdown 中的图片链接只接受 MinerU 的结果域名，不跟随任意地址（SSRF，`SERVER_DESIGN.md` 第 4.4 节）。
+
+#### 前面各步登记给第 6 步的事项
+
+| # | 事项 | 来源 | 本计划的处理 |
+|---|---|---|---|
+| 1 | 过期文件与产物的物理清理（7 天恢复期满的文件、产物、项目，遗留 `uploading` 行；对象先删、行后删） | 第 4 步（旧仓库 PR #34）、5.2（#8）、第 9 步上线检查“文件存储” | 6.8 |
+| 2 | 对象存储中的孤儿对象（如从技术方案复制到废标检查时清理失败的残留，按对象键前缀处理） | 5.13（#22，`fromTechnicalPlan.ts`） | 6.8 |
+| 3 | 重新解析时替换旧产物（产物没有单独的删除接口） | 5.2（#8） | 6.6，被替换的产物由 6.8 清理 |
+| 4 | 按记录的 MIME 分派，只在沙箱中解析 | 第 4 步（#6）“第 6 步解析要求” | 6.5、6.6、6.7，见上方分派表 |
+| 5 | 解析沙箱完全断网 | 同上 | 6.5（`--network none` + 测试） |
+| 6 | HTML / MHT / RTF 禁止加载远程资源（含 RTF 域、OLE 链接、MHT 外部 `Content-Location`） | 同上 | 6.7 |
+| 7 | XML 类格式禁用 DTD 和外部实体（含实体膨胀、XInclude），交给解析器前检查并有测试 | 同上 | 6.7：含 `<!DOCTYPE` 一律拒绝 |
+| 8 | MHT 先解包再交给 LibreOffice | 同上 | 6.7 |
+| 9 | ZIP 炸弹、PDF 页数等解析阶段的防护 | 第 4 步（旧仓库 PR #34）、`SERVER_DESIGN.md` 第 6.2 节 | 6.6 |
+| 10 | MinerU（`tender` 用途加 ppt、pptx、jp2 和图片类型） | 第 4 步上传白名单差距第 5 项 | 决定事项第 6 项；提供时另开 6.15 |
+| 11 | 目录生成 / 调整、全局事实生成 / 调整（技术方案）、可研目录生成 / 调整是否用到命令工具 | 第 5 步拆分计划 | 已核实用到，随第 8 步（见上方） |
+| 12 | 所有 `*_tasks` / `task_logs` 由 `jobs` / `job_events` 取代，`loadState` 返回任务状态 | 第 5 步拆分计划 | 6.2，各模块 PR 接入 |
+| 13 | 进度推送（`onTaskEvent`、`knowledgeBase.onEvent`、`onBalanceInsufficient`） | 第 5 步、第 3 步 | 6.3、6.4、6.13 |
+| 14 | 入队检查余额、运行中耗尽暂停、`jobs.billed_amount`、`usage_records.job_id` 外键 | 第 2、3 步（`SERVER_DESIGN.md` 第 10.3、10.8 节） | 6.4 |
+| 15 | AI 网关在 worker 中运行；按组织 + 服务商的并发信号量（Redis），取 `org_settings.concurrency_limit` 与平台上限的较小值 | 第 3 步（旧仓库 PR #32）、5.3（#9） | 6.4 |
+| 16 | 限流从进程内存换成 Redis | 第 2 步（旧仓库 PR #29） | 6.14 |
+| 17 | `/readyz` 加入 Redis 检查 | 第 2 步（旧仓库 PR #27、#28） | 6.1 |
+| 18 | `checkBidSections` 在 worker 中计算，并消除正则的平方级回溯 | 5.11（#20） | 6.11 |
+| 19 | 导入招标文件前取消本项目的后台任务；导入原方案时校验原图资源 | 5.11（#20） | 6.11（取消）、6.6（解析时校验原图资源） |
+| 20 | 可研“正文生成或审校运行中不能改目录 / 手工改正文”（`assertContentUnlocked`）；服务端合并资料（`readCombinedSourceMarkdown`） | 5.10（#19） | 6.12 |
+| 21 | 技术方案“正文生成运行或暂停中不能调整目录 / 手工改正文”、重置正文时取消正文生成任务、`saveGlobalFacts` 写“手工保存”任务记录 | 5.12（#21）、5.13（#22） | 正文生成任务随第 8 步，锁和取消随它一起做；“手工保存”任务记录建议不迁移（`job_events` 只记任务的事件） |
+| 22 | 知识库文档处理中被删除时任务停止；`recoverInterruptedDocuments` 由任务队列负责 | 5.6（#12） | 6.13 |
+| 23 | 废标检查由任务合并招标正文、经 `computeSignatures` 写签名 | 5.9（#18） | 6.9 |
+| 24 | 冻结到期收尾从 api 定时器移到 worker | 第 3 步（旧仓库 PR #32，现由 `src/server.ts` 定时执行） | 6.8 |
+
+#### 需要决定的事项
+
+1. **解析的隔离方案**：A / B / C / D（见上方对比）。建议 **B**：第 6 步提前建 `sandbox-runner` + `SandboxDriver`，只做断网的 `parse` 模板，第 8 步在其上加 `agent` 模板。
+2. **沙箱运行时的环境差异**：建议生产只允许 gVisor（`runsc`，启动时检查）、CI 安装 `runsc` 跑隔离测试、开发环境允许参数相同的加固 `runc`。另一种做法是开发环境也必须 `runsc`（Windows / macOS 本地开发会很不方便）。
+3. **Redis 发行版（许可证）**：Redis 7.4 起改为 RSALv2 / SSPLv1 双许可，Redis 8 起再加 AGPLv3 选项，`CLAUDE.md` 要求强传染性许可证须由你确认。选项：a. **Valkey 8**（Linux 基金会维护的 Redis 分支，BSD-3-Clause，BullMQ 支持）；b. Redis 7.2（最后一个 BSD-3-Clause 版本，后续不再有新功能）；c. Redis 8（按 AGPLv3 或 RSALv2 使用）。建议 **a**。BullMQ 和 Node 客户端 `ioredis` 都是 MIT，6.1 / 6.2 引入时在审计报告中列出版本。
+4. **可研正文生成与自然化审校放在第 6 步**：已核实只调用 `aiService`、不用 Agent，偏离第 5 步表中的“第 8 步”。建议放在第 6 步（6.12）。
+5. **解析资源上限**：见上方“资源上限”的起步值，确认或调整。
+6. **MinerU 第一版是否由平台提供**：需要把用户原件发给第三方 `mineru.net`（个人信息出境和第三方条款，`SERVER_DESIGN.md` 第 11 节第 1、3 项）、按页计费（价格表要加页单价）、平台凭据 `kind = 'mineru'`（迁移 0004 的 CHECK 只有 `text_model`）。建议**第一版不提供**，第 6 步只做本地解析，上传白名单不加 ppt / pptx / 图片；以后决定提供时再开 6.15。
+7. **入队的最低启动余额**：设计第 10.3 节写“价格表中按任务类型配置，默认 1 元”。建议 6.4 先用一个全局值 1 元（写在迁移中），按任务类型配置等有需要时再加。
+8. **组织级任务并发**：建议同时运行的任务起步 3 个（设计第 5.3 节）；全局 `parse` 队列并发 4、`ai` 队列 8（设计第 5.2 节，单机起步值）。
+9. **清理任务的数据库角色**：清理要跨组织读写应用角色在 RLS 下看不到的行，建议照配额函数的做法新建 `NOLOGIN` 定义者角色 `bidtools_cleanup`，只有清理用到的表和列的权限；同步加进 `10-provision.sh`、测试 harness 和第 9 步上线检查“数据库角色”一条。另外确认恢复期满后的删除时机：建议每小时一批，期满即删。
+10. **任务记录的保留期**：建议已结束的 `jobs` 保留 90 天、`job_events` 保留 30 天（`billed_amount` 的财务汇总另见第 11 节第 1 项），写进隐私声明。
+
 ### 第 9 步说明
 
 #### 品牌改名第一部分：用户可见文字和文档（#1）
@@ -1008,7 +1147,7 @@ AI 网关加固，做法见 `docs/SERVER_DESIGN.md` 第 10.9 节。`client/` 未
 3. **配置与 AI 网关**：配置按组织 / 用户入库；平台统一提供 AI（旧仓库 PR #26），API Key 由平台持有、只在服务端；`aiService` 搬到服务端成为 AI 网关，同时实现平台模型清单、用量计量、余额检查和价格表（`docs/SERVER_DESIGN.md` 第 10 节）；`ai.chat/requestJson/testImageModel`、`config.listModels/getModelInfo` 走服务端，后两者只在管理后台提供。
 4. **文件上传 / 下载 / 资源协议**：上传接口 + 对象存储 + 带鉴权的资源路由，替换 `getPathForFile`/`filePaths`、`app-asset://`、`openFile`、保存对话框。
 5. **数据层迁移（按业务逐个）**：模板库 → 资信库 → 知识库 → 标书查重 → 废标检查 → 可研报告 → 技术方案，每个 Store 改成异步 Postgres 实现并按 `org_id`（项目级再加 `project_id`）隔离；不做 `app.sqlite` 导入（旧仓库 PR #26 第 18 项）。拆分为 13 个 PR，先做 `projects` 和生成产物存储，见“第 5 步说明”。
-6. **任务队列与 worker**：`taskService` 迁到 BullMQ worker，进度推送、暂停/继续、重启恢复、每用户互斥和两级并发上限。先迁无 Agent 的短任务（查重、废标、招标解析），再迁目录、全局事实。文档解析须满足第 4 步说明中“上传白名单补充（#6）”的“第 6 步解析要求”（沙箱完全断网、HTML / MHT / RTF 禁止加载远程资源、XML 类格式禁用 DTD 和外部实体等）。
+6. **任务队列与 worker**：`taskService` 迁到 BullMQ worker，进度推送、暂停/继续、重启恢复、每用户互斥和两级并发上限。先迁无 Agent 的短任务（查重、废标、招标解析）；目录、全局事实经核实用到 Agent 命令工具，改随第 8 步（见“第 6 步说明”）。解析在断网沙箱中执行，建议提前建 `sandbox-runner` 和只含 `parse` 模板的沙箱基础设施，拆分计划与待决定事项见“第 6 步说明”。文档解析须满足第 4 步说明中“上传白名单补充（#6）”的“第 6 步解析要求”（沙箱完全断网、HTML / MHT / RTF 禁止加载远程资源、XML 类格式禁用 DTD 和外部实体等）。
 7. **OpenXmlHelper 容器化**：Word 导出、模板样张、模板提取改成调用 helper 服务；离屏渲染改成 Playwright。前置：CI 新增 .NET 编译与 OpenXmlHelper 测试（#5 登记）。
 8. **Agent 沙箱**：Pi Runtime 迁到隔离沙箱，最后迁正文生成、原方案还原、格式自检这类最复杂的长任务。
 9. **收尾**：插件下线或重做、开发者工具改管理员页面；不自建 analytics Worker（0.18 决定；客户端埋点、内容服务代码和 `analytics/` 目录已在 0.19 删除）；压测、安全评审，再上线。
