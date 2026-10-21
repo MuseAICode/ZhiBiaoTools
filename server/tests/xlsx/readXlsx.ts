@@ -31,7 +31,9 @@ export function unzip(buffer: Buffer): Map<string, Buffer> {
 }
 
 function unescapeXml(value: string): string {
-  return value.replace(/&(lt|gt|quot|amp);/g, (_match, entity: string) => ({ lt: '<', gt: '>', quot: '"', amp: '&' })[entity]!);
+  return value.replace(/&(lt|gt|quot|amp|#\d+);/g, (_match, entity: string) =>
+    entity.startsWith('#') ? String.fromCodePoint(Number(entity.slice(1))) : ({ lt: '<', gt: '>', quot: '"', amp: '&' })[entity]!,
+  );
 }
 
 export interface ReadCell {

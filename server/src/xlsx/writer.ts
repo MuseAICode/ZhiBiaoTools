@@ -2,8 +2,10 @@
 // 百分比格式、列宽、表头筛选、文档标题和创建时间。不引入第三方依赖（桌面版用 SheetJS，npm 上的版本有未修复的漏洞，
 // 新版只在 SheetJS 自己的 CDN 发布）。
 //
-// 文本一律写成内联字符串（inlineStr），不会被 Excel 当作公式求值；控制字符、XML 不接受的字符由调用方去掉
-// （见 normalizeCellText），这里再做 XML 转义。zip 容器用 Node 自带的 zlib（deflate、crc32）写出。
+// 防公式注入：文本一律写成内联字符串（inlineStr），从不写 <f>，打开文件时不会被当作公式求值；以 = + - @、制表符、
+// 回车开头的文本另外套用 quotePrefix 样式（相当于在 Excel 中输入前导单引号），用户双击编辑后回车也仍是文本。
+// 控制字符和 XML 不接受的字符由 normalizeCellText 去掉，其余做 XML 转义（回车写成 &#13;，否则会被 XML 解析器
+// 规范化为换行）。zip 容器用 Node 自带的 zlib（deflate、crc32）写出。
 import { crc32, deflateRawSync } from 'node:zlib';
 
 /** Excel 单元格文本的长度上限（与桌面版相同，超出时截断并加提示）。 */
@@ -44,8 +46,18 @@ export function normalizeCellText(value: unknown): string {
   return `${normalized.slice(0, EXCEL_TEXT_PREFIX_LIMIT)}${EXCEL_TEXT_TRUNCATION_SUFFIX}`;
 }
 
+const XML_ESCAPES: Readonly<Record<string, string>> = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', '\r': '&#13;' };
+
 function escapeXml(value: string): string {
-  return value.replace(/[&<>"]/g, (char) => (char === '&' ? '&amp;' : char === '<' ? '&lt;' : char === '>' ? '&gt;' : '&quot;'));
+  return value.replace(/[&<>"\r]/g, (char) => XML_ESCAPES[char]!);
+}
+
+/** Excel 会当作公式开头的字符（OWASP CSV Injection 列出的 = + - @ 和制表符、回车）。 */
+const FORMULA_PREFIX = /^[=+\-@\t\r]/;
+
+/** 文本单元格是否需要 quotePrefix（样式 2）。 */
+export function needsQuotePrefix(text: string): boolean {
+  return FORMULA_PREFIX.test(text);
 }
 
 /** 列号（从 0 开始）转为 A、B、…、AA。 */
@@ -65,7 +77,8 @@ function cellXml(ref: string, value: CellValue): string {
   if (typeof value === 'number') return Number.isFinite(value) ? `<c r="${ref}"><v>${value}</v></c>` : '';
   const text = normalizeCellText(value);
   if (text === '') return '';
-  return `<c r="${ref}" t="inlineStr"><is><t xml:space="preserve">${escapeXml(text)}</t></is></c>`;
+  const style = needsQuotePrefix(text) ? ' s="2"' : '';
+  return `<c r="${ref}"${style} t="inlineStr"><is><t xml:space="preserve">${escapeXml(text)}</t></is></c>`;
 }
 
 function lastColumn(sheet: WorksheetSpec): number {
@@ -168,7 +181,7 @@ const ROOT_RELS =
   '<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/package/2006/relationships/metadata/core-properties" Target="docProps/core.xml"/>' +
   '</Relationships>';
 
-// 样式 0 是默认格式，样式 1 是内置格式 10（0.00%）。
+// 样式 0 是默认格式，样式 1 是内置格式 10（0.00%），样式 2 是带 quotePrefix 的文本（防公式注入）。
 const STYLES =
   '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n' +
   '<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">' +
@@ -176,8 +189,9 @@ const STYLES =
   '<fills count="2"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill></fills>' +
   '<borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders>' +
   '<cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>' +
-  '<cellXfs count="2"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>' +
-  '<xf numFmtId="10" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/></cellXfs>' +
+  '<cellXfs count="3"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>' +
+  '<xf numFmtId="10" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/>' +
+  '<xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0" quotePrefix="1"/></cellXfs>' +
   '<cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles>' +
   '</styleSheet>';
 
