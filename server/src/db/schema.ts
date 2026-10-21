@@ -33,6 +33,12 @@ import type {
   REJECTION_CHECK_SEVERITIES,
   REJECTION_CHECK_STEPS,
 } from './migrations/0016_rejection_check.ts';
+import type {
+  FEASIBILITY_OUTLINE_TEMPLATES,
+  FEASIBILITY_PROJECT_TYPES,
+  FEASIBILITY_REPORT_STEPS,
+  FEASIBILITY_SOURCE_STATUSES,
+} from './migrations/0017_feasibility_report.ts';
 import type { ProjectKind } from '../projects/store.ts';
 
 type Timestamp = ColumnType<Date, Date | string, Date | string>;
@@ -836,6 +842,79 @@ export interface RejectionCheckLogicFindingsTable extends RejectionCheckFindingC
   suggestion: Fixed<string>;
 }
 
+export type FeasibilityReportStep = (typeof FEASIBILITY_REPORT_STEPS)[number];
+export type FeasibilityProjectType = (typeof FEASIBILITY_PROJECT_TYPES)[number];
+export type FeasibilityOutlineTemplate = (typeof FEASIBILITY_OUTLINE_TEMPLATES)[number];
+export type FeasibilitySourceStatus = (typeof FEASIBILITY_SOURCE_STATUSES)[number];
+
+type Editable<T> = ColumnType<T, T | undefined, T>;
+
+/** 可研报告的页面状态（迁移 0017_feasibility_report），每个项目一行，不能删除。 */
+export interface FeasibilityReportMetaTable {
+  project_id: Fixed<string>;
+  org_id: Fixed<string>;
+  step: Editable<FeasibilityReportStep>;
+  project_name: Editable<string>;
+  project_type: Editable<FeasibilityProjectType>;
+  industry: Editable<string>;
+  construction_unit: Editable<string>;
+  location: Editable<string>;
+  construction_content: Editable<string>;
+  construction_period_years: Editable<string>;
+  operation_period_years: Editable<string>;
+  total_investment: Editable<string>;
+  funding_source: Editable<string>;
+  analysis_markdown: Editable<string>;
+  outline_template: Editable<FeasibilityOutlineTemplate>;
+  target_words: Editable<number>;
+  key_parameters_markdown: Editable<string>;
+  outline_project_name: Editable<string | null>;
+  outline_project_overview: Editable<string | null>;
+  created_at: ColumnType<Date, never, never>;
+  updated_at: ColumnType<Date, never, never>;
+}
+
+/** 可研资料（迁移 0017_feasibility_report），原件已删除或已不属于本项目时不可见（RLS），没有 DELETE 授权。 */
+export interface FeasibilityReportSourcesTable {
+  file_id: Fixed<string>;
+  org_id: Fixed<string>;
+  project_id: Fixed<string>;
+  sort_order: Editable<number>;
+  status: ColumnType<FeasibilitySourceStatus, never, FeasibilitySourceStatus>;
+  markdown_artifact_id: ColumnType<string | null, never, string | null>;
+  content_chars: ColumnType<number, never, number>;
+  content_hash: ColumnType<string | null, never, string | null>;
+  parser_label: ColumnType<string | null, never, string | null>;
+  error: ColumnType<string | null, never, string | null>;
+  created_at: ColumnType<Date, never, never>;
+  updated_at: ColumnType<Date, never, never>;
+}
+
+/** 目录生成引用的知识库文档（迁移 0017_feasibility_report），整体替换，没有 UPDATE 授权。 */
+export interface FeasibilityReportReferenceDocsTable {
+  org_id: Fixed<string>;
+  project_id: Fixed<string>;
+  document_id: Fixed<string>;
+  sort_order: ColumnType<number, number | undefined, never>;
+  created_at: ColumnType<Date, never, never>;
+}
+
+/** 报告目录与正文（迁移 0017_feasibility_report），整体替换，只有 content 可以更新。 */
+export interface FeasibilityReportOutlineNodesTable {
+  org_id: Fixed<string>;
+  project_id: Fixed<string>;
+  node_id: Fixed<string>;
+  parent_node_id: Fixed<string | null>;
+  sort_order: ColumnType<number, number | undefined, never>;
+  level: Fixed<number>;
+  title: Fixed<string>;
+  description: ColumnType<string, string | undefined, never>;
+  knowledge_item_ids: ColumnType<string[] | null, string | null | undefined, never>;
+  content: ColumnType<string, string | undefined, string>;
+  created_at: ColumnType<Date, never, never>;
+  updated_at: ColumnType<Date, never, never>;
+}
+
 export interface Database {
   organizations: OrganizationsTable;
   users: UsersTable;
@@ -891,4 +970,8 @@ export interface Database {
   rejection_check_risk_findings: RejectionCheckRiskFindingsTable;
   rejection_check_typo_findings: RejectionCheckTypoFindingsTable;
   rejection_check_logic_findings: RejectionCheckLogicFindingsTable;
+  feasibility_report_meta: FeasibilityReportMetaTable;
+  feasibility_report_sources: FeasibilityReportSourcesTable;
+  feasibility_report_reference_docs: FeasibilityReportReferenceDocsTable;
+  feasibility_report_outline_nodes: FeasibilityReportOutlineNodesTable;
 }

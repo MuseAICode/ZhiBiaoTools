@@ -17,6 +17,7 @@ import * as knowledgeBaseItems from './0013_knowledge_base_items.ts';
 import * as duplicateCheck from './0014_duplicate_check.ts';
 import * as filesProjectImmutable from './0015_files_project_immutable.ts';
 import * as rejectionCheck from './0016_rejection_check.ts';
+import * as feasibilityReport from './0017_feasibility_report.ts';
 
 export const migrations: Readonly<Record<string, Migration>> = Object.freeze({
   '0001_identity': identity,
@@ -35,4 +36,5 @@ export const migrations: Readonly<Record<string, Migration>> = Object.freeze({
   '0014_duplicate_check': duplicateCheck,
   '0015_files_project_immutable': filesProjectImmutable,
   '0016_rejection_check': rejectionCheck,
+  '0017_feasibility_report': feasibilityReport,
 });
