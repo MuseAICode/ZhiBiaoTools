@@ -979,6 +979,8 @@ export interface TechnicalPlanMetaTable {
   outline_project_name: Editable<string | null>;
   outline_project_overview: Editable<string | null>;
   outline_word_control_snapshot: ColumnType<TechnicalPlanWordControl | null, string | null | undefined, string | null>;
+  /** 正文生成的运行进度，见迁移 0020_technical_plan_content。 */
+  content_generation_runtime: ColumnType<Record<string, unknown> | null, string | null | undefined, string | null>;
   created_at: ColumnType<Date, never, never>;
   updated_at: ColumnType<Date, never, never>;
 }
@@ -1061,6 +1063,29 @@ export interface TechnicalPlanGlobalFactGroupsTable {
   sort_order: ColumnType<number, number | undefined, never>;
   created_at: ColumnType<Date, never, never>;
   updated_at: ColumnType<Date, Date | string | undefined, never>;
+}
+
+/** 各节的正文生成状态（迁移 0020_technical_plan_content），随目录节点删除。 */
+export interface TechnicalPlanContentSectionsTable {
+  org_id: Fixed<string>;
+  project_id: Fixed<string>;
+  node_id: Fixed<string>;
+  status: Editable<TechnicalPlanRunStatus>;
+  error: Editable<string | null>;
+  created_at: ColumnType<Date, never, never>;
+  updated_at: ColumnType<Date, never, never>;
+}
+
+/** 各节的正文编排（迁移 0020_technical_plan_content），随目录节点删除。 */
+export interface TechnicalPlanContentPlansTable {
+  org_id: Fixed<string>;
+  project_id: Fixed<string>;
+  node_id: Fixed<string>;
+  plan_version: ColumnType<number, number, number>;
+  plan: ColumnType<Record<string, unknown>, string, string>;
+  table_requirement: Editable<TechnicalPlanTableRequirement | null>;
+  created_at: ColumnType<Date, never, never>;
+  updated_at: ColumnType<Date, never, never>;
 }
 
 /** 选中的招标解析项（迁移 0018_technical_plan），整体替换，没有 UPDATE 授权。 */
@@ -1162,4 +1187,6 @@ export interface Database {
   technical_plan_bid_items: TechnicalPlanBidItemsTable;
   technical_plan_outline_nodes: TechnicalPlanOutlineNodesTable;
   technical_plan_global_fact_groups: TechnicalPlanGlobalFactGroupsTable;
+  technical_plan_content_sections: TechnicalPlanContentSectionsTable;
+  technical_plan_content_plans: TechnicalPlanContentPlansTable;
 }

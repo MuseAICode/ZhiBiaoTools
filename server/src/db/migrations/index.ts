@@ -20,6 +20,7 @@ import * as rejectionCheck from './0016_rejection_check.ts';
 import * as feasibilityReport from './0017_feasibility_report.ts';
 import * as technicalPlan from './0018_technical_plan.ts';
 import * as technicalPlanOutline from './0019_technical_plan_outline.ts';
+import * as technicalPlanContent from './0020_technical_plan_content.ts';
 
 export const migrations: Readonly<Record<string, Migration>> = Object.freeze({
   '0001_identity': identity,
@@ -41,4 +42,5 @@ export const migrations: Readonly<Record<string, Migration>> = Object.freeze({
   '0017_feasibility_report': feasibilityReport,
   '0018_technical_plan': technicalPlan,
   '0019_technical_plan_outline': technicalPlanOutline,
+  '0020_technical_plan_content': technicalPlanContent,
 });

@@ -1,8 +1,9 @@
-// 技术方案接口（路线图第 5 步 5.11、5.12）。需要登录，组织取自会话；先经 requireProject 校验项目属于本组织、未删除、
+// 技术方案接口（路线图第 5 步 5.11~5.13）。需要登录，组织取自会话；先经 requireProject 校验项目属于本组织、未删除、
 // kind 是 technical-plan，不符一律 404。组织内成员都可以查看和编辑（组织内共享，第 9 节第 2 项），可见性、写权限与删除
 // 可见性由 RLS 保证。对应桌面版 technicalPlan.loadState / updateStep / clear / saveGenerationConfig / saveBidAnalysisConfig /
 // saveContentGenerationOptions / importTenderDocument / removeTenderDocument / importOriginalPlanDocument /
-// removeOriginalPlanDocument / readTenderMarkdown / readTenderSourceMarkdown / selectBidSection / saveOutline / saveGlobalFacts。
+// removeOriginalPlanDocument / readTenderMarkdown / readTenderSourceMarkdown / selectBidSection / saveOutline / saveGlobalFacts /
+// saveChapterContent / resetContentGeneration。
 //
 // GET    /api/projects/:projectId/technical-plan                                    完整状态（任务状态随第 6 步）
 // PATCH  /api/projects/:projectId/technical-plan/step                               切换页面步骤
@@ -17,11 +18,13 @@
 // DELETE /api/projects/:projectId/technical-plan/original-plan                      移除原方案（原件进回收站）
 // PUT    /api/projects/:projectId/technical-plan/bid-section                        选择投标范围
 // PUT    /api/projects/:projectId/technical-plan/outline                            保存目录（reason 协议，见 Store）
-// PUT    /api/projects/:projectId/technical-plan/global-facts                       保存全局事实（同时清空全部正文）
+// PUT    /api/projects/:projectId/technical-plan/global-facts                       保存全局事实（同时清空正文阶段）
+// PUT    /api/projects/:projectId/technical-plan/chapters/:nodeId                   手工保存一节正文
+// DELETE /api/projects/:projectId/technical-plan/content-generation                 重置正文阶段（保留目录、全局事实和生成配置）
 // DELETE /api/projects/:projectId/technical-plan                                    清空（招标文件与原方案进回收站）
 //
 // 文档解析、多标段识别、招标解析随第 6 步的任务队列；checkBidSections（疑似多标段的检测）随第 6 步由任务在服务端计算；
-// 目录生成 / 调整、全局事实生成 / 调整随第 6 步（或第 8 步）；正文随 5.13；openBidTemplate、previewContentWord 随第 7 步。
+// 目录生成 / 调整、全局事实生成 / 调整随第 6 步（或第 8 步）；正文生成随第 8 步；openBidTemplate、previewContentWord 随第 7 步。
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import type { Kysely } from 'kysely';
 import { tenantOf } from '../auth/hooks.ts';
@@ -41,7 +44,7 @@ import {
   TECHNICAL_PLAN_TITLE_MAX,
   TECHNICAL_PLAN_WORDS_MAX,
 } from '../db/migrations/0018_technical_plan.ts';
-import { TECHNICAL_PLAN_FACT_CONTENT_MAX, TECHNICAL_PLAN_FACT_ID_MAX } from '../db/migrations/0019_technical_plan_outline.ts';
+import { TECHNICAL_PLAN_CONTENT_MAX, TECHNICAL_PLAN_FACT_CONTENT_MAX, TECHNICAL_PLAN_FACT_ID_MAX } from '../db/migrations/0019_technical_plan_outline.ts';
 import type { Database, TechnicalPlanStep } from '../db/schema.ts';
 import { attachmentDisposition } from '../files/filename.ts';
 import type { ObjectStore } from '../files/objectStore.ts';
@@ -60,7 +63,9 @@ import {
   readTenderMarkdown,
   removeOriginalPlan,
   removeTenderFile,
+  resetContentGeneration,
   saveBidAnalysisConfig,
+  saveChapterContent,
   saveContentGenerationOptions,
   saveGenerationConfig,
   saveGlobalFacts,
@@ -224,7 +229,25 @@ const GLOBAL_FACTS_SCHEMA = {
   additionalProperties: false,
 } as const;
 
+const CHAPTER_PARAMS = {
+  type: 'object',
+  properties: { ...PROJECT_ID_PARAMS.properties, nodeId: UUID },
+  required: ['projectId', 'nodeId'],
+  additionalProperties: false,
+} as const;
+
+// 单节正文最多 TECHNICAL_PLAN_CONTENT_MAX 字（Store 按 Unicode 字符再查一次），UTF-8 下中文 3 字节，另留转义的余量。
+const CHAPTER_BODY_LIMIT = 4 * 1024 * 1024 + 64 * 1024;
+
+const CHAPTER_SCHEMA = {
+  type: 'object',
+  properties: { content: { type: 'string', maxLength: TECHNICAL_PLAN_CONTENT_MAX } },
+  required: ['content'],
+  additionalProperties: false,
+} as const;
+
 type ProjectParams = { Params: { projectId: string } };
+type ChapterParams = { Params: { projectId: string; nodeId: string } };
 type FileParams = { Params: { projectId: string; fileId: string } };
 
 /** 与 /api/artifacts/:artifactId/content 相同：一律附件、nosniff、sandbox CSP，Markdown 原文不会在本站内被当作页面渲染。 */
@@ -333,6 +356,16 @@ export async function registerTechnicalPlanRoutes(app: FastifyInstance, deps: Te
     '/:projectId/technical-plan/global-facts',
     { schema: { params: PROJECT_ID_PARAMS, body: GLOBAL_FACTS_SCHEMA }, bodyLimit: GLOBAL_FACTS_BODY_LIMIT },
     async (request) => saveGlobalFacts(db, tenantOf(request), await project(request), request.body.globalFacts),
+  );
+
+  app.put<ChapterParams & { Body: { content: string } }>(
+    '/:projectId/technical-plan/chapters/:nodeId',
+    { schema: { params: CHAPTER_PARAMS, body: CHAPTER_SCHEMA }, bodyLimit: CHAPTER_BODY_LIMIT },
+    async (request) => saveChapterContent(db, tenantOf(request), await project(request), request.params.nodeId, request.body.content),
+  );
+
+  app.delete<ProjectParams>('/:projectId/technical-plan/content-generation', { schema: { params: PROJECT_ID_PARAMS } }, async (request) =>
+    resetContentGeneration(db, tenantOf(request), await project(request)),
   );
 
   app.delete<ProjectParams>('/:projectId/technical-plan', { schema: { params: PROJECT_ID_PARAMS } }, async (request) =>

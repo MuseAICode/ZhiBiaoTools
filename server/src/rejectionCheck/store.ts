@@ -639,6 +639,85 @@ export async function importDocuments(
   });
 }
 
+/** 从技术方案复制来的一份招标文件：原件与 Markdown 产物都已是本组织的新副本（见 fromTechnicalPlan.ts）。 */
+export interface CopiedTenderDocument {
+  fileId: string;
+  markdownArtifactId: string;
+  contentChars: number;
+  contentHash: string | null;
+  parserLabel: string | null;
+}
+
+/**
+ * 用从技术方案复制来的招标文件整体替换本项目的招标文件（importTenderFromTechnicalPlan 的最后一步，与桌面版相同）：新原件挂到
+ * 本项目并登记，直接写入解析结果（Markdown 已有，不再解析）；原有的招标文件原件软删除；清空解析结果和三类检查结果，技术方案
+ * 中已解析出的无效投标与废标项（discardedBids）给出时作为来源为 technical-plan 的解析结果写入，签名取替换后的招标文件；当前
+ * 页签回到合并的招标正文。新原件或产物不合规时被触发器、RLS 拒绝，整体回滚。
+ */
+export async function replaceTenderDocuments(
+  db: Kysely<Database>,
+  context: TenantContext,
+  projectId: string,
+  documents: CopiedTenderDocument[],
+  discardedBids: string | null,
+): Promise<RejectionCheckState> {
+  if (documents.length === 0 || documents.length > REJECTION_CHECK_TENDER_DOCUMENTS_MAX) throw new TypeError('招标文件数不合法');
+  const ids = documents.map((document) => uuid(document.fileId, '文件 id'));
+  return withTenant(db, context, async (trx) => {
+    await lockProject(trx, projectId);
+    const existing = await trx
+      .selectFrom('rejection_check_documents')
+      .select('file_id')
+      .where('project_id', '=', projectId)
+      .where('role', '=', 'tender')
+      .execute();
+    const claimed = await trx
+      .updateTable('files')
+      .set({ project_id: projectId })
+      .where('id', 'in', ids)
+      .where('purpose', '=', 'tender')
+      .where('status', '=', 'uploaded')
+      .where('deleted_at', 'is', null)
+      .executeTakeFirst();
+    if (Number(claimed.numUpdatedRows) !== ids.length) throw new Error('copied tender files are unavailable');
+    // 先删结果再软删除原件（同 removeDocument）。
+    await clearExtractionAndCheckResults(trx, projectId);
+    await trashFiles(
+      trx,
+      context,
+      existing.map((row) => row.file_id),
+    );
+    await trx
+      .insertInto('rejection_check_documents')
+      .values(ids.map((fileId, index) => ({ file_id: fileId, org_id: context.orgId, project_id: projectId, role: 'tender' as const, sort_order: index })))
+      .execute();
+    for (const [index, document] of documents.entries()) {
+      await trx
+        .updateTable('rejection_check_documents')
+        .set({
+          status: 'success',
+          markdown_artifact_id: uuid(document.markdownArtifactId, 'Markdown 产物 id'),
+          content_chars: count(document.contentChars),
+          content_hash: optionalKey(document.contentHash, '正文哈希'),
+          parser_label: optionalText(document.parserLabel, REJECTION_CHECK_PARSER_LABEL_MAX),
+        })
+        .where('project_id', '=', projectId)
+        .where('file_id', '=', ids[index]!)
+        .execute();
+    }
+    const analysis = discardedBids?.trim() ? taskText(stripTripleQuoteWrapper(discardedBids), REJECTION_CHECK_EXTRACTION_MAX) : '';
+    if (analysis) {
+      const { signatures } = await readState(trx, projectId);
+      await trx
+        .insertInto('rejection_check_extraction')
+        .values({ project_id: projectId, org_id: context.orgId, status: 'success', content: analysis, source: 'technical-plan', tender_signature: signatures.tender })
+        .execute();
+    }
+    await writeMeta(trx, context, projectId, { active_document_tab: TENDER_TAB });
+    return readState(trx, projectId);
+  });
+}
+
 /**
  * 移除一份文档（取代桌面版 removeDocument）：原件软删除（进回收站），文档行随之不可见。与桌面版相同：招标文件清空解析结果
  * 和三类检查结果，当前页签回到合并的招标正文；投标文件清空三类检查结果，当前页签切到剩下的第一份投标文件。

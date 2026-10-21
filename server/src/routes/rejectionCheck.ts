@@ -1,11 +1,12 @@
-// 废标检查接口（路线图第 5 步 5.9）。需要登录，组织取自会话；先经 requireProject 校验项目属于本组织、未删除、
+// 废标检查接口（路线图第 5 步 5.9；从技术方案读取招标文件随 5.13）。需要登录，组织取自会话；先经 requireProject 校验项目属于本组织、未删除、
 // kind 是 rejection-check，不符一律 404。组织内成员都可以查看和编辑（组织内共享，第 9 节第 2 项），可见性、
 // 写权限与删除可见性由 RLS 保证。对应桌面版 rejectionCheck.loadState / importDocument / removeDocument / saveUiState /
-// updateState（Renderer 的部分）/ clear / exportExcel。
+// updateState（Renderer 的部分）/ clear / exportExcel / importTenderFromTechnicalPlan。
 //
 // GET    /api/projects/:projectId/rejection-check                                    完整状态（文档、页面状态、解析结果、三类检查，任务状态随第 6 步）
 // POST   /api/projects/:projectId/rejection-check/documents                          导入招标文件或投标文件（挂已上传的 tender 文件，待解析）
 // DELETE /api/projects/:projectId/rejection-check/documents/:fileId                  移除一份文档（原件进回收站）
+// POST   /api/projects/:projectId/rejection-check/tender-from-technical-plan         从技术方案项目复制招标文件（整体替换招标文件）
 // PATCH  /api/projects/:projectId/rejection-check/ui-state                           保存页面状态、自定义检查项和检查选项
 // PATCH  /api/projects/:projectId/rejection-check/results/:resultType                切换当前问题
 // DELETE /api/projects/:projectId/rejection-check/results/:resultType/findings/:findingId  删除单条问题
@@ -13,7 +14,7 @@
 // GET    /api/projects/:projectId/rejection-check/export                             当前结果导出为 Excel（附件下载）
 //
 // 文档解析、废标项解析与三类检查随第 6 步的任务队列，结果由任务经 saveDocumentParse / saveExtraction / saveCheckResult
-// 写入；桌面版 updateState 中任务写入的部分不开放为接口。importTenderFromTechnicalPlan 随 5.13。
+// 写入；桌面版 updateState 中任务写入的部分不开放为接口。
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import type { Kysely } from 'kysely';
 import { tenantOf } from '../auth/hooks.ts';
@@ -28,7 +29,9 @@ import {
 import type { Database, RejectionCheckResultType } from '../db/schema.ts';
 import { AppError } from '../errors.ts';
 import { attachmentDisposition } from '../files/filename.ts';
+import type { ObjectStore } from '../files/objectStore.ts';
 import { PROJECT_ID_PARAMS, requireProject } from '../projects/access.ts';
+import { importTenderFromTechnicalPlan } from '../rejectionCheck/fromTechnicalPlan.ts';
 import { buildRejectionWorkbook, exportFileName, isExportable } from '../rejectionCheck/export.ts';
 import {
   clearRejectionCheck,
@@ -45,6 +48,8 @@ import {
 
 export interface RejectionCheckRouteDependencies {
   db: Kysely<Database>;
+  /** 从技术方案复制招标文件用；未配置时该接口返回 503。 */
+  objectStore: ObjectStore | null;
   /** 测试用：导出时间。 */
   now?: () => Date;
 }
@@ -111,6 +116,13 @@ const RESULT_SCHEMA = {
 
 const XLSX_MIME = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
 
+const FROM_TECHNICAL_PLAN_SCHEMA = {
+  type: 'object',
+  properties: { technicalPlanProjectId: PROJECT_ID_PARAMS.properties.projectId },
+  required: ['technicalPlanProjectId'],
+  additionalProperties: false,
+} as const;
+
 type ProjectParams = { Params: { projectId: string } };
 type DocumentParams = { Params: { projectId: string; fileId: string } };
 type ResultParams = { Params: { projectId: string; resultType: RejectionCheckResultType } };
@@ -142,6 +154,13 @@ export async function registerRejectionCheckRoutes(app: FastifyInstance, deps: R
 
   app.delete<DocumentParams>('/:projectId/rejection-check/documents/:fileId', { schema: { params: DOCUMENT_PARAMS } }, async (request) =>
     removeDocument(db, tenantOf(request), await project(request), request.params.fileId),
+  );
+
+  app.post<ProjectParams & { Body: { technicalPlanProjectId: string } }>(
+    '/:projectId/rejection-check/tender-from-technical-plan',
+    { schema: { params: PROJECT_ID_PARAMS, body: FROM_TECHNICAL_PLAN_SCHEMA } },
+    async (request) =>
+      importTenderFromTechnicalPlan(db, tenantOf(request), deps.objectStore, await project(request), request.body.technicalPlanProjectId),
   );
 
   app.patch<ProjectParams & { Body: UiStatePatch }>(

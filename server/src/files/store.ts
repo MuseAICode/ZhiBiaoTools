@@ -104,7 +104,7 @@ export async function completeUpload(
   db: Kysely<Database>,
   context: TenantContext,
   fileId: string,
-  inspection: InspectionResult,
+  inspection: Pick<InspectionResult, 'mime' | 'size' | 'sha256'>,
 ): Promise<FileRecord> {
   try {
     return await withTenant(db, context, async (trx) => {
