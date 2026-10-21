@@ -25,6 +25,7 @@ import { registerKnowledgeBaseRoutes } from './routes/knowledgeBase.ts';
 import { registerProjectRoutes } from './routes/projects.ts';
 import { registerRejectionCheckRoutes } from './routes/rejectionCheck.ts';
 import { registerSettingsRoutes } from './routes/settings.ts';
+import { registerTechnicalPlanRoutes } from './routes/technicalPlan.ts';
 import { registerTemplateRoutes } from './routes/templates.ts';
 
 export interface BuildAppOptions {
@@ -125,6 +126,7 @@ export async function buildApp(config: AppConfig, options: BuildAppOptions): Pro
   await app.register(registerDuplicateCheckRoutes, { prefix: '/api/projects', db });
   await app.register(registerRejectionCheckRoutes, { prefix: '/api/projects', db });
   await app.register(registerFeasibilityReportRoutes, { prefix: '/api/projects', db, objectStore: options.objectStore ?? null });
+  await app.register(registerTechnicalPlanRoutes, { prefix: '/api/projects', db, objectStore: options.objectStore ?? null });
 
   return app;
 }

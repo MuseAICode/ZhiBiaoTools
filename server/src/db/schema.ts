@@ -39,6 +39,21 @@ import type {
   FEASIBILITY_REPORT_STEPS,
   FEASIBILITY_SOURCE_STATUSES,
 } from './migrations/0017_feasibility_report.ts';
+import type {
+  TECHNICAL_PLAN_BID_ANALYSIS_MODES,
+  TECHNICAL_PLAN_BID_ITEM_IDS,
+  TECHNICAL_PLAN_BID_SECTION_MODES,
+  TECHNICAL_PLAN_DOCUMENT_ROLES,
+  TECHNICAL_PLAN_DOCUMENT_STATUSES,
+  TECHNICAL_PLAN_EXPORT_TEMPLATE_SCOPES,
+  TECHNICAL_PLAN_GLOBAL_FACTS_MODES,
+  TECHNICAL_PLAN_IMAGE_QUANTITIES,
+  TECHNICAL_PLAN_OUTLINE_EXPANSION_MODES,
+  TECHNICAL_PLAN_OUTLINE_MODES,
+  TECHNICAL_PLAN_RUN_STATUSES,
+  TECHNICAL_PLAN_STEPS,
+  TECHNICAL_PLAN_TABLE_REQUIREMENTS,
+} from './migrations/0018_technical_plan.ts';
 import type { ProjectKind } from '../projects/store.ts';
 
 type Timestamp = ColumnType<Date, Date | string, Date | string>;
@@ -915,6 +930,126 @@ export interface FeasibilityReportOutlineNodesTable {
   updated_at: ColumnType<Date, never, never>;
 }
 
+export type TechnicalPlanStep = (typeof TECHNICAL_PLAN_STEPS)[number];
+export type TechnicalPlanDocumentRole = (typeof TECHNICAL_PLAN_DOCUMENT_ROLES)[number];
+export type TechnicalPlanDocumentStatus = (typeof TECHNICAL_PLAN_DOCUMENT_STATUSES)[number];
+export type TechnicalPlanRunStatus = (typeof TECHNICAL_PLAN_RUN_STATUSES)[number];
+export type TechnicalPlanBidAnalysisMode = (typeof TECHNICAL_PLAN_BID_ANALYSIS_MODES)[number];
+export type TechnicalPlanBidSectionMode = (typeof TECHNICAL_PLAN_BID_SECTION_MODES)[number];
+export type TechnicalPlanOutlineMode = (typeof TECHNICAL_PLAN_OUTLINE_MODES)[number];
+export type TechnicalPlanOutlineExpansionMode = (typeof TECHNICAL_PLAN_OUTLINE_EXPANSION_MODES)[number];
+export type TechnicalPlanGlobalFactsMode = (typeof TECHNICAL_PLAN_GLOBAL_FACTS_MODES)[number];
+export type TechnicalPlanExportTemplateScope = (typeof TECHNICAL_PLAN_EXPORT_TEMPLATE_SCOPES)[number];
+export type TechnicalPlanTableRequirement = (typeof TECHNICAL_PLAN_TABLE_REQUIREMENTS)[number];
+export type TechnicalPlanImageQuantity = (typeof TECHNICAL_PLAN_IMAGE_QUANTITIES)[number];
+export type TechnicalPlanBidItemId = (typeof TECHNICAL_PLAN_BID_ITEM_IDS)[number];
+
+/** 多标段识别出的标段（与桌面版 Renderer 的 DetectedBidSection 相同）。 */
+export interface TechnicalPlanBidSection {
+  id: string;
+  index: number;
+  unit: string;
+  title: string;
+  headLine: string;
+  description: string;
+  includeRanges: { startLine: number; endLine: number; reason?: string }[];
+  evidence: string[];
+}
+
+/** 技术方案的页面状态（迁移 0018_technical_plan），每个项目一行，不能删除。 */
+export interface TechnicalPlanMetaTable {
+  project_id: Fixed<string>;
+  org_id: Fixed<string>;
+  step: Editable<TechnicalPlanStep>;
+  bid_sections: ColumnType<TechnicalPlanBidSection[] | null, string | null | undefined, string | null>;
+  bid_section_extraction_status: Editable<TechnicalPlanRunStatus>;
+  bid_section_extraction_error: Editable<string | null>;
+  selected_section_id: Editable<string | null>;
+  selected_section_title: Editable<string | null>;
+  created_at: ColumnType<Date, never, never>;
+  updated_at: ColumnType<Date, never, never>;
+}
+
+/** 招标文件与原方案（迁移 0018_technical_plan），原件已删除或已不属于本项目时不可见（RLS），没有 DELETE 授权。 */
+export interface TechnicalPlanDocumentsTable {
+  file_id: Fixed<string>;
+  org_id: Fixed<string>;
+  project_id: Fixed<string>;
+  role: Fixed<TechnicalPlanDocumentRole>;
+  sort_order: Fixed<number>;
+  status: ColumnType<TechnicalPlanDocumentStatus, never, TechnicalPlanDocumentStatus>;
+  markdown_artifact_id: ColumnType<string | null, never, string | null>;
+  content_chars: ColumnType<number, never, number>;
+  content_hash: ColumnType<string | null, never, string | null>;
+  parser_label: ColumnType<string | null, never, string | null>;
+  error: ColumnType<string | null, never, string | null>;
+  created_at: ColumnType<Date, never, never>;
+  updated_at: ColumnType<Date, never, never>;
+}
+
+/** 统一生成配置（迁移 0018_technical_plan），每个项目一行，不能删除。 */
+export interface TechnicalPlanGenerationConfigTable {
+  project_id: Fixed<string>;
+  org_id: Fixed<string>;
+  bid_analysis_mode: Editable<TechnicalPlanBidAnalysisMode>;
+  bid_section_mode: Editable<TechnicalPlanBidSectionMode>;
+  outline_mode: Editable<TechnicalPlanOutlineMode>;
+  outline_expansion_mode: Editable<TechnicalPlanOutlineExpansionMode>;
+  minimum_words: Editable<number>;
+  maximum_words: Editable<number>;
+  section_words: Editable<number>;
+  global_facts_mode: Editable<TechnicalPlanGlobalFactsMode>;
+  export_template_id: Editable<string | null>;
+  export_template_scope: Editable<TechnicalPlanExportTemplateScope>;
+  use_ai_images: Editable<boolean>;
+  use_mermaid_images: Editable<boolean>;
+  use_html_images: Editable<boolean>;
+  html_image_types: Editable<string>;
+  table_requirement: Editable<TechnicalPlanTableRequirement>;
+  image_quantity: Editable<number>;
+  html_image_optimization: Editable<boolean>;
+  word_count_repair: Editable<boolean>;
+  layout_check: Editable<boolean>;
+  use_single_image_layout: Editable<boolean>;
+  use_image_text_layout: Editable<boolean>;
+  use_three_images_layout: Editable<boolean>;
+  use_four_images_layout: Editable<boolean>;
+  created_at: ColumnType<Date, never, never>;
+  updated_at: ColumnType<Date, never, never>;
+}
+
+/** 选中的招标解析项（迁移 0018_technical_plan），整体替换，没有 UPDATE 授权。 */
+export interface TechnicalPlanGenerationBidTasksTable {
+  org_id: Fixed<string>;
+  project_id: Fixed<string>;
+  task_id: Fixed<TechnicalPlanBidItemId>;
+  sort_order: ColumnType<number, number | undefined, never>;
+  created_at: ColumnType<Date, never, never>;
+}
+
+/** 生成引用的知识库文档（迁移 0018_technical_plan），整体替换，没有 UPDATE 授权。 */
+export interface TechnicalPlanGenerationReferenceDocsTable {
+  org_id: Fixed<string>;
+  project_id: Fixed<string>;
+  document_id: Fixed<string>;
+  sort_order: ColumnType<number, number | undefined, never>;
+  created_at: ColumnType<Date, never, never>;
+}
+
+/** 招标解析项的结果（迁移 0018_technical_plan），由第 6 步的解析任务写入。 */
+export interface TechnicalPlanBidItemsTable {
+  org_id: Fixed<string>;
+  project_id: Fixed<string>;
+  item_id: Fixed<TechnicalPlanBidItemId>;
+  label: Editable<string>;
+  status: Editable<TechnicalPlanRunStatus>;
+  content: Editable<string>;
+  error: Editable<string | null>;
+  sort_order: Editable<number>;
+  created_at: ColumnType<Date, never, never>;
+  updated_at: ColumnType<Date, never, never>;
+}
+
 export interface Database {
   organizations: OrganizationsTable;
   users: UsersTable;
@@ -974,4 +1109,10 @@ export interface Database {
   feasibility_report_sources: FeasibilityReportSourcesTable;
   feasibility_report_reference_docs: FeasibilityReportReferenceDocsTable;
   feasibility_report_outline_nodes: FeasibilityReportOutlineNodesTable;
+  technical_plan_meta: TechnicalPlanMetaTable;
+  technical_plan_documents: TechnicalPlanDocumentsTable;
+  technical_plan_generation_config: TechnicalPlanGenerationConfigTable;
+  technical_plan_generation_bid_tasks: TechnicalPlanGenerationBidTasksTable;
+  technical_plan_generation_reference_docs: TechnicalPlanGenerationReferenceDocsTable;
+  technical_plan_bid_items: TechnicalPlanBidItemsTable;
 }

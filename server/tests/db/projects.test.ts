@@ -103,9 +103,9 @@ beforeAll(async () => {
     { ...testConfig, database: testDb.appConfig },
     { database, passwordHasher: await fastHasher(), rateLimits: RELAXED_LIMITS, mailer: { send: async () => {} } },
   );
-  // 模拟一个模块的项目级接口：先校验归属（组织 + kind），再往下传。
+  // 模拟一个模块的项目级接口：先校验归属（组织 + kind），再往下传（路径不与真实的技术方案接口冲突）。
   app.get<{ Params: { projectId: string } }>(
-    '/api/projects/:projectId/technical-plan',
+    '/api/projects/:projectId/access-probe',
     { schema: { params: PROJECT_ID_PARAMS } },
     async (request) => {
       const project = await requireProject(appDb, tenantOf(request), request.params.projectId, 'technical-plan');
@@ -458,7 +458,7 @@ describe('项目接口', () => {
       await call(a, 'PATCH', `/api/projects/${project.id}`, { name: '篡改' }),
       await call(a, 'DELETE', `/api/projects/${project.id}`),
       await call(a, 'POST', `/api/projects/${deletedProject.id}/restore`),
-      await call(a, 'GET', `/api/projects/${project.id}/technical-plan`),
+      await call(a, 'GET', `/api/projects/${project.id}/access-probe`),
     ];
     for (const response of responses) {
       expect(response.statusCode, response.body).toBe(404);
@@ -492,7 +492,7 @@ describe('项目接口', () => {
     const project = await createOk(member, 'technical-plan', '字'.repeat(PROJECT_NAME_MAX_LENGTH));
     expect([...project.name]).toHaveLength(PROJECT_NAME_MAX_LENGTH);
     expect((await call(member, 'GET', "/api/projects/' OR 1=1 --")).statusCode).toBe(400);
-    expect((await call(member, 'GET', '/api/projects/not-a-uuid/technical-plan')).statusCode).toBe(400);
+    expect((await call(member, 'GET', '/api/projects/not-a-uuid/access-probe')).statusCode).toBe(400);
   });
 });
 
@@ -504,13 +504,13 @@ describe('路由层的项目归属校验（requireProject）', () => {
     const removed = await createOk(member, 'technical-plan');
     expect((await call(member, 'DELETE', `/api/projects/${removed.id}`)).statusCode).toBe(200);
 
-    const ok = await call(member, 'GET', `/api/projects/${plan.id.toUpperCase()}/technical-plan`);
+    const ok = await call(member, 'GET', `/api/projects/${plan.id.toUpperCase()}/access-probe`);
     expect(ok.statusCode).toBe(200);
     expect(ok.json()).toEqual({ id: plan.id, kind: 'technical-plan' });
 
     const bodies = [];
     for (const id of [check.id, removed.id, randomUUID()]) {
-      const response = await call(member, 'GET', `/api/projects/${id}/technical-plan`);
+      const response = await call(member, 'GET', `/api/projects/${id}/access-probe`);
       expect(response.statusCode).toBe(404);
       bodies.push({ ...response.json().error, requestId: undefined });
     }
