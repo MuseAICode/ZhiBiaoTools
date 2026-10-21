@@ -32,6 +32,10 @@ const APPLICATION_TABLES = [
   'duplicate_check_outline_items',
   'duplicate_check_outline_pairwise',
   'export_templates',
+  'feasibility_report_meta',
+  'feasibility_report_outline_nodes',
+  'feasibility_report_reference_docs',
+  'feasibility_report_sources',
   'files',
   'invitations',
   'knowledge_blocks',
@@ -199,6 +203,7 @@ describe('迁移升级与回滚', () => {
       (await sql<{ prosrc: string }>`SELECT prosrc FROM pg_proc WHERE proname = 'ai_usage_begin'`.execute(testDb.admin)).rows.map((row) => row.prosrc);
     expectSuccess(await migrateToLatest(owner));
     expect((await source())[0]).toContain('ai_model_price');
+    expect(expectSuccess(await migrateDown(owner))).toEqual(['Down:0017_feasibility_report']);
     expect(expectSuccess(await migrateDown(owner))).toEqual(['Down:0016_rejection_check']);
     expect(expectSuccess(await migrateDown(owner))).toEqual(['Down:0015_files_project_immutable']);
     expect(expectSuccess(await migrateDown(owner))).toEqual(['Down:0014_duplicate_check']);
