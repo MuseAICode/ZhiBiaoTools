@@ -54,6 +54,7 @@ import type {
   TECHNICAL_PLAN_STEPS,
   TECHNICAL_PLAN_TABLE_REQUIREMENTS,
 } from './migrations/0018_technical_plan.ts';
+import type { TECHNICAL_PLAN_CONTENT_MODES } from './migrations/0019_technical_plan_outline.ts';
 import type { ProjectKind } from '../projects/store.ts';
 
 type Timestamp = ColumnType<Date, Date | string, Date | string>;
@@ -943,6 +944,14 @@ export type TechnicalPlanExportTemplateScope = (typeof TECHNICAL_PLAN_EXPORT_TEM
 export type TechnicalPlanTableRequirement = (typeof TECHNICAL_PLAN_TABLE_REQUIREMENTS)[number];
 export type TechnicalPlanImageQuantity = (typeof TECHNICAL_PLAN_IMAGE_QUANTITIES)[number];
 export type TechnicalPlanBidItemId = (typeof TECHNICAL_PLAN_BID_ITEM_IDS)[number];
+export type TechnicalPlanContentMode = (typeof TECHNICAL_PLAN_CONTENT_MODES)[number];
+
+/** 目录的字数控制（与桌面版 Renderer 的 OutlineWordControlOptions 相同）。 */
+export interface TechnicalPlanWordControl {
+  minimumWords: number;
+  maximumWords: number;
+  sectionWords: number;
+}
 
 /** 多标段识别出的标段（与桌面版 Renderer 的 DetectedBidSection 相同）。 */
 export interface TechnicalPlanBidSection {
@@ -966,6 +975,10 @@ export interface TechnicalPlanMetaTable {
   bid_section_extraction_error: Editable<string | null>;
   selected_section_id: Editable<string | null>;
   selected_section_title: Editable<string | null>;
+  /** 以下三列见迁移 0019_technical_plan_outline。 */
+  outline_project_name: Editable<string | null>;
+  outline_project_overview: Editable<string | null>;
+  outline_word_control_snapshot: ColumnType<TechnicalPlanWordControl | null, string | null | undefined, string | null>;
   created_at: ColumnType<Date, never, never>;
   updated_at: ColumnType<Date, never, never>;
 }
@@ -1016,6 +1029,38 @@ export interface TechnicalPlanGenerationConfigTable {
   use_four_images_layout: Editable<boolean>;
   created_at: ColumnType<Date, never, never>;
   updated_at: ColumnType<Date, never, never>;
+}
+
+/** 目录与各节正文（迁移 0019_technical_plan_outline），节点 id 写入后不能改。 */
+export interface TechnicalPlanOutlineNodesTable {
+  org_id: Fixed<string>;
+  project_id: Fixed<string>;
+  node_id: Fixed<string>;
+  parent_node_id: Editable<string | null>;
+  sort_order: Editable<number>;
+  level: Editable<number>;
+  title: Editable<string>;
+  description: Editable<string>;
+  content_mode: Editable<TechnicalPlanContentMode | null>;
+  content_mode_note: Editable<string | null>;
+  source_requirement_id: Editable<string | null>;
+  source_requirement_title: Editable<string | null>;
+  knowledge_item_ids: ColumnType<string[] | null, string | null | undefined, string | null>;
+  content: Editable<string>;
+  created_at: ColumnType<Date, never, never>;
+  updated_at: ColumnType<Date, never, never>;
+}
+
+/** 全局事实（迁移 0019_technical_plan_outline），整体替换，没有 UPDATE 授权。 */
+export interface TechnicalPlanGlobalFactGroupsTable {
+  org_id: Fixed<string>;
+  project_id: Fixed<string>;
+  group_id: Fixed<string>;
+  title: Fixed<string>;
+  content: Fixed<string>;
+  sort_order: ColumnType<number, number | undefined, never>;
+  created_at: ColumnType<Date, never, never>;
+  updated_at: ColumnType<Date, Date | string | undefined, never>;
 }
 
 /** 选中的招标解析项（迁移 0018_technical_plan），整体替换，没有 UPDATE 授权。 */
@@ -1115,4 +1160,6 @@ export interface Database {
   technical_plan_generation_bid_tasks: TechnicalPlanGenerationBidTasksTable;
   technical_plan_generation_reference_docs: TechnicalPlanGenerationReferenceDocsTable;
   technical_plan_bid_items: TechnicalPlanBidItemsTable;
+  technical_plan_outline_nodes: TechnicalPlanOutlineNodesTable;
+  technical_plan_global_fact_groups: TechnicalPlanGlobalFactGroupsTable;
 }

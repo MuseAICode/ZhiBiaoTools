@@ -1,6 +1,7 @@
-// 技术方案（一）（迁移 0018_technical_plan）的数据库与接口测试：六张表的隔离模板（describeProjectTable，项目级），
-// 删除可见性与写权限由 RLS 强制（绕过 Store 直接写库同样被拒绝），招标文件与原方案、生成配置（含导出模板、选中的解析项、
-// 引用的知识库文档）、单 / 多标段切换与投标范围、合并的招标正文、清空，给第 6 步任务用的写函数，以及全部接口。
+// 技术方案（迁移 0018_technical_plan、0019_technical_plan_outline）的数据库与接口测试：八张表的隔离模板（describeProjectTable，
+// 项目级），删除可见性与写权限由 RLS 强制（绕过 Store 直接写库同样被拒绝），招标文件与原方案、生成配置（含导出模板、选中的
+// 解析项、引用的知识库文档）、单 / 多标段切换与投标范围、合并的招标正文、目录（reason 协议）与全局事实、下游清空、清空，
+// 给第 6 步任务用的写函数，以及全部接口。
 import { randomUUID } from 'node:crypto';
 import { Readable } from 'node:stream';
 import type { FastifyInstance } from 'fastify';
@@ -10,6 +11,7 @@ import { buildApp } from '../../src/app.ts';
 import { DEFAULT_AUTH_RATE_LIMITS, type AuthRateLimitSettings } from '../../src/auth/rateLimit.ts';
 import { createDatabase, type DatabaseHandle } from '../../src/db/database.ts';
 import { TECHNICAL_PLAN_BID_ITEM_IDS, TECHNICAL_PLAN_DEFAULT_HTML_IMAGE_TYPES, TECHNICAL_PLAN_TABLES } from '../../src/db/migrations/0018_technical_plan.ts';
+import { TECHNICAL_PLAN_OUTLINE_TABLES } from '../../src/db/migrations/0019_technical_plan_outline.ts';
 import { migrateToLatest } from '../../src/db/migrator.ts';
 import { APP_ROLE } from '../../src/db/roles.ts';
 import type { Database } from '../../src/db/schema.ts';
@@ -30,7 +32,10 @@ import {
   saveBidSectionExtraction,
   saveContentGenerationOptions,
   saveDocumentParse,
+  saveGeneratedOutline,
   saveGenerationConfig,
+  saveGlobalFacts,
+  saveOutline,
   selectBidSection,
   setOriginalPlan,
   TECHNICAL_PLAN_MARKDOWN_READ_MAX_BYTES,
@@ -43,6 +48,9 @@ import { connect, createTestDatabase, type TestDatabase } from './harness.ts';
 import { describeProjectTable, type ProjectRowScope } from './projectTable.ts';
 
 const PASSWORD = 'quiet-harbor-maple-59';
+
+/** 0018 的六张表与 0019 的两张表。 */
+const ALL_TABLES = [...TECHNICAL_PLAN_TABLES, ...TECHNICAL_PLAN_OUTLINE_TABLES] as const;
 
 const RELAXED_LIMITS: AuthRateLimitSettings = Object.fromEntries(
   Object.entries(DEFAULT_AUTH_RATE_LIMITS).map(([key, value]) => [
@@ -249,7 +257,7 @@ const base = (scope: ProjectRowScope) => ({ org_id: scope.orgId, project_id: sco
 let nextItem = 0;
 const itemId = () => TECHNICAL_PLAN_BID_ITEM_IDS[nextItem++ % TECHNICAL_PLAN_BID_ITEM_IDS.length]!;
 
-const ROW_WRITERS: Record<(typeof TECHNICAL_PLAN_TABLES)[number], (trx: Transaction<any>, scope: ProjectRowScope) => Promise<string>> = {
+const ROW_WRITERS: Record<(typeof ALL_TABLES)[number], (trx: Transaction<any>, scope: ProjectRowScope) => Promise<string>> = {
   async technical_plan_meta(trx, scope) {
     await trx.insertInto('technical_plan_meta').values(base(scope)).execute();
     return scope.projectId;
@@ -288,6 +296,16 @@ const ROW_WRITERS: Record<(typeof TECHNICAL_PLAN_TABLES)[number], (trx: Transact
     await trx.insertInto('technical_plan_bid_items').values({ ...base(scope), item_id: id, label: '项目概述' }).execute();
     return id;
   },
+  async technical_plan_outline_nodes(trx, scope) {
+    const nodeId = randomUUID();
+    await trx.insertInto('technical_plan_outline_nodes').values({ ...base(scope), node_id: nodeId, level: 1, title: '第一章' }).execute();
+    return nodeId;
+  },
+  async technical_plan_global_fact_groups(trx, scope) {
+    const groupId = `fact_${randomUUID()}`;
+    await trx.insertInto('technical_plan_global_fact_groups').values({ ...base(scope), group_id: groupId, title: '团队', content: '十人' }).execute();
+    return groupId;
+  },
 };
 
 // ---- 接口 ----
@@ -317,7 +335,7 @@ async function expectAppError(promise: Promise<unknown>, status: number, code: s
 /** 每张表中某个项目的行数（超级用户，绕过 RLS）。 */
 async function adminCounts(projectId: string): Promise<Record<string, number>> {
   const counts: Record<string, number> = {};
-  for (const table of TECHNICAL_PLAN_TABLES) {
+  for (const table of ALL_TABLES) {
     const row = await superuser.selectFrom(table).select((eb: any) => eb.fn.countAll().as('n')).where('project_id', '=', projectId).executeTakeFirstOrThrow();
     counts[table] = Number((row as { n: string }).n);
   }
@@ -328,7 +346,7 @@ async function adminCounts(projectId: string): Promise<Record<string, number>> {
 async function visibleCounts(member: Member): Promise<Record<string, number>> {
   return withTenant(appDb, member.context, async (trx) => {
     const counts: Record<string, number> = {};
-    for (const table of TECHNICAL_PLAN_TABLES) {
+    for (const table of ALL_TABLES) {
       const row = await (trx as unknown as Kysely<any>).selectFrom(table).select((eb: any) => eb.fn.countAll().as('n')).executeTakeFirstOrThrow();
       counts[table] = Number((row as { n: string }).n);
     }
@@ -336,7 +354,7 @@ async function visibleCounts(member: Member): Promise<Record<string, number>> {
   });
 }
 
-const zeroCounts = () => Object.fromEntries(TECHNICAL_PLAN_TABLES.map((table) => [table, 0]));
+const zeroCounts = () => Object.fromEntries(ALL_TABLES.map((table) => [table, 0]));
 
 const SECTIONS = [
   { id: 's1', title: '一标段', includeRanges: [{ startLine: 2, endLine: 2 }] },
@@ -348,11 +366,47 @@ interface Filled {
   tenders: string[];
   originalPlan: string;
   reference: { documentId: string; fileId: string };
+  /** 目录的节点 id：[第一章, 1.1, 1.2, 第二章]。 */
+  nodes: string[];
+}
+
+/** 两章四个节点的目录（1.1、1.2 是叶子）。 */
+function outlineOf(nodes: string[], extra: Record<string, unknown> = {}): { outline: any[]; [field: string]: unknown } {
+  return {
+    project_name: '示例项目',
+    project_overview: '项目概述',
+    ...extra,
+    outline: [
+      {
+        id: nodes[0],
+        title: '第一章',
+        description: '总体',
+        children: [
+          { id: nodes[1], title: '1.1 节', description: '', content_mode: 'ai-generate', knowledge_item_ids: ['k1', 'k2'], source_requirement_id: 'r1' },
+          { id: nodes[2], title: '1.2 节', description: '', content_mode: 'other', content_mode_note: '人工补充' },
+        ],
+      },
+      { id: nodes[3], title: '第二章', description: '', content_mode: 'manual-fill' },
+    ],
+  };
+}
+
+/** 用超级用户直接写入各节正文（正文生成随 5.13、第 8 步）。 */
+async function writeContents(projectId: string, contents: Record<string, string>): Promise<void> {
+  for (const [nodeId, content] of Object.entries(contents)) {
+    await superuser.updateTable('technical_plan_outline_nodes').set({ content }).where('project_id', '=', projectId).where('node_id', '=', nodeId).execute();
+  }
+}
+
+/** 各节正文（超级用户读取）。 */
+async function contentsOf(projectId: string): Promise<Record<string, string>> {
+  const rows = await superuser.selectFrom('technical_plan_outline_nodes').select(['node_id', 'content']).where('project_id', '=', projectId).execute();
+  return Object.fromEntries(rows.map((row: { node_id: string; content: string }) => [row.node_id, row.content]));
 }
 
 /**
  * 新建项目，导入两份招标文件并写入解析结果，上传原方案，多标段识别出两个标段并选择第一个，保存招标解析配置、生成配置
- * （引用一个知识库文档、选一个组织模板），写入招标解析结果。
+ * （引用一个知识库文档、选一个组织模板），写入招标解析结果，生成目录（带字数控制快照）和两组全局事实，写入两节正文。
  */
 async function fillProject(member: Member): Promise<Filled> {
   const projectId = await newProject(member);
@@ -376,8 +430,18 @@ async function fillProject(member: Member): Promise<Filled> {
     projectOverview: { status: 'success', content: '概述' },
     agentInfo: { status: 'running' },
   });
+  const nodes = Array.from({ length: 4 }, () => randomUUID());
+  await saveGeneratedOutline(appDb, member.context, projectId, {
+    outlineData: outlineOf(nodes),
+    wordControlSnapshot: { minimumWords: 1000, maximumWords: 2000, sectionWords: 500 },
+  });
+  await saveGlobalFacts(appDb, member.context, projectId, [
+    { id: 'team', title: '团队', content: '十人' },
+    { id: 'schedule', title: '工期', content: '90 天' },
+  ]);
+  await writeContents(projectId, { [nodes[1]!]: '正文 1.1', [nodes[3]!]: '正文二' });
   await updateStep(appDb, member.context, projectId, 'bid-analysis');
-  return { projectId, tenders, originalPlan, reference };
+  return { projectId, tenders, originalPlan, reference, nodes };
 }
 
 beforeAll(async () => {
@@ -416,16 +480,20 @@ describe('隔离模板', () => {
     technical_plan_generation_bid_tasks: 'task_id',
     technical_plan_generation_reference_docs: 'document_id',
     technical_plan_bid_items: 'item_id',
+    technical_plan_outline_nodes: 'node_id',
+    technical_plan_global_fact_groups: 'group_id',
   };
-  // 页面状态、生成配置、文档的解析结果、解析项的结果按字段更新；选中的解析项和引用的知识库文档整体替换，不授予 UPDATE。
+  // 页面状态、生成配置、文档的解析结果、解析项的结果、目录节点按字段更新；选中的解析项、引用的知识库文档和全局事实整体替换，
+  // 不授予 UPDATE。
   const updates: Record<string, Record<string, unknown>> = {
     technical_plan_meta: { step: 'bid-analysis' },
     technical_plan_documents: { status: 'running' },
     technical_plan_generation_config: { outline_mode: 'response-file' },
     technical_plan_bid_items: { status: 'running' },
+    technical_plan_outline_nodes: { title: '改过的标题' },
   };
 
-  for (const table of TECHNICAL_PLAN_TABLES) {
+  for (const table of ALL_TABLES) {
     describeProjectTable(
       {
         table,
@@ -450,7 +518,7 @@ describe('RLS：删除可见性与写权限', () => {
     b = await newMember();
   });
 
-  it('所属项目软删除后六张表都查不到、改不了、删不掉，恢复项目即一起恢复', async () => {
+  it('所属项目软删除后八张表都查不到、改不了、删不掉，恢复项目即一起恢复', async () => {
     const member = await newMember();
     const filled = await fillProject(member);
     const before = await adminCounts(filled.projectId);
@@ -461,6 +529,8 @@ describe('RLS：删除可见性与写权限', () => {
       technical_plan_generation_bid_tasks: 7,
       technical_plan_generation_reference_docs: 1,
       technical_plan_bid_items: 2,
+      technical_plan_outline_nodes: 4,
+      technical_plan_global_fact_groups: 2,
     });
     expect(await visibleCounts(member)).toEqual(before);
 
@@ -475,11 +545,22 @@ describe('RLS：删除可见性与写权限', () => {
       expect((await any.deleteFrom('technical_plan_bid_items').executeTakeFirst()).numDeletedRows).toBe(0n);
       expect((await any.deleteFrom('technical_plan_generation_bid_tasks').executeTakeFirst()).numDeletedRows).toBe(0n);
       expect((await any.deleteFrom('technical_plan_generation_reference_docs').executeTakeFirst()).numDeletedRows).toBe(0n);
+      expect((await any.updateTable('technical_plan_outline_nodes').set({ content: '' }).executeTakeFirst()).numUpdatedRows).toBe(0n);
+      expect((await any.deleteFrom('technical_plan_outline_nodes').executeTakeFirst()).numDeletedRows).toBe(0n);
+      expect((await any.deleteFrom('technical_plan_global_fact_groups').executeTakeFirst()).numDeletedRows).toBe(0n);
     });
     // 已删除的项目下不能新写。
     await expect(
       withTenant(appDb, member.context, (trx) =>
         trx.insertInto('technical_plan_bid_items').values({ org_id: member.orgId, project_id: filled.projectId, item_id: 'keyInfo', label: '投标关键节点' }).execute(),
+      ),
+    ).rejects.toThrow(/row-level security/);
+    await expect(
+      withTenant(appDb, member.context, (trx) =>
+        trx
+          .insertInto('technical_plan_outline_nodes')
+          .values({ org_id: member.orgId, project_id: filled.projectId, node_id: randomUUID(), level: 1, title: '新章' })
+          .execute(),
       ),
     ).rejects.toThrow(/row-level security/);
     expect(await adminCounts(filled.projectId)).toEqual(before);
@@ -574,7 +655,7 @@ describe('RLS：删除可见性与写权限', () => {
   it('只能挂在技术方案项目下：其他 kind 的项目下写不进任何一张表', async () => {
     const projectId = await newProject(a, 'feasibility-report');
     const scope = { orgId: a.orgId, userId: a.userId, projectId };
-    for (const table of TECHNICAL_PLAN_TABLES) {
+    for (const table of ALL_TABLES) {
       await expect(
         withTenant(appDb, a.context, (trx) => ROW_WRITERS[table](trx as unknown as Transaction<any>, scope)),
         table,
@@ -632,10 +713,10 @@ describe('RLS：删除可见性与写权限', () => {
     await setMarkdown(await newArtifact(member, { kind: 'markdown', sourceFileId: fileA }));
   });
 
-  it('页面状态、文档、生成配置没有 DELETE 授权，选中的解析项与引用没有 UPDATE 授权；归属列和文档的角色、顺序写入后不能改', async () => {
+  it('页面状态、文档、生成配置没有 DELETE 授权，选中的解析项、引用与全局事实没有 UPDATE 授权；归属列、节点 id 和文档的角色、顺序写入后不能改', async () => {
     const privileges = await sql<{ table: string; del: boolean; upd: boolean }>`
       SELECT t AS table, has_table_privilege(${APP_ROLE}, t, 'DELETE') AS del, has_any_column_privilege(${APP_ROLE}, t, 'UPDATE') AS upd
-      FROM unnest(${sql.val([...TECHNICAL_PLAN_TABLES])}::text[]) AS t ORDER BY t`.execute(superuser);
+      FROM unnest(${sql.val([...ALL_TABLES])}::text[]) AS t ORDER BY t`.execute(superuser);
     const byTable = Object.fromEntries(privileges.rows.map((row) => [row.table, row]));
     expect(byTable.technical_plan_meta).toMatchObject({ del: false, upd: true });
     expect(byTable.technical_plan_documents).toMatchObject({ del: false, upd: true });
@@ -643,6 +724,8 @@ describe('RLS：删除可见性与写权限', () => {
     expect(byTable.technical_plan_generation_bid_tasks).toMatchObject({ del: true, upd: false });
     expect(byTable.technical_plan_generation_reference_docs).toMatchObject({ del: true, upd: false });
     expect(byTable.technical_plan_bid_items).toMatchObject({ del: true, upd: true });
+    expect(byTable.technical_plan_outline_nodes).toMatchObject({ del: true, upd: true });
+    expect(byTable.technical_plan_global_fact_groups).toMatchObject({ del: true, upd: false });
     for (const [table, column] of [
       ['technical_plan_meta', 'project_id'],
       ['technical_plan_meta', 'org_id'],
@@ -653,10 +736,35 @@ describe('RLS：删除可见性与写权限', () => {
       ['technical_plan_generation_config', 'project_id'],
       ['technical_plan_bid_items', 'item_id'],
       ['technical_plan_bid_items', 'project_id'],
+      ['technical_plan_outline_nodes', 'org_id'],
+      ['technical_plan_outline_nodes', 'project_id'],
+      ['technical_plan_outline_nodes', 'node_id'],
     ] as const) {
       const result = await sql<{ ok: boolean }>`SELECT has_column_privilege(${APP_ROLE}, ${table}, ${column}, 'UPDATE') AS ok`.execute(superuser);
       expect(result.rows[0]!.ok, `${table}.${column}`).toBe(false);
     }
+  });
+
+  it('目录节点的父节点只能是同一项目的节点，不能以自己为父；删除父节点时子节点级联删除', async () => {
+    const member = await newMember();
+    const projectId = await newProject(member);
+    const other = await newProject(member);
+    const insert = (project: string, nodeId: string, parent: string | null) =>
+      withTenant(appDb, member.context, (trx) =>
+        trx
+          .insertInto('technical_plan_outline_nodes')
+          .values({ org_id: member.orgId, project_id: project, node_id: nodeId, parent_node_id: parent, level: parent ? 2 : 1, title: '节' })
+          .execute(),
+      );
+    const root = randomUUID();
+    const child = randomUUID();
+    await insert(projectId, root, null);
+    await insert(projectId, child, root);
+    await expect(insert(other, randomUUID(), root)).rejects.toThrow(/foreign key/);
+    const self = randomUUID();
+    await expect(insert(projectId, self, self)).rejects.toThrow(/check constraint|foreign key/);
+    await withTenant(appDb, member.context, (trx) => trx.deleteFrom('technical_plan_outline_nodes').where('node_id', '=', root).execute());
+    expect((await adminCounts(projectId)).technical_plan_outline_nodes).toBe(0);
   });
 
   it('取值与长度由 CHECK 约束挡住', async () => {
@@ -684,6 +792,18 @@ describe('RLS：删除可见性与写权限', () => {
       ['technical_plan_bid_items', { item_id: 'unknown', label: 'x' }],
       ['technical_plan_bid_items', { item_id: 'keyInfo', label: '' }],
       ['technical_plan_bid_items', { item_id: 'keyInfo', label: 'x', status: 'done' }],
+      ['technical_plan_meta', { outline_word_control_snapshot: '[]' }],
+      ['technical_plan_meta', { outline_project_name: '' }],
+      ['technical_plan_outline_nodes', { node_id: randomUUID(), level: 0, title: 'x' }],
+      ['technical_plan_outline_nodes', { node_id: randomUUID(), level: 11, title: 'x' }],
+      ['technical_plan_outline_nodes', { node_id: randomUUID(), level: 2, title: 'x' }],
+      ['technical_plan_outline_nodes', { node_id: randomUUID(), level: 1, title: '' }],
+      ['technical_plan_outline_nodes', { node_id: randomUUID(), level: 1, title: 'x', content_mode: 'auto' }],
+      ['technical_plan_outline_nodes', { node_id: randomUUID(), level: 1, title: 'x', content_mode: 'manual-fill', content_mode_note: '说明' }],
+      ['technical_plan_outline_nodes', { node_id: randomUUID(), level: 1, title: 'x', knowledge_item_ids: '{}' }],
+      ['technical_plan_outline_nodes', { node_id: randomUUID(), level: 1, title: 'x', source_requirement_id: '' }],
+      ['technical_plan_global_fact_groups', { group_id: 'Team', title: 'x', content: 'y' }],
+      ['technical_plan_global_fact_groups', { group_id: 'team', title: 'x', content: '' }],
     ];
     for (const [table, values] of cases) {
       await expect(insert(table, values), `${table} ${JSON.stringify(values)}`).rejects.toThrow(/check constraint/);
@@ -733,6 +853,13 @@ describe('Store', () => {
       bidSectionExtractionError: null,
       bidSectionExtractionTask: null,
       bidAnalysisTask: null,
+      outlineData: null,
+      outlineWordControlSnapshot: null,
+      globalFacts: [],
+      outlineGenerationTask: null,
+      outlineAdjustmentTask: null,
+      globalFactsTask: null,
+      globalFactsAdjustmentTask: null,
     });
     expect(await adminCounts(projectId)).toEqual(zeroCounts());
   });
@@ -992,7 +1119,7 @@ describe('Store', () => {
     expect(await readTenderMarkdown(appDb, a.context, projectId, memoryStore)).toBe('公告\n二标段');
   });
 
-  it('清空：删除招标解析结果、选中的解析项与引用，招标文件与原方案进回收站，页面状态与生成配置恢复默认值', async () => {
+  it('清空：删除招标解析结果、目录、全局事实、选中的解析项与引用，招标文件与原方案进回收站，页面状态与生成配置恢复默认值', async () => {
     const filled = await fillProject(a);
     expect(await clearTechnicalPlan(appDb, a.context, filled.projectId)).toEqual({ deletedFileCount: 3 });
     const state = await loadTechnicalPlan(appDb, a.context, filled.projectId);
@@ -1003,12 +1130,250 @@ describe('Store', () => {
       technical_plan_generation_bid_tasks: REQUIRED_TASKS.length,
       technical_plan_generation_reference_docs: 0,
       technical_plan_bid_items: 0,
+      technical_plan_outline_nodes: 0,
+      technical_plan_global_fact_groups: 0,
     });
+    expect(state).toMatchObject({ outlineData: null, outlineWordControlSnapshot: null, globalFacts: [] });
     for (const fileId of [...filled.tenders, filled.originalPlan]) expect(await fileDeleted(fileId)).toBe(true);
     // 没写过的项目清空时不插入行。
     const empty = await newProject(a);
     expect(await clearTechnicalPlan(appDb, a.context, empty)).toEqual({ deletedFileCount: 0 });
     expect(await adminCounts(empty)).toEqual(zeroCounts());
+  });
+
+  it('目录：完整状态带编号、正文与字数控制快照；组织内其他成员看到同样的目录', async () => {
+    const filled = await fillProject(a);
+    const [n0, n1, n2, n3] = filled.nodes;
+    const state = await loadTechnicalPlan(appDb, a.context, filled.projectId);
+    expect(state.outlineData).toEqual({
+      project_name: '示例项目',
+      project_overview: '项目概述',
+      outline: [
+        {
+          id: n0,
+          number: '1',
+          title: '第一章',
+          description: '总体',
+          children: [
+            {
+              id: n1,
+              number: '1.1',
+              title: '1.1 节',
+              description: '',
+              content_mode: 'ai-generate',
+              knowledge_item_ids: ['k1', 'k2'],
+              source_requirement_id: 'r1',
+              content: '正文 1.1',
+            },
+            { id: n2, number: '1.2', title: '1.2 节', description: '', content_mode: 'other', content_mode_note: '人工补充' },
+          ],
+        },
+        { id: n3, number: '2', title: '第二章', description: '', content_mode: 'manual-fill', content: '正文二' },
+      ],
+    });
+    expect(state.outlineWordControlSnapshot).toEqual({ minimumWords: 1000, maximumWords: 2000, sectionWords: 500 });
+    expect(state.globalFacts.map((fact) => [fact.id, fact.title, fact.content])).toEqual([
+      ['team', '团队', '十人'],
+      ['schedule', '工期', '90 天'],
+    ]);
+    expect((await loadTechnicalPlan(appDb, peer.context, filled.projectId)).outlineData).toEqual(state.outlineData);
+  });
+
+  it('保存目录 sort：只改位置与项目名称，节点身份和正文不变，编号按新顺序现算；节点不一致时 409 不做改动', async () => {
+    const filled = await fillProject(a);
+    const [n0, n1, n2, n3] = filled.nodes as [string, string, string, string];
+    const before = await contentsOf(filled.projectId);
+    // 第二章移到最前，1.2 移到第二章下，同时请求中的正文、标题被忽略。
+    const state = await saveOutline(appDb, a.context, filled.projectId, {
+      reason: 'sort',
+      outlineData: {
+        project_name: '新名称',
+        outline: [
+          { id: n3, title: '第二章', content: '忽略', children: [{ id: n2, title: '改不了' }] },
+          { id: n0, title: '第一章', children: [{ id: n1, title: '1.1 节' }] },
+        ],
+      },
+    });
+    expect(state.outlineData!.project_name).toBe('新名称');
+    expect(state.outlineData!.project_overview).toBeUndefined();
+    expect(state.outlineData!.outline.map((item) => [item.id, item.number, item.children?.map((child) => [child.id, child.number, child.title])])).toEqual([
+      [n3, '1', [[n2, '1.1', '1.2 节']]],
+      [n0, '2', [[n1, '2.1', '1.1 节']]],
+    ]);
+    expect(await contentsOf(filled.projectId)).toEqual(before);
+    // 少了节点、多了节点：409，不做改动。
+    for (const outline of [[{ id: n0, children: [{ id: n1 }, { id: n2 }] }], [...outlineOf(filled.nodes).outline, { id: randomUUID(), title: '新' }]]) {
+      await expectAppError(saveOutline(appDb, a.context, filled.projectId, { reason: 'sort', outlineData: { outline } }), 409, 'TECHNICAL_PLAN_OUTLINE_CHANGED');
+    }
+    expect((await loadTechnicalPlan(appDb, a.context, filled.projectId)).outlineData).toEqual(state.outlineData);
+  });
+
+  it('保存目录 edit：只改标题与说明，处理方式、正文与位置不变', async () => {
+    const filled = await fillProject(a);
+    const [n0, n1, n2, n3] = filled.nodes as [string, string, string, string];
+    const state = await saveOutline(appDb, a.context, filled.projectId, {
+      reason: 'edit',
+      outlineData: {
+        outline: [
+          { id: n0, title: '新第一章', description: '新说明', children: [{ id: n1, title: '1.1 节', content_mode: 'manual-fill', content: '' }, { id: n2, title: '1.2 节' }] },
+          { id: n3, title: '' },
+        ],
+      },
+    });
+    expect(state.outlineData!.outline.map((item) => [item.title, item.description])).toEqual([
+      ['新第一章', '新说明'],
+      ['未命名章节', ''],
+    ]);
+    expect(state.outlineData!.outline[0]!.children![0]).toMatchObject({ content_mode: 'ai-generate', content: '正文 1.1' });
+    expect(state.outlineData!.outline[1]).toMatchObject({ content: '正文二' });
+    expect(state.outlineData!.project_name).toBe('示例项目');
+    await expectAppError(
+      saveOutline(appDb, a.context, filled.projectId, { reason: 'edit', outlineData: { outline: [{ id: n0, title: 'x' }] } }),
+      409,
+      'TECHNICAL_PLAN_OUTLINE_CHANGED',
+    );
+  });
+
+  it('保存目录 add-child / delete：受影响节点与叶子、父节点身份变化的节点清空正文，其余沿用已保存的正文，新节点取请求的正文', async () => {
+    const filled = await fillProject(a);
+    const [n0, n1, n2, n3] = filled.nodes as [string, string, string, string];
+    await writeContents(filled.projectId, { [n2]: '正文 1.2' });
+    const added = randomUUID();
+    // 第二章下加一个子节点：第二章由叶子变成父节点，正文清空；请求给出的 1.1 正文被忽略（沿用已保存的）。
+    const outline = outlineOf(filled.nodes).outline;
+    outline[0].children[0].content = '请求中的正文';
+    outline[1].children = [{ id: added, title: '2.1 节', content_mode: 'ai-generate', content: '新节点正文' }];
+    let state = await saveOutline(appDb, a.context, filled.projectId, { reason: 'add-child', outlineData: { outline }, affectedNodeIds: [] });
+    expect(await contentsOf(filled.projectId)).toEqual({ [n0]: '', [n1]: '正文 1.1', [n2]: '正文 1.2', [n3]: '', [added]: '新节点正文' });
+    expect(state.outlineData!.outline[1]).toMatchObject({ id: n3, number: '2', children: [{ id: added, number: '2.1' }] });
+    // 父节点不再保留处理方式。
+    expect(state.outlineData!.outline[1]!.content_mode).toBeUndefined();
+    expect(state.outlineData!.project_name).toBeUndefined();
+
+    // 删除 1.2，affectedNodeIds 中的 1.1 正文清空；删除第二章时其子节点一起删除。
+    state = await saveOutline(appDb, a.context, filled.projectId, {
+      reason: 'delete',
+      outlineData: { project_name: '项目', outline: [{ id: n0, title: '第一章', children: [{ id: n1, title: '1.1 节', content_mode: 'ai-generate' }] }] },
+      affectedNodeIds: [n1.toUpperCase()],
+    });
+    expect(await contentsOf(filled.projectId)).toEqual({ [n0]: '', [n1]: '' });
+    expect(state.outlineData!.outline.map((item) => item.id)).toEqual([n0]);
+    // 字数控制快照只在目录清空时清除。
+    expect(state.outlineWordControlSnapshot).toEqual({ minimumWords: 1000, maximumWords: 2000, sectionWords: 500 });
+  });
+
+  it('保存目录 replace：整体替换并清空全部正文；空目录删除目录并清除字数控制快照；全局事实不受影响', async () => {
+    const filled = await fillProject(a);
+    const [n0, n1] = filled.nodes as [string, string];
+    const fresh = randomUUID();
+    let state = await saveOutline(appDb, a.context, filled.projectId, {
+      reason: 'replace',
+      outlineData: { outline: [{ id: n0, title: '第一章', children: [{ id: n1, title: '1.1', content: '不保留' }, { id: fresh, title: '1.2', content: '不保留' }] }] },
+    });
+    expect(await contentsOf(filled.projectId)).toEqual({ [n0]: '', [n1]: '', [fresh]: '' });
+    expect(state.globalFacts).toHaveLength(2);
+    state = await saveOutline(appDb, a.context, filled.projectId, { reason: 'add-root', outlineData: { project_name: '项目', outline: [] } });
+    expect(state).toMatchObject({ outlineData: null, outlineWordControlSnapshot: null });
+    expect((await adminCounts(filled.projectId)).technical_plan_outline_nodes).toBe(0);
+    const meta = await superuser.selectFrom('technical_plan_meta').select(['outline_project_name', 'outline_project_overview']).where('project_id', '=', filled.projectId).executeTakeFirstOrThrow();
+    expect(meta).toEqual({ outline_project_name: null, outline_project_overview: null });
+    state = await saveOutline(appDb, a.context, filled.projectId, { reason: 'replace', outlineData: null });
+    expect(state.outlineData).toBeNull();
+  });
+
+  it('保存目录：不合法的目录返回 400，不做改动', async () => {
+    const filled = await fillProject(a);
+    const before = await loadTechnicalPlan(appDb, a.context, filled.projectId);
+    for (const outlineData of [{ outline: {} }, { outline: [{ id: '1.1', title: 'x' }] }, { outline: [{ id: randomUUID(), content_mode: 'auto' }] }, 'x']) {
+      await expectAppError(saveOutline(appDb, a.context, filled.projectId, { reason: 'replace', outlineData }), 400, 'TECHNICAL_PLAN_INVALID');
+    }
+    expect(await loadTechnicalPlan(appDb, a.context, filled.projectId)).toEqual(before);
+  });
+
+  it('saveGeneratedOutline：整体替换、清空正文并写入字数控制快照；空目录时快照为 null；不合法的目录返回 400', async () => {
+    const filled = await fillProject(a);
+    const nodes = Array.from({ length: 4 }, () => randomUUID());
+    await saveGeneratedOutline(appDb, a.context, filled.projectId, {
+      outlineData: outlineOf(nodes),
+      wordControlSnapshot: { minimumWords: 3000.7, maximumWords: -1, sectionWords: 800 },
+    });
+    let state = await loadTechnicalPlan(appDb, a.context, filled.projectId);
+    expect(state.outlineData!.outline.map((item) => item.id)).toEqual([nodes[0], nodes[3]]);
+    expect(Object.values(await contentsOf(filled.projectId))).toEqual(['', '', '', '']);
+    expect(state.outlineWordControlSnapshot).toEqual({ minimumWords: 3000, maximumWords: 0, sectionWords: 800 });
+    await saveGeneratedOutline(appDb, a.context, filled.projectId, { outlineData: null, wordControlSnapshot: { minimumWords: 1, maximumWords: 2, sectionWords: 3 } });
+    state = await loadTechnicalPlan(appDb, a.context, filled.projectId);
+    expect(state).toMatchObject({ outlineData: null, outlineWordControlSnapshot: null });
+    await expectAppError(
+      saveGeneratedOutline(appDb, a.context, filled.projectId, { outlineData: { outline: [{ id: 'x' }] }, wordControlSnapshot: null }),
+      400,
+      'TECHNICAL_PLAN_INVALID',
+    );
+  });
+
+  it('保存全局事实：按桌面版整理后整体替换，清空全部正文；内容未变的分组沿用原来的 updated_at；超出上限返回 400', async () => {
+    const filled = await fillProject(a);
+    const before = (await loadTechnicalPlan(appDb, a.context, filled.projectId)).globalFacts;
+    const state = await saveGlobalFacts(appDb, a.context, filled.projectId, [
+      { id: 'schedule', title: '工期', content: '120 天' },
+      { id: 'team', title: ' 团队 ', content: '十人' },
+      { title: '空的丢弃', content: ' ' },
+      { title: 'Quality Level', content: '合格' },
+    ]);
+    expect(state.globalFacts.map((fact) => [fact.id, fact.title, fact.content])).toEqual([
+      ['schedule', '工期', '120 天'],
+      ['team', '团队', '十人'],
+      ['quality_level', 'Quality Level', '合格'],
+    ]);
+    const team = state.globalFacts.find((fact) => fact.id === 'team')!;
+    const schedule = state.globalFacts.find((fact) => fact.id === 'schedule')!;
+    expect(team.updated_at).toEqual(before.find((fact) => fact.id === 'team')!.updated_at);
+    expect(schedule.updated_at.getTime()).toBeGreaterThan(before.find((fact) => fact.id === 'schedule')!.updated_at.getTime());
+    expect(Object.values(await contentsOf(filled.projectId)).every((content) => content === '')).toBe(true);
+    // 目录本身不变。
+    expect(state.outlineData!.outline).toHaveLength(2);
+    expect((await saveGlobalFacts(appDb, a.context, filled.projectId, [])).globalFacts).toEqual([]);
+    await expectAppError(
+      saveGlobalFacts(appDb, a.context, filled.projectId, Array.from({ length: 101 }, () => ({ title: 't', content: 'c' }))),
+      400,
+      'TECHNICAL_PLAN_INVALID',
+    );
+  });
+
+  it('下游清空：导入或移除招标文件、切换单 / 多标段、选择投标范围时删除目录与全局事实，清除项目名称、概述与字数控制快照', async () => {
+    const cleared = { outlineData: null, outlineWordControlSnapshot: null, globalFacts: [] };
+    const check = async (projectId: string) => {
+      expect(await loadTechnicalPlan(appDb, a.context, projectId)).toMatchObject(cleared);
+      const meta = await superuser
+        .selectFrom('technical_plan_meta')
+        .select(['outline_project_name', 'outline_project_overview', 'outline_word_control_snapshot'])
+        .where('project_id', '=', projectId)
+        .executeTakeFirstOrThrow();
+      expect(meta).toEqual({ outline_project_name: null, outline_project_overview: null, outline_word_control_snapshot: null });
+    };
+    let filled = await fillProject(a);
+    await importTenderFiles(appDb, a.context, filled.projectId, [await newFile(a)]);
+    await check(filled.projectId);
+    filled = await fillProject(a);
+    await removeTenderFile(appDb, a.context, filled.projectId, filled.tenders[1]!);
+    await check(filled.projectId);
+    filled = await fillProject(a);
+    await saveGenerationConfig(appDb, a.context, filled.projectId, { bidSectionMode: 'single' });
+    await check(filled.projectId);
+    filled = await fillProject(a);
+    await selectBidSection(appDb, a.context, filled.projectId, 's2', memoryStore);
+    await check(filled.projectId);
+    filled = await fillProject(a);
+    await prepareBidSectionExtraction(appDb, a.context, filled.projectId);
+    await check(filled.projectId);
+    // 上传、移除原方案和不切换单 / 多标段的配置保存不清空。
+    filled = await fillProject(a);
+    await setOriginalPlan(appDb, a.context, filled.projectId, await newFile(a));
+    await removeOriginalPlan(appDb, a.context, filled.projectId);
+    await saveGenerationConfig(appDb, a.context, filled.projectId, { globalFactsMode: 'omit' });
+    const state = await loadTechnicalPlan(appDb, a.context, filled.projectId);
+    expect(state.outlineData!.outline).toHaveLength(2);
+    expect(state.globalFacts).toHaveLength(2);
   });
 
   it('saveDocumentParse：只写给出的字段；产物不合规被拒绝；文档已移除时返回 false；参数不合法抛 TypeError', async () => {
@@ -1096,6 +1461,8 @@ describe('接口', () => {
     await expectError(await call(a, 'GET', tp(await newProject(a, 'rejection-check'))), 404, 'PROJECT_NOT_FOUND');
     await expectError(await call(b, 'PATCH', tp(projectId, '/step'), { step: 'expand' }), 404, 'PROJECT_NOT_FOUND');
     await expectError(await call(b, 'GET', tp(projectId, '/tender-markdown')), 404, 'PROJECT_NOT_FOUND');
+    await expectError(await call(b, 'PUT', tp(projectId, '/outline'), { outlineData: null, reason: 'replace' }), 404, 'PROJECT_NOT_FOUND');
+    await expectError(await call(b, 'PUT', tp(projectId, '/global-facts'), { globalFacts: [] }), 404, 'PROJECT_NOT_FOUND');
     await softDeleteProject(projectId, a.userId);
     await expectError(await call(a, 'GET', tp(projectId)), 404, 'PROJECT_NOT_FOUND');
   });
@@ -1188,6 +1555,15 @@ describe('接口', () => {
       ['POST', '/tender-files', { fileIds: ['x'] }],
       ['PUT', '/original-plan', {}],
       ['PUT', '/bid-section', { sectionId: '' }],
+      ['PUT', '/outline', { outlineData: { outline: [] } }],
+      ['PUT', '/outline', { outlineData: [], reason: 'replace' }],
+      ['PUT', '/outline', { outlineData: null, reason: 'move' }],
+      ['PUT', '/outline', { outlineData: null, reason: 'delete', affectedNodeIds: ['1.2'] }],
+      ['PUT', '/outline', { outlineData: { outline: [{ id: '1', title: 'x' }] }, reason: 'replace' }],
+      ['PUT', '/global-facts', {}],
+      ['PUT', '/global-facts', { globalFacts: [{ title: 'x' }] }],
+      ['PUT', '/global-facts', { globalFacts: [{ title: 'x', content: 'y', note: 'z' }] }],
+      ['PUT', '/global-facts', { globalFacts: [{ title: 'x', content: 'y'.repeat(100_001) }] }],
     ];
     for (const [method, path, payload] of cases) {
       const response = await call(a, method, tp(projectId, path), payload);
@@ -1197,6 +1573,47 @@ describe('接口', () => {
     await expectError(await call(a, 'PUT', tp(projectId, '/original-plan'), { fileId: await newFile(a, { purpose: 'knowledge' }) }), 400, 'TECHNICAL_PLAN_FILE_UNAVAILABLE');
     await expectError(await call(a, 'PATCH', tp(projectId, '/generation-config'), { exportTemplateId: await newTemplate(b) }), 400, 'TECHNICAL_PLAN_TEMPLATE_UNAVAILABLE');
     await expectError(await call(a, 'PATCH', tp(projectId, '/generation-config'), { referenceKnowledgeDocumentIds: [randomUUID()] }), 400, 'TECHNICAL_PLAN_REFERENCE_UNAVAILABLE');
+  });
+
+  it('目录与全局事实：保存后返回完整状态；sort 与已保存的目录不一致时 409', async () => {
+    const projectId = await newProject(a);
+    const nodes = Array.from({ length: 4 }, () => randomUUID());
+    let response = await call(a, 'PUT', tp(projectId, '/outline'), { outlineData: outlineOf(nodes), reason: 'replace' });
+    expect(response.statusCode, response.body).toBe(200);
+    expect(response.headers['cache-control']).toBe('no-store');
+    expect(response.json().outlineData.outline.map((item: { id: string; number: string }) => [item.id, item.number])).toEqual([
+      [nodes[0], '1'],
+      [nodes[3], '2'],
+    ]);
+    response = await call(a, 'PUT', tp(projectId, '/outline'), {
+      outlineData: { outline: [{ id: nodes[3] }, { id: nodes[0], children: [{ id: nodes[2] }, { id: nodes[1] }] }] },
+      reason: 'sort',
+    });
+    expect(response.statusCode, response.body).toBe(200);
+    expect(response.json().outlineData.outline[1].children.map((item: { id: string; number: string }) => [item.id, item.number])).toEqual([
+      [nodes[2], '2.1'],
+      [nodes[1], '2.2'],
+    ]);
+    await expectError(await call(a, 'PUT', tp(projectId, '/outline'), { outlineData: { outline: [{ id: nodes[0] }] }, reason: 'sort' }), 409, 'TECHNICAL_PLAN_OUTLINE_CHANGED');
+    await expectError(
+      await call(a, 'PUT', tp(projectId, '/outline'), { outlineData: { outline: [{ id: randomUUID(), content_mode: 'auto' }] }, reason: 'replace' }),
+      400,
+      'TECHNICAL_PLAN_INVALID',
+    );
+
+    response = await call(a, 'PUT', tp(projectId, '/global-facts'), {
+      globalFacts: [{ id: 'team', title: '团队', content: '十人', updated_at: '2000-01-01T00:00:00.000Z' }, { title: '空', content: '' }],
+    });
+    expect(response.statusCode, response.body).toBe(200);
+    const facts = response.json().globalFacts;
+    expect(facts).toMatchObject([{ id: 'team', title: '团队', content: '十人' }]);
+    expect(facts[0].updated_at).not.toBe('2000-01-01T00:00:00.000Z');
+
+    // 其他组织的成员读不到。
+    await expectError(await call(b, 'GET', tp(projectId)), 404, 'PROJECT_NOT_FOUND');
+    response = await call(a, 'DELETE', tp(projectId));
+    expect(response.statusCode).toBe(200);
+    expect((await call(a, 'GET', tp(projectId))).json()).toMatchObject({ outlineData: null, globalFacts: [], outlineWordControlSnapshot: null });
   });
 
   it('招标文件的 Markdown：附件下载；还没有解析时为空；未配置对象存储时 503；文档不可见或不是招标文件时 404', async () => {

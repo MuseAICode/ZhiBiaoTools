@@ -1,8 +1,8 @@
-// 技术方案（一）的读写（迁移 0018_technical_plan）：页面状态、招标文件与原方案、统一生成配置（含选中的招标解析项、引用的
-// 知识库文档和导出模板）、招标解析项的结果、多标段识别与投标范围选择。组织和用户一律来自 TenantContext，所有查询都经
-// withTenant；项目由路由先经 requireProject 校验（kind = technical-plan）。
+// 技术方案的读写（迁移 0018_technical_plan、0019_technical_plan_outline）：页面状态、招标文件与原方案、统一生成配置（含选中的
+// 招标解析项、引用的知识库文档和导出模板）、招标解析项的结果、多标段识别与投标范围选择（5.11），目录与全局事实（5.12）。
+// 组织和用户一律来自 TenantContext，所有查询都经 withTenant；项目由路由先经 requireProject 校验（kind = technical-plan）。
 //
-// 可见性、写权限和删除可见性由 RLS 保证，这里不判断：所属项目已删除时六张表的行都查不到、改不了；文档随原件的生命周期，
+// 可见性、写权限和删除可见性由 RLS 保证，这里不判断：所属项目已删除时八张表的行都查不到、改不了；文档随原件的生命周期，
 // 原件已删除（进入回收站）时文档行不可见；引用的知识库文档不可见时引用行同样不可见；导出模板只能是本组织的或系统模板。
 // 导入招标文件、上传原方案就是把已上传的 tender 文件挂到本项目（files.project_id，设置后不能再改，由迁移 0015 的触发器
 // 保证）并登记到 technical_plan_documents，文档停在待解析；移除和清空时软删除原件（进回收站，按文件自己的恢复期处理），
@@ -11,11 +11,17 @@
 // 与桌面版 technicalPlanStore.cjs（经 taskService 调用的版本）相同：导入或移除招标文件时清空招标解析结果、多标段识别结果和
 // 投标范围，生成配置恢复默认值，步骤回到 document-analysis（clearDownstreamFromTender）；切换单 / 多标段或选择投标范围时
 // 清空招标解析结果、引用的知识库文档和正文生成选项，步骤回到 bid-analysis（clearDownstreamFromBidSectionChange）；移除原方案
-// 时目录扩展方式恢复为 ai-complement。目录、全局事实（5.12）和正文（5.13）的下游清空随对应的 PR 加入这两个函数。
+// 时目录扩展方式恢复为 ai-complement。两个函数都清空目录（含各节正文）、全局事实和目录的项目名称、概述与字数控制快照；
+// 正文生成状态（5.13）的清空随对应的 PR 加入。
+//
+// 目录与桌面版 saveOutline 的 reason 协议相同（节点 id 是稳定 UUID，sort_order 是同级顺序，编号读取时现算）：replace 清空
+// 全部正文，delete / add-* 只清空受影响节点（affectedNodeIds 与叶子 / 父节点身份变化的节点）的正文，sort 只改位置，edit 只改
+// 标题与说明。保存全局事实时清空全部正文（与桌面版 clearContentGenerationState 相同）。
 //
 // 桌面版合并的招标正文（tender-original.md）和按投标范围裁剪的工作副本（tender.md）不再保存：读取时由各招标文件解析出的
 // Markdown 现算（readTenderMarkdown），投标范围只记 id 和标题。给第 6 步任务用的写函数：saveDocumentParse（文档的解析
-// 结果）、saveBidItems（招标解析项的结果）、prepareBidSectionExtraction / saveBidSectionExtraction（多标段识别）。
+// 结果）、saveBidItems（招标解析项的结果）、prepareBidSectionExtraction / saveBidSectionExtraction（多标段识别）、
+// saveGeneratedOutline（目录生成的结果与字数控制快照）；全局事实生成同样经 saveGlobalFacts 写入。
 import { sql, type Kysely, type Transaction } from 'kysely';
 import {
   TECHNICAL_PLAN_BID_SECTION_MODES,
@@ -58,6 +64,17 @@ import { withTenant, type TenantContext } from '../db/tenant.ts';
 import { AppError } from '../errors.ts';
 import type { ObjectStore } from '../files/objectStore.ts';
 import { storageDisabled } from '../knowledgeBase/content.ts';
+import {
+  buildOutline,
+  flattenOutline,
+  normalizeGlobalFactGroups,
+  OutlineInputError,
+  outlineHeader,
+  TECHNICAL_PLAN_OUTLINE_SAVE_REASONS,
+  type OutlineNodeRow,
+  type TechnicalPlanOutlineData,
+  type TechnicalPlanOutlineSaveReason,
+} from './outline.ts';
 import {
   bidAnalysisProgress,
   bidItemLabel,
@@ -146,6 +163,15 @@ export interface TechnicalPlanGenerationConfig {
   contentGenerationOptions: ContentGenerationOptions;
 }
 
+/** 一组全局事实（与桌面版 Renderer 的 GlobalFactGroup 相同）。 */
+export interface TechnicalPlanGlobalFact {
+  id: string;
+  title: string;
+  content: string;
+  /** 内容最近一次变化的时间（重新保存时内容未变的分组沿用原值）。 */
+  updated_at: Date;
+}
+
 export interface TechnicalPlanState extends TechnicalPlanGenerationConfig {
   step: TechnicalPlanStep;
   /** 招标文件，按导入顺序。 */
@@ -164,6 +190,15 @@ export interface TechnicalPlanState extends TechnicalPlanGenerationConfig {
   /** 后台任务状态随第 6 步（jobs），本步一律为 null。 */
   bidSectionExtractionTask: null;
   bidAnalysisTask: null;
+  /** 目录（含各节正文），还没有目录时为 null。 */
+  outlineData: TechnicalPlanOutlineData | null;
+  /** 目录生成时生效的字数控制，没有时为 null。 */
+  outlineWordControlSnapshot: OutlineWordControlOptions | null;
+  globalFacts: TechnicalPlanGlobalFact[];
+  outlineGenerationTask: null;
+  outlineAdjustmentTask: null;
+  globalFactsTask: null;
+  globalFactsAdjustmentTask: null;
 }
 
 // ---- 错误 ----
@@ -191,6 +226,14 @@ function templateUnavailable(cause?: unknown): AppError {
 
 function documentNotFound(): AppError {
   return new AppError(404, 'TECHNICAL_PLAN_DOCUMENT_NOT_FOUND', '招标文件不存在或已移除');
+}
+
+function outlineInvalid(error: OutlineInputError): AppError {
+  return new AppError(400, 'TECHNICAL_PLAN_INVALID', error.message, { cause: error });
+}
+
+function outlineChanged(): AppError {
+  return new AppError(409, 'TECHNICAL_PLAN_OUTLINE_CHANGED', '目录已变化，请刷新后再调整');
 }
 
 function markdownTooLarge(): AppError {
@@ -250,6 +293,17 @@ function oneOf<T extends string | number>(value: unknown, allowed: readonly T[],
 function words(value: unknown): number {
   const number = Number(value);
   return Number.isFinite(number) && number >= 0 ? Math.min(Math.floor(number), TECHNICAL_PLAN_WORDS_MAX) : 0;
+}
+
+/** 与桌面版 normalizeOutlineWordControlOptions 中本步用到的部分相同：三项字数各自按 words 整理。 */
+function normalizeWordControl(value: unknown): OutlineWordControlOptions {
+  const source = isObject(value) ? value : {};
+  return { minimumWords: words(source.minimumWords), maximumWords: words(source.maximumWords), sectionWords: words(source.sectionWords) };
+}
+
+async function insertChunked<T>(rows: T[], insert: (chunk: T[]) => Promise<unknown>): Promise<void> {
+  const size = 500;
+  for (let start = 0; start < rows.length; start += size) await insert(rows.slice(start, start + size));
 }
 
 function errorCode(error: unknown): unknown {
@@ -312,7 +366,6 @@ function normalizeDocumentIds(values: unknown): string[] {
 /** 生成配置的完整取值；exportTemplateId 的有效性由数据库检查（策略与外键）。 */
 function normalizeGenerationConfig(source: Partial<Record<keyof TechnicalPlanGenerationConfig, unknown>>): TechnicalPlanGenerationConfig {
   const bidAnalysis = normalizeBidAnalysisConfig(source.bidAnalysisMode, source.bidAnalysisSelectedTaskIds);
-  const wordControl = isObject(source.outlineWordControlOptions) ? source.outlineWordControlOptions : {};
   const templateId = source.exportTemplateId;
   return {
     bidAnalysisMode: bidAnalysis.mode,
@@ -320,11 +373,7 @@ function normalizeGenerationConfig(source: Partial<Record<keyof TechnicalPlanGen
     bidSectionMode: source.bidSectionMode === 'multiple' ? 'multiple' : 'single',
     outlineMode: oneOf(source.outlineMode, TECHNICAL_PLAN_OUTLINE_MODES, 'standalone-technical'),
     outlineExpansionMode: oneOf(source.outlineExpansionMode, TECHNICAL_PLAN_OUTLINE_EXPANSION_MODES, 'ai-complement'),
-    outlineWordControlOptions: {
-      minimumWords: words(wordControl.minimumWords),
-      maximumWords: words(wordControl.maximumWords),
-      sectionWords: words(wordControl.sectionWords),
-    },
+    outlineWordControlOptions: normalizeWordControl(source.outlineWordControlOptions),
     referenceKnowledgeDocumentIds: normalizeDocumentIds(source.referenceKnowledgeDocumentIds),
     globalFactsMode: oneOf(source.globalFactsMode, TECHNICAL_PLAN_GLOBAL_FACTS_MODES, 'fabricate'),
     exportTemplateId: typeof templateId === 'string' && templateId.trim() ? templateId.trim().toLowerCase() : null,
@@ -457,12 +506,53 @@ async function readBidItems(trx: Trx, projectId: string): Promise<TechnicalPlanB
   }));
 }
 
-/** 在已设置上下文的事务中读取完整状态（与桌面版 loadTechnicalPlan 中本步涉及的字段相同，任务状态先返回 null）。 */
+async function readOutlineRows(trx: Trx, projectId: string): Promise<OutlineNodeRow[]> {
+  return trx
+    .selectFrom('technical_plan_outline_nodes')
+    .select([
+      'node_id',
+      'parent_node_id',
+      'sort_order',
+      'level',
+      'title',
+      'description',
+      'content_mode',
+      'content_mode_note',
+      'source_requirement_id',
+      'source_requirement_title',
+      'knowledge_item_ids',
+      'content',
+    ])
+    .where('project_id', '=', projectId)
+    .orderBy('level')
+    .orderBy('parent_node_id')
+    .orderBy('sort_order')
+    .orderBy('node_id')
+    .execute();
+}
+
+async function readGlobalFacts(trx: Trx, projectId: string): Promise<TechnicalPlanGlobalFact[]> {
+  const rows = await trx
+    .selectFrom('technical_plan_global_fact_groups')
+    .select(['group_id', 'title', 'content', 'updated_at'])
+    .where('project_id', '=', projectId)
+    .orderBy('sort_order')
+    .orderBy('group_id')
+    .execute();
+  return rows.map((row) => ({ id: row.group_id, title: row.title, content: row.content, updated_at: row.updated_at }));
+}
+
+/** 在已设置上下文的事务中读取完整状态（与桌面版 loadTechnicalPlan 中已迁移的字段相同，任务状态先返回 null）。 */
 export async function readState(trx: Trx, projectId: string): Promise<TechnicalPlanState> {
   const meta = await trx.selectFrom('technical_plan_meta').selectAll().where('project_id', '=', projectId).executeTakeFirst();
   const config = await readGenerationConfig(trx, projectId);
   const documents = await readDocuments(trx, projectId);
   const items = await readBidItems(trx, projectId);
+  const outline = buildOutline(await readOutlineRows(trx, projectId), {
+    name: meta?.outline_project_name ?? null,
+    overview: meta?.outline_project_overview ?? null,
+  });
+  const snapshot = meta?.outline_word_control_snapshot;
   const strip = ({ role: _role, ...document }: TechnicalPlanDocument & { role: TechnicalPlanDocumentRole }): TechnicalPlanDocument => document;
   // 原方案只有一份；从回收站恢复了被替换的旧原方案时取最近导入的一份。
   const originalPlans = documents.filter((document) => document.role === 'original-plan');
@@ -487,6 +577,13 @@ export async function readState(trx: Trx, projectId: string): Promise<TechnicalP
     bidSectionExtractionError: meta?.bid_section_extraction_error ?? null,
     bidSectionExtractionTask: null,
     bidAnalysisTask: null,
+    outlineData: outline,
+    outlineWordControlSnapshot: snapshot ? normalizeWordControl(snapshot) : null,
+    globalFacts: await readGlobalFacts(trx, projectId),
+    outlineGenerationTask: null,
+    outlineAdjustmentTask: null,
+    globalFactsTask: null,
+    globalFactsAdjustmentTask: null,
   };
 }
 
@@ -503,6 +600,9 @@ type MetaPatch = Partial<{
   bid_section_extraction_error: string | null;
   selected_section_id: string | null;
   selected_section_title: string | null;
+  outline_project_name: string | null;
+  outline_project_overview: string | null;
+  outline_word_control_snapshot: string | null;
 }>;
 
 async function writeMeta(trx: Trx, context: TenantContext, projectId: string, set: MetaPatch): Promise<void> {
@@ -521,6 +621,19 @@ const RESET_BID_SECTIONS: MetaPatch = {
   selected_section_id: null,
   selected_section_title: null,
 };
+
+/** 目录的项目名称、概述与字数控制快照恢复初始状态（目录删除时）。 */
+const RESET_OUTLINE_META: MetaPatch = {
+  outline_project_name: null,
+  outline_project_overview: null,
+  outline_word_control_snapshot: null,
+};
+
+/** 删除目录（含各节正文）和全局事实。 */
+async function deleteOutlineAndFacts(trx: Trx, projectId: string): Promise<void> {
+  await trx.deleteFrom('technical_plan_outline_nodes').where('project_id', '=', projectId).execute();
+  await trx.deleteFrom('technical_plan_global_fact_groups').where('project_id', '=', projectId).execute();
+}
 
 /** 整份写入生成配置（与桌面版 writeGenerationConfig 相同），选中的招标解析项和引用的知识库文档整体替换。 */
 async function writeGenerationConfig(trx: Trx, context: TenantContext, projectId: string, config: TechnicalPlanGenerationConfig): Promise<void> {
@@ -599,18 +712,26 @@ async function updateGenerationConfig(trx: Trx, context: TenantContext, projectI
   await writeGenerationConfig(trx, context, projectId, normalizeGenerationConfig(merged));
 }
 
-/** 与桌面版 clearDownstreamFromTender 相同：清空招标解析结果和多标段识别结果，生成配置恢复默认值，步骤回到第一步。 */
+/**
+ * 与桌面版 clearDownstreamFromTender 相同：清空招标解析结果、多标段识别结果、目录（含正文）和全局事实，生成配置恢复默认值，
+ * 步骤回到第一步。
+ */
 async function clearDownstreamFromTender(trx: Trx, context: TenantContext, projectId: string): Promise<void> {
   await trx.deleteFrom('technical_plan_bid_items').where('project_id', '=', projectId).execute();
+  await deleteOutlineAndFacts(trx, projectId);
   await writeGenerationConfig(trx, context, projectId, await defaultGenerationConfig(trx));
-  await writeMeta(trx, context, projectId, { ...RESET_BID_SECTIONS, step: 'document-analysis' });
+  await writeMeta(trx, context, projectId, { ...RESET_BID_SECTIONS, ...RESET_OUTLINE_META, step: 'document-analysis' });
 }
 
-/** 与桌面版 clearDownstreamFromBidSectionChange 相同：清空招标解析结果、引用的知识库文档和正文生成选项，步骤回到招标解析。 */
+/**
+ * 与桌面版 clearDownstreamFromBidSectionChange 相同：清空招标解析结果、目录（含正文）、全局事实、引用的知识库文档和正文生成
+ * 选项，步骤回到招标解析。
+ */
 async function clearDownstreamFromBidSectionChange(trx: Trx, context: TenantContext, projectId: string): Promise<void> {
   await trx.deleteFrom('technical_plan_bid_items').where('project_id', '=', projectId).execute();
+  await deleteOutlineAndFacts(trx, projectId);
   await updateGenerationConfig(trx, context, projectId, { referenceKnowledgeDocumentIds: [], contentGenerationOptions: DEFAULT_CONTENT_OPTIONS });
-  await writeMeta(trx, context, projectId, { step: 'bid-analysis' });
+  await writeMeta(trx, context, projectId, { ...RESET_OUTLINE_META, step: 'bid-analysis' });
 }
 
 /** 切换页面步骤（与桌面版 updateStep 相同）。 */
@@ -949,20 +1070,222 @@ export async function selectBidSection(
   });
 }
 
+// ---- 目录与全局事实 ----
+
+/** 展开请求中的目录；不合法时返回 400。null、undefined 或空目录表示删除目录。 */
+function parseOutline(outlineData: unknown): { rows: ReturnType<typeof flattenOutline>; header: { name: string | null; overview: string | null } } {
+  if (outlineData === null || outlineData === undefined) return { rows: [], header: { name: null, overview: null } };
+  try {
+    if (!isObject(outlineData)) throw new OutlineInputError('目录数据必须是对象');
+    const rows = flattenOutline(outlineData.outline ?? []);
+    return { rows, header: rows.length ? outlineHeader(outlineData) : { name: null, overview: null } };
+  } catch (error) {
+    if (error instanceof OutlineInputError) throw outlineInvalid(error);
+    throw error;
+  }
+}
+
 /**
- * 清空技术方案（与桌面版 clearTechnicalPlan 相同）：删除招标解析结果、选中的解析项与引用的知识库文档，招标文件与原方案的
- * 原件软删除（进回收站），页面状态和生成配置恢复默认值。返回软删除的文件数。
+ * 按新目录写入节点（与桌面版 saveOutlineData 相同）：新增和保留的节点整行写入（节点身份不变，位置、标题等按请求），不在
+ * 新目录中的节点删除（子节点随之级联删除；仍在新目录中的子节点已先移到新的父节点下）。content 是每个节点最终的正文。
+ */
+async function writeOutlineNodes(trx: Trx, context: TenantContext, projectId: string, rows: (OutlineNodeRow & { branch?: boolean })[]): Promise<void> {
+  const values = rows.map(({ branch: _branch, ...row }) => ({
+    org_id: context.orgId,
+    project_id: projectId,
+    ...row,
+    knowledge_item_ids: row.knowledge_item_ids ? JSON.stringify(row.knowledge_item_ids) : null,
+  }));
+  await insertChunked(values, (chunk) =>
+    trx
+      .insertInto('technical_plan_outline_nodes')
+      .values(chunk)
+      .onConflict((oc) =>
+        oc.columns(['project_id', 'node_id']).doUpdateSet((eb) => ({
+          parent_node_id: eb.ref('excluded.parent_node_id'),
+          sort_order: eb.ref('excluded.sort_order'),
+          level: eb.ref('excluded.level'),
+          title: eb.ref('excluded.title'),
+          description: eb.ref('excluded.description'),
+          content_mode: eb.ref('excluded.content_mode'),
+          content_mode_note: eb.ref('excluded.content_mode_note'),
+          source_requirement_id: eb.ref('excluded.source_requirement_id'),
+          source_requirement_title: eb.ref('excluded.source_requirement_title'),
+          knowledge_item_ids: eb.ref('excluded.knowledge_item_ids'),
+          content: eb.ref('excluded.content'),
+        })),
+      )
+      .execute(),
+  );
+  let removal = trx.deleteFrom('technical_plan_outline_nodes').where('project_id', '=', projectId);
+  if (rows.length > 0) removal = removal.where('node_id', 'not in', rows.map((row) => row.node_id));
+  await removal.execute();
+}
+
+export interface SaveOutlineInput {
+  /** null 或空目录表示删除目录。 */
+  outlineData: unknown;
+  reason?: TechnicalPlanOutlineSaveReason;
+  /** 需要清空正文的节点（delete、add-* 时由前端给出）。 */
+  affectedNodeIds?: string[];
+}
+
+/**
+ * 保存目录（与桌面版 saveOutline 相同的 reason 协议，节点 id 是稳定 UUID）：
+ * - sort：只改节点的父节点、同级顺序和层级以及目录的项目名称与概述，节点身份、正文不变；
+ * - edit：只改标题与说明，正文、处理方式等不变；
+ * - delete、add-root、add-child：按新目录写入，affectedNodeIds 中的节点和由叶子变成父节点（或反过来）的节点清空正文，
+ *   其余已有节点沿用已保存的正文（忽略请求中的正文），新节点取请求给出的正文；
+ * - replace：按新目录写入，清空全部正文。
+ * sort、edit 要求请求中的节点与已保存的完全一致（例如其他成员已改过目录时），否则返回 409，不做改动；目录为空时同时清空
+ * 字数控制快照。
+ *
+ * 桌面版“正文生成任务运行或暂停中不能调整目录”的检查随第 6 步的任务队列；正文生成状态（编排、各节状态、运行进度）的保留
+ * 与清空随 5.13 加入。
+ */
+export async function saveOutline(db: Kysely<Database>, context: TenantContext, projectId: string, input: SaveOutlineInput): Promise<TechnicalPlanState> {
+  const reason = oneOf(input.reason, TECHNICAL_PLAN_OUTLINE_SAVE_REASONS, 'replace');
+  const { rows, header } = parseOutline(input.outlineData);
+  const affected = new Set((input.affectedNodeIds ?? []).map((id) => String(id).trim().toLowerCase()).filter(Boolean));
+  return withTenant(db, context, async (trx) => {
+    await lockProject(trx, projectId);
+    const previous = new Map(
+      (await trx.selectFrom('technical_plan_outline_nodes').select(['node_id', 'parent_node_id', 'content']).where('project_id', '=', projectId).execute()).map(
+        (row) => [row.node_id, row],
+      ),
+    );
+    if (reason === 'sort' || reason === 'edit') {
+      if (rows.length !== previous.size || rows.some((row) => !previous.has(row.node_id))) throw outlineChanged();
+      if (rows.length === 0) return readState(trx, projectId);
+      const values = JSON.stringify(rows.map(({ node_id, parent_node_id, sort_order, level, title, description }) => ({ node_id, parent_node_id, sort_order, level, title, description })));
+      if (reason === 'sort') {
+        await sql`UPDATE technical_plan_outline_nodes n
+          SET parent_node_id = v.parent_node_id, sort_order = v.sort_order, level = v.level
+          FROM jsonb_to_recordset(${values}::jsonb) AS v(node_id uuid, parent_node_id uuid, sort_order integer, level integer)
+          WHERE n.project_id = ${projectId} AND n.node_id = v.node_id
+            AND (n.parent_node_id IS DISTINCT FROM v.parent_node_id OR n.sort_order <> v.sort_order OR n.level <> v.level)`.execute(trx);
+        await writeMeta(trx, context, projectId, { outline_project_name: header.name, outline_project_overview: header.overview });
+      } else {
+        await sql`UPDATE technical_plan_outline_nodes n
+          SET title = v.title, description = v.description
+          FROM jsonb_to_recordset(${values}::jsonb) AS v(node_id uuid, title text, description text)
+          WHERE n.project_id = ${projectId} AND n.node_id = v.node_id AND (n.title <> v.title OR n.description <> v.description)`.execute(trx);
+      }
+      return readState(trx, projectId);
+    }
+    // 由叶子变成父节点或反过来的已有节点，正文一并失效（与桌面版相同，按保存前后是否有子节点行判断）。
+    const previousParents = new Set([...previous.values()].map((row) => row.parent_node_id));
+    const nextParents = new Set(rows.map((row) => row.parent_node_id));
+    for (const row of rows) {
+      if (previous.has(row.node_id) && previousParents.has(row.node_id) !== nextParents.has(row.node_id)) affected.add(row.node_id);
+    }
+    const clearAll = reason === 'replace';
+    await writeOutlineNodes(
+      trx,
+      context,
+      projectId,
+      rows.map((row) => {
+        const saved = previous.get(row.node_id);
+        const content = clearAll || affected.has(row.node_id) ? '' : saved ? saved.content : (row.content ?? '');
+        return { ...row, content };
+      }),
+    );
+    await writeMeta(trx, context, projectId, {
+      outline_project_name: header.name,
+      outline_project_overview: header.overview,
+      ...(rows.length === 0 ? { outline_word_control_snapshot: null } : {}),
+    });
+    return readState(trx, projectId);
+  });
+}
+
+export interface GeneratedOutlineInput {
+  /** 生成的目录，null 或空目录表示删除目录。 */
+  outlineData: unknown;
+  /** 目录生成时生效的字数控制；null 清空。 */
+  wordControlSnapshot: Partial<OutlineWordControlOptions> | null;
+}
+
+/**
+ * 写入目录生成的结果（给第 6 步的目录生成任务用，取代桌面版任务 checkpoint 中的 outlineData 与 outlineWordControlSnapshot）：
+ * 与 saveOutline 的 replace 相同整体替换、清空全部正文，同时写入字数控制快照。目录不合法时返回 400（AppError）。
+ */
+export async function saveGeneratedOutline(db: Kysely<Database>, context: TenantContext, projectId: string, input: GeneratedOutlineInput): Promise<void> {
+  const { rows, header } = parseOutline(input.outlineData);
+  const snapshot = rows.length > 0 && input.wordControlSnapshot ? JSON.stringify(normalizeWordControl(input.wordControlSnapshot)) : null;
+  await withTenant(db, context, async (trx) => {
+    await lockProject(trx, projectId);
+    await writeOutlineNodes(
+      trx,
+      context,
+      projectId,
+      rows.map((row) => ({ ...row, content: '' })),
+    );
+    await writeMeta(trx, context, projectId, {
+      outline_project_name: header.name,
+      outline_project_overview: header.overview,
+      outline_word_control_snapshot: snapshot,
+    });
+  });
+}
+
+/**
+ * 保存全局事实（与桌面版 saveGlobalFacts 相同）：按 normalizeGlobalFactGroups 整理后整体替换，同时清空全部正文
+ * （clearContentGenerationState；正文生成状态的清空随 5.13 加入）。内容未变的分组沿用原来的 updated_at。第 6 步的全局事实
+ * 生成任务同样经它写入。分组过多或超长时返回 400。
+ */
+export async function saveGlobalFacts(db: Kysely<Database>, context: TenantContext, projectId: string, groups: unknown): Promise<TechnicalPlanState> {
+  let normalized: ReturnType<typeof normalizeGlobalFactGroups>;
+  try {
+    normalized = normalizeGlobalFactGroups(groups);
+  } catch (error) {
+    if (error instanceof OutlineInputError) throw outlineInvalid(error);
+    throw error;
+  }
+  return withTenant(db, context, async (trx) => {
+    await lockProject(trx, projectId);
+    const previous = new Map((await readGlobalFacts(trx, projectId)).map((fact) => [fact.id, fact]));
+    await trx.deleteFrom('technical_plan_global_fact_groups').where('project_id', '=', projectId).execute();
+    if (normalized.length > 0) {
+      await trx
+        .insertInto('technical_plan_global_fact_groups')
+        .values(
+          normalized.map((group, index) => {
+            const saved = previous.get(group.id);
+            const unchanged = saved && saved.title === group.title && saved.content === group.content;
+            return {
+              org_id: context.orgId,
+              project_id: projectId,
+              group_id: group.id,
+              title: group.title,
+              content: group.content,
+              sort_order: index,
+              ...(unchanged ? { updated_at: saved.updated_at } : {}),
+            };
+          }),
+        )
+        .execute();
+    }
+    await trx.updateTable('technical_plan_outline_nodes').set({ content: '' }).where('project_id', '=', projectId).where('content', '<>', '').execute();
+    return readState(trx, projectId);
+  });
+}
+
+/**
+ * 清空技术方案（与桌面版 clearTechnicalPlan 相同）：删除招标解析结果、目录（含正文）、全局事实、选中的解析项与引用的知识库
+ * 文档，招标文件与原方案的原件软删除（进回收站），页面状态和生成配置恢复默认值。返回软删除的文件数。
  */
 export async function clearTechnicalPlan(db: Kysely<Database>, context: TenantContext, projectId: string): Promise<{ deletedFileCount: number }> {
   return withTenant(db, context, async (trx) => {
     await lockProject(trx, projectId);
     const documents = await trx.selectFrom('technical_plan_documents').select('file_id').where('project_id', '=', projectId).execute();
     await trx.deleteFrom('technical_plan_bid_items').where('project_id', '=', projectId).execute();
+    await deleteOutlineAndFacts(trx, projectId);
     const config = await trx.selectFrom('technical_plan_generation_config').select('project_id').where('project_id', '=', projectId).executeTakeFirst();
     if (config) await writeGenerationConfig(trx, context, projectId, await defaultGenerationConfig(trx));
     await trx
       .updateTable('technical_plan_meta')
-      .set({ step: 'document-analysis', bid_sections: null, bid_section_extraction_status: 'idle', bid_section_extraction_error: null, selected_section_id: null, selected_section_title: null })
+      .set({ step: 'document-analysis', ...RESET_BID_SECTIONS, ...RESET_OUTLINE_META })
       .where('project_id', '=', projectId)
       .execute();
     const deletedFileCount = await trashFiles(
