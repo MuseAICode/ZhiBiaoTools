@@ -13,7 +13,7 @@
 | 2 | 服务端骨架 | 进行中 | 旧仓库 PR #25（设计文档 `docs/SERVER_DESIGN.md`）、旧仓库 PR #26（决定 18 项事项，新增计费与合规章节）、旧仓库 PR #27（`server/` 基础设施：配置、日志、`/healthz`、错误处理、安全响应头、Docker、CI）、旧仓库 PR #28（数据库层：PostgreSQL 17、Kysely 迁移、身份与租户表、RLS、`TenantContext`、`/readyz`）、旧仓库 PR #29（鉴权：登录前查询的 `SECURITY DEFINER` 函数、argon2id、服务端会话与 CSRF、邀请注册、找回密码、限流、平台管理员命令行）、旧仓库 PR #30（限流的客户端 IP：新增 `TRUSTED_PROXIES`，只采信可信代理附加的 `X-Forwarded-For`）、#13（测试 harness：删除测试库前等连接全部断开，修复收尾时偶发的 57P01；同 PR 在 `CLAUDE.md` 新增自动合并规则） |
 | 3 | 配置与 AI 网关 | 进行中 | 旧仓库 PR #31（计费账本：组织余额、只追加的账本、带版本的价格表、幂等扣费、管理员手动充值与冲正，不调用 AI）、旧仓库 PR #32（AI 网关：调用前预扣冻结、按实际用量结算、冻结超时自动释放、`usage_records`、平台 Key 信封加密、DeepSeek / 通义千问流式适配、`POST /api/ai/chat`）、旧仓库 PR #33（平台模型白名单 `platform_models`：只有登记且启用、并有生效价格的模型能调用，免费须显式标记；管理员登记 / 启用 / 停用接口；用户断开时中止上游请求的端到端测试） |
 | 4 | 文件上传 / 下载 / 资源协议 | 进行中 | 旧仓库 PR #34（文件存储：S3 兼容对象存储、本地 SeaweedFS、`files` 表与强制 RLS、按内容校验类型、大小上限与组织配额、附件方式下载、7 天恢复期）、#6（上传白名单补齐桌面版能导入的内容：OLE 内容的 `.docx`，`.doc/.wps` 的 RTF / HTML / MHT / Word 2003 XML，`.xls` 的 HTML 表格 / SpreadsheetML，`%PDF-` 前有多余字节的 PDF） |
-| 5 | 数据层迁移（按业务逐个） | 进行中 | 旧仓库 PR #35（拆分计划，见“第 5 步说明”；记录上传白名单与桌面版的差距）、#7（5.1 项目：`projects` 表、`files.project_id`、项目接口、路由层归属校验、项目级表的迁移与测试模板）、#8（5.2 生成产物存储：`artifacts` 表、Store、只读接口；项目软删除与其下文件、产物联动，由 RLS 强制）、#9（5.3 配置：`org_settings`、`user_settings`、`GET/PATCH /api/settings`；写权限与删除可见性由 RLS 强制）、#10（5.4 导出模板：`export_templates`、`/api/export-templates` 增删改查与复制；系统模板只读、修改删除权限由 RLS 强制，迁移命令同步系统模板）、#11（5.5 资信库：6 张表、`/api/credential-library`；权限与删除可见性由 RLS 强制，图片随所引用文件的生命周期）、#12（5.6 知识库（一）：`knowledge_folders`、`_documents`、`_document_steps`、`/api/knowledge-base` 文件夹与文档管理；权限与删除可见性由 RLS 强制，文档随原件的生命周期）、#14（5.7 知识库（二）：切块、条目、匹配结果等 7 张表，检索与读取条目 / 分析 / Markdown 接口；删除可见性与写权限由 RLS 强制，随文档可见）、#16（5.8 标书查重：13 张项目级表、`/api/projects/:projectId/duplicate-check` 状态 / 文件选择 / 页面状态 / 清空 / Excel 导出；删除可见性与写权限由 RLS 强制，随项目和所选原件可见）、#17（5.8 后续：`files.project_id` 设置后不能再改，由触发器强制；xlsx 写出器防公式注入，回车按原样写出） |
+| 5 | 数据层迁移（按业务逐个） | 进行中 | 旧仓库 PR #35（拆分计划，见“第 5 步说明”；记录上传白名单与桌面版的差距）、#7（5.1 项目：`projects` 表、`files.project_id`、项目接口、路由层归属校验、项目级表的迁移与测试模板）、#8（5.2 生成产物存储：`artifacts` 表、Store、只读接口；项目软删除与其下文件、产物联动，由 RLS 强制）、#9（5.3 配置：`org_settings`、`user_settings`、`GET/PATCH /api/settings`；写权限与删除可见性由 RLS 强制）、#10（5.4 导出模板：`export_templates`、`/api/export-templates` 增删改查与复制；系统模板只读、修改删除权限由 RLS 强制，迁移命令同步系统模板）、#11（5.5 资信库：6 张表、`/api/credential-library`；权限与删除可见性由 RLS 强制，图片随所引用文件的生命周期）、#12（5.6 知识库（一）：`knowledge_folders`、`_documents`、`_document_steps`、`/api/knowledge-base` 文件夹与文档管理；权限与删除可见性由 RLS 强制，文档随原件的生命周期）、#14（5.7 知识库（二）：切块、条目、匹配结果等 7 张表，检索与读取条目 / 分析 / Markdown 接口；删除可见性与写权限由 RLS 强制，随文档可见）、#16（5.8 标书查重：13 张项目级表、`/api/projects/:projectId/duplicate-check` 状态 / 文件选择 / 页面状态 / 清空 / Excel 导出；删除可见性与写权限由 RLS 强制，随项目和所选原件可见）、#17（5.8 后续：`files.project_id` 设置后不能再改，由触发器强制；xlsx 写出器防公式注入，回车按原样写出）、#18（5.9 废标检查：7 张项目级表、`/api/projects/:projectId/rejection-check` 状态 / 导入与移除文档 / 页面状态 / 切换与删除问题 / 清空 / Excel 导出；删除可见性与写权限由 RLS 强制，文档随原件可见，签名由服务端现算） |
 | 6 | 任务队列与 worker | 未开始 | — |
 | 7 | OpenXmlHelper 容器化与离屏渲染（前置：CI 新增 .NET 编译与 OpenXmlHelper 测试，见“第 9 步说明”的品牌改名第三部分） | 未开始 | — |
 | 8 | Agent 沙箱 | 未开始 | — |
@@ -434,7 +434,7 @@ AI 网关加固，做法见 `docs/SERVER_DESIGN.md` 第 10.9 节。`client/` 未
 | 5.6 | H 知识库（一）：`knowledge_folders`、`_documents`、`_document_steps`、文件夹与文档管理接口 | 5.2 | 已完成 | #12 |
 | 5.7 | H 知识库（二）：`_blocks`、`_candidate_items`、`_items`、`_item_blocks`、`_discarded_groups`、`_reports`、`_match_batches`、检索与读取接口 | 5.6 | 已完成 | #14 |
 | 5.8 | G 标书查重：13 张表与接口、`exportExcel` | 5.1、5.2 | 已完成 | #16 |
-| 5.9 | G 废标检查：7 张表与接口、`exportExcel`（不含 `importTenderFromTechnicalPlan`） | 5.1、5.2 | 未开始 | — |
+| 5.9 | G 废标检查：7 张表与接口、`exportExcel`（不含 `importTenderFromTechnicalPlan`） | 5.1、5.2 | 已完成 | #18 |
 | 5.10 | F 可研报告：2 张表与接口 | 5.1、5.2 | 未开始 | — |
 | 5.11 | E 技术方案（一）：`technical_plan_meta`、`_generation_config`、`_generation_bid_tasks`、`_generation_reference_docs`、`_bid_items`，状态、配置、招标文件 / 原方案、标段接口 | 5.1、5.2、5.6 | 未开始 | — |
 | 5.12 | E 技术方案（二）：`_outline_nodes`、`_global_fact_groups`，`saveOutline`（`reason` 协议、节点 UUID 与 `sort_order` 语义不变）、`saveGlobalFacts` | 5.11 | 未开始 | — |
@@ -662,6 +662,38 @@ AI 网关加固，做法见 `docs/SERVER_DESIGN.md` 第 10.9 节。`client/` 未
   - 测试：危险前缀与安全前缀（含全角符号、前导空格、换行开头）各一组、转义与控制字符、代理项；本地另用 openpyxl（单元格类型为文本、`quotePrefix` 为真）和 LibreOffice（转 CSV 后 `=1+1`、`-3+1` 原样保留，回车保留）验证。去掉 `quotePrefix`、去掉回车转义，分别有 2、1 个用例失败。
 
 与路线图的偏离：无（落实 #16 中记录的后续事项）。
+
+#### 废标检查（#18，5.9）
+
+只改 `server/`，不改 `client/`，没有新增依赖，没有新增数据库角色，没有修改已有表的策略。
+
+- **迁移 `0016_rejection_check`**：取代桌面版 SQLite 的 `rejection_check_*` 七张表（`_tasks` 按拆分计划不迁移），全部是项目级表，挂在 `kind = 'rejection-check'` 的项目下（取代桌面版的单例 `id = 1`），照 `exampleProjectTable` 模板写：`org_id`、`project_id` 不可空，复合外键 `(org_id, project_id) → projects` 级联，`timestamptz`，索引以 `org_id, project_id` 开头。
+  - `rejection_check_meta`：每个项目一行（主键 `project_id`），步骤、当前文档 / 结果页签、自定义检查项（≤ 10 万字）、检查选项（`check_options_json` 改为 `typo_check`、`logic_check` 两个布尔列，废标项检查始终开启）；不授予 DELETE，清空时恢复默认值。
+  - `rejection_check_documents`：`document_id` / `markdown_path` 改为 `file_id`（复合外键指向 `files`，原件被清理任务物理删除时级联）与 `markdown_artifact_id`（生成产物，被清理时列级 `SET NULL`），文件名、扩展名、大小取 `files`；每个文件只能导入一次。新文档一律 `pending`（状态等解析结果没有 INSERT 授权），解析结果（状态、Markdown、字数、正文哈希、解析器、错误）由第 6 步的解析任务写入。桌面版合并的招标正文（`document_id = 'tender'`）不再存，由任务按招标文件的顺序合并。
+  - `rejection_check_extraction`（每个项目一行）、`rejection_check_results`（每类检查一行）：取值与桌面版 Renderer 类型相同（CHECK），各文本列有长度上限。
+  - 三张问题表：`bid_document_id` 以复合外键 `(org_id, project_id, bid_document_id) → rejection_check_documents` 随文档行级联删除，不可空（桌面版可空，读出时回退到第一份投标文件）；`(project_id, finding_id)` 唯一。
+- **删除可见性与写权限由 RLS 强制**，应用代码不判断：
+  - 七张表都只对应用角色建策略：只能看到、写入本组织的行，未设置上下文时什么都看不到；条件另含“不存在同 id 的已删除或其他 kind 的项目”，项目软删除后七张表的行查不到、改不了、删不掉，也不能新写，恢复项目即一起恢复。跨组织的 `project_id` 由复合外键报错。
+  - **文档随原件的生命周期**：原件已删除（进入回收站）、未上传完成或已不属于本项目时，文档行和引用它的问题都不可见，恢复文件即一起恢复。应用角色没有文档的 DELETE 授权，移除文档就是软删除原件（与知识库文档相同）。INSERT 策略只允许导入本组织已上传、未删除、用途是 `tender`、已挂到本项目的文件。
+  - `markdown_artifact_id` 只能是本组织已写完、来源文件就是该文档原件的 Markdown 产物（UPDATE 策略）；问题只能指向本项目的投标文件（INSERT 策略要求文档可见且 `role = 'bid'`）。
+  - 问题表只授予 SELECT、INSERT、DELETE（整体替换、用户删除单条）；`org_id`、`project_id`、`file_id`、`role`、`sort_order`、`result_type` 没有列级 UPDATE 授权。
+  - 隔离测试：七张表各调用一次 `describeProjectTable`（`projectKind: 'rejection-check'`；文档与三张问题表 `onProjectDelete: 'restrict'`）；另测了上面的规则。分别去掉项目条件中的已删除判断、kind 判断，文档的原件条件、INSERT 的用途条件，Markdown 产物条件、问题的投标文件条件，给问题表授予 UPDATE、给文档授予 DELETE、给文档的状态授予 INSERT，各有 1、1、5、1、1、2、16、1、1 个用例失败。
+- **接口**（`src/routes/rejectionCheck.ts`、`src/rejectionCheck/store.ts`），先经 `requireProject(..., 'rejection-check')`：`GET /api/projects/:projectId/rejection-check`（完整状态，任务状态 `extractionTask` / `checkTask` 先返回 `null`）、`POST .../documents`（`{ role, fileIds }`）、`DELETE .../documents/:fileId`、`PATCH .../ui-state`、`PATCH .../results/:resultType`（`{ activeFindingId }`）、`DELETE .../results/:resultType/findings/:findingId`、`DELETE`（清空）、`GET .../export`，对应桌面版 `loadState`、`importDocument`、`removeDocument`、`saveUiState`、`updateState`（Renderer 只用它切换当前问题和删除单条问题）、`clear`、`exportExcel`。
+  - 导入：文件挂到本项目，按给出的顺序追加到同类文档之后，已导入到本项目的文件跳过（`skippedCount`）；文件不可用时整体失败，`400 REJECTION_CHECK_FILE_UNAVAILABLE`；每个项目最多 20 份招标文件、50 份投标文件（`400 REJECTION_CHECK_DOCUMENT_LIMIT`）。有新文档时与桌面版相同：招标文件清空解析结果和三类检查结果、页签回到合并的招标正文；投标文件清空三类检查结果、页签切到第一份新投标文件。
+  - 移除：原件软删除；招标文件清空解析与检查结果，投标文件清空检查结果；页签与桌面版相同。先删结果再软删除原件（原件进回收站后引用它的问题不可见，删不到）。不存在的文档 `404 REJECTION_CHECK_DOCUMENT_NOT_FOUND`。
+  - 删除单条问题的进度说明与桌面版 Renderer 相同（“保留 N 个需复核风险项”等）；不存在的问题 `404 REJECTION_CHECK_FINDING_NOT_FOUND`。
+  - **签名由服务端现算**，状态返回 `signatures: { tender, bid, rejectionInput }`：招标文件、投标文件各自按顺序由文件 id 和正文哈希算出；废标项检查的输入另含当前有效的解析结果（其 `tenderSignature` 与当前招标签名一致时才计入，同桌面版 `visibleExtractionContent`）和自定义检查项。第 6 步的任务经导出的 `computeSignatures` 用同样的方式算出并写进结果。
+  - 导出与桌面版相同：四个工作表、列和文案不变，只导出输入签名与当前一致的结果（其余标“结果已失效”），没有可导出的当前结果时 `409 REJECTION_CHECK_NOTHING_TO_EXPORT`。复用 `src/xlsx/writer.ts`（文本一律内联字符串，危险前缀另加 `quotePrefix`），附件下载（`nosniff`、`sandbox` CSP、`no-store`），文件名 `废标检查结果_YYYYMMDD_HHMMSS.xlsx`。导出时间的格式化从查重导出中抽到 `src/xlsx/displayTime.ts` 共用。
+  - 同一项目的导入、移除、清空、问题操作和任务写入用事务级 advisory lock 串行。其他组织的、已删除的、kind 不符的项目一律 `404 PROJECT_NOT_FOUND`。响应带 `cache-control: no-store`。
+- **给第 6 步任务用的 Store 函数**（已直接测试）：`saveDocumentParse`（只写给出的字段，文档已移除时返回 `false`）、`saveExtraction`（与桌面版相同整体写入，去掉外层 `'''`，`null` 删除）、`saveCheckResult`（状态等字段只写给出的，问题给出时整体替换，`null` 删除这一类）。默认问题 id（`rejection-finding-1` 等）、类型、等级、摘要取标题等细节与桌面版相同；问题 id 为空、超长或重复，投标文件 id 不是 uuid 是调用方的程序错误，抛 `TypeError`；文本超长时截短，去掉 `\u0000`；行数多时分批插入。指向招标文件或已移除的投标文件的写入被 RLS 拒绝，整体回滚。
+
+与路线图、设计的偏离：
+
+- 接口字段与桌面版 Renderer 的差异：文档不再带 `content`（正文），改为 `markdownArtifactId`，经 `/api/artifacts/:artifactId/content` 读取，另有解析状态 `status`、`contentChars` 等；不再有合并的 `tenderDocument`（由第 6 步的任务合并，前端按 `tenderDocuments` 显示）；文档不再有 `source`（来自技术方案的导入随 5.13 再定）；签名改由服务端返回，导出不再接收客户端传来的签名；时间为 `Date`（JSON 中是 ISO 字符串）；前端接入时由第 9 步的 bridge 适配；
+- 拆分计划列出的 `updateState`：Renderer 的用法（切换当前问题、删除单条问题）拆成两个专门的接口，只能改这两项；任务写入的部分实现为 Store 函数，不开放为接口：解析与检查结果不应由客户端写入；
+- 导入时不再按“文件名 + 正文哈希”去重（导入时尚未解析），改为同一文件只导入一次；移除文档、清空时原件软删除（与 5.8 相同理由：原件计入配额）；从回收站恢复原件时文档随之恢复，但已清空的结果不会恢复，签名随之变化，旧结果按失效处理；
+- 新增招标文件 20 份、投标文件 50 份的上限（桌面版没有），与 5.8 相同；
+- 本地验证用的是 PostgreSQL 16，CI 用 17；`tests/db/files.test.ts` 需要 S3 兼容服务，本地无法启动，只在 CI 中运行（本 PR 未改动文件存储）。
 
 
 
