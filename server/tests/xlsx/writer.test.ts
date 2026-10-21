@@ -1,6 +1,6 @@
 // xlsx 写出器（src/xlsx/writer.ts）的单元测试：zip 结构与校验和、工作表内容、转义、截断、百分比格式、表头筛选。
 import { describe, expect, it } from 'vitest';
-import { columnName, EXCEL_TEXT_LIMIT, normalizeCellText, writeWorkbook } from '../../src/xlsx/writer.ts';
+import { columnName, EXCEL_TEXT_LIMIT, needsQuotePrefix, normalizeCellText, writeWorkbook } from '../../src/xlsx/writer.ts';
 import { readWorkbook } from './readXlsx.ts';
 
 const createdAt = new Date('2026-10-20T08:09:10.123Z');
@@ -37,10 +37,54 @@ describe('xlsx 写出器', () => {
     expect(sheet.cells.has('C1')).toBe(false);
     expect(sheet.cells.has('E1')).toBe(false);
     expect(sheet.xml).not.toContain('<row r="2"');
-    expect(sheet.cells.get('A3')).toEqual({ value: '=SUM(A1:A2)', style: 0 });
+    expect(sheet.cells.get('A3')).toEqual({ value: '=SUM(A1:A2)', style: 2 });
     expect(sheet.xml).not.toContain('<f>');
     expect(sheet.cells.has('B3')).toBe(false);
     expect(sheet.cells.get('C3')).toEqual({ value: 0, style: 0 });
+  });
+
+  it('防公式注入：以 = + - @、制表符、回车开头的文本是带 quotePrefix 的内联字符串，从不写公式', () => {
+    const dangerous = ['=HYPERLINK("http://evil","x")', '+1+1', '-2+3', '@SUM(A1)', '\t=1+1', '\r=1+1', '=cmd|\' /C calc\'!A0'];
+    const safe = ['正常文本', ' =1', '1=1', 'a@b.com', '－1', '＝1', '\n=1'];
+    const buffer = writeWorkbook({ title: 't', createdAt, sheets: [{ name: 'S', rows: [dangerous, safe], columnWidths: [] }] });
+    const { sheets, files } = readWorkbook(buffer);
+    const sheet = sheets[0]!;
+    dangerous.forEach((text, index) => {
+      const ref = `${columnName(index)}1`;
+      expect(sheet.cells.get(ref), ref).toEqual({ value: text, style: 2 });
+      expect(sheet.xml).toMatch(new RegExp(`<c r="${ref}" s="2" t="inlineStr">`));
+    });
+    safe.forEach((text, index) => {
+      const ref = `${columnName(index)}2`;
+      expect(sheet.cells.get(ref), ref).toEqual({ value: text, style: 0 });
+    });
+    expect(sheet.xml).not.toMatch(/<f[ >]/);
+    expect(sheet.xml).not.toContain('t="str"');
+    expect(files.get('xl/styles.xml')!.toString('utf8')).toContain('<cellXfs count="3">');
+    expect(files.get('xl/styles.xml')!.toString('utf8')).toContain('quotePrefix="1"');
+    expect([...dangerous].every(needsQuotePrefix)).toBe(true);
+    expect(safe.some(needsQuotePrefix)).toBe(false);
+  });
+
+  it('XML 特殊字符转义，回车写成 &#13;（保留原样），制表符和换行原样保留，控制字符去掉', () => {
+    const text = 'a&b<c>d"e\'f]]>g\rh\ti\nj\u0001k\u001Fl\u007Fm';
+    const { sheets } = readWorkbook(writeWorkbook({ title: 't', createdAt, sheets: [{ name: 'S', rows: [[text]], columnWidths: [] }] }));
+    const sheet = sheets[0]!;
+    expect(sheet.xml).toContain('a&amp;b&lt;c&gt;d&quot;e\'f]]&gt;g&#13;h\ti\nj');
+    expect(sheet.xml).not.toContain('\r');
+    expect(sheet.xml).not.toMatch(/[\u0001\u001F]/);
+    // XML 1.0 允许 DEL（U+007F），与桌面版相同不去掉。
+    expect(sheet.cells.get('A1')!.value).toBe('a&b<c>d"e\'f]]>g\rh\ti\njkl\u007Fm');
+  });
+
+  it('不成对的代理项替换为 U+FFFD，工作表名称和标题中的特殊字符同样转义', () => {
+    const { sheets, files } = readWorkbook(
+      writeWorkbook({ title: '<标题&>', createdAt, sheets: [{ name: 'A&B<"', rows: [['x\uD800y']], columnWidths: [], filterHeaderRow: 0 }] }),
+    );
+    expect(sheets[0]!.name).toBe('A&B<"');
+    expect(sheets[0]!.cells.get('A1')!.value).toBe('x\uFFFDy');
+    expect(files.get('xl/workbook.xml')!.toString('utf8')).toContain('<sheet name="A&amp;B&lt;&quot;"');
+    expect(files.get('docProps/core.xml')!.toString('utf8')).toContain('<dc:title>&lt;标题&amp;&gt;</dc:title>');
   });
 
   it('百分比单元格使用样式 1（0.00%）', () => {

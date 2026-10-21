@@ -343,11 +343,12 @@ export function describeProjectTable(spec: ProjectTableSpec, env: ProjectTableEn
         await expect(
           withTenantAny(env.app(), a.context, (trx) => spec.insert(trx, scopeOf(a, b.emptyProjectId))),
         ).rejects.toThrow(/foreign key constraint/);
+        // 改挂：外键或列级授权拒绝；files 的 project_id 设置后不能再改，由迁移 0015 的触发器先于外键拒绝。
         await expect(
           withTenantAny(env.app(), a.context, (trx) =>
             trx.updateTable(table).set({ project_id: b.emptyProjectId }).where(idColumn, '=', rowA).execute(),
           ),
-        ).rejects.toThrow(/foreign key constraint|permission denied/);
+        ).rejects.toThrow(/foreign key constraint|permission denied|project is immutable/);
         const rows = await env.admin().selectFrom(table).select(['org_id', 'project_id']).where('org_id', '=', a.context.orgId).execute();
         expect(rows).toEqual([{ org_id: a.context.orgId, project_id: a.projectId }]);
       });

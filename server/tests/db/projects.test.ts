@@ -1,4 +1,4 @@
-// 项目（迁移 0007_projects）的数据库与接口测试：projects 表的 RLS 与守卫、files.project_id 的复合外键、
+// 项目（迁移 0007_projects）的数据库与接口测试：projects 表的 RLS 与守卫、files.project_id 的复合外键与设置后不可改（迁移 0015）、
 // 项目接口、路由层的项目归属校验，以及项目级表模板（tests/db/fixtures/exampleProjectTable.ts）的隔离测试。
 import { randomUUID } from 'node:crypto';
 import type { FastifyInstance } from 'fastify';
@@ -238,6 +238,39 @@ describe('files.project_id', () => {
       return row.id;
     });
     expect(id).toMatch(/^[0-9a-f-]{36}$/);
+  });
+
+  it('project_id 只能从空设为某个项目，设置后不能改成别的项目，也不能改回空（所有角色都一样）', async () => {
+    const member = await newMember();
+    const projectA = await createOk(member, 'duplicate-check', '项目 A');
+    const projectB = await createOk(member, 'duplicate-check', '项目 B');
+    const { id: fileId } = await superuser
+      .insertInto('files')
+      .values({
+        org_id: member.orgId, purpose: 'duplicate-check', display_name: 'd.docx', extension: 'docx', created_by: member.userId,
+        status: 'uploaded', mime: 'application/zip', size_bytes: 10, sha256: Buffer.alloc(32), uploaded_at: new Date(),
+      })
+      .returning('id')
+      .executeTakeFirstOrThrow();
+    const setProject = (db: Kysely<any>, projectId: string | null) =>
+      db.updateTable('files').set({ project_id: projectId }).where('id', '=', fileId).execute();
+    const asApp = (projectId: string | null) => withTenantAny(appDb, member.context, (trx) => setProject(trx, projectId));
+
+    // 从空设为项目 A：允许；再写同一个值：允许（不算修改）。
+    await asApp(projectA.id);
+    await asApp(projectA.id);
+    // 改成项目 B、改回空：应用角色被触发器拒绝（FS005）；绕过 RLS 的超级用户同样被拒绝（触发器对所有角色生效）。
+    await expect(asApp(projectB.id)).rejects.toMatchObject({ code: 'FS005' });
+    await expect(asApp(null)).rejects.toMatchObject({ code: 'FS005' });
+    await expect(setProject(superuser, projectB.id)).rejects.toMatchObject({ code: 'FS005' });
+    await expect(setProject(superuser, null)).rejects.toMatchObject({ code: 'FS005' });
+    // 其他列照常可以改（软删除、恢复不受影响）。
+    await withTenantAny(appDb, member.context, (trx) =>
+      trx.updateTable('files').set({ deleted_at: sql`now()`, deleted_by: member.userId }).where('id', '=', fileId).execute(),
+    );
+    const row = await superuser.selectFrom('files').select(['project_id', 'deleted_at']).where('id', '=', fileId).executeTakeFirstOrThrow();
+    expect(row.project_id).toBe(projectA.id);
+    expect(row.deleted_at).toBeInstanceOf(Date);
   });
 
   it('文件接口返回 projectId', async () => {

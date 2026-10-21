@@ -3,8 +3,8 @@
 //
 // 可见性、写权限和删除可见性由 RLS 保证，这里不判断：所属项目已删除时十三张表的行都查不到、改不了；选中的文件随原件的
 // 生命周期，原件已删除（进入回收站）时文件行和引用它的分析结果都不可见。选择文件就是把已上传的 duplicate-check 文件
-// 挂到本项目（files.project_id）并登记到 duplicate_check_files；从选择中去掉的文件和清空时的全部文件软删除（进回收站，
-// 按文件自己的恢复期处理）。
+// 挂到本项目（files.project_id，设置后不能再改，由迁移 0015 的触发器保证）并登记到 duplicate_check_files；
+// 从选择中去掉的文件和清空时的全部文件软删除（进回收站，按文件自己的恢复期处理）。
 //
 // 与桌面版 duplicateCheckStore.cjs 相同：重新选择文件时清空全部分析结果；分析结果由任务按类整体替换写入，状态与统计
 // 按字段合并。给第 6 步查重任务用的写函数（saveAnalysisSection，取代桌面版 updateState 中的分析部分）在本步一并实现，
@@ -648,16 +648,22 @@ export async function saveFiles(
     await lockProject(trx, projectId);
     const previous = await trx.selectFrom('duplicate_check_files').select('file_id').where('project_id', '=', projectId).execute();
     if (ids.length > 0) {
-      // 只挂还不属于任何项目、或已属于本项目的文件；能否选入由 duplicate_check_files 的 INSERT 策略检查。
-      const claimed = await trx
-        .updateTable('files')
-        .set({ project_id: projectId })
-        .where('id', 'in', ids)
-        .where('purpose', '=', 'duplicate-check')
-        .where('status', '=', 'uploaded')
-        .where('deleted_at', 'is', null)
-        .where((eb) => eb.or([eb('project_id', 'is', null), eb('project_id', '=', projectId)]))
-        .executeTakeFirst();
+      // 挂到本项目。已属于其他项目的文件由触发器 files_project_guard 拒绝（FS005，迁移 0015：project_id 设置后不能再改）；
+      // 能否选入由 duplicate_check_files 的 INSERT 策略检查，这里的条件只为给出明确的错误。
+      let claimed;
+      try {
+        claimed = await trx
+          .updateTable('files')
+          .set({ project_id: projectId })
+          .where('id', 'in', ids)
+          .where('purpose', '=', 'duplicate-check')
+          .where('status', '=', 'uploaded')
+          .where('deleted_at', 'is', null)
+          .executeTakeFirst();
+      } catch (error) {
+        if ((error as { code?: unknown } | null)?.code === 'FS005') throw fileUnavailable(error);
+        throw error;
+      }
       if (Number(claimed.numUpdatedRows) !== ids.length) throw fileUnavailable();
     }
     // 先删文件行（分析结果随之级联删除），再软删除去掉的文件：文件进回收站后其行不可见，删不到。
