@@ -69,7 +69,9 @@ const APPLICATION_TABLES = [
   'technical_plan_generation_bid_tasks',
   'technical_plan_generation_config',
   'technical_plan_generation_reference_docs',
+  'technical_plan_global_fact_groups',
   'technical_plan_meta',
+  'technical_plan_outline_nodes',
   'usage_records',
   'user_settings',
   'users',
@@ -209,6 +211,7 @@ describe('迁移升级与回滚', () => {
       (await sql<{ prosrc: string }>`SELECT prosrc FROM pg_proc WHERE proname = 'ai_usage_begin'`.execute(testDb.admin)).rows.map((row) => row.prosrc);
     expectSuccess(await migrateToLatest(owner));
     expect((await source())[0]).toContain('ai_model_price');
+    expect(expectSuccess(await migrateDown(owner))).toEqual(['Down:0019_technical_plan_outline']);
     expect(expectSuccess(await migrateDown(owner))).toEqual(['Down:0018_technical_plan']);
     expect(expectSuccess(await migrateDown(owner))).toEqual(['Down:0017_feasibility_report']);
     expect(expectSuccess(await migrateDown(owner))).toEqual(['Down:0016_rejection_check']);

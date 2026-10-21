@@ -13,7 +13,7 @@
 | 2 | 服务端骨架 | 进行中 | 旧仓库 PR #25（设计文档 `docs/SERVER_DESIGN.md`）、旧仓库 PR #26（决定 18 项事项，新增计费与合规章节）、旧仓库 PR #27（`server/` 基础设施：配置、日志、`/healthz`、错误处理、安全响应头、Docker、CI）、旧仓库 PR #28（数据库层：PostgreSQL 17、Kysely 迁移、身份与租户表、RLS、`TenantContext`、`/readyz`）、旧仓库 PR #29（鉴权：登录前查询的 `SECURITY DEFINER` 函数、argon2id、服务端会话与 CSRF、邀请注册、找回密码、限流、平台管理员命令行）、旧仓库 PR #30（限流的客户端 IP：新增 `TRUSTED_PROXIES`，只采信可信代理附加的 `X-Forwarded-For`）、#13（测试 harness：删除测试库前等连接全部断开，修复收尾时偶发的 57P01；同 PR 在 `CLAUDE.md` 新增自动合并规则） |
 | 3 | 配置与 AI 网关 | 进行中 | 旧仓库 PR #31（计费账本：组织余额、只追加的账本、带版本的价格表、幂等扣费、管理员手动充值与冲正，不调用 AI）、旧仓库 PR #32（AI 网关：调用前预扣冻结、按实际用量结算、冻结超时自动释放、`usage_records`、平台 Key 信封加密、DeepSeek / 通义千问流式适配、`POST /api/ai/chat`）、旧仓库 PR #33（平台模型白名单 `platform_models`：只有登记且启用、并有生效价格的模型能调用，免费须显式标记；管理员登记 / 启用 / 停用接口；用户断开时中止上游请求的端到端测试） |
 | 4 | 文件上传 / 下载 / 资源协议 | 进行中 | 旧仓库 PR #34（文件存储：S3 兼容对象存储、本地 SeaweedFS、`files` 表与强制 RLS、按内容校验类型、大小上限与组织配额、附件方式下载、7 天恢复期）、#6（上传白名单补齐桌面版能导入的内容：OLE 内容的 `.docx`，`.doc/.wps` 的 RTF / HTML / MHT / Word 2003 XML，`.xls` 的 HTML 表格 / SpreadsheetML，`%PDF-` 前有多余字节的 PDF） |
-| 5 | 数据层迁移（按业务逐个） | 进行中 | 旧仓库 PR #35（拆分计划，见“第 5 步说明”；记录上传白名单与桌面版的差距）、#7（5.1 项目：`projects` 表、`files.project_id`、项目接口、路由层归属校验、项目级表的迁移与测试模板）、#8（5.2 生成产物存储：`artifacts` 表、Store、只读接口；项目软删除与其下文件、产物联动，由 RLS 强制）、#9（5.3 配置：`org_settings`、`user_settings`、`GET/PATCH /api/settings`；写权限与删除可见性由 RLS 强制）、#10（5.4 导出模板：`export_templates`、`/api/export-templates` 增删改查与复制；系统模板只读、修改删除权限由 RLS 强制，迁移命令同步系统模板）、#11（5.5 资信库：6 张表、`/api/credential-library`；权限与删除可见性由 RLS 强制，图片随所引用文件的生命周期）、#12（5.6 知识库（一）：`knowledge_folders`、`_documents`、`_document_steps`、`/api/knowledge-base` 文件夹与文档管理；权限与删除可见性由 RLS 强制，文档随原件的生命周期）、#14（5.7 知识库（二）：切块、条目、匹配结果等 7 张表，检索与读取条目 / 分析 / Markdown 接口；删除可见性与写权限由 RLS 强制，随文档可见）、#16（5.8 标书查重：13 张项目级表、`/api/projects/:projectId/duplicate-check` 状态 / 文件选择 / 页面状态 / 清空 / Excel 导出；删除可见性与写权限由 RLS 强制，随项目和所选原件可见）、#17（5.8 后续：`files.project_id` 设置后不能再改，由触发器强制；xlsx 写出器防公式注入，回车按原样写出）、#18（5.9 废标检查：7 张项目级表、`/api/projects/:projectId/rejection-check` 状态 / 导入与移除文档 / 页面状态 / 切换与删除问题 / 清空 / Excel 导出；删除可见性与写权限由 RLS 强制，文档随原件可见，签名由服务端现算）、#19（5.10 可研报告：4 张项目级表、`/api/projects/:projectId/feasibility-report` 状态 / 步骤 / 项目信息 / 资料分析 / 目录配置 / 目录（`reason` 协议）/ 关键参数 / 正文 / 资料导入与移除 / 资料 Markdown / 清空；删除可见性与写权限由 RLS 强制，资料随原件、引用随知识库文档可见）、#20（5.11 技术方案（一）：6 张项目级表、`/api/projects/:projectId/technical-plan` 状态 / 步骤 / 生成配置 / 招标解析配置 / 正文生成选项 / 招标文件导入与移除 / 招标文件与合并正文的 Markdown / 原方案 / 投标范围选择 / 清空；删除可见性与写权限由 RLS 强制，文档随原件、引用随知识库文档可见，导出模板只能是本组织的或系统模板） |
+| 5 | 数据层迁移（按业务逐个） | 进行中 | 旧仓库 PR #35（拆分计划，见“第 5 步说明”；记录上传白名单与桌面版的差距）、#7（5.1 项目：`projects` 表、`files.project_id`、项目接口、路由层归属校验、项目级表的迁移与测试模板）、#8（5.2 生成产物存储：`artifacts` 表、Store、只读接口；项目软删除与其下文件、产物联动，由 RLS 强制）、#9（5.3 配置：`org_settings`、`user_settings`、`GET/PATCH /api/settings`；写权限与删除可见性由 RLS 强制）、#10（5.4 导出模板：`export_templates`、`/api/export-templates` 增删改查与复制；系统模板只读、修改删除权限由 RLS 强制，迁移命令同步系统模板）、#11（5.5 资信库：6 张表、`/api/credential-library`；权限与删除可见性由 RLS 强制，图片随所引用文件的生命周期）、#12（5.6 知识库（一）：`knowledge_folders`、`_documents`、`_document_steps`、`/api/knowledge-base` 文件夹与文档管理；权限与删除可见性由 RLS 强制，文档随原件的生命周期）、#14（5.7 知识库（二）：切块、条目、匹配结果等 7 张表，检索与读取条目 / 分析 / Markdown 接口；删除可见性与写权限由 RLS 强制，随文档可见）、#16（5.8 标书查重：13 张项目级表、`/api/projects/:projectId/duplicate-check` 状态 / 文件选择 / 页面状态 / 清空 / Excel 导出；删除可见性与写权限由 RLS 强制，随项目和所选原件可见）、#17（5.8 后续：`files.project_id` 设置后不能再改，由触发器强制；xlsx 写出器防公式注入，回车按原样写出）、#18（5.9 废标检查：7 张项目级表、`/api/projects/:projectId/rejection-check` 状态 / 导入与移除文档 / 页面状态 / 切换与删除问题 / 清空 / Excel 导出；删除可见性与写权限由 RLS 强制，文档随原件可见，签名由服务端现算）、#19（5.10 可研报告：4 张项目级表、`/api/projects/:projectId/feasibility-report` 状态 / 步骤 / 项目信息 / 资料分析 / 目录配置 / 目录（`reason` 协议）/ 关键参数 / 正文 / 资料导入与移除 / 资料 Markdown / 清空；删除可见性与写权限由 RLS 强制，资料随原件、引用随知识库文档可见）、#20（5.11 技术方案（一）：6 张项目级表、`/api/projects/:projectId/technical-plan` 状态 / 步骤 / 生成配置 / 招标解析配置 / 正文生成选项 / 招标文件导入与移除 / 招标文件与合并正文的 Markdown / 原方案 / 投标范围选择 / 清空；删除可见性与写权限由 RLS 强制，文档随原件、引用随知识库文档可见，导出模板只能是本组织的或系统模板）、#21（5.12 技术方案（二）：目录与全局事实 2 张项目级表、`PUT .../outline`（`reason` 协议，节点 UUID 稳定、编号现算）与 `PUT .../global-facts`，下游清空扩展到目录与全局事实；删除可见性与写权限由 RLS 强制） |
 | 6 | 任务队列与 worker | 未开始 | — |
 | 7 | OpenXmlHelper 容器化与离屏渲染（前置：CI 新增 .NET 编译与 OpenXmlHelper 测试，见“第 9 步说明”的品牌改名第三部分） | 未开始 | — |
 | 8 | Agent 沙箱 | 未开始 | — |
@@ -437,7 +437,7 @@ AI 网关加固，做法见 `docs/SERVER_DESIGN.md` 第 10.9 节。`client/` 未
 | 5.9 | G 废标检查：7 张表与接口、`exportExcel`（不含 `importTenderFromTechnicalPlan`） | 5.1、5.2 | 已完成 | #18 |
 | 5.10 | F 可研报告：2 张表与接口（实际拆成 4 张，见下方“可研报告”一节） | 5.1、5.2、5.6 | 已完成 | #19 |
 | 5.11 | E 技术方案（一）：`technical_plan_meta`、`_generation_config`、`_generation_bid_tasks`、`_generation_reference_docs`、`_bid_items`，状态、配置、招标文件 / 原方案、标段接口（实际另有 `_documents`，见下方“技术方案（一）”一节） | 5.1、5.2、5.6 | 已完成 | #20 |
-| 5.12 | E 技术方案（二）：`_outline_nodes`、`_global_fact_groups`，`saveOutline`（`reason` 协议、节点 UUID 与 `sort_order` 语义不变）、`saveGlobalFacts` | 5.11 | 未开始 | — |
+| 5.12 | E 技术方案（二）：`_outline_nodes`、`_global_fact_groups`，`saveOutline`（`reason` 协议、节点 UUID 与 `sort_order` 语义不变）、`saveGlobalFacts` | 5.11 | 已完成 | #21 |
 | 5.13 | E 技术方案（三）：`_content_sections`、`_content_plans`，`saveChapterContent`、`resetContentGeneration`；补上废标检查的 `importTenderFromTechnicalPlan` | 5.12、5.9 | 未开始 | — |
 
 顺序说明：5.1 是所有项目级模块的基础，最先做；5.2 是所有“导入后读 Markdown”的接口的基础。5.3~5.5 不依赖二者，可在 5.1 评审期间并行。之后按路线图原顺序（模板库 → 资信库 → 知识库 → 查重 → 废标 → 可研 → 技术方案）由简到繁，技术方案最复杂，表最多、持久化协议最多，拆成三个 PR。知识库排在技术方案之前，因为 `_generation_reference_docs` 引用知识库文档。
@@ -762,6 +762,30 @@ AI 网关加固，做法见 `docs/SERVER_DESIGN.md` 第 10.9 节。`client/` 未
 - 导入时不再按“文件名 + 正文哈希”去重（导入时尚未解析），改为同一文件只导入一次；移除招标文件、替换或移除原方案、清空时原件软删除（与 5.8~5.10 相同理由：原件计入配额）；从回收站恢复原件时文档随之恢复，但已清空的下游不会恢复；
 - 桌面版导入原方案时校验原图资源、删除 Agent 持久任务，导入招标文件前取消后台任务、关闭 OpenXmlHelper：分别随第 6 步（解析）、第 8 步（Agent）、第 6 步（任务队列）、第 7 步实现；
 - 新增招标文件 20 份、引用 100 个、标段 100 个（每个最多 500 个范围）、合并正文读取 32 MiB 和各文本长度的上限（桌面版没有）；
+- 本地验证用的是 PostgreSQL 16，CI 用 17；`tests/db/files.test.ts` 需要 S3 兼容服务，本地无法启动，只在 CI 中运行（本 PR 未改动文件存储）。
+
+#### 技术方案（二）（#21，5.12）
+
+只改 `server/`，不改 `client/`，没有新增依赖，没有新增数据库角色，没有修改已有表的策略（`technical_plan_meta` 只加列和列级授权）。
+
+- **迁移 `0019_technical_plan_outline`**：取代桌面版 SQLite 的 `technical_plan_outline_nodes`、`technical_plan_global_fact_groups`，两张都是项目级表，挂在 `kind = 'technical-plan'` 的项目下，照 `exampleProjectTable` 模板写；另给 `technical_plan_meta` 加上 5.11 留下的目录项目名称、概述（上限与招标解析项相同，概述由目录生成任务取自项目概述）和字数控制快照（`jsonb` 对象）。
+  - `technical_plan_outline_nodes`：主键 `(project_id, node_id)`，`node_id` 是 `uuid`（与桌面版相同由程序分配的稳定 UUID，写入后不能改）；父节点以复合外键指向同一项目的节点、随父节点级联删除，`DEFERRABLE INITIALLY DEFERRED`；`sort_order` 是同级顺序，显示编号不存、读取时按树的顺序现算（与桌面版 `numberOutline` 相同）；层级 1~10 且与是否有父节点一致、不能以自己为父、处理方式只能取 5 种之一且说明只能配 `other`（CHECK）；标题 1~2000 字，说明 ≤ 2 万字，单节正文 ≤ 50 万字，`knowledge_item_ids` 为 `jsonb` 数组（≤ 64 KiB）。授予 SELECT、INSERT、DELETE 和除归属列、`node_id` 以外各列的 UPDATE（sort 只改位置、edit 只改标题与说明，节点身份不变）。
+  - `technical_plan_global_fact_groups`：主键 `(project_id, group_id)`，`group_id` 只含小写字母、数字、下划线和连字符（与桌面版 `normalizeGlobalFactId` 相同，CHECK）；标题 1~2000 字，内容 1~10 万字；整体替换，不授予 UPDATE。
+- **删除可见性与写权限由 RLS 强制**，应用代码不判断：两张表都只对应用角色建策略，只能看到、写入本组织的行，未设置上下文时什么都看不到；条件另含“不存在同 id 的已删除或其他 kind 的项目”，项目软删除后两张表的行查不到、改不了、删不掉，也不能新写，恢复项目即一起恢复。跨组织的 `project_id`、其他项目的父节点由复合外键报错。隔离测试：两张表各调用一次 `describeProjectTable`（`projectKind: 'technical-plan'`，级联）；另测了上面的规则。分别去掉项目条件中的已删除判断、kind 判断，去掉节点 UPDATE 策略 USING 中的项目条件，去掉层级与父节点一致的 CHECK，给全局事实授予 UPDATE、给 `node_id` 授予 UPDATE，各有 1、1、1、1、2、1 个用例失败。
+- **接口**（`src/routes/technicalPlan.ts`），先经 `requireProject(..., 'technical-plan')`：`PUT /api/projects/:projectId/technical-plan/outline`（`{ outlineData, reason, affectedNodeIds? }`，请求体上限 16 MiB）、`PUT .../global-facts`（`{ globalFacts }`，最多 100 组），对应桌面版 `saveOutline`、`saveGlobalFacts`，都返回完整状态。`GET .../technical-plan` 的状态加上 `outlineData`（带 `number`）、`outlineWordControlSnapshot`、`globalFacts`，`outlineGenerationTask`、`outlineAdjustmentTask`、`globalFactsTask`、`globalFactsAdjustmentTask` 先返回 `null`。
+  - **`reason` 协议**与桌面版相同：`replace` 清空全部正文；`delete`、`add-root`、`add-child` 只清空 `affectedNodeIds` 中的节点和叶子 / 父节点身份变化的节点的正文，其余已有节点沿用已保存的正文（忽略请求中的正文），新节点取请求给出的正文，不在新目录中的节点删除（仍在目录中的子节点先移到新父节点下再删）；`sort` 只改父节点、同级顺序、层级和目录的项目名称与概述；`edit` 只改标题与说明；目录为空时同时清除字数控制快照。节点的整理与桌面版 `flattenOutlineItems` 相同（没有 id 的节点连同子节点跳过，标题为空用“未命名章节”，处理方式只留在叶子上），读出与 `loadOutlineData` 相同（父节点不存在的节点作为根节点，空的可选字段省略）。
+  - **保存全局事实**与桌面版相同按 `normalizeGlobalFactGroups` 整理（标题或内容为空的分组丢弃，id 取 `id`、`group_id` 或标题，重复时追加 `_2`、`_3`……）后整体替换，同时清空全部正文（`clearContentGenerationState` 中本步已有的部分）。
+  - **下游清空**：`clearDownstreamFromTender`、`clearDownstreamFromBidSectionChange`（导入 / 移除招标文件、切换单 / 多标段、选择投标范围、开始多标段识别）和清空技术方案都删除目录（含正文）与全局事实，并清除目录的项目名称、概述与字数控制快照，与桌面版相同。
+- **给第 6 步任务用的 Store 函数**（已直接测试）：`saveGeneratedOutline`（目录生成的结果：与 `replace` 相同整体替换、清空正文，同时写入字数控制快照，取代桌面版任务 checkpoint 中的 `outlineData` / `outlineWordControlSnapshot`）；全局事实生成同样经 `saveGlobalFacts` 写入。
+- **纯函数**（`src/technicalPlan/outline.ts`）：`flattenOutline`、`buildOutline`、`normalizeGlobalFactGroups`、`normalizeGlobalFactId` 桌面版没有导出，测试按桌面版的规则逐条核对；`numberOutline` 由单元测试直接加载桌面版 `technicalPlanOutline.cjs` 对照。
+
+与路线图、设计的偏离：
+
+- `sort`、`edit` 要求请求中的节点与已保存的完全一致，否则 `409 TECHNICAL_PLAN_OUTLINE_CHANGED`、不做改动（桌面版对不一致的节点静默跳过）：Web 版同一项目可能由组织内多个成员同时编辑，旧页面提交的排序会让部分节点停在旧位置，甚至引用已删除的父节点；
+- 节点 id 必须是 UUID、处理方式必须是 5 种之一，否则 400（桌面版不校验）；新增目录 2000 个节点、10 级、每节 200 个知识库条目、全局事实 100 组和各文本长度的上限（桌面版没有）；
+- 全局事实的 `updated_at` 不再取请求中的值：内容未变的分组沿用原值，变化或新增的取保存时间；
+- 桌面版“正文生成任务运行或暂停中不能调整目录”的检查随第 6 步的任务队列；`saveOutline` 中正文生成状态（各节状态、编排、运行进度）的保留与清空、`saveGlobalFacts` 中正文生成状态的清空随 5.13 加入（本步只处理节点上的正文）；`saveGlobalFacts` 写入的“手工保存”任务记录随第 6 步；Agent 持久任务的删除、正文 Word 文件的暂存与回收随第 8 步、第 7 步；
+- 接口字段与桌面版 Renderer 的差异：保存接口返回完整状态（桌面版 `saveOutline` 只返回目录与正文生成相关字段、`saveGlobalFacts` 只返回全局事实相关字段）；任务状态为 `null`；`updated_at` 是 `Date`（JSON 中是 ISO 字符串）；前端接入时由第 9 步的 bridge 适配；
 - 本地验证用的是 PostgreSQL 16，CI 用 17；`tests/db/files.test.ts` 需要 S3 兼容服务，本地无法启动，只在 CI 中运行（本 PR 未改动文件存储）。
 
 
