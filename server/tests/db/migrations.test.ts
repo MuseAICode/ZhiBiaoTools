@@ -64,6 +64,12 @@ const APPLICATION_TABLES = [
   'rejection_check_risk_findings',
   'rejection_check_typo_findings',
   'sessions',
+  'technical_plan_bid_items',
+  'technical_plan_documents',
+  'technical_plan_generation_bid_tasks',
+  'technical_plan_generation_config',
+  'technical_plan_generation_reference_docs',
+  'technical_plan_meta',
   'usage_records',
   'user_settings',
   'users',
@@ -203,6 +209,7 @@ describe('迁移升级与回滚', () => {
       (await sql<{ prosrc: string }>`SELECT prosrc FROM pg_proc WHERE proname = 'ai_usage_begin'`.execute(testDb.admin)).rows.map((row) => row.prosrc);
     expectSuccess(await migrateToLatest(owner));
     expect((await source())[0]).toContain('ai_model_price');
+    expect(expectSuccess(await migrateDown(owner))).toEqual(['Down:0018_technical_plan']);
     expect(expectSuccess(await migrateDown(owner))).toEqual(['Down:0017_feasibility_report']);
     expect(expectSuccess(await migrateDown(owner))).toEqual(['Down:0016_rejection_check']);
     expect(expectSuccess(await migrateDown(owner))).toEqual(['Down:0015_files_project_immutable']);
