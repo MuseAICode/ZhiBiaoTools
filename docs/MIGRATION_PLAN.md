@@ -14,7 +14,7 @@
 | 3 | 配置与 AI 网关 | 进行中 | 旧仓库 PR #31（计费账本：组织余额、只追加的账本、带版本的价格表、幂等扣费、管理员手动充值与冲正，不调用 AI）、旧仓库 PR #32（AI 网关：调用前预扣冻结、按实际用量结算、冻结超时自动释放、`usage_records`、平台 Key 信封加密、DeepSeek / 通义千问流式适配、`POST /api/ai/chat`）、旧仓库 PR #33（平台模型白名单 `platform_models`：只有登记且启用、并有生效价格的模型能调用，免费须显式标记；管理员登记 / 启用 / 停用接口；用户断开时中止上游请求的端到端测试） |
 | 4 | 文件上传 / 下载 / 资源协议 | 进行中 | 旧仓库 PR #34（文件存储：S3 兼容对象存储、本地 SeaweedFS、`files` 表与强制 RLS、按内容校验类型、大小上限与组织配额、附件方式下载、7 天恢复期）、#6（上传白名单补齐桌面版能导入的内容：OLE 内容的 `.docx`，`.doc/.wps` 的 RTF / HTML / MHT / Word 2003 XML，`.xls` 的 HTML 表格 / SpreadsheetML，`%PDF-` 前有多余字节的 PDF） |
 | 5 | 数据层迁移（按业务逐个） | 已完成 | 旧仓库 PR #35（拆分计划，见“第 5 步说明”；记录上传白名单与桌面版的差距）、#7（5.1 项目：`projects` 表、`files.project_id`、项目接口、路由层归属校验、项目级表的迁移与测试模板）、#8（5.2 生成产物存储：`artifacts` 表、Store、只读接口；项目软删除与其下文件、产物联动，由 RLS 强制）、#9（5.3 配置：`org_settings`、`user_settings`、`GET/PATCH /api/settings`；写权限与删除可见性由 RLS 强制）、#10（5.4 导出模板：`export_templates`、`/api/export-templates` 增删改查与复制；系统模板只读、修改删除权限由 RLS 强制，迁移命令同步系统模板）、#11（5.5 资信库：6 张表、`/api/credential-library`；权限与删除可见性由 RLS 强制，图片随所引用文件的生命周期）、#12（5.6 知识库（一）：`knowledge_folders`、`_documents`、`_document_steps`、`/api/knowledge-base` 文件夹与文档管理；权限与删除可见性由 RLS 强制，文档随原件的生命周期）、#14（5.7 知识库（二）：切块、条目、匹配结果等 7 张表，检索与读取条目 / 分析 / Markdown 接口；删除可见性与写权限由 RLS 强制，随文档可见）、#16（5.8 标书查重：13 张项目级表、`/api/projects/:projectId/duplicate-check` 状态 / 文件选择 / 页面状态 / 清空 / Excel 导出；删除可见性与写权限由 RLS 强制，随项目和所选原件可见）、#17（5.8 后续：`files.project_id` 设置后不能再改，由触发器强制；xlsx 写出器防公式注入，回车按原样写出）、#18（5.9 废标检查：7 张项目级表、`/api/projects/:projectId/rejection-check` 状态 / 导入与移除文档 / 页面状态 / 切换与删除问题 / 清空 / Excel 导出；删除可见性与写权限由 RLS 强制，文档随原件可见，签名由服务端现算）、#19（5.10 可研报告：4 张项目级表、`/api/projects/:projectId/feasibility-report` 状态 / 步骤 / 项目信息 / 资料分析 / 目录配置 / 目录（`reason` 协议）/ 关键参数 / 正文 / 资料导入与移除 / 资料 Markdown / 清空；删除可见性与写权限由 RLS 强制，资料随原件、引用随知识库文档可见）、#20（5.11 技术方案（一）：6 张项目级表、`/api/projects/:projectId/technical-plan` 状态 / 步骤 / 生成配置 / 招标解析配置 / 正文生成选项 / 招标文件导入与移除 / 招标文件与合并正文的 Markdown / 原方案 / 投标范围选择 / 清空；删除可见性与写权限由 RLS 强制，文档随原件、引用随知识库文档可见，导出模板只能是本组织的或系统模板）、#21（5.12 技术方案（二）：目录与全局事实 2 张项目级表、`PUT .../outline`（`reason` 协议，节点 UUID 稳定、编号现算）与 `PUT .../global-facts`，下游清空扩展到目录与全局事实；删除可见性与写权限由 RLS 强制））、#22（5.13 技术方案（三）：正文生成状态与编排 2 张项目级表、`PUT .../chapters/:nodeId`、`DELETE .../content-generation`，目录保存与全局事实、下游清空扩展到正文生成状态、编排与运行进度；废标检查 `POST .../tender-from-technical-plan` 复制原件与 Markdown；删除可见性与写权限由 RLS 强制） |
-| 6 | 任务队列与 worker | 进行中 | #23（拆分计划，见“第 6 步说明”） |
+| 6 | 任务队列与 worker | 进行中 | #23（拆分计划，见“第 6 步说明”）、#24（6.1 Redis 接入：Valkey 8 开启 ACL、`REDIS_URL` / `REDIS_PASSWORD[_FILE]`、`/readyz` 检查 Redis、CI 起 Valkey） |
 | 7 | OpenXmlHelper 容器化与离屏渲染（前置：CI 新增 .NET 编译与 OpenXmlHelper 测试，见“第 9 步说明”的品牌改名第三部分） | 未开始 | — |
 | 8 | Agent 沙箱 | 未开始 | — |
 | 9 | 收尾与上线 | 进行中 | #1（品牌改名第一部分：用户可见文字和文档）、#2（品牌改名第二部分：代码标识符、数据与协议、打包，新增 CI 禁用词检查）、#5（品牌改名第三部分：原产品名缩写前缀改为中性前缀 `app`，禁用词检查加入该缩写） |
@@ -872,7 +872,7 @@ AI 网关加固，做法见 `docs/SERVER_DESIGN.md` 第 10.9 节。`client/` 未
 | 序号 | 内容 | 依赖 | 需确认后合并 | 状态 | PR |
 |---|---|---|---|---|---|
 | 6.0 | 拆分计划（本节）与 10 项决定 | — | 是（按本次要求，已确认） | 已完成 | #23 |
-| 6.1 | Redis 接入：`docker-compose.yml` 新增 `redis`（发行版见决定事项第 3 项；开启密码和 ACL，只在 `backend` 网络、开发时只绑 `127.0.0.1`）；配置 `REDIS_URL`、`REDIS_PASSWORD[_FILE]`（`init-dev-secrets.sh` 生成）；`/readyz` 加入 Redis 检查；CI 的 `server-checks` 加 Redis 服务容器。不含队列 | — | 否 | 未开始 | — |
+| 6.1 | Redis 接入：`docker-compose.yml` 新增 `redis`（发行版见决定事项第 3 项；开启密码和 ACL，只在 `backend` 网络、开发时只绑 `127.0.0.1`）；配置 `REDIS_URL`、`REDIS_PASSWORD[_FILE]`（`init-dev-secrets.sh` 生成）；`/readyz` 加入 Redis 检查；CI 的 `server-checks` 加 Redis 服务容器。不含队列 | — | 否 | 已完成 | #24 |
 | 6.2 | `jobs` 表与 worker 骨架：迁移新建 `jobs`（`SERVER_DESIGN.md` 第 5.1 节的字段，`project_id` 可空供组织级任务，强制 RLS）和 `job_events`（取代 `task_logs`，只追加）；互斥用部分唯一索引（见下方“互斥”）；`src/jobs/`（入队、取消、暂停、继续、checkpoint、状态机，事务内检查互斥和组织级并发）；BullMQ 生产者与 `src/worker.ts` 消费者（同一镜像、不同入口，compose 新增 `worker` 服务）；stalled 恢复；`GET /api/jobs`、`GET /api/jobs/:jobId`、`POST /api/jobs/:jobId/cancel`。只注册一个测试用任务类型，不迁移业务任务 | 6.1 | 否 | 未开始 | — |
 | 6.3 | SSE 推送：`GET /api/events`，worker 发布到 Redis `events:org:{orgId}` 并追加 Stream，api 按连接的组织和用户过滤后写出；`Last-Event-ID` 补发、超出窗口推 `resync`、25 秒心跳；会话吊销、移出组织后关闭连接（定期重新校验会话）；单用户连接数上限 | 6.2 | 否 | 未开始 | — |
 | 6.4 | worker 接入 AI 网关与余额：网关在 worker 中运行，任务调用记 `job_id` / `job_type`；`usage_records.job_id` 不补外键（任务记录到保留期会被删除，用量记录不可修改、永久保留，见“决定事项”第 10 项），只保留 `job_id` / `job_type` 的值；`jobs.billed_amount` 与结算在同一事务中累加（改 `ai_usage_settle`）；入队前检查最低启动余额（决定事项第 7 项）；运行中冻结失败时暂停为 `paused` / `insufficient_balance`，经 SSE 推送（取代 `onBalanceInsufficient`），充值后继续不重复扣费；AI 网关按组织 + 服务商的并发上限改为 Redis 分布式信号量（取 `org_settings.concurrency_limit` 与平台上限的较小值） | 6.2、6.3 | **是**（计费） | 未开始 | — |
@@ -964,7 +964,7 @@ AI 网关加固，做法见 `docs/SERVER_DESIGN.md` 第 10.9 节。`client/` 未
 | 14 | 入队检查余额、运行中耗尽暂停、`jobs.billed_amount`、`usage_records.job_id`（决定不加外键，见“决定事项”第 10 项） | 第 2、3 步（`SERVER_DESIGN.md` 第 10.3、10.8 节） | 6.4 |
 | 15 | AI 网关在 worker 中运行；按组织 + 服务商的并发信号量（Redis），取 `org_settings.concurrency_limit` 与平台上限的较小值 | 第 3 步（旧仓库 PR #32）、5.3（#9） | 6.4 |
 | 16 | 限流从进程内存换成 Redis | 第 2 步（旧仓库 PR #29） | 6.14 |
-| 17 | `/readyz` 加入 Redis 检查 | 第 2 步（旧仓库 PR #27、#28） | 6.1 |
+| 17 | `/readyz` 加入 Redis 检查 | 第 2 步（旧仓库 PR #27、#28） | 6.1，已完成（#24） |
 | 18 | `checkBidSections` 在 worker 中计算，并消除正则的平方级回溯 | 5.11（#20） | 6.11 |
 | 19 | 导入招标文件前取消本项目的后台任务；导入原方案时校验原图资源 | 5.11（#20） | 6.11（取消）、6.6（解析时校验原图资源） |
 | 20 | 可研“正文生成或审校运行中不能改目录 / 手工改正文”（`assertContentUnlocked`）；服务端合并资料（`readCombinedSourceMarkdown`） | 5.10（#19） | 6.12 |
@@ -972,6 +972,14 @@ AI 网关加固，做法见 `docs/SERVER_DESIGN.md` 第 10.9 节。`client/` 未
 | 22 | 知识库文档处理中被删除时任务停止；`recoverInterruptedDocuments` 由任务队列负责 | 5.6（#12） | 6.13 |
 | 23 | 废标检查由任务合并招标正文、经 `computeSignatures` 写签名 | 5.9（#18） | 6.9 |
 | 24 | 冻结到期收尾从 api 定时器移到 worker | 第 3 步（旧仓库 PR #32，现由 `src/server.ts` 定时执行） | 6.8 |
+
+#### Redis 接入（#24，6.1）
+
+- **Valkey 8**（决定事项第 3 项）：`valkey/valkey:8.1.10-trixie` 按 digest 固定，compose 与 CI 用同一 digest。启动脚本 `server/redis/start-valkey.sh` 由 compose 和 CI 共用：禁用 `default` 用户，只有 ACL 用户 `bidtools`，密码取自 Docker secret（ACL 文件只写 SHA-256，放在 tmpfs）；`bidtools` 可访问全部键和频道，但不能执行 `@admin` 类命令（`CONFIG`、`ACL`、`DEBUG`、`SHUTDOWN`、`MONITOR` 等）和 `FLUSHALL` / `FLUSHDB` / `SWAPDB`；不持久化（`SERVER_DESIGN.md` 第 8.4 节），`maxmemory-policy noeviction`（BullMQ 的要求）。容器以镜像中的 `valkey` 用户（999）运行，只读根文件系统、`cap_drop: ALL`、`no-new-privileges`，不经镜像入口脚本（它以 root 启动再降权）。6.2 起 BullMQ 若需要被禁止的命令，在同一脚本中调整并说明；
+- **网络**：redis 只在新建的 `backend` 网络上，api 同时加入 `default` 和 `backend`，postgres、s3、migrate 解析不到 `redis`（已实测）。开发环境要把端口映射到 `127.0.0.1:6379` 供本机集成测试，`backend` 没有设为 `internal`（internal 网络不能映射端口）；生产按 `SERVER_DESIGN.md` 第 8.1 节设为 `internal: true`、不映射端口；
+- **配置**：`REDIS_URL`（`redis://` 或 `rediss://`，可带 ACL 用户名，不接受密码、库号路径、查询串）与 `REDIS_PASSWORD` / `REDIS_PASSWORD_FILE`（`init-dev-secrets.sh` 生成 `redis_password`）。偏离计划：**未设置 `REDIS_URL` 时 Redis 关闭**，`/readyz` 不检查、启动时写一条警告，与 `S3_BUCKET`、`AI_KEK_FILE` 的处理一致；6.1 还没有任何功能用到 Redis，6.2 接入任务队列时改为必需；
+- **客户端**：`ioredis` 6.0.0（MIT，BullMQ 6 的 peer 依赖为 `ioredis >=5`，6.2 沿用同一个包）。`src/redis.ts` 只提供 `ping` / `destroy`：关闭离线队列（未连接时命令立即失败，`/readyz` 不会等待重连、Redis 长时间不可用时也不堆积命令），命令超时 2 秒，断线后按最长 5 秒的间隔自动重连，连接错误写 warn 日志（不含密码）。`/readyz` 并行检查数据库和 Redis，每个失败的依赖分别写日志，响应仍只有固定的 `status`；
+- **CI**：偏离计划中的“服务容器”：服务容器不能指定启动命令、不能挂载仓库中的启动脚本，所以和 SeaweedFS 一样在步骤中 `docker run`，参数与 compose 相同；`tests/db/redis.test.ts` 覆盖正确凭据、错误密码（响应和日志不含密码）、`default` 用户被禁用、不可达时 4 秒内返回 503、应用用户执行 `CONFIG` / `FLUSHALL` / `ACL` 被拒绝。
 
 #### 决定事项（#23）
 
@@ -1175,5 +1183,6 @@ AI 网关加固，做法见 `docs/SERVER_DESIGN.md` 第 10.9 节。`client/` 未
    - 鉴权上线前提（旧仓库 PR #29）：数据库角色见上一条；发信接口换成正式发信服务的实现；登录、注册、找回密码的限流从进程内存换成 Redis（多实例部署前必须完成）；按反向代理拓扑设置 `TRUSTED_PROXIES`（旧仓库 PR #30，只填 Caddy 的固定地址），用两个不同出口的客户端确认限流和会话中的 IP 是真实客户端地址；用 `npm run admin:create` 创建首个平台管理员后，确认平台管理员已开启 TOTP（设计文档第 3.4 节，TOTP 尚未实现）；
    - 计费核对：价格表已录入并公示，计价函数测试通过，余额不足拒绝新任务和运行中耗尽暂停已实测，管理员充值的 TOTP 和双人复核已启用；旧仓库 PR #31 暂用重新输入密码做二次验证并禁用 1,000 元以上的单笔充值，TOTP 和双人复核实现后再用新迁移放开大额充值；`bidtools_billing` 角色见“数据库角色”一条；
    - AI 网关（旧仓库 PR #32）：主密钥从 `AI_KEK_FILE` 换成云 KMS 的 `KeyWrapper` 实现（第 9 节第 8 项），开启删除保护和调用审计；生产环境 `AI_UPSTREAM_PRIVATE_HOSTS` 为空；确定通义千问使用国内站还是国际站并在管理后台填写对应 Base URL；用真实 Key 在预发环境核对两家服务商流式响应中的用量字段与控制台账单一致；
+   - Redis（#24）：生产用与开发相同的 `server/redis/start-valkey.sh`（禁用 `default` 用户、ACL 用户 `bidtools`、禁止 `@admin` 与清空命令、不持久化、`noeviction`），`maxmemory` 按实例内存设置（`REDIS_MAXMEMORY`）；redis 只在 `internal: true` 的 `backend` 网络上、不映射端口；密码走 Docker secret；api 和 worker 都设置 `REDIS_URL`，确认 `/readyz` 在停掉 Redis 后返回 503；
    - 从大陆主要省份和运营商实测访问香港服务器的延迟和可用性（`docs/SERVER_DESIGN.md` 第 8.0 节）。
    - 文件存储（旧仓库 PR #34）：选定云厂商对象存储（与 KMS 同一家、香港地域），bucket 私有、禁止公开读和列目录，开启服务端加密（默认加密或 KMS 密钥），配置生命周期规则清理未完成的分片上传；api 使用只能访问该 bucket 的最小权限访问密钥；用真实服务跑一遍 `tests/db/files.test.ts` 确认 S3 兼容性；过期文件和遗留 `uploading` 记录的物理清理任务已上线（否则对象只增不减）；Caddy 层设置请求体上限（略大于 100 MB）；`S3_ENDPOINT` 为 https。

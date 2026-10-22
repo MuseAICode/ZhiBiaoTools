@@ -516,7 +516,7 @@ AI 网关（worker 内）── 解密 Key ──> 模型服务商
 | `openxml` | `openxmlhelper/` .NET 10 | `backend`（与 worker 共享临时卷） |
 | `sandbox-runner` | 唯一能访问容器运行时 | `backend` |
 | `postgres` | PostgreSQL 17，数据卷 | `backend` |
-| `redis` | Redis 7，开启密码和 ACL，`appendonly` 可关 | `backend` |
+| `redis` | Valkey 8（第 6 步决定替代 Redis 7，协议兼容），开启密码和 ACL，不持久化；启动脚本 `server/redis/start-valkey.sh`（6.1） | `backend` |
 | （云对象存储） | 生产环境用云厂商对象存储，不在本机；开发环境才在 Compose 中起本地 S3 兼容存储 | 经 `egress`，用实例角色访问 |
 | 沙箱容器 | 由 sandbox-runner 动态创建 | `none` 或 `sandbox-gw`（`internal: true`） |
 
@@ -558,7 +558,7 @@ AI 网关（worker 内）── 解密 Key ──> 模型服务商
 ### 8.3 日志与监控
 
 - 结构化日志（pino）输出到 stdout，由 Docker 日志驱动收集并轮转；凭据字段一律脱敏（第 4.3 节），**不记录用户文档内容和 AI 输入输出全文**；
-- 健康检查：`/healthz`（进程存活，旧仓库 PR #27 已实现，只返回 `{"status":"ok"}`）、`/readyz`（数据库、Redis、对象存储可连，随对应依赖加入；旧仓库 PR #28 已加入数据库检查，失败返回 503 `{"status":"unavailable"}`，原因只写日志）；
+- 健康检查：`/healthz`（进程存活，旧仓库 PR #27 已实现，只返回 `{"status":"ok"}`）、`/readyz`（数据库、Redis、对象存储可连，随对应依赖加入；旧仓库 PR #28 已加入数据库检查，#24（6.1）加入 Redis 检查（配置了 `REDIS_URL` 时），失败返回 503 `{"status":"unavailable"}`，原因只写日志）；
 - 指标：队列长度、任务耗时与失败率、沙箱数量与资源、AI 请求错误率；告警至少覆盖磁盘、备份失败、队列积压、证书到期。
 
 ### 8.4 备份与恢复

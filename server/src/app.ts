@@ -12,6 +12,7 @@ import { registerErrorHandlers } from './errors.ts';
 import type { ObjectStore } from './files/objectStore.ts';
 import { createLoggerOptions } from './logger.ts';
 import { createLogMailer, type Mailer } from './mail/mailer.ts';
+import type { RedisHandle } from './redis.ts';
 import { registerAdminRoutes } from './routes/admin.ts';
 import { registerAiRoutes } from './routes/ai.ts';
 import { registerArtifactRoutes } from './routes/artifacts.ts';
@@ -31,6 +32,8 @@ import { registerTemplateRoutes } from './routes/templates.ts';
 export interface BuildAppOptions {
   /** 数据库由调用方创建和关闭（src/server.ts），测试中可以替换为桩。 */
   database: Pick<DatabaseHandle, 'ping' | 'db'>;
+  /** Redis 由调用方创建和关闭（src/server.ts）。未提供时 /readyz 不检查 Redis。 */
+  redis?: Pick<RedisHandle, 'ping'> | null;
   /** 测试用：把日志写到指定流。 */
   logStream?: NodeJS.WritableStream;
   /** 发信实现；默认输出到日志（发信服务未选定，见 src/mail/mailer.ts）。 */
@@ -96,7 +99,11 @@ export async function buildApp(config: AppConfig, options: BuildAppOptions): Pro
   // CSRF 校验与会话解析对全部路由生效，必须在注册路由之前添加。
   registerAuthHooks(app, { db: options.database.db, publicOrigin: config.publicOrigin, ...(options.now ? { now: options.now } : {}) });
 
-  await app.register(registerHealthRoutes, { pingDatabase: () => options.database.ping() });
+  const redis = options.redis ?? null;
+  await app.register(registerHealthRoutes, {
+    pingDatabase: () => options.database.ping(),
+    ...(redis ? { pingRedis: () => redis.ping() } : {}),
+  });
 
   const db = options.database.db;
   const mailer = options.mailer ?? createLogMailer(app.log, config.nodeEnv);

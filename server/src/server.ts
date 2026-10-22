@@ -5,6 +5,7 @@ import { expireStaleHolds } from './billing/usage.ts';
 import { ConfigError, loadConfig, type AppConfig } from './config.ts';
 import { createDatabase } from './db/database.ts';
 import { createS3ObjectStore } from './files/objectStore.ts';
+import { createRedis } from './redis.ts';
 
 const SHUTDOWN_TIMEOUT_MS = 10_000;
 /** 清理到期冻结的间隔。到期的冻结本来就不占用余额，这里只把记录标为 abandoned。 */
@@ -39,9 +40,14 @@ const database = createDatabase(config.database, {
   onIdleError: (error) => app.log.warn({ err: error }, 'idle database connection error'),
 });
 const objectStore = config.storage ? createS3ObjectStore(config.storage) : null;
-const app = await buildApp(config, { database, keyWrapper, objectStore });
+// 与数据库相同：Redis 暂时不可用时进程照常启动并自动重连，由 /readyz 报告未就绪。
+const redis = config.redis
+  ? createRedis(config.redis, { onError: (error) => app.log.warn({ err: error }, 'redis connection error') })
+  : null;
+const app = await buildApp(config, { database, keyWrapper, objectStore, redis });
 if (!keyWrapper) app.log.warn('AI_KEK_FILE is not set, AI gateway disabled');
 if (!objectStore) app.log.warn('S3_BUCKET is not set, file storage disabled');
+if (!redis) app.log.warn('REDIS_URL is not set, redis readiness check disabled');
 
 const sweeper = setInterval(() => {
   expireStaleHolds(database.db).then(
@@ -55,7 +61,7 @@ sweeper.unref();
 
 app.addHook('onClose', async () => {
   clearInterval(sweeper);
-  await database.destroy();
+  await Promise.all([database.destroy(), redis?.destroy()]);
 });
 
 let shuttingDown = false;

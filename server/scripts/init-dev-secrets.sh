@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 生成开发用 docker-compose.yml 所需的数据库密码、AI 网关主密钥和对象存储密钥（随机值），已存在的文件不覆盖。
+# 生成开发用 docker-compose.yml 所需的数据库密码、AI 网关主密钥、对象存储密钥和 Redis 密码（随机值），已存在的文件不覆盖。
 # 文件在 server/.dev-secrets/，已被 .gitignore 排除；只用于本机开发，生产环境的密钥另行管理。
 set -euo pipefail
 
@@ -8,7 +8,8 @@ mkdir -p "$dir"
 chmod 700 "$dir"
 
 # s3_secret_key：本地对象存储（SeaweedFS）的访问密钥，api 用它访问 bucket。
-for name in postgres_password db_owner_password db_app_password s3_secret_key; do
+# redis_password：Redis（Valkey）ACL 用户 bidtools 的密码，见 server/redis/start-valkey.sh。
+for name in postgres_password db_owner_password db_app_password s3_secret_key redis_password; do
   file="$dir/$name"
   if [[ -s "$file" ]]; then
     echo "保留已有的 $name"

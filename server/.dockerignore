@@ -11,3 +11,4 @@ vitest.db.config.ts
 db
 scripts
 .dev-secrets
+redis
