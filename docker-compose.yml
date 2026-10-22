@@ -1,11 +1,12 @@
-# 开发用 Docker Compose：api + PostgreSQL 17 + 本地 S3 兼容对象存储（SeaweedFS），Redis 在后续 PR 中加入。
+# 开发用 Docker Compose：api + PostgreSQL 17 + 本地 S3 兼容对象存储（SeaweedFS）+ Redis（Valkey 8）。
 # 用法：
-#   1. server/scripts/init-dev-secrets.sh   # 首次运行：生成数据库密码、AI 主密钥和对象存储密钥到 server/.dev-secrets/（不入库）
+#   1. server/scripts/init-dev-secrets.sh   # 首次运行：生成数据库密码、AI 主密钥、对象存储密钥和 Redis 密码到 server/.dev-secrets/（不入库）
 #   2. docker compose up --build            # migrate 执行完迁移后 api 才启动
 #   3. 访问 http://localhost:3000/healthz 和 /readyz
 #   4. 创建首个平台管理员：cd server && MIGRATION_DATABASE_PASSWORD_FILE=.dev-secrets/db_owner_password npm run admin:create -- --email <邮箱>
 # 已有的数据卷是 旧仓库 PR #29 之前初始化的（缺少 bidtools_auth 角色）时，先 docker compose down -v 重建。
 # 旧仓库 PR #34 起新增 s3 服务：已有的开发环境需要重新运行 init-dev-secrets.sh 生成 s3_secret_key（已有的文件不会被覆盖）。
+# 6.1 起新增 redis 服务：同样需要重新运行 init-dev-secrets.sh 生成 redis_password。
 # 重建数据库：docker compose down -v（会删除数据卷）。
 # 生产部署的 compose 与网络划分见 docs/SERVER_DESIGN.md 第 8.1 节，不使用本文件。
 name: bidtools-dev
@@ -85,6 +86,33 @@ services:
     <<: *hardening
     restart: unless-stopped
 
+  # Redis：Valkey 8（BSD-3-Clause，docs/MIGRATION_PLAN.md 第 6 步决定事项第 3 项），任务队列、事件推送、限流共用。
+  # 按 digest 固定，升级时同时更新标签和 digest；与 CI 一致。启动脚本禁用 default 用户、按密码文件创建 ACL 用户 bidtools，
+  # 不持久化（见 server/redis/start-valkey.sh）。只在 backend 网络上，postgres、s3、migrate 连不到它。
+  redis:
+    image: valkey/valkey:8.1.10-trixie@sha256:640c5e62cea04b6d6f2084232651d0cc70362d31f4f805e7be94dbed6855e8f2
+    # 镜像中的 valkey 用户；不经镜像的入口脚本（以 root 启动再降权，需要 SETUID / SETGID 能力）。
+    user: "999:999"
+    entrypoint: ["/bin/sh", "/opt/start-valkey.sh"]
+    environment:
+      REDIS_PASSWORD_FILE: /run/secrets/redis_password
+    secrets:
+      - redis_password
+    volumes:
+      - ./server/redis/start-valkey.sh:/opt/start-valkey.sh:ro
+    networks:
+      - backend
+    ports:
+      # 只绑定本机回环地址，供本机的集成测试使用，不对局域网暴露。
+      - "127.0.0.1:6379:6379"
+    healthcheck:
+      test: ["CMD-SHELL", "REDISCLI_AUTH=\"$$(cat /run/secrets/redis_password)\" valkey-cli --user bidtools ping | grep -q PONG"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    <<: *hardening
+    restart: unless-stopped
+
   migrate:
     image: bidtools-api:dev
     build:
@@ -127,16 +155,25 @@ services:
       S3_FORCE_PATH_STYLE: "true"
       S3_ACCESS_KEY_ID: bidtools-dev
       S3_SECRET_ACCESS_KEY_FILE: /run/secrets/s3_secret_key
-    # 只拿应用角色的密码、主密钥和对象存储密钥，拿不到属主和超级用户密码；migrate 拿不到主密钥和对象存储密钥。
+      # Redis 的 ACL 用户名写在地址中，密码走 secret（不写进连接串）。
+      REDIS_URL: redis://bidtools@redis:6379
+      REDIS_PASSWORD_FILE: /run/secrets/redis_password
+    # 只拿应用角色的密码、主密钥、对象存储密钥和 Redis 密码，拿不到属主和超级用户密码；migrate 拿不到后三者。
     secrets:
       - db_app_password
       - ai_kek
       - s3_secret_key
+      - redis_password
     depends_on:
       migrate:
         condition: service_completed_successfully
       s3:
         condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - default
+      - backend
     ports:
       # 只绑定本机回环地址，不对局域网暴露。
       - "127.0.0.1:3000:3000"
@@ -154,6 +191,13 @@ secrets:
     file: ./server/.dev-secrets/ai_kek
   s3_secret_key:
     file: ./server/.dev-secrets/s3_secret_key
+  redis_password:
+    file: ./server/.dev-secrets/redis_password
+
+# backend：Redis 所在的网络，只有 api（以后还有 worker）加入。开发环境需要把 Redis 端口映射到本机供集成测试使用，
+# 所以没有设为 internal（internal 网络不能映射端口）；生产部署的网络划分见 docs/SERVER_DESIGN.md 第 8.1 节。
+networks:
+  backend:
 
 volumes:
   pgdata:

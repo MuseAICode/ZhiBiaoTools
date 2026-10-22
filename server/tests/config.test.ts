@@ -26,6 +26,7 @@ describe('loadConfig', () => {
       database: { host: '127.0.0.1', port: 5432, name: 'bidtools', user: 'bidtools_app', password: 'pw' },
       ai: { kekFile: null, kekVersion: 1, upstreamTimeoutMs: 300_000, holdTtlSeconds: 900, maxOutputTokens: 8192, upstreamPrivateHosts: [] },
       storage: null,
+      redis: null,
     });
   });
 
@@ -68,6 +69,7 @@ describe('loadConfig', () => {
         upstreamPrivateHosts: ['127.0.0.1', 'llm.internal'],
       },
       storage: null,
+      redis: null,
     });
     expect(Object.isFrozen(config)).toBe(true);
     expect(Object.isFrozen(config.database)).toBe(true);
@@ -272,6 +274,48 @@ describe('对象存储（S3_*）', () => {
     expect(expectConfigError({ ...production, S3_ENDPOINT: 'http://s3.example.com' }).issues.map((issue) => issue.name)).toEqual(['S3_ENDPOINT']);
     expect(loadConfig({ ...production, S3_ENDPOINT: 'https://s3.example.com' }).storage?.endpoint).toBe('https://s3.example.com');
     expect(expectConfigError({ ...S3_ENV, S3_BUCKET: '../Bad_Bucket' }).issues.map((issue) => issue.name)).toEqual(['S3_BUCKET']);
+  });
+});
+
+describe('Redis（REDIS_*）', () => {
+  const REDIS_ENV = { ...BASE_ENV, REDIS_URL: 'redis://bidtools@redis:6379', REDIS_PASSWORD: 'redis-secret' };
+
+  it('未设置 REDIS_URL 时关闭', () => {
+    expect(loadConfig(BASE_ENV).redis).toBeNull();
+  });
+
+  it('解析地址和用户名，密码可以来自文件', () => {
+    const config = loadConfig(REDIS_ENV);
+    expect(config.redis).toEqual({ host: 'redis', port: 6379, username: 'bidtools', password: 'redis-secret', tls: false });
+    expect(Object.isFrozen(config.redis)).toBe(true);
+    const fromFile = loadConfig(
+      { ...REDIS_ENV, REDIS_URL: 'rediss://[::1]:6380/', REDIS_PASSWORD: undefined, REDIS_PASSWORD_FILE: '/run/secrets/redis' },
+      { readFile: () => 'file-secret\n' },
+    );
+    expect(fromFile.redis).toEqual({ host: '::1', port: 6380, username: null, password: 'file-secret', tls: true });
+  });
+
+  it('启用后缺少密码时失败', () => {
+    const error = expectConfigError({ ...BASE_ENV, REDIS_URL: 'redis://bidtools@redis:6379' });
+    expect(error.issues.map((issue) => issue.name)).toEqual(['REDIS_PASSWORD']);
+    expect(expectConfigError({ ...REDIS_ENV, REDIS_PASSWORD_FILE: '/run/secrets/redis' }).issues.map((issue) => issue.name)).toEqual([
+      'REDIS_PASSWORD',
+    ]);
+  });
+
+  it.each([
+    'http://redis:6379',
+    'redis://bidtools:inline-secret@redis:6379',
+    'redis://redis:6379/1',
+    'redis://redis:6379?db=1',
+    'redis://redis:0',
+    'redis://bad%20user@redis:6379',
+    'not a url',
+  ])('拒绝不合法的 REDIS_URL：%s，错误信息不回显变量值', (url) => {
+    const error = expectConfigError({ ...REDIS_ENV, REDIS_URL: url });
+    expect(error.issues.map((issue) => issue.name)).toEqual(['REDIS_URL']);
+    expect(error.message).not.toContain('inline-secret');
+    expect(error.message).not.toContain('redis-secret');
   });
 });
 

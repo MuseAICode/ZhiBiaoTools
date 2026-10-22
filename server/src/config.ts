@@ -51,6 +51,17 @@ export interface ObjectStorageConfig {
   secretAccessKey: string;
 }
 
+/** Redis（Valkey，docs/SERVER_DESIGN.md 第 5 节）：任务队列、事件推送、限流和分布式信号量的共享存储。 */
+export interface RedisConfig {
+  host: string;
+  port: number;
+  /** ACL 用户名；为 null 时用 default 用户（开发 compose 和生产都禁用了 default，必须给出用户名）。 */
+  username: string | null;
+  password: string;
+  /** rediss:// 时为 true，用 TLS 连接。 */
+  tls: boolean;
+}
+
 export interface AppConfig {
   nodeEnv: NodeEnv;
   host: string;
@@ -71,6 +82,8 @@ export interface AppConfig {
   ai: AiGatewayConfig;
   /** 未设置 S3_BUCKET 时为 null，文件接口返回 503。 */
   storage: ObjectStorageConfig | null;
+  /** 未设置 REDIS_URL 时为 null，/readyz 不检查 Redis（第 6 步的任务队列接入后改为必需）。 */
+  redis: RedisConfig | null;
 }
 
 export interface ConfigIssue {
@@ -178,6 +191,41 @@ function intSpec(defaultValue: number, min: number, max: number): VarSpec<number
     },
     expected: `${min}~${max} 的整数`,
   };
+}
+
+interface RedisAddress {
+  host: string;
+  port: number;
+  username: string | null;
+  tls: boolean;
+}
+
+/**
+ * redis:// 或 rediss://，可带 ACL 用户名，不带密码（密码走 REDIS_PASSWORD[_FILE]，不写进连接串）、
+ * 不带库号路径、查询串和片段：队列只用 0 号库，避免不同进程配置不一致。
+ */
+function parseRedisUrl(raw: string): RedisAddress | undefined {
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    return undefined;
+  }
+  if (url.protocol !== 'redis:' && url.protocol !== 'rediss:') return undefined;
+  if (url.password || url.search || url.hash || (url.pathname !== '/' && url.pathname !== '')) return undefined;
+  if (raw.endsWith('?') || raw.endsWith('#') || url.port === '0') return undefined;
+  const host = url.hostname.startsWith('[') ? url.hostname.slice(1, -1) : url.hostname;
+  if (!host || !HOSTNAME_PATTERN.test(host)) return undefined;
+  let username: string | null = null;
+  if (url.username) {
+    try {
+      username = decodeURIComponent(url.username);
+    } catch {
+      return undefined;
+    }
+    if (!/^[A-Za-z0-9_.-]{1,64}$/.test(username)) return undefined;
+  }
+  return Object.freeze({ host, port: url.port ? Number(url.port) : 6379, username, tls: url.protocol === 'rediss:' });
 }
 
 const HOSTNAME_LIST_ENTRY = /^[a-z0-9]([a-z0-9.-]{0,251}[a-z0-9])?$|^\[[0-9a-f:.]+\]$/;
@@ -316,11 +364,22 @@ function createReader(env: Env, options: LoadConfigOptions) {
     });
   }
 
-  return { read, readDatabase, readAi, readStorage, finish };
+  /** 设置了 REDIS_URL 才启用；启用后密码必需（REDIS_PASSWORD 或 REDIS_PASSWORD_FILE）。 */
+  function readRedis(): RedisConfig | null {
+    if (!env.REDIS_URL?.trim()) return null;
+    const address = read('REDIS_URL', {
+      parse: parseRedisUrl,
+      expected: 'redis:// 或 rediss:// 地址（可带用户名，不带密码和路径，如 redis://bidtools@redis:6379）',
+    });
+    const password = readSecret('REDIS_PASSWORD');
+    return Object.freeze({ ...address, password });
+  }
+
+  return { read, readDatabase, readAi, readStorage, readRedis, finish };
 }
 
 export function loadConfig(env: Env, options: LoadConfigOptions = {}): AppConfig {
-  const { read, readDatabase, readAi, readStorage, finish } = createReader(env, options);
+  const { read, readDatabase, readAi, readStorage, readRedis, finish } = createReader(env, options);
   const nodeEnv = read('NODE_ENV', {
     parse: oneOf(NODE_ENVS),
     expected: NODE_ENVS.join(' / '),
@@ -352,6 +411,7 @@ export function loadConfig(env: Env, options: LoadConfigOptions = {}): AppConfig
     database: readDatabase('DATABASE_USER', 'bidtools_app', 'DATABASE_PASSWORD'),
     ai: readAi(),
     storage: readStorage(production),
+    redis: readRedis(),
   });
 }
 

@@ -11,9 +11,13 @@ afterEach(async () => {
   app = undefined;
 });
 
-async function setup(register?: (instance: FastifyInstance) => void, database = fakeDatabase()) {
+async function setup(
+  register?: (instance: FastifyInstance) => void,
+  database = fakeDatabase(),
+  redis: { ping(): Promise<void> } | null = null,
+) {
   const logs = createLogCapture();
-  app = await buildApp(testConfig, { database, logStream: logs.stream, passwordHasher: await fastHasher() });
+  app = await buildApp(testConfig, { database, redis, logStream: logs.stream, passwordHasher: await fastHasher() });
   // 测试中临时注册的路由不需要登录。
   app.addHook('onRoute', (route) => {
     route.config = { ...route.config, access: 'public' };
@@ -63,6 +67,52 @@ describe('GET /readyz', () => {
     const entry = logs.lines().find((line) => line.msg === 'readiness check failed');
     expect(entry).toMatchObject({ level: 40, dependency: 'database' });
     expect(JSON.stringify(entry)).toContain('ECONNREFUSED');
+  });
+
+  it('配置了 Redis 时一并检查，二者都可用才返回 200', async () => {
+    let pinged = false;
+    const { app } = await setup(undefined, fakeDatabase(), {
+      ping: async () => {
+        pinged = true;
+      },
+    });
+    const response = await app.inject({ method: 'GET', url: '/readyz' });
+    expect(response.statusCode).toBe(200);
+    expect(pinged).toBe(true);
+  });
+
+  it('Redis 不可用时返回 503，响应不含错误细节，原因写入日志', async () => {
+    const detail = 'WRONGPASS invalid username-password pair redis:6379';
+    const { app, logs } = await setup(undefined, fakeDatabase(), {
+      ping: async () => {
+        throw new Error(detail);
+      },
+    });
+    const response = await app.inject({ method: 'GET', url: '/readyz' });
+    expect(response.statusCode).toBe(503);
+    expect(response.json()).toEqual({ status: 'unavailable' });
+    expect(response.body).not.toMatch(/WRONGPASS|6379|redis/);
+    const entries = logs.lines().filter((line) => line.msg === 'readiness check failed');
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({ level: 40, dependency: 'redis' });
+  });
+
+  it('数据库和 Redis 都不可用时分别写日志', async () => {
+    const { app, logs } = await setup(
+      undefined,
+      fakeDatabase(async () => {
+        throw new Error('db down');
+      }),
+      {
+        ping: async () => {
+          throw new Error('redis down');
+        },
+      },
+    );
+    const response = await app.inject({ method: 'GET', url: '/readyz' });
+    expect(response.statusCode).toBe(503);
+    const dependencies = logs.lines().filter((line) => line.msg === 'readiness check failed').map((line) => line.dependency);
+    expect(dependencies.sort()).toEqual(['database', 'redis']);
   });
 
   it('/healthz 不检查数据库：数据库不可用时仍返回 200', async () => {

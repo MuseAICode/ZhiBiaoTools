@@ -137,6 +137,28 @@ jobs:
           docker logs seaweedfs
           exit 1
 
+      # Redis 集成测试用的 Valkey，与 docker-compose.yml 的 redis 服务使用同一镜像 digest 和同一启动脚本（同样的 ACL）。
+      # 服务容器不能指定启动命令和挂载仓库文件，所以在这里启动。密码只用于 CI 的一次性容器，不是机密。
+      - name: Start Valkey (Redis)
+        run: |
+          mkdir -p "$RUNNER_TEMP/redis"
+          echo ci-redis-password > "$RUNNER_TEMP/redis/redis_password"
+          chmod 644 "$RUNNER_TEMP/redis/redis_password"
+          docker run -d --name valkey -p 127.0.0.1:6379:6379 --user 999:999 --read-only --tmpfs /tmp:size=64m \
+            --cap-drop ALL --security-opt no-new-privileges:true \
+            -e REDIS_PASSWORD_FILE=/run/secrets/redis_password \
+            -v "$RUNNER_TEMP/redis/redis_password:/run/secrets/redis_password:ro" \
+            -v "$PWD/redis/start-valkey.sh:/opt/start-valkey.sh:ro" \
+            --entrypoint /bin/sh \
+            valkey/valkey:8.1.10-trixie@sha256:640c5e62cea04b6d6f2084232651d0cc70362d31f4f805e7be94dbed6855e8f2 \
+            /opt/start-valkey.sh
+          for attempt in $(seq 1 30); do
+            if docker exec -e REDISCLI_AUTH=ci-redis-password valkey valkey-cli --user bidtools ping 2>/dev/null | grep -q PONG; then exit 0; fi
+            sleep 1
+          done
+          docker logs valkey
+          exit 1
+
       - name: Typecheck (tsc --noEmit)
         run: npm run typecheck
 
@@ -146,16 +168,18 @@ jobs:
       - name: Unit tests (Vitest)
         run: npm run test
 
-      - name: Database tests (migrations, RLS, /readyz, file storage)
+      - name: Database tests (migrations, RLS, /readyz, file storage, redis)
         run: npm run test:db
         env:
           TEST_DATABASE_ADMIN_URL: postgres://postgres:postgres@127.0.0.1:5432/postgres
           TEST_S3_ENDPOINT: http://127.0.0.1:8333
           TEST_S3_ACCESS_KEY_ID: ci-access
           TEST_S3_SECRET_ACCESS_KEY: ci-secret-key
+          TEST_REDIS_URL: redis://bidtools@127.0.0.1:6379
+          TEST_REDIS_PASSWORD: ci-redis-password
 
       - name: Shell script syntax (bash -n)
-        run: bash -n db/init/10-provision.sh && bash -n scripts/init-dev-secrets.sh
+        run: bash -n db/init/10-provision.sh && bash -n scripts/init-dev-secrets.sh && sh -n redis/start-valkey.sh
 
       - name: npm audit (fail on high)
         run: npm audit --audit-level=high
