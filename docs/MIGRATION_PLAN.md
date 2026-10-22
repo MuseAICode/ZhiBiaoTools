@@ -865,28 +865,28 @@ AI 网关加固，做法见 `docs/SERVER_DESIGN.md` 第 10.9 节。`client/` 未
 - 提示词明确要求使用命令：`outlineGenerationTaskV2.cjs`（目录审核：“可使用 grep、read 或 bash 定位相关部分”）、`globalFactsTaskV2.cjs`（“用 grep 定位……可用 node、jq 辅助合并条目”）、`outlineAdjustmentTask.cjs` / `globalFactsAdjustmentTask.cjs`（“可使用 bash 配合 node、jq 处理”）；
 - 可研报告的目录生成 / 调整（`feasibilityOutlineTask.cjs`、`feasibilityOutlineAdjustmentTask.cjs`）同样经 `agentService.runTask`，七个原生工具同样启用；模板提取（`templateExtractionTask.cjs`）也经 `runTask`，随第 7、8 步。
 
-因此第 5 步“第 6 步核实、可能推迟到第 8 步”的三类任务（技术方案目录生成 / 调整、全局事实生成 / 调整，可研目录生成 / 调整）全部定为第 8 步。另外核实了“不带 Agent”的任务：`bidAnalysisTask.cjs`、`bidSectionExtractionTask.cjs`、`rejectionCheckTask.cjs`、`feasibilityReportTasks.cjs`、`knowledgeBaseService.cjs` 只调用 `aiService`，`duplicateCheckService.cjs` 不调用 AI，都可以在第 6 步迁移。其中**可研报告正文生成与自然化审校**（`runFeasibilityContentTask`、`runFeasibilityHumanWritingTask`）也只调用 `aiService`，第 5 步的表写的是“正文生成：第 8 步”，本计划改为第 6 步（偏离，待确认，见“需要决定的事项”第 4 项）。
+因此第 5 步“第 6 步核实、可能推迟到第 8 步”的三类任务（技术方案目录生成 / 调整、全局事实生成 / 调整，可研目录生成 / 调整）全部定为第 8 步。另外核实了“不带 Agent”的任务：`bidAnalysisTask.cjs`、`bidSectionExtractionTask.cjs`、`rejectionCheckTask.cjs`、`feasibilityReportTasks.cjs`、`knowledgeBaseService.cjs` 只调用 `aiService`，`duplicateCheckService.cjs` 不调用 AI，都可以在第 6 步迁移。其中**可研报告正文生成与自然化审校**（`runFeasibilityContentTask`、`runFeasibilityHumanWritingTask`）也只调用 `aiService`，第 5 步的表写的是“正文生成：第 8 步”，本计划改为第 6 步（偏离，已在 #23 确认，见“决定事项”第 4 项）。
 
 **PR 拆分顺序**：
 
 | 序号 | 内容 | 依赖 | 需确认后合并 | 状态 | PR |
 |---|---|---|---|---|---|
-| 6.0 | 拆分计划（本节） | — | 是（按本次要求） | 进行中 | #23 |
+| 6.0 | 拆分计划（本节）与 10 项决定 | — | 是（按本次要求，已确认） | 已完成 | #23 |
 | 6.1 | Redis 接入：`docker-compose.yml` 新增 `redis`（发行版见决定事项第 3 项；开启密码和 ACL，只在 `backend` 网络、开发时只绑 `127.0.0.1`）；配置 `REDIS_URL`、`REDIS_PASSWORD[_FILE]`（`init-dev-secrets.sh` 生成）；`/readyz` 加入 Redis 检查；CI 的 `server-checks` 加 Redis 服务容器。不含队列 | — | 否 | 未开始 | — |
 | 6.2 | `jobs` 表与 worker 骨架：迁移新建 `jobs`（`SERVER_DESIGN.md` 第 5.1 节的字段，`project_id` 可空供组织级任务，强制 RLS）和 `job_events`（取代 `task_logs`，只追加）；互斥用部分唯一索引（见下方“互斥”）；`src/jobs/`（入队、取消、暂停、继续、checkpoint、状态机，事务内检查互斥和组织级并发）；BullMQ 生产者与 `src/worker.ts` 消费者（同一镜像、不同入口，compose 新增 `worker` 服务）；stalled 恢复；`GET /api/jobs`、`GET /api/jobs/:jobId`、`POST /api/jobs/:jobId/cancel`。只注册一个测试用任务类型，不迁移业务任务 | 6.1 | 否 | 未开始 | — |
 | 6.3 | SSE 推送：`GET /api/events`，worker 发布到 Redis `events:org:{orgId}` 并追加 Stream，api 按连接的组织和用户过滤后写出；`Last-Event-ID` 补发、超出窗口推 `resync`、25 秒心跳；会话吊销、移出组织后关闭连接（定期重新校验会话）；单用户连接数上限 | 6.2 | 否 | 未开始 | — |
-| 6.4 | worker 接入 AI 网关与余额：网关在 worker 中运行，任务调用记 `job_id` / `job_type`；`usage_records.job_id` 补外键；`jobs.billed_amount` 与结算在同一事务中累加（改 `ai_usage_settle`）；入队前检查最低启动余额（决定事项第 7 项）；运行中冻结失败时暂停为 `paused` / `insufficient_balance`，经 SSE 推送（取代 `onBalanceInsufficient`），充值后继续不重复扣费；AI 网关按组织 + 服务商的并发上限改为 Redis 分布式信号量（取 `org_settings.concurrency_limit` 与平台上限的较小值） | 6.2、6.3 | **是**（计费） | 未开始 | — |
+| 6.4 | worker 接入 AI 网关与余额：网关在 worker 中运行，任务调用记 `job_id` / `job_type`；`usage_records.job_id` 不补外键（任务记录到保留期会被删除，用量记录不可修改、永久保留，见“决定事项”第 10 项），只保留 `job_id` / `job_type` 的值；`jobs.billed_amount` 与结算在同一事务中累加（改 `ai_usage_settle`）；入队前检查最低启动余额（决定事项第 7 项）；运行中冻结失败时暂停为 `paused` / `insufficient_balance`，经 SSE 推送（取代 `onBalanceInsufficient`），充值后继续不重复扣费；AI 网关按组织 + 服务商的并发上限改为 Redis 分布式信号量（取 `org_settings.concurrency_limit` 与平台上限的较小值） | 6.2、6.3 | **是**（计费） | 未开始 | — |
 | 6.5 | 解析沙箱基础设施：`sandbox-runner` 服务、`SandboxDriver` 接口、`parse` 模板、解析镜像（见下方“文件解析的隔离”）；隔离测试 | 6.2 | **是**（沙箱） | 未开始 | — |
 | 6.6 | 解析任务（一）二进制与纯文本格式：`parse` 队列；按记录的 MIME 分派（见下方分派表）；ZIP 炸弹、PDF 页数、超时检查；产出经 `writeArtifact` 写入；重新解析时替换旧产物（第 5 步 #8 留下）；接入技术方案、废标检查、可研报告三个模块的文档解析（`saveDocumentParse` / `saveSourceParse`），导入后自动入队 | 6.5 | 否 | 未开始 | — |
 | 6.7 | 解析任务（二）文本类格式（#6 放行的 RTF、HTML、MHT、Word 2003 XML、SpreadsheetML）：逐项满足“第 6 步解析要求”，用恶意样本测试（XXE、实体膨胀、外链图片 / 样式 / `<iframe>`、RTF `INCLUDEPICTURE` / `INCLUDETEXT`、MHT 外部 `Content-Location`） | 6.6 | 否 | 未开始 | — |
-| 6.8 | 清理任务：过期文件、产物、项目的对象与行的物理删除，遗留 `uploading` 行，按对象键前缀找出的孤儿对象，冻结到期收尾（`expireStaleHolds` 从 api 的定时器移到 worker 的定时任务）；跨组织，用新的 `NOLOGIN` 定义者角色写 `SECURITY DEFINER` 函数（决定事项第 9 项） | 6.2 | **是**（新增数据库角色） | 未开始 | — |
+| 6.8 | 清理任务：过期文件、产物、项目的对象与行的物理删除，遗留 `uploading` 行，按对象键前缀找出的孤儿对象，冻结到期收尾（`expireStaleHolds` 从 api 的定时器移到 worker 的定时任务），超过保留期的 `jobs` / `job_events`；跨组织，用新的 `NOLOGIN` 定义者角色 `bidtools_cleanup` 写 `SECURITY DEFINER` 函数，要求见“决定事项”第 9、10 项 | 6.2 | **是**（新增数据库角色） | 未开始 | — |
 | 6.9 | 废标检查任务：`rejection-items-extraction`、`rejection-check-run`；任务按招标文件顺序合并正文，经 `computeSignatures` 写签名；`loadState` 返回任务状态 | 6.4、6.6 | 否 | 未开始 | — |
 | 6.10 | 标书查重任务：`duplicate-analysis`。`duplicateCheckService.cjs` 自己用 `adm-zip`、`cfb`、`cheerio`、`pdf-parse` 读原件（正文、元数据、目录、图片），这部分提取放进 `parse` 沙箱，产出正文与图片产物；比对计算在 worker 中进行，经 `saveAnalysisSection` 写入 | 6.5、6.6 | 否 | 未开始 | — |
 | 6.11 | 技术方案任务（一）：招标解析 `bid-analysis`、多标段识别 `bid-section-extraction`；`checkBidSections`（疑似多标段检测）在 worker 中计算并写入状态，改写正则消除平方级回溯（#20 留下）；导入招标文件前取消本项目的技术方案任务（#20 留下） | 6.4、6.6 | 否 | 未开始 | — |
-| 6.12 | 可研报告任务：`feasibility-analysis`、`feasibility-parameters`、`feasibility-content`、`feasibility-human-writing`（后两项待决定事项第 4 项确认）；服务端合并资料（取代 `readCombinedSourceMarkdown`）；正文生成或审校运行、暂停时不能修改目录和手工改正文（`assertContentUnlocked`，#19 留下） | 6.4、6.6 | 否 | 未开始 | — |
+| 6.12 | 可研报告任务：`feasibility-analysis`、`feasibility-parameters`、`feasibility-content`、`feasibility-human-writing`（后两项按“决定事项”第 4 项提前到第 6 步）；服务端合并资料（取代 `readCombinedSourceMarkdown`）；正文生成或审校运行、暂停时不能修改目录和手工改正文（`assertContentUnlocked`，#19 留下） | 6.4、6.6 | 否 | 未开始 | — |
 | 6.13 | 知识库任务：文档准备（解析、切块、条目抽取）、`retryDocument`、`startMatching`、`knowledgeBase.onEvent` 改为 SSE；文档在处理中被删除时任务停止（写入影响 0 行即退出，#12 留下）；取代 `recoverInterruptedDocuments` | 6.4、6.6 | 否 | 未开始 | — |
 | 6.14 | 登录、注册、找回密码的限流从进程内存换成 Redis（旧仓库 PR #29 留下，多实例部署前必须完成），接口与参数不变 | 6.1 | **是**（鉴权） | 未开始 | — |
-| 6.15 | MinerU 解析（决定事项第 6 项决定提供时才做） | 6.6 | 视决定 | 未开始 | — |
+| 6.15 | MinerU 解析（决定事项第 6 项：第一版不提供，以后决定提供时才做） | 6.6 | 视决定 | 不做（第一版） | — |
 
 顺序说明：6.1~6.3 是所有任务的基础；6.4 让任务能调模型；6.5~6.7 让文档能被解析，第 5 步所有“导入后读 Markdown”的模块都依赖它。6.8 只依赖 6.2，可与 6.5~6.7 并行，宜早做：6.6 起重新解析会产生被替换的旧产物。业务任务按路线图第 6 节“先迁无 Agent 的短任务（查重、废标、招标解析）”排在后面，废标检查结构最简单、最先做。6.14 只依赖 6.1，可随时插入。“需确认后合并”按 `CLAUDE.md`“自动合并”判断：涉及计费、鉴权、沙箱、数据库角色的不自行合并。
 
@@ -914,9 +914,9 @@ AI 网关加固，做法见 `docs/SERVER_DESIGN.md` 第 10.9 节。`client/` 未
 | 工作量与风险 | 最大；把 Agent 的网络、令牌、RPC 设计提前到还没有 Agent 任务时，无法用真实任务验证，第 6 步明显变长 | 中；`sandbox-runner` 和驱动第 8 步本来就要建，提前建的部分都会沿用 | 起步最快；但 bubblewrap / nsjail 在容器内需要用户命名空间（Docker 默认 seccomp / AppArmor 常拦截，放开又扩大 worker 的权限），常驻容器需要自己处理崩溃、超时和残留文件 | 第 5 步所有“导入后读 Markdown”的功能和第 6 步多数任务（查重、废标、招标解析、可研、知识库都要先有解析结果）一直不可用，第 6 步基本无法验证 |
 | 性能 | 同 B | 每个文件多一次容器启动（gVisor 约 150–500 ms，LibreOffice 冷启动另需 1~2 秒），解析任务本来是秒级到分钟级，可接受；`parse` 队列并发起步 4 | 无额外启动开销 | — |
 
-**建议 B**，理由：第 8 步一定要建 `sandbox-runner` 和 `SandboxDriver`，`parse` 模板是其中最简单的一种（不需要网络、令牌、RPC），提前建不会白做；隔离粒度是单个任务，满足“完全断网”和“不在 worker 进程内解析”；C 的两种做法都会在第 8 步被替换，而且隔离边界明显弱于设计。B 的具体约定（6.5 实现，同步写进 `SERVER_DESIGN.md` 第 7 节）：
+**采用 B**（决定事项第 1 项），理由：第 8 步一定要建 `sandbox-runner` 和 `SandboxDriver`，`parse` 模板是其中最简单的一种（不需要网络、令牌、RPC），提前建不会白做；隔离粒度是单个任务，满足“完全断网”和“不在 worker 进程内解析”；C 的两种做法都会在第 8 步被替换，而且隔离边界明显弱于设计。B 的具体约定（6.5 实现，同步写进 `SERVER_DESIGN.md` 第 7 节）：
 
-- **运行时**：生产环境只允许 `runsc`，启动时检查，配置成 `runc` 时拒绝启动；开发环境（Windows / macOS 的 Docker Desktop 不便安装 gVisor）允许加固的 `runc`，网络、只读、权限等参数完全相同；CI 安装 `runsc`，隔离测试在 `runsc` 下跑（决定事项第 2 项）。设计第 7.2 节预留的“LibreOffice 在 gVisor 下问题过多时改用 A + 严格 seccomp + 完全断网”仍然有效，以 6.5 的实测为准；
+- **运行时**：生产环境只允许 `runsc`，启动时检查，配置成 `runc` 时拒绝启动；开发环境（Windows / macOS 的 Docker Desktop 不便安装 gVisor）允许加固的 `runc`，网络、只读、权限等参数完全相同；CI 安装 `runsc`，隔离测试在 `runsc` 下跑（决定事项第 2 项，已采用）。设计第 7.2 节预留的“LibreOffice 在 gVisor 下问题过多时改用 A + 严格 seccomp + 完全断网”仍然有效，以 6.5 的实测为准；
 - **镜像**：Node 24 + `doc2markdown/` 所需的 npm 依赖 + LibreOffice + 中文字体，按 digest 固定，不含编译器和网络工具；与第 8 步的 Agent 镜像分开，各自只装自己需要的东西；
 - **输入输出**：worker 从对象存储取出原件，经 `copyIn` 放进沙箱 `/input`；沙箱内只运行解析入口（固定命令，参数只有分派结果，见下表），结果写到 `/output`（Markdown、图片、一个 JSON 清单）；worker 经 `copyOut` 取回、校验后经 `writeArtifact` 写入。沙箱内没有任何凭据、数据库连接串、对象存储地址；
 - **sandbox-runner 的接口**：只接受“模板名 + 任务 id”，模板写死在代码中，调用方不能传镜像、挂载、网络或任意 Docker 参数；worker 和 api 都不挂载 Docker socket（设计第 7.4 节）；
@@ -957,11 +957,11 @@ AI 网关加固，做法见 `docs/SERVER_DESIGN.md` 第 10.9 节。`client/` 未
 | 7 | XML 类格式禁用 DTD 和外部实体（含实体膨胀、XInclude），交给解析器前检查并有测试 | 同上 | 6.7：含 `<!DOCTYPE` 一律拒绝 |
 | 8 | MHT 先解包再交给 LibreOffice | 同上 | 6.7 |
 | 9 | ZIP 炸弹、PDF 页数等解析阶段的防护 | 第 4 步（旧仓库 PR #34）、`SERVER_DESIGN.md` 第 6.2 节 | 6.6 |
-| 10 | MinerU（`tender` 用途加 ppt、pptx、jp2 和图片类型） | 第 4 步上传白名单差距第 5 项 | 决定事项第 6 项；提供时另开 6.15 |
+| 10 | MinerU（`tender` 用途加 ppt、pptx、jp2 和图片类型） | 第 4 步上传白名单差距第 5 项 | 第一版不提供（决定事项第 6 项）；以后提供时另开 6.15 |
 | 11 | 目录生成 / 调整、全局事实生成 / 调整（技术方案）、可研目录生成 / 调整是否用到命令工具 | 第 5 步拆分计划 | 已核实用到，随第 8 步（见上方） |
 | 12 | 所有 `*_tasks` / `task_logs` 由 `jobs` / `job_events` 取代，`loadState` 返回任务状态 | 第 5 步拆分计划 | 6.2，各模块 PR 接入 |
 | 13 | 进度推送（`onTaskEvent`、`knowledgeBase.onEvent`、`onBalanceInsufficient`） | 第 5 步、第 3 步 | 6.3、6.4、6.13 |
-| 14 | 入队检查余额、运行中耗尽暂停、`jobs.billed_amount`、`usage_records.job_id` 外键 | 第 2、3 步（`SERVER_DESIGN.md` 第 10.3、10.8 节） | 6.4 |
+| 14 | 入队检查余额、运行中耗尽暂停、`jobs.billed_amount`、`usage_records.job_id`（决定不加外键，见“决定事项”第 10 项） | 第 2、3 步（`SERVER_DESIGN.md` 第 10.3、10.8 节） | 6.4 |
 | 15 | AI 网关在 worker 中运行；按组织 + 服务商的并发信号量（Redis），取 `org_settings.concurrency_limit` 与平台上限的较小值 | 第 3 步（旧仓库 PR #32）、5.3（#9） | 6.4 |
 | 16 | 限流从进程内存换成 Redis | 第 2 步（旧仓库 PR #29） | 6.14 |
 | 17 | `/readyz` 加入 Redis 检查 | 第 2 步（旧仓库 PR #27、#28） | 6.1 |
@@ -973,18 +973,26 @@ AI 网关加固，做法见 `docs/SERVER_DESIGN.md` 第 10.9 节。`client/` 未
 | 23 | 废标检查由任务合并招标正文、经 `computeSignatures` 写签名 | 5.9（#18） | 6.9 |
 | 24 | 冻结到期收尾从 api 定时器移到 worker | 第 3 步（旧仓库 PR #32，现由 `src/server.ts` 定时执行） | 6.8 |
 
-#### 需要决定的事项
+#### 决定事项（#23）
 
-1. **解析的隔离方案**：A / B / C / D（见上方对比）。建议 **B**：第 6 步提前建 `sandbox-runner` + `SandboxDriver`，只做断网的 `parse` 模板，第 8 步在其上加 `agent` 模板。
-2. **沙箱运行时的环境差异**：建议生产只允许 gVisor（`runsc`，启动时检查）、CI 安装 `runsc` 跑隔离测试、开发环境允许参数相同的加固 `runc`。另一种做法是开发环境也必须 `runsc`（Windows / macOS 本地开发会很不方便）。
-3. **Redis 发行版（许可证）**：Redis 7.4 起改为 RSALv2 / SSPLv1 双许可，Redis 8 起再加 AGPLv3 选项，`CLAUDE.md` 要求强传染性许可证须由你确认。选项：a. **Valkey 8**（Linux 基金会维护的 Redis 分支，BSD-3-Clause，BullMQ 支持）；b. Redis 7.2（最后一个 BSD-3-Clause 版本，后续不再有新功能）；c. Redis 8（按 AGPLv3 或 RSALv2 使用）。建议 **a**。BullMQ 和 Node 客户端 `ioredis` 都是 MIT，6.1 / 6.2 引入时在审计报告中列出版本。
-4. **可研正文生成与自然化审校放在第 6 步**：已核实只调用 `aiService`、不用 Agent，偏离第 5 步表中的“第 8 步”。建议放在第 6 步（6.12）。
-5. **解析资源上限**：见上方“资源上限”的起步值，确认或调整。
-6. **MinerU 第一版是否由平台提供**：需要把用户原件发给第三方 `mineru.net`（个人信息出境和第三方条款，`SERVER_DESIGN.md` 第 11 节第 1、3 项）、按页计费（价格表要加页单价）、平台凭据 `kind = 'mineru'`（迁移 0004 的 CHECK 只有 `text_model`）。建议**第一版不提供**，第 6 步只做本地解析，上传白名单不加 ppt / pptx / 图片；以后决定提供时再开 6.15。
-7. **入队的最低启动余额**：设计第 10.3 节写“价格表中按任务类型配置，默认 1 元”。建议 6.4 先用一个全局值 1 元（写在迁移中），按任务类型配置等有需要时再加。
-8. **组织级任务并发**：建议同时运行的任务起步 3 个（设计第 5.3 节）；全局 `parse` 队列并发 4、`ai` 队列 8（设计第 5.2 节，单机起步值）。
-9. **清理任务的数据库角色**：清理要跨组织读写应用角色在 RLS 下看不到的行，建议照配额函数的做法新建 `NOLOGIN` 定义者角色 `bidtools_cleanup`，只有清理用到的表和列的权限；同步加进 `10-provision.sh`、测试 harness 和第 9 步上线检查“数据库角色”一条。另外确认恢复期满后的删除时机：建议每小时一批，期满即删。
-10. **任务记录的保留期**：建议已结束的 `jobs` 保留 90 天、`job_events` 保留 30 天（`billed_amount` 的财务汇总另见第 11 节第 1 项），写进隐私声明。
+拆分计划中的 10 项待决定事项和两处偏离已在 #23 决定（只改文档）：
+
+1. **解析的隔离方案**：**采用 B**。第 6 步提前建 `sandbox-runner` + `SandboxDriver`，只做断网的 `parse` 模板，第 8 步在其上加 `agent` 模板。
+2. **沙箱运行时**：**采用建议**。生产只允许 gVisor（`runsc`，启动时检查），CI 安装 `runsc` 跑隔离测试，开发环境允许参数相同的加固 `runc`。
+3. **Redis 发行版**：**Valkey 8**（BSD-3-Clause），许可证已确认可以使用。BullMQ、`ioredis`（MIT）引入时仍在审计报告中列出版本和许可证。
+4. **可研正文生成与自然化审校放在第 6 步**：**同意**（6.12），偏离第 5 步表中的“第 8 步”。
+5. **解析资源上限**：**采用起步值**（见“资源上限”）。
+6. **MinerU**：**第一版不提供**。第 6 步只做本地解析，上传白名单不加 ppt / pptx / 图片；以后决定提供时再开 6.15。
+7. **入队最低启动余额**：**全局 1 元**，写在迁移中；按任务类型配置等有需要时再加。
+8. **并发**：组织级同时运行的任务 3 个；全局 `parse` 队列 4、`ai` 队列 8。
+9. **清理角色**：**同意新建** `bidtools_cleanup`（`NOLOGIN`，属性同其他定义者角色，加进 `10-provision.sh`、测试 harness 和第 9 步上线检查“数据库角色”一条），每小时一批。要求（6.8 逐项实现并测试）：
+   - **只删除超过保留期的数据**：文件、产物、项目超过 7 天恢复期，遗留 `uploading` 行超过上传超时，任务记录超过第 10 项的保留期；恢复期内的行一律不动，删除条件写在 `SECURITY DEFINER` 函数中，调用方不能传入时间或 id 绕过；
+   - **同时删除对象存储中的对应文件**：先删对象，确认删除成功（或对象已不存在）后再删行；对象删除失败的行保留，下一批重试，不留下“行已删、对象还在”的孤儿；按前缀找出的孤儿对象同样只删除超过保留期的；
+   - **每批记录删除数量**：每批按类别（文件、产物、项目、`uploading` 行、孤儿对象、任务、任务事件、冻结收尾）记一行结构化日志，含删除条数、对象数、失败数和耗时，不含文件名和内容；
+   - **不得有计费账本的任何权限**：`bidtools_cleanup` 对 `billing_ledger`、`org_balances`、`model_prices`、`usage_records`、`provider_credentials`、`platform_models` 没有任何授权、也没有为它建的策略；测试检查这些表上它的权限为空（`has_table_privilege` 全部为假），清理后账本和用量记录的行数不变。冻结到期收尾仍调用 `bidtools_billing` 所属的 `ai_usage_expire_holds`，不经清理角色。
+10. **任务记录的保留期**：**同意**。已结束的 `jobs` 保留 90 天、`job_events` 保留 30 天，写进隐私声明。**保留期清理不涉及计费数据，账本永久保留**：`billing_ledger` 不删除（其不可修改、不可删除的触发器不变），`usage_records` 同样不删除；因此 6.4 不给 `usage_records.job_id` 加外键（否则删除任务记录会被外键挡住或连带用量记录），用量记录中只保留 `job_id` / `job_type` 的值，任务删除后按任务汇总的费用仍可从用量记录算出。
+
+两处偏离均已确认：可研正文生成与自然化审校提前到第 6 步（第 4 项）；任务互斥改用通用的 `lock_key`（见“任务模型的细化”，6.2 实现时同步修改 `SERVER_DESIGN.md` 第 5.1、5.3 节）。
 
 ### 第 9 步说明
 
