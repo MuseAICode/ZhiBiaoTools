@@ -1,5 +1,6 @@
 // Redis（Valkey）连接。连接参数来自 src/config.ts，密码不写日志。
-// 6.1 只用于 /readyz 的连通性检查；任务队列（BullMQ）、事件推送等在第 6 步后续 PR 中接入，各自建立需要的连接。
+// createRedis 用于 /readyz 的连通性检查；任务队列（BullMQ，src/jobs/）用 bullmqConnection 的参数自建连接。
+import type { RedisOptions as BullmqRedisOptions } from 'bullmq';
 import { Redis } from 'ioredis';
 import type { RedisConfig } from './config.ts';
 
@@ -49,5 +50,25 @@ export function createRedis(config: RedisConfig, options: CreateRedisOptions = {
         client.disconnect();
       }
     },
+  };
+}
+
+/**
+ * BullMQ 的连接参数（BullMQ 按参数自建并复制连接）。producer（入队、对账）：未连接时命令立即失败，入队失败不影响任务
+ * （任务已写入 jobs，由对账重新放入）；worker（消费者）：BullMQ 要求 maxRetriesPerRequest 为 null，断线后自动重连。
+ */
+export function bullmqConnection(config: RedisConfig, role: 'producer' | 'worker', connectionName: string): BullmqRedisOptions {
+  return {
+    host: config.host,
+    port: config.port,
+    ...(config.username ? { username: config.username } : {}),
+    password: config.password,
+    ...(config.tls ? { tls: { servername: config.host } } : {}),
+    connectionName,
+    connectTimeout: CONNECT_TIMEOUT_MS,
+    retryStrategy: (attempt: number) => Math.min(attempt * 200, MAX_RECONNECT_DELAY_MS),
+    ...(role === 'producer'
+      ? { enableOfflineQueue: false, maxRetriesPerRequest: 1, commandTimeout: COMMAND_TIMEOUT_MS }
+      : { maxRetriesPerRequest: null }),
   };
 }

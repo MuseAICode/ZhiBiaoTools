@@ -22,3 +22,10 @@ export const BILLING_ROLE = 'bidtools_billing';
  * 只有为它单独建的只读策略和列级 SELECT 授权。迁移角色以 SET（不继承）加入它。
  */
 export const STORAGE_ROLE = 'bidtools_storage';
+/**
+ * 任务对账函数 jobs_dispatch_candidates 的 SECURITY DEFINER 属主（迁移 0021）：worker 在 Redis（Valkey，不持久化）重启或被清空后
+ * 要从 jobs 表找出所有组织中未结束的任务重新入队，这需要跨组织读取。函数只返回任务 id 和组织 id，之后每个任务的读写仍按
+ * 该组织的上下文经 RLS 进行。与 bidtools_auth 相同：NOLOGIN、非超级用户、无 BYPASSRLS，只有为它单独建的只读策略和列级 SELECT 授权。
+ * 迁移角色以 SET（不继承）加入它。
+ */
+export const JOBS_ROLE = 'bidtools_jobs';

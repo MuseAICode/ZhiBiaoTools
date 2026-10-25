@@ -170,6 +170,8 @@ organizations（组织，数据隔离的边界）
 
 **实现（#8）**：存储配额新增第五个角色 `bidtools_storage`，属性同上，是配额函数 `files_org_usage_bytes` 的属主，只对 `files`、`artifacts`、`projects` 有只读策略和列级 `SELECT`。配额需要统计应用角色在 RLS 下看不到的行（已删除项目下、仍在恢复期内的文件和产物），详见路线图第 5 步“生成产物（#8，5.2）”。
 
+**实现（#25）**：任务队列新增第六个角色 `bidtools_jobs`，属性同上，是对账函数 `jobs_dispatch_candidates` 的属主，只对 `jobs` 的 `id`、`org_id`、`status`、`lease_expires_at`、`created_at` 有列级 `SELECT` 和只读策略。worker 要在 Redis 重启或被清空后跨组织找出未结束的任务重新入队，函数只返回任务 id 和组织 id，之后每个任务的处理仍按其组织经 RLS 进行。详见路线图第 6 步“jobs 表与 worker 骨架（#25，6.2）”。
+
 **实现（#9）**：`org_settings`、`user_settings`（迁移 `0009_settings`）不新增角色。组织设置的写权限按 `org_memberships` 中的实际角色（owner / admin）由 RLS 判断，不信任 `TenantContext.role`；用户设置只对本人可见，且要求成员关系仍存在，移出组织后不可见并随外键级联删除。详见路线图第 5 步“配置（#9，5.3）”。
 
 **实现（#10）**：`export_templates`（迁移 `0010_export_templates`）不新增角色，是唯一一张 `org_id` 可空的业务表：系统模板 `org_id` 为空，应用角色只读（修改、删除影响 0 行，不能新写或改出系统模板），组织模板组织内成员都可以增删改；系统模板只由迁移角色同步，它在本表上的策略只覆盖 `org_id` 为空的行。详见路线图第 5 步“导出模板（#10，5.4）”。
@@ -306,7 +308,9 @@ Markdown 中远程图片的下载（`docs/EXTERNAL_SERVICES.md` §2.9）URL 来�
 
 ### 5.1 任务模型
 
-`jobs` 表是任务状态的**唯一权威**，BullMQ 只负责“派发到哪个 worker”。字段：`id`、`org_id`、`project_id`、`user_id`、`type`（沿用 `taskService.cjs` 中 `taskDefinitions` 的键，如 `bid-analysis`）、`group`（`technical-plan` / `duplicate-check` / `rejection-check` / `feasibility-report` / `knowledge-base` / `export`）、`status`（`queued` / `running` / `paused` / `cancelling` / `succeeded` / `failed` / `cancelled`）、`progress`、`checkpoint`（jsonb）、`params`（jsonb，不含凭据）、`error`（脱敏）、`attempt`、各时间戳。
+`jobs` 表是任务状态的**唯一权威**，BullMQ 只负责“派发到哪个 worker”。字段：`id`、`org_id`、`project_id`、`user_id`、`type`（沿用 `taskService.cjs` 中 `taskDefinitions` 的键，如 `bid-analysis`）、`lock_key`（互斥键，见第 5.3 节；6.2 起取代原设计的 `group`）、`status`（`queued` / `running` / `paused` / `cancelling` / `succeeded` / `failed` / `cancelled`）、`pause_requested`、`progress`、`checkpoint`（jsonb）、`params`（jsonb，不含凭据）、`error_code` / `error_message`（脱敏）、`attempt`、`run_id` 与 `lease_expires_at`（执行者的隔离令牌与租约）、各时间戳。
+
+**派发与恢复（6.2 实现）**：入队先写 `jobs` 再放进 BullMQ（任务 id 即 `jobs.id`，重复放入是空操作）；只有 `queued` 能被认领，认领生成 `run_id` 和租约，之后的写入都带 `run_id` 条件；worker 定期并在发现 Redis 数据丢失时对账：`queued` 的重新放入，租约过期的按任务类型续跑或标为失败。因此 Redis 重启或被清空后任务不丢失、不重复执行。
 
 为什么不把状态只放在 BullMQ：Redis 不做持久备份（第 8.4 节），且需要按组织 / 项目查询、受 RLS 保护。
 
@@ -321,7 +325,7 @@ Markdown 中远程图片的下载（`docs/EXTERNAL_SERVICES.md` §2.9）URL 来�
 
 ### 5.3 互斥、并发与配额
 
-- **互斥**：现有 `lockPolicy: 'group-exclusive'` 是“全机同组只能跑一个”。Web 版改为“**同一项目内**同组只能跑一个”：入队时在一个事务里检查 `jobs` 中同 `project_id` + `group` 是否有未结束的任务，并用部分唯一索引（`UNIQUE(project_id, group) WHERE status IN ('queued','running','paused','cancelling')`）兜底，杜绝并发入队竞争。
+- **互斥**：现有 `lockPolicy: 'group-exclusive'` 是“全机同组只能跑一个”。Web 版改为按通用的互斥键 `lock_key` 互斥（例如 `project:{projectId}:technical-plan` 即“同一项目内同组只能跑一个”，知识库按文档 `knowledge-document:{documentId}`，`lock_key` 为空的任务不互斥）：部分唯一索引 `UNIQUE (org_id, lock_key) WHERE status IN ('queued','running','paused','cancelling')` 保证并发入队也只有一个成功（6.2 实现，路线图第 6 步“任务模型的细化”）。
 - **两级并发**（路线图第 4 节）：
   - 组织级：同时运行的任务数（如 3）、同时运行的 Agent 任务数（如 1）；
   - 全局：队列并发 + AI 网关对每个模型服务商的并发上限（`aiService` 现有并发设置改成 Redis 分布式信号量，键为 `org_id + provider`）。
@@ -344,7 +348,7 @@ Markdown 中远程图片的下载（`docs/EXTERNAL_SERVICES.md` §2.9）URL 来�
 
 ### 5.5 推送链路
 
-1. worker 产生事件（进度、日志、Agent 提问、任务结束）→ 写 `jobs` / `task_logs`（需要持久化的）→ 向 Redis 发布到 `events:org:{orgId}`；
+1. worker 产生事件（进度、日志、Agent 提问、任务结束）→ 写 `jobs` / `job_events`（需要持久化的）→ 向 Redis 发布到 `events:org:{orgId}`；
 2. 同时追加到 Redis Stream `stream:org:{orgId}`（只保留最近 10 分钟或 1000 条），每条带单调递增 ID；
 3. api 进程订阅 Redis，按连接的 `org_id` 和用户在该组织的权限过滤后写入 SSE，`id:` 字段即 Stream ID；
 4. 浏览器断线重连时带 `Last-Event-ID`，api 从 Stream 补发；超出保留窗口的，推一条 `resync` 事件，前端重新调用 `getActiveTasks` / `loadState` 拉快照（现有页面本来就会在挂载时拉快照，“页面卸载不取消任务”的语义不变）；
@@ -355,7 +359,7 @@ Markdown 中远程图片的下载（`docs/EXTERNAL_SERVICES.md` §2.9）URL 来�
 
 - 取消 / 暂停：api 把 `jobs.status` 改为 `cancelling` / `paused` 并发布 `cancel:{jobId}`；worker 内每个任务持有 `AbortController`，收到信号后在下一个检查点退出（现有 `agentInterruption.cjs`、`pauseContentGeneration` 的语义保留）；
 - Agent 正在等用户回答（`ask-user`）时，任务状态为 `running` 并带 `waiting_for_user`，问题经 SSE 推送，回答经 `POST /api/jobs/:id/answer` 写入后通知 worker；等待超时按现有 `suppressQuestionAutoAnswer` / 自动确认规则处理；
-- 恢复：worker 崩溃后 BullMQ 的 stalled 检测会把任务交给其他 worker，任务从 `jobs.checkpoint` 继续（现有“重启恢复”逻辑改成读 `jobs` 表）。Agent 任务的会话文件和工作区在对象存储中有快照（第 7.3 节），可以从最近一次快照恢复。
+- 恢复：worker 崩溃后租约过期，由对账收回并交给其他 worker，任务从 `jobs.checkpoint` 继续（现有“重启恢复”逻辑改成读 `jobs` 表；不依赖 BullMQ 的 stalled 检测，它在 Redis 被清空后无从发现）。6.2 中取消、暂停由执行者续租时从 `jobs` 读到，`cancel:{jobId}` 发布随 6.3 接入。Agent 任务的会话文件和工作区在对象存储中有快照（第 7.3 节），可以从最近一次快照恢复。
 
 ## 6. 文件上传、存储与下载
 
