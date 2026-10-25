@@ -22,6 +22,7 @@ import { registerDuplicateCheckRoutes } from './routes/duplicateCheck.ts';
 import { registerFeasibilityReportRoutes } from './routes/feasibilityReport.ts';
 import { registerFileRoutes, type FileRouteDependencies } from './routes/files.ts';
 import { registerHealthRoutes } from './routes/health.ts';
+import { registerJobRoutes } from './routes/jobs.ts';
 import { registerKnowledgeBaseRoutes } from './routes/knowledgeBase.ts';
 import { registerProjectRoutes } from './routes/projects.ts';
 import { registerRejectionCheckRoutes } from './routes/rejectionCheck.ts';
@@ -125,6 +126,7 @@ export async function buildApp(config: AppConfig, options: BuildAppOptions): Pro
   await app.register(registerAiRoutes, { prefix: '/api/ai', gateway, maxOutputTokens: config.ai.maxOutputTokens });
   await app.register(registerFileRoutes, { prefix: '/api/files', db, objectStore: options.objectStore ?? null, ...options.uploadLimits });
   await app.register(registerProjectRoutes, { prefix: '/api/projects', db });
+  await app.register(registerJobRoutes, { prefix: '/api/jobs', db });
   await app.register(registerArtifactRoutes, { prefix: '/api/artifacts', db, objectStore: options.objectStore ?? null });
   await app.register(registerSettingsRoutes, { prefix: '/api/settings', db });
   await app.register(registerTemplateRoutes, { prefix: '/api/export-templates', db });

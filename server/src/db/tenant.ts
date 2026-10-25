@@ -38,3 +38,20 @@ export async function withTenant<T>(
     return fn(trx);
   });
 }
+
+/**
+ * 只设置 app.org_id、不设置 app.user_id 的事务，只供 worker 的系统操作使用（src/jobs/：认领任务、续租、对账）：
+ * 这些操作发生在“某个组织的任务”上，但不代表任何用户。要求 app.user_id 的策略在此一律不成立（失败即关闭）；
+ * 执行任务本身的业务读写仍经 withTenant，用任务记录中的用户和该用户当前在组织中的角色。
+ */
+export async function withOrgContext<T>(
+  db: Kysely<Database>,
+  orgId: string,
+  fn: (trx: Transaction<Database>) => Promise<T>,
+): Promise<T> {
+  if (typeof orgId !== 'string' || !UUID_PATTERN.test(orgId)) throw new TypeError('orgId 必须是 UUID');
+  return db.transaction().execute(async (trx) => {
+    await sql`SELECT set_config('app.org_id', ${orgId}, true)`.execute(trx);
+    return fn(trx);
+  });
+}

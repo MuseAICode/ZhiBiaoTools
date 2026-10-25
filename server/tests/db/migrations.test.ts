@@ -38,6 +38,8 @@ const APPLICATION_TABLES = [
   'feasibility_report_sources',
   'files',
   'invitations',
+  'job_events',
+  'jobs',
   'knowledge_blocks',
   'knowledge_candidate_items',
   'knowledge_discarded_groups',
@@ -116,6 +118,8 @@ const APP_FUNCTIONS = [
   'files_guard',
   'files_org_usage_bytes',
   'files_project_guard',
+  'jobs_dispatch_candidates',
+  'jobs_guard',
   'knowledge_base_guard',
   'org_settings_guard',
   'projects_guard',
@@ -213,6 +217,7 @@ describe('迁移升级与回滚', () => {
       (await sql<{ prosrc: string }>`SELECT prosrc FROM pg_proc WHERE proname = 'ai_usage_begin'`.execute(testDb.admin)).rows.map((row) => row.prosrc);
     expectSuccess(await migrateToLatest(owner));
     expect((await source())[0]).toContain('ai_model_price');
+    expect(expectSuccess(await migrateDown(owner))).toEqual(['Down:0021_jobs']);
     expect(expectSuccess(await migrateDown(owner))).toEqual(['Down:0020_technical_plan_content']);
     expect(expectSuccess(await migrateDown(owner))).toEqual(['Down:0019_technical_plan_outline']);
     expect(expectSuccess(await migrateDown(owner))).toEqual(['Down:0018_technical_plan']);

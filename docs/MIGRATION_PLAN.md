@@ -14,7 +14,7 @@
 | 3 | 配置与 AI 网关 | 进行中 | 旧仓库 PR #31（计费账本：组织余额、只追加的账本、带版本的价格表、幂等扣费、管理员手动充值与冲正，不调用 AI）、旧仓库 PR #32（AI 网关：调用前预扣冻结、按实际用量结算、冻结超时自动释放、`usage_records`、平台 Key 信封加密、DeepSeek / 通义千问流式适配、`POST /api/ai/chat`）、旧仓库 PR #33（平台模型白名单 `platform_models`：只有登记且启用、并有生效价格的模型能调用，免费须显式标记；管理员登记 / 启用 / 停用接口；用户断开时中止上游请求的端到端测试） |
 | 4 | 文件上传 / 下载 / 资源协议 | 进行中 | 旧仓库 PR #34（文件存储：S3 兼容对象存储、本地 SeaweedFS、`files` 表与强制 RLS、按内容校验类型、大小上限与组织配额、附件方式下载、7 天恢复期）、#6（上传白名单补齐桌面版能导入的内容：OLE 内容的 `.docx`，`.doc/.wps` 的 RTF / HTML / MHT / Word 2003 XML，`.xls` 的 HTML 表格 / SpreadsheetML，`%PDF-` 前有多余字节的 PDF） |
 | 5 | 数据层迁移（按业务逐个） | 已完成 | 旧仓库 PR #35（拆分计划，见“第 5 步说明”；记录上传白名单与桌面版的差距）、#7（5.1 项目：`projects` 表、`files.project_id`、项目接口、路由层归属校验、项目级表的迁移与测试模板）、#8（5.2 生成产物存储：`artifacts` 表、Store、只读接口；项目软删除与其下文件、产物联动，由 RLS 强制）、#9（5.3 配置：`org_settings`、`user_settings`、`GET/PATCH /api/settings`；写权限与删除可见性由 RLS 强制）、#10（5.4 导出模板：`export_templates`、`/api/export-templates` 增删改查与复制；系统模板只读、修改删除权限由 RLS 强制，迁移命令同步系统模板）、#11（5.5 资信库：6 张表、`/api/credential-library`；权限与删除可见性由 RLS 强制，图片随所引用文件的生命周期）、#12（5.6 知识库（一）：`knowledge_folders`、`_documents`、`_document_steps`、`/api/knowledge-base` 文件夹与文档管理；权限与删除可见性由 RLS 强制，文档随原件的生命周期）、#14（5.7 知识库（二）：切块、条目、匹配结果等 7 张表，检索与读取条目 / 分析 / Markdown 接口；删除可见性与写权限由 RLS 强制，随文档可见）、#16（5.8 标书查重：13 张项目级表、`/api/projects/:projectId/duplicate-check` 状态 / 文件选择 / 页面状态 / 清空 / Excel 导出；删除可见性与写权限由 RLS 强制，随项目和所选原件可见）、#17（5.8 后续：`files.project_id` 设置后不能再改，由触发器强制；xlsx 写出器防公式注入，回车按原样写出）、#18（5.9 废标检查：7 张项目级表、`/api/projects/:projectId/rejection-check` 状态 / 导入与移除文档 / 页面状态 / 切换与删除问题 / 清空 / Excel 导出；删除可见性与写权限由 RLS 强制，文档随原件可见，签名由服务端现算）、#19（5.10 可研报告：4 张项目级表、`/api/projects/:projectId/feasibility-report` 状态 / 步骤 / 项目信息 / 资料分析 / 目录配置 / 目录（`reason` 协议）/ 关键参数 / 正文 / 资料导入与移除 / 资料 Markdown / 清空；删除可见性与写权限由 RLS 强制，资料随原件、引用随知识库文档可见）、#20（5.11 技术方案（一）：6 张项目级表、`/api/projects/:projectId/technical-plan` 状态 / 步骤 / 生成配置 / 招标解析配置 / 正文生成选项 / 招标文件导入与移除 / 招标文件与合并正文的 Markdown / 原方案 / 投标范围选择 / 清空；删除可见性与写权限由 RLS 强制，文档随原件、引用随知识库文档可见，导出模板只能是本组织的或系统模板）、#21（5.12 技术方案（二）：目录与全局事实 2 张项目级表、`PUT .../outline`（`reason` 协议，节点 UUID 稳定、编号现算）与 `PUT .../global-facts`，下游清空扩展到目录与全局事实；删除可见性与写权限由 RLS 强制））、#22（5.13 技术方案（三）：正文生成状态与编排 2 张项目级表、`PUT .../chapters/:nodeId`、`DELETE .../content-generation`，目录保存与全局事实、下游清空扩展到正文生成状态、编排与运行进度；废标检查 `POST .../tender-from-technical-plan` 复制原件与 Markdown；删除可见性与写权限由 RLS 强制） |
-| 6 | 任务队列与 worker | 进行中 | #23（拆分计划，见“第 6 步说明”）、#24（6.1 Redis 接入：Valkey 8 开启 ACL、`REDIS_URL` / `REDIS_PASSWORD[_FILE]`、`/readyz` 检查 Redis、CI 起 Valkey） |
+| 6 | 任务队列与 worker | 进行中 | #23（拆分计划，见“第 6 步说明”）、#24（6.1 Redis 接入：Valkey 8 开启 ACL、`REDIS_URL` / `REDIS_PASSWORD[_FILE]`、`/readyz` 检查 Redis、CI 起 Valkey）、#25（6.2 `jobs` / `job_events` 表与 worker 骨架：BullMQ 只派发、`jobs` 为唯一权威，认领加 `run_id` 隔离令牌与数据库租约，Redis 重启或清空后从 `jobs` 对账恢复入队；新增定义者角色 `bidtools_jobs`） |
 | 7 | OpenXmlHelper 容器化与离屏渲染（前置：CI 新增 .NET 编译与 OpenXmlHelper 测试，见“第 9 步说明”的品牌改名第三部分） | 未开始 | — |
 | 8 | Agent 沙箱 | 未开始 | — |
 | 9 | 收尾与上线 | 进行中 | #1（品牌改名第一部分：用户可见文字和文档）、#2（品牌改名第二部分：代码标识符、数据与协议、打包，新增 CI 禁用词检查）、#5（品牌改名第三部分：原产品名缩写前缀改为中性前缀 `app`，禁用词检查加入该缩写） |
@@ -853,7 +853,7 @@ AI 网关加固，做法见 `docs/SERVER_DESIGN.md` 第 10.9 节。`client/` 未
 
 只做计划，不改代码。目标设计见 `docs/SERVER_DESIGN.md` 第 5 节（BullMQ + Redis、`jobs` 表为权威状态、SSE 推送、worker 进程）、第 6.2 节（解析阶段的防护）和第 7 节（沙箱）。原则：
 
-- `jobs` 表是任务状态的唯一权威，BullMQ 只负责派发；worker 崩溃后由 stalled 检测转交，从 `jobs.checkpoint` 继续；
+- `jobs` 表是任务状态的唯一权威，BullMQ 只负责派发；worker 崩溃后由数据库租约过期收回、重新派发（6.2 起不依赖 BullMQ 的 stalled 检测，见“jobs 表与 worker 骨架”），从 `jobs.checkpoint` 继续；
 - api 进程只做鉴权、校验、入队、取消和 SSE，不执行长任务、不解析文档；worker 执行全部任务，按 `TenantContext`（取自任务记录，不取自任务参数）经 `withTenant()` 读写业务表，写入一律经第 5 步已测好的 Store 函数（`saveDocumentParse`、`saveAnalysisSection`、`saveCheckResult` 等），不在 worker 中另写 SQL；
 - 所有模型调用经 AI 网关，`source: 'job'`，记 `job_id`；任务参数里只放 id，不放凭据和正文；
 - **上传的文件只在断网沙箱中解析**（见下方“文件解析的隔离”），worker 和 api 进程内不运行 mammoth、pdfjs、SheetJS、LibreOffice、cheerio、`adm-zip`、`cfb` 等解析器；
@@ -873,7 +873,7 @@ AI 网关加固，做法见 `docs/SERVER_DESIGN.md` 第 10.9 节。`client/` 未
 |---|---|---|---|---|---|
 | 6.0 | 拆分计划（本节）与 10 项决定 | — | 是（按本次要求，已确认） | 已完成 | #23 |
 | 6.1 | Redis 接入：`docker-compose.yml` 新增 `redis`（发行版见决定事项第 3 项；开启密码和 ACL，只在 `backend` 网络、开发时只绑 `127.0.0.1`）；配置 `REDIS_URL`、`REDIS_PASSWORD[_FILE]`（`init-dev-secrets.sh` 生成）；`/readyz` 加入 Redis 检查；CI 的 `server-checks` 加 Redis 服务容器。不含队列 | — | 否 | 已完成 | #24 |
-| 6.2 | `jobs` 表与 worker 骨架：迁移新建 `jobs`（`SERVER_DESIGN.md` 第 5.1 节的字段，`project_id` 可空供组织级任务，强制 RLS）和 `job_events`（取代 `task_logs`，只追加）；互斥用部分唯一索引（见下方“互斥”）；`src/jobs/`（入队、取消、暂停、继续、checkpoint、状态机，事务内检查互斥和组织级并发）；BullMQ 生产者与 `src/worker.ts` 消费者（同一镜像、不同入口，compose 新增 `worker` 服务）；stalled 恢复；`GET /api/jobs`、`GET /api/jobs/:jobId`、`POST /api/jobs/:jobId/cancel`。只注册一个测试用任务类型，不迁移业务任务 | 6.1 | 否 | 未开始 | — |
+| 6.2 | `jobs` 表与 worker 骨架：迁移新建 `jobs`（`SERVER_DESIGN.md` 第 5.1 节的字段，`project_id` 可空供组织级任务，强制 RLS）和 `job_events`（取代 `task_logs`，只追加）；互斥用部分唯一索引（见下方“互斥”）；`src/jobs/`（入队、取消、暂停、继续、checkpoint、状态机，事务内检查互斥和组织级并发）；BullMQ 生产者与 `src/worker.ts` 消费者（同一镜像、不同入口，compose 新增 `worker` 服务）；stalled 恢复；`GET /api/jobs`、`GET /api/jobs/:jobId`、`POST /api/jobs/:jobId/cancel`。只注册一个测试用任务类型，不迁移业务任务 | 6.1 | **是**（实现时新增定义者角色 `bidtools_jobs`，见下方“jobs 表与 worker 骨架”） | 已完成 | #25 |
 | 6.3 | SSE 推送：`GET /api/events`，worker 发布到 Redis `events:org:{orgId}` 并追加 Stream，api 按连接的组织和用户过滤后写出；`Last-Event-ID` 补发、超出窗口推 `resync`、25 秒心跳；会话吊销、移出组织后关闭连接（定期重新校验会话）；单用户连接数上限 | 6.2 | 否 | 未开始 | — |
 | 6.4 | worker 接入 AI 网关与余额：网关在 worker 中运行，任务调用记 `job_id` / `job_type`；`usage_records.job_id` 不补外键（任务记录到保留期会被删除，用量记录不可修改、永久保留，见“决定事项”第 10 项），只保留 `job_id` / `job_type` 的值；`jobs.billed_amount` 与结算在同一事务中累加（改 `ai_usage_settle`）；入队前检查最低启动余额（决定事项第 7 项）；运行中冻结失败时暂停为 `paused` / `insufficient_balance`，经 SSE 推送（取代 `onBalanceInsufficient`），充值后继续不重复扣费；AI 网关按组织 + 服务商的并发上限改为 Redis 分布式信号量（取 `org_settings.concurrency_limit` 与平台上限的较小值） | 6.2、6.3 | **是**（计费） | 未开始 | — |
 | 6.5 | 解析沙箱基础设施：`sandbox-runner` 服务、`SandboxDriver` 接口、`parse` 模板、解析镜像（见下方“文件解析的隔离”）；隔离测试 | 6.2 | **是**（沙箱） | 未开始 | — |
@@ -896,7 +896,7 @@ AI 网关加固，做法见 `docs/SERVER_DESIGN.md` 第 10.9 节。`client/` 未
 
 - **互斥**：`SERVER_DESIGN.md` 第 5.3 节写的是 `UNIQUE(project_id, group)`。知识库任务是组织级、按文档互斥（桌面版按文档排队，不是全组互斥），清理任务没有项目，所以改为通用的 `lock_key`（例如 `project:{projectId}:technical-plan`、`knowledge-document:{documentId}`），部分唯一索引 `UNIQUE (org_id, lock_key) WHERE status IN ('queued','running','paused','cancelling')`；`lock_key` 为空的任务不互斥。实现时（6.2）同步改设计第 5.1、5.3 节；
 - **组织级并发**：同时运行的任务数上限（起步 3，决定事项第 8 项），超出的留在 `queued`，按入队时间排队；`org_settings.concurrency_limit` 是模型调用并发，不是任务并发，两者分开；
-- **重启恢复**：桌面版启动时把中断的任务标为失败或从 checkpoint 继续（`taskService.cjs` 的重启恢复），改为 worker 认领 stalled 任务时按任务类型决定：可续跑的从 `jobs.checkpoint` 继续，不可续跑的标为失败并写日志；
+- **重启恢复**：桌面版启动时把中断的任务标为失败或从 checkpoint 继续（`taskService.cjs` 的重启恢复），改为 worker 对账时收回租约过期的任务、按任务类型决定（6.2 实现）：可续跑的从 `jobs.checkpoint` 继续，不可续跑的标为失败并写日志；
 - **任务日志**：`task_logs` 不迁移，改为 `job_events`，经 SSE 推送；不记录文档正文和 AI 输入输出全文（`SERVER_DESIGN.md` 第 8.3 节）；
 - **保留期**：已结束的任务和日志保留期见决定事项第 10 项，由 6.8 的清理任务删除。
 
@@ -980,6 +980,31 @@ AI 网关加固，做法见 `docs/SERVER_DESIGN.md` 第 10.9 节。`client/` 未
 - **配置**：`REDIS_URL`（`redis://` 或 `rediss://`，可带 ACL 用户名，不接受密码、库号路径、查询串）与 `REDIS_PASSWORD` / `REDIS_PASSWORD_FILE`（`init-dev-secrets.sh` 生成 `redis_password`）。偏离计划：**未设置 `REDIS_URL` 时 Redis 关闭**，`/readyz` 不检查、启动时写一条警告，与 `S3_BUCKET`、`AI_KEK_FILE` 的处理一致；6.1 还没有任何功能用到 Redis，6.2 接入任务队列时改为必需；
 - **客户端**：`ioredis` 6.0.0（MIT，BullMQ 6 的 peer 依赖为 `ioredis >=5`，6.2 沿用同一个包）。`src/redis.ts` 只提供 `ping` / `destroy`：关闭离线队列（未连接时命令立即失败，`/readyz` 不会等待重连、Redis 长时间不可用时也不堆积命令），命令超时 2 秒，断线后按最长 5 秒的间隔自动重连，连接错误写 warn 日志（不含密码）。`/readyz` 并行检查数据库和 Redis，每个失败的依赖分别写日志，响应仍只有固定的 `status`；
 - **CI**：偏离计划中的“服务容器”：服务容器不能指定启动命令、不能挂载仓库中的启动脚本，所以和 SeaweedFS 一样在步骤中 `docker run`，参数与 compose 相同；`tests/db/redis.test.ts` 覆盖正确凭据、错误密码（响应和日志不含密码）、`default` 用户被禁用、不可达时 4 秒内返回 503、应用用户执行 `CONFIG` / `FLUSHALL` / `ACL` 被拒绝。
+
+#### jobs 表与 worker 骨架（#25，6.2）
+
+- **原则**：`jobs` 是任务状态的唯一权威；Redis（Valkey）不持久化，BullMQ 中的内容随时可能全部丢失，所以任何“任务在不在、该不该执行、执行到哪”都只看 `jobs`。BullMQ 只负责派发：任务 id 就是 `jobs.id`（重复放入是空操作），数据只有 `orgId`，`attempts = 1`、完成或失败后立即删除，失败和续跑由 `jobs` 的状态机决定。
+- **迁移 0021**：`jobs`（`SERVER_DESIGN.md` 第 5.1 节的字段，`group` 改为 `lock_key`，另有 `pause_requested`、`run_id`、`lease_expires_at`；`project_id` 可空，不空时由复合外键保证同组织、新建时项目必须未删除）与 `job_events`（取代 `task_logs`，只追加：应用角色只有 `SELECT`、`INSERT`）。两表强制 RLS，按 `app.org_id` 隔离，新建时 `user_id` 必须是当前用户、状态只能是 `queued`；`type`、`params`、`user_id`、`lock_key`、`org_id` 写入后不能改（列级授权），没有 `DELETE`；已结束的任务不能再改（`JB001`）；状态与 `run_id`、租约、结束时间、错误代码的组合由 `CHECK` 约束。互斥为部分唯一索引 `UNIQUE (org_id, lock_key) WHERE status IN ('queued','running','paused','cancelling')`，冲突返回 409 `JOB_LOCKED`。
+- **不丢失、不重复执行**：
+  - 入队先写 `jobs`、提交后才放进 BullMQ；放入失败（Redis 不可用）不报错，任务仍是 `queued`；
+  - 认领（`claimJob`）在同一组织的咨询锁内把 `queued` 改为 `running`，生成 `run_id` 和租约（默认 60 秒，每 15 秒续租）；只有 `queued` 能被认领，所以同一任务被派发多次（重复投递、对账与入队同时放入、BullMQ stalled 后再派发）也只执行一次；
+  - 认领后的每次写入（进度、checkpoint、日志、结束）都带 `run_id` 条件（隔离令牌）：租约被收回后，原执行者的写入只影响 0 行，结果丢弃；
+  - **对账**（worker 启动时、发现 Redis 数据丢失时、每 15 秒）：跨组织列出 `queued` 和租约过期的 `running` / `cancelling`，逐个在其组织的上下文中处理：`queued` 重新放进 BullMQ；租约过期的按请求收尾（`cancelling` → `cancelled`，已请求暂停 → `paused`），否则可续跑的类型回到 `queued` 再派发、从 checkpoint 继续，不可续跑的标为 `JOB_INTERRUPTED`；开始执行超过 3 次（可按类型设置）标为 `JOB_ATTEMPTS_EXHAUSTED`；
+  - **发现 Redis 数据丢失**：Redis 被清空时连接不会断开，BullMQ 也不会报告，所以 worker 在 Redis 中放一个哨兵键，每次（重新）连上和每 5 秒用 `SET NX` 写一次，写入成功即说明数据已丢失（重启或被清空），立即对账；对账有失败时删掉哨兵，下次检查再来一遍。
+- **组织级并发**：认领时统计本组织 `running` / `cancelling` 的任务数，达到 3 个（决定事项第 8 项）时本次派发延后 5 秒（BullMQ 延迟任务），任务留在 `queued`。各队列并发按设计第 5.2 节（`parse` 4、`ai` 8、`agent` 2、`export` 2）。
+- **执行**：TenantContext 取自任务记录（组织、发起用户）和该用户当前在组织中的角色，不取自派发数据；用户已被移出组织时不执行（`JOB_USER_REMOVED`）。派发数据中的 `orgId` 只用来设置认领事务的组织上下文，与任务不符时在 RLS 下查不到任务，按不存在处理。worker 的系统操作（认领、续租、结束、对账）经新的 `withOrgContext()`（只设置 `app.org_id`，要求 `app.user_id` 的策略一律不成立）。任务失败时只有 `JobError` 的代码和文案写入任务，其他错误记为 `JOB_FAILED`，内部消息只写日志。
+- **取消、暂停、继续**（`src/jobs/service.ts`）：`queued` / `paused` 取消即 `cancelled`；`running` 取消为 `cancelling`、暂停为记下 `pause_requested`，执行者经续租发现后中止（`AbortSignal`），在检查点退出后变为 `cancelled` / `paused`（保留 checkpoint）；`paused` 继续即回到 `queued` 并派发。worker 收到 SIGTERM 时中止执行中的任务，可续跑的回到 `queued`。
+- **接口**：`GET /api/jobs?projectId=&active=&limit=`、`GET /api/jobs/:jobId`（含最近 200 条事件）、`POST /api/jobs/:jobId/cancel`。任务在组织内共享（与项目相同），成员都可以查看和取消；其他组织的任务返回 404；响应不含参数和 checkpoint。入队、暂停、继续没有接口，由各业务模块的 PR 按需开放。
+- **worker 进程**：`src/worker.ts`，与 api 同一镜像、入口 `node dist/worker.js`；compose 新增 `worker` 服务（`default` + `backend` 网络，只拿应用角色密码和 Redis 密码，`/healthz`、`/readyz` 只监听容器内回环地址供 `HEALTHCHECK` 使用，`stop_grace_period: 30s`）。`src/jobs/registry.ts` 中还没有业务任务类型；测试用的两个任务类型（可续跑、不可续跑）只在 `tests/db/jobFixtures.ts` 中登记。
+- **依赖**：`bullmq` 6.3.11（MIT，2026-10-01 发布）；新增传递依赖 `cron-parser` 5.10.1、`luxon` 3.7.2、`msgpackr` 2.1.0、`msgpackr-extract` 3.0.4（可选，原生加速）、`node-gyp-build-optional-packages` 5.2.2、`node-abort-controller` 3.1.1，均为 MIT。BullMQ 在 6.1 的 ACL 下正常工作（Lua 脚本、`CLIENT SETNAME` 不属于 `@admin`），`start-valkey.sh` 不需要调整。
+- **测试**：`tests/db/jobQueue.test.ts`（真实 Valkey）覆盖：执行一次与事件；重复投递只执行一次；伪造的派发组织；清空 Redis 后排队中、延后中、执行中的任务全部恢复且各执行一次（执行中的任务租约有效，不被收回）；worker 与 Redis 一起“重启”；worker 运行中 Redis 被清空，经哨兵自动对账；入队时 Redis 不可用；**真实重启 Valkey**（CI 中 `docker restart valkey`，由 `TEST_REDIS_RESTART_COMMAND` 指定）后不手动对账、任务不丢失不重复；执行者崩溃后从 checkpoint 续跑、原执行者的写入被隔离；不可续跑类型、超过执行次数；worker 正常关闭后续跑；组织级并发；互斥；取消、暂停、继续。`tests/db/jobs.test.ts` 覆盖 RLS、列级授权、约束、`JB001`、并发入队互斥、并发认领只有一次成功、对账函数（只返回 id，分页不重复）、`bidtools_jobs` 的属性与权限（只对 `jobs` 的 5 列有 `SELECT`，对其他表包括计费表没有任何权限）和接口。
+
+偏离计划（均需确认）：
+
+1. **新增定义者角色 `bidtools_jobs`**（拆分计划未列出，因此本 PR 改为“需确认后合并”）。对账要跨组织找出未结束的任务，应用角色在 RLS 下做不到；照 `bidtools_storage` 的做法建 `NOLOGIN`、无 `BYPASSRLS` 的属主角色，是 `SECURITY DEFINER` 函数 `jobs_dispatch_candidates` 的属主，只对 `jobs` 的 `id`、`org_id`、`status`、`lease_expires_at`、`created_at` 有列级 `SELECT` 和为它建的只读策略；函数只返回任务 id、组织 id 和入队时间，每个任务之后的处理仍按其组织经 RLS 进行。已加入 `10-provision.sh`、测试 harness 和第 9 步上线检查“数据库角色”一条；已有的开发数据卷需要 `docker compose down -v` 重建。已知限制：api 与 worker 共用应用角色，api 进程也能调用该函数（只能得到 id）；以后 worker 改用独立的登录角色时，只把执行权授给它。
+2. **崩溃恢复不依赖 BullMQ 的 stalled 检测**（拆分计划写的是“由 stalled 检测转交”）：Redis 被清空后 BullMQ 的执行中记录和锁都不在了，stalled 检测无从发现；改为数据库租约 + 对账，BullMQ 的 stalled 检测只会造成重复投递，由认领条件挡住。
+3. **取消、暂停信号经续租轮询数据库**（设计第 5.6 节写的是发布 `cancel:{jobId}`）：最长延迟一个续租间隔（15 秒）；6.3 接入 Redis 发布订阅后可以缩短，数据库仍是权威。
+4. **api 的 `REDIS_URL` 仍是可选**（6.1 写的是“6.2 接入任务队列时改为必需”）：6.2 没有入队接口，api 不使用队列；worker 未设置 `REDIS_URL` 时拒绝启动。第一个提供入队接口的业务 PR 给 api 接上派发，Redis 不可用时任务由对账派发。
 
 #### 决定事项（#23）
 
@@ -1179,7 +1204,7 @@ AI 网关加固，做法见 `docs/SERVER_DESIGN.md` 第 10.9 节。`client/` 未
      - 模型服务商对中国大陆用户的条款限制：逐家确认，确定 `platform_models` 上架清单；
      - 第一版线下收款的主体、方式与币种；
    - 发信服务选定并完成 QQ / 163 等邮箱的送达率实测（`docs/EXTERNAL_SERVICES.md` §7）；**首个真实用户注册前必须完成**（旧仓库 PR #31），不必等到上线；
-   - 数据库角色（#9 汇总）：生产数据库按 `server/db/init/10-provision.sh` 同样的属性创建**全部**角色，写进部署文档：迁移角色 `bidtools_owner`、应用角色 `bidtools_app`，以及全部 `SECURITY DEFINER` 函数属主（定义者角色）`bidtools_auth`（旧仓库 PR #29）、`bidtools_billing`（旧仓库 PR #31）、`bidtools_storage`（#8）。定义者角色一律 `NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS NOINHERIT`，迁移角色以 `INHERIT FALSE, SET TRUE` 加入；缺任何一个，迁移在 `SET ROLE` 时失败。执行迁移前对照 `server/src/db/roles.ts` 逐个核对 `pg_roles` 中的属性和 `pg_auth_members` 中的成员关系；以后新增定义者角色时同步加到本条、`10-provision.sh` 和测试 harness；
+   - 数据库角色（#9 汇总）：生产数据库按 `server/db/init/10-provision.sh` 同样的属性创建**全部**角色，写进部署文档：迁移角色 `bidtools_owner`、应用角色 `bidtools_app`，以及全部 `SECURITY DEFINER` 函数属主（定义者角色）`bidtools_auth`（旧仓库 PR #29）、`bidtools_billing`（旧仓库 PR #31）、`bidtools_storage`（#8）、`bidtools_jobs`（#25）。定义者角色一律 `NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS NOINHERIT`，迁移角色以 `INHERIT FALSE, SET TRUE` 加入；缺任何一个，迁移在 `SET ROLE` 时失败。执行迁移前对照 `server/src/db/roles.ts` 逐个核对 `pg_roles` 中的属性和 `pg_auth_members` 中的成员关系；以后新增定义者角色时同步加到本条、`10-provision.sh` 和测试 harness；
    - 鉴权上线前提（旧仓库 PR #29）：数据库角色见上一条；发信接口换成正式发信服务的实现；登录、注册、找回密码的限流从进程内存换成 Redis（多实例部署前必须完成）；按反向代理拓扑设置 `TRUSTED_PROXIES`（旧仓库 PR #30，只填 Caddy 的固定地址），用两个不同出口的客户端确认限流和会话中的 IP 是真实客户端地址；用 `npm run admin:create` 创建首个平台管理员后，确认平台管理员已开启 TOTP（设计文档第 3.4 节，TOTP 尚未实现）；
    - 计费核对：价格表已录入并公示，计价函数测试通过，余额不足拒绝新任务和运行中耗尽暂停已实测，管理员充值的 TOTP 和双人复核已启用；旧仓库 PR #31 暂用重新输入密码做二次验证并禁用 1,000 元以上的单笔充值，TOTP 和双人复核实现后再用新迁移放开大额充值；`bidtools_billing` 角色见“数据库角色”一条；
    - AI 网关（旧仓库 PR #32）：主密钥从 `AI_KEK_FILE` 换成云 KMS 的 `KeyWrapper` 实现（第 9 节第 8 项），开启删除保护和调用审计；生产环境 `AI_UPSTREAM_PRIVATE_HOSTS` 为空；确定通义千问使用国内站还是国际站并在管理后台填写对应 Base URL；用真实 Key 在预发环境核对两家服务商流式响应中的用量字段与控制台账单一致；

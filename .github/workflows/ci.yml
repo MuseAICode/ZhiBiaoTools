@@ -168,7 +168,7 @@ jobs:
       - name: Unit tests (Vitest)
         run: npm run test
 
-      - name: Database tests (migrations, RLS, /readyz, file storage, redis)
+      - name: Database tests (migrations, RLS, /readyz, file storage, redis, job queue)
         run: npm run test:db
         env:
           TEST_DATABASE_ADMIN_URL: postgres://postgres:postgres@127.0.0.1:5432/postgres
@@ -177,6 +177,8 @@ jobs:
           TEST_S3_SECRET_ACCESS_KEY: ci-secret-key
           TEST_REDIS_URL: redis://bidtools@127.0.0.1:6379
           TEST_REDIS_PASSWORD: ci-redis-password
+          # 任务队列测试中真实重启 Valkey（不持久化，重启即清空），验证任务从 jobs 表恢复、不丢失、不重复执行。
+          TEST_REDIS_RESTART_COMMAND: docker restart valkey
 
       - name: Shell script syntax (bash -n)
         run: bash -n db/init/10-provision.sh && bash -n scripts/init-dev-secrets.sh && sh -n redis/start-valkey.sh

@@ -55,6 +55,7 @@ import type {
   TECHNICAL_PLAN_TABLE_REQUIREMENTS,
 } from './migrations/0018_technical_plan.ts';
 import type { TECHNICAL_PLAN_CONTENT_MODES } from './migrations/0019_technical_plan_outline.ts';
+import type { JOB_EVENT_KINDS, JOB_STATUSES } from './migrations/0021_jobs.ts';
 import type { ProjectKind } from '../projects/store.ts';
 
 type Timestamp = ColumnType<Date, Date | string, Date | string>;
@@ -1120,6 +1121,44 @@ export interface TechnicalPlanBidItemsTable {
   updated_at: ColumnType<Date, never, never>;
 }
 
+export type JobStatus = (typeof JOB_STATUSES)[number];
+export type JobEventKind = (typeof JOB_EVENT_KINDS)[number];
+
+/** 任务（迁移 0021_jobs）：任务状态的唯一权威。jsonb 列写入时传 JSON 字符串。 */
+export interface JobsTable {
+  id: Generated<string>;
+  org_id: Fixed<string>;
+  project_id: ColumnType<string | null, string | null | undefined, never>;
+  user_id: Fixed<string>;
+  type: Fixed<string>;
+  lock_key: ColumnType<string | null, string | null | undefined, never>;
+  status: Editable<JobStatus>;
+  pause_requested: Editable<boolean>;
+  progress: Editable<number>;
+  params: FixedJson<Record<string, unknown>>;
+  checkpoint: ColumnType<Record<string, unknown> | null, never, string | null>;
+  error_code: ColumnType<string | null, never, string | null>;
+  error_message: ColumnType<string | null, never, string | null>;
+  attempt: ColumnType<number, never, number>;
+  run_id: ColumnType<string | null, never, string | null>;
+  lease_expires_at: ColumnType<Date | null, never, Date | string | null>;
+  created_at: ColumnType<Date, never, never>;
+  updated_at: ColumnType<Date, never, never>;
+  started_at: ColumnType<Date | null, never, Date | string | null>;
+  finished_at: ColumnType<Date | null, never, Date | string | null>;
+}
+
+/** 任务事件（迁移 0021_jobs），只追加。 */
+export interface JobEventsTable {
+  id: ColumnType<string, never, never>;
+  org_id: Fixed<string>;
+  job_id: Fixed<string>;
+  kind: Fixed<JobEventKind>;
+  message: ColumnType<string | null, string | null | undefined, never>;
+  data: ColumnType<Record<string, unknown> | null, string | null | undefined, never>;
+  created_at: ColumnType<Date, never, never>;
+}
+
 export interface Database {
   organizations: OrganizationsTable;
   users: UsersTable;
@@ -1189,4 +1228,6 @@ export interface Database {
   technical_plan_global_fact_groups: TechnicalPlanGlobalFactGroupsTable;
   technical_plan_content_sections: TechnicalPlanContentSectionsTable;
   technical_plan_content_plans: TechnicalPlanContentPlansTable;
+  jobs: JobsTable;
+  job_events: JobEventsTable;
 }
