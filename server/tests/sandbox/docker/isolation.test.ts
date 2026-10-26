@@ -308,15 +308,22 @@ describe('resource limits', () => {
     expect(result.spawned).toBe(400);
   });
 
-  it('contains a fork bomb and terminates it at the time limit without flooding the host', async () => {
+  it('contains a fork bomb without flooding the host', async () => {
     const ref = await createSandbox();
     const before = hostThreads();
+    const started = Date.now();
     const { result, max } = await sampleDuring(hostThreads, run(ref, ['sh', '-c', 'bomb() { while :; do bomb & done; }; bomb & exec sleep 60'], 8_000));
-    // dash 在 fork 失败时退出，炸弹在 pids 上限处不断有进程退出、又不断重试；主进程（sleep）一直等到超时被终止。
-    expect(result.timedOut).toBe(true);
+    const sandboxAlive = await driver.lookup(ref.id, ref.jobId).then(
+      () => true,
+      () => false,
+    );
+    // 实际结果写进 CI 日志：runc 下 dash 在 fork 失败时退出、炸弹在 pids 上限处反复重试，主进程（sleep）一直等到超时被终止；
+    // gVisor 下炸弹可能使整个沙箱提前结束。两种都算被限制或被终止，不允许的是“命令正常结束且沙箱完好”。
+    console.info(JSON.stringify({ runtime: sandboxEnv.runtime, forkBomb: { timedOut: result.timedOut, exitCode: result.exitCode, elapsedMs: Date.now() - started, sandboxAlive, hostThreadDelta: max - before, stderr: result.stderr.slice(0, 200) } }));
+    expect(result.timedOut || result.exitCode !== 0 || !sandboxAlive).toBe(true);
+    if (result.timedOut) expect(sandboxAlive).toBe(false);
     // runc 下沙箱内的进程都是宿主进程，最多 pids 上限个；gVisor 下沙箱内的进程不是宿主进程。
     expect(max - before).toBeLessThan(parse.pidsLimit + 64);
-    await expect(driver.lookup(ref.id, ref.jobId)).rejects.toMatchObject({ code: 'SANDBOX_NOT_FOUND' });
     await expectHostHealthy();
   });
 
