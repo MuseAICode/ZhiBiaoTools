@@ -14,7 +14,7 @@
 | 3 | 配置与 AI 网关 | 进行中 | 旧仓库 PR #31（计费账本：组织余额、只追加的账本、带版本的价格表、幂等扣费、管理员手动充值与冲正，不调用 AI）、旧仓库 PR #32（AI 网关：调用前预扣冻结、按实际用量结算、冻结超时自动释放、`usage_records`、平台 Key 信封加密、DeepSeek / 通义千问流式适配、`POST /api/ai/chat`）、旧仓库 PR #33（平台模型白名单 `platform_models`：只有登记且启用、并有生效价格的模型能调用，免费须显式标记；管理员登记 / 启用 / 停用接口；用户断开时中止上游请求的端到端测试） |
 | 4 | 文件上传 / 下载 / 资源协议 | 进行中 | 旧仓库 PR #34（文件存储：S3 兼容对象存储、本地 SeaweedFS、`files` 表与强制 RLS、按内容校验类型、大小上限与组织配额、附件方式下载、7 天恢复期）、#6（上传白名单补齐桌面版能导入的内容：OLE 内容的 `.docx`，`.doc/.wps` 的 RTF / HTML / MHT / Word 2003 XML，`.xls` 的 HTML 表格 / SpreadsheetML，`%PDF-` 前有多余字节的 PDF） |
 | 5 | 数据层迁移（按业务逐个） | 已完成 | 旧仓库 PR #35（拆分计划，见“第 5 步说明”；记录上传白名单与桌面版的差距）、#7（5.1 项目：`projects` 表、`files.project_id`、项目接口、路由层归属校验、项目级表的迁移与测试模板）、#8（5.2 生成产物存储：`artifacts` 表、Store、只读接口；项目软删除与其下文件、产物联动，由 RLS 强制）、#9（5.3 配置：`org_settings`、`user_settings`、`GET/PATCH /api/settings`；写权限与删除可见性由 RLS 强制）、#10（5.4 导出模板：`export_templates`、`/api/export-templates` 增删改查与复制；系统模板只读、修改删除权限由 RLS 强制，迁移命令同步系统模板）、#11（5.5 资信库：6 张表、`/api/credential-library`；权限与删除可见性由 RLS 强制，图片随所引用文件的生命周期）、#12（5.6 知识库（一）：`knowledge_folders`、`_documents`、`_document_steps`、`/api/knowledge-base` 文件夹与文档管理；权限与删除可见性由 RLS 强制，文档随原件的生命周期）、#14（5.7 知识库（二）：切块、条目、匹配结果等 7 张表，检索与读取条目 / 分析 / Markdown 接口；删除可见性与写权限由 RLS 强制，随文档可见）、#16（5.8 标书查重：13 张项目级表、`/api/projects/:projectId/duplicate-check` 状态 / 文件选择 / 页面状态 / 清空 / Excel 导出；删除可见性与写权限由 RLS 强制，随项目和所选原件可见）、#17（5.8 后续：`files.project_id` 设置后不能再改，由触发器强制；xlsx 写出器防公式注入，回车按原样写出）、#18（5.9 废标检查：7 张项目级表、`/api/projects/:projectId/rejection-check` 状态 / 导入与移除文档 / 页面状态 / 切换与删除问题 / 清空 / Excel 导出；删除可见性与写权限由 RLS 强制，文档随原件可见，签名由服务端现算）、#19（5.10 可研报告：4 张项目级表、`/api/projects/:projectId/feasibility-report` 状态 / 步骤 / 项目信息 / 资料分析 / 目录配置 / 目录（`reason` 协议）/ 关键参数 / 正文 / 资料导入与移除 / 资料 Markdown / 清空；删除可见性与写权限由 RLS 强制，资料随原件、引用随知识库文档可见）、#20（5.11 技术方案（一）：6 张项目级表、`/api/projects/:projectId/technical-plan` 状态 / 步骤 / 生成配置 / 招标解析配置 / 正文生成选项 / 招标文件导入与移除 / 招标文件与合并正文的 Markdown / 原方案 / 投标范围选择 / 清空；删除可见性与写权限由 RLS 强制，文档随原件、引用随知识库文档可见，导出模板只能是本组织的或系统模板）、#21（5.12 技术方案（二）：目录与全局事实 2 张项目级表、`PUT .../outline`（`reason` 协议，节点 UUID 稳定、编号现算）与 `PUT .../global-facts`，下游清空扩展到目录与全局事实；删除可见性与写权限由 RLS 强制））、#22（5.13 技术方案（三）：正文生成状态与编排 2 张项目级表、`PUT .../chapters/:nodeId`、`DELETE .../content-generation`，目录保存与全局事实、下游清空扩展到正文生成状态、编排与运行进度；废标检查 `POST .../tender-from-technical-plan` 复制原件与 Markdown；删除可见性与写权限由 RLS 强制） |
-| 6 | 任务队列与 worker | 进行中 | #23（拆分计划，见“第 6 步说明”）、#24（6.1 Redis 接入：Valkey 8 开启 ACL、`REDIS_URL` / `REDIS_PASSWORD[_FILE]`、`/readyz` 检查 Redis、CI 起 Valkey）、#25（6.2 `jobs` / `job_events` 表与 worker 骨架：BullMQ 只派发、`jobs` 为唯一权威，认领加 `run_id` 隔离令牌与数据库租约，Redis 重启或清空后从 `jobs` 对账恢复入队；新增定义者角色 `bidtools_jobs`）、#26（6.3 SSE 推送 `GET /api/events`：每组织一条 Stream + 频道，`Last-Event-ID` 补发与 `resync`、心跳、会话定期重新校验、单用户连接数上限；任务状态、进度、日志经 worker 推送，取消 / 暂停经控制频道立即送达 worker）、#27（6.4 worker 接入 AI 网关与余额：任务调用记 `job_id` / `job_type`，`jobs.billed_amount` 在结算的同一事务中累加，入队和继续前检查最低启动余额 1 元，运行中余额不足暂停为 `paused` / `insufficient_balance` 并推送，按“组织 + 服务商”的 Redis 分布式信号量） |
+| 6 | 任务队列与 worker | 进行中 | #23（拆分计划，见“第 6 步说明”）、#24（6.1 Redis 接入：Valkey 8 开启 ACL、`REDIS_URL` / `REDIS_PASSWORD[_FILE]`、`/readyz` 检查 Redis、CI 起 Valkey）、#25（6.2 `jobs` / `job_events` 表与 worker 骨架：BullMQ 只派发、`jobs` 为唯一权威，认领加 `run_id` 隔离令牌与数据库租约，Redis 重启或清空后从 `jobs` 对账恢复入队；新增定义者角色 `bidtools_jobs`）、#26（6.3 SSE 推送 `GET /api/events`：每组织一条 Stream + 频道，`Last-Event-ID` 补发与 `resync`、心跳、会话定期重新校验、单用户连接数上限；任务状态、进度、日志经 worker 推送，取消 / 暂停经控制频道立即送达 worker）、#27（6.4 worker 接入 AI 网关与余额：任务调用记 `job_id` / `job_type`，`jobs.billed_amount` 在结算的同一事务中累加，入队和继续前检查最低启动余额 1 元，运行中余额不足暂停为 `paused` / `insufficient_balance` 并推送，按“组织 + 服务商”的 Redis 分布式信号量）、#28（6.5 解析沙箱基础设施：`sandbox-runner` 服务、`SandboxDriver` 接口、断网的 `parse` 模板与镜像，取回归档逐项校验，gVisor 下的隔离测试） |
 | 7 | OpenXmlHelper 容器化与离屏渲染（前置：CI 新增 .NET 编译与 OpenXmlHelper 测试，见“第 9 步说明”的品牌改名第三部分） | 未开始 | — |
 | 8 | Agent 沙箱 | 未开始 | — |
 | 9 | 收尾与上线 | 进行中 | #1（品牌改名第一部分：用户可见文字和文档）、#2（品牌改名第二部分：代码标识符、数据与协议、打包，新增 CI 禁用词检查）、#5（品牌改名第三部分：原产品名缩写前缀改为中性前缀 `app`，禁用词检查加入该缩写） |
@@ -877,7 +877,7 @@ AI 网关加固，做法见 `docs/SERVER_DESIGN.md` 第 10.9 节。`client/` 未
 | 6.3 | SSE 推送：`GET /api/events`，worker 发布到 Redis `events:org:{orgId}` 并追加 Stream，api 按连接的组织和用户过滤后写出；`Last-Event-ID` 补发、超出窗口推 `resync`、25 秒心跳；会话吊销、移出组织后关闭连接（定期重新校验会话）；单用户连接数上限 | 6.2 | 否 | 已完成 | #26 |
 | 6.4 | worker 接入 AI 网关与余额：网关在 worker 中运行，任务调用记 `job_id` / `job_type`；`usage_records.job_id` 不补外键（任务记录到保留期会被删除，用量记录不可修改、永久保留，见“决定事项”第 10 项），只保留 `job_id` / `job_type` 的值；`jobs.billed_amount` 与结算在同一事务中累加（改 `ai_usage_settle`）；入队前检查最低启动余额（决定事项第 7 项）；运行中冻结失败时暂停为 `paused` / `insufficient_balance`，经 SSE 推送（取代 `onBalanceInsufficient`），充值后继续不重复扣费；AI 网关按组织 + 服务商的并发上限改为 Redis 分布式信号量（取 `org_settings.concurrency_limit` 与平台上限的较小值） | 6.2、6.3 | **是**（计费） | 已完成 | #27 |
 | 6.4a | **步骤幂等，必做**（#27 确认时登记）：平台自身故障（worker 崩溃、租约收回、重启）导致的重复调用不向用户收费。现状：一次调用已结算、任务还没保存 checkpoint 时 worker 崩溃，续跑会重做这一步并再次扣费。二选一：步骤结果与 checkpoint 同一事务提交（结算、写结果、写 checkpoint 一起提交），或给每一步加幂等键（`jobId + 步骤键`，续跑时同一步已结算的调用直接复用结果或不再收费）；测试须覆盖“结算后、checkpoint 前崩溃”只扣费一次。**必须在第一个调用 AI 的业务任务 PR（6.9、6.11、6.12、6.13 中最先做的那个）之前完成** | 6.4 | **是**（计费） | 未开始 | — |
-| 6.5 | 解析沙箱基础设施：`sandbox-runner` 服务、`SandboxDriver` 接口、`parse` 模板、解析镜像（见下方“文件解析的隔离”）；隔离测试 | 6.2 | **是**（沙箱） | 未开始 | — |
+| 6.5 | 解析沙箱基础设施：`sandbox-runner` 服务、`SandboxDriver` 接口、`parse` 模板、解析镜像（见下方“文件解析的隔离”）；隔离测试 | 6.2 | **是**（沙箱） | 已完成 | #28 |
 | 6.6 | 解析任务（一）二进制与纯文本格式：`parse` 队列；按记录的 MIME 分派（见下方分派表）；ZIP 炸弹、PDF 页数、超时检查；产出经 `writeArtifact` 写入；重新解析时替换旧产物（第 5 步 #8 留下）；接入技术方案、废标检查、可研报告三个模块的文档解析（`saveDocumentParse` / `saveSourceParse`），导入后自动入队 | 6.5 | 否 | 未开始 | — |
 | 6.7 | 解析任务（二）文本类格式（#6 放行的 RTF、HTML、MHT、Word 2003 XML、SpreadsheetML）：逐项满足“第 6 步解析要求”，用恶意样本测试（XXE、实体膨胀、外链图片 / 样式 / `<iframe>`、RTF `INCLUDEPICTURE` / `INCLUDETEXT`、MHT 外部 `Content-Location`） | 6.6 | 否 | 未开始 | — |
 | 6.8 | 清理任务：过期文件、产物、项目的对象与行的物理删除，遗留 `uploading` 行，按对象键前缀找出的孤儿对象，冻结到期收尾（`expireStaleHolds` 从 api 的定时器移到 worker 的定时任务），超过保留期的 `jobs` / `job_events`；跨组织，用新的 `NOLOGIN` 定义者角色 `bidtools_cleanup` 写 `SECURITY DEFINER` 函数，要求见“决定事项”第 9、10 项 | 6.2 | **是**（新增数据库角色） | 未开始 | — |
@@ -953,7 +953,7 @@ AI 网关加固，做法见 `docs/SERVER_DESIGN.md` 第 10.9 节。`client/` 未
 | 2 | 对象存储中的孤儿对象（如从技术方案复制到废标检查时清理失败的残留，按对象键前缀处理） | 5.13（#22，`fromTechnicalPlan.ts`） | 6.8 |
 | 3 | 重新解析时替换旧产物（产物没有单独的删除接口） | 5.2（#8） | 6.6，被替换的产物由 6.8 清理 |
 | 4 | 按记录的 MIME 分派，只在沙箱中解析 | 第 4 步（#6）“第 6 步解析要求” | 6.5、6.6、6.7，见上方分派表 |
-| 5 | 解析沙箱完全断网 | 同上 | 6.5（`--network none` + 测试） |
+| 5 | 解析沙箱完全断网 | 同上 | 6.5（`--network none` + 测试），已完成（#28） |
 | 6 | HTML / MHT / RTF 禁止加载远程资源（含 RTF 域、OLE 链接、MHT 外部 `Content-Location`） | 同上 | 6.7 |
 | 7 | XML 类格式禁用 DTD 和外部实体（含实体膨胀、XInclude），交给解析器前检查并有测试 | 同上 | 6.7：含 `<!DOCTYPE` 一律拒绝 |
 | 8 | MHT 先解包再交给 LibreOffice | 同上 | 6.7 |
@@ -1055,6 +1055,29 @@ AI 网关加固，做法见 `docs/SERVER_DESIGN.md` 第 10.9 节。`client/` 未
 6. **冻结到期收尾（`expireStaleHolds`）仍在 api 的定时器中**，按拆分计划随 6.8 移到 worker。
 
 **已知缺口（#27 确认时登记为 6.4a，必做）**：任务中的一次调用已结算、任务还没保存 checkpoint 时 worker 崩溃，续跑会重做这一步并再次扣费（两次调用在服务商侧都真实发生）。原则是平台自身故障导致的重复调用不向用户收费，所以在第一个调用 AI 的业务任务 PR 之前，用“步骤结果与 checkpoint 同一事务提交”或“步骤幂等键”消除这个窗口，并加入第 9 步上线检查。其余情况已有测试：冻结后、结算前崩溃的调用不收费，已保存 checkpoint 的步骤不重做。
+
+#### 解析沙箱基础设施（#28，6.5）
+
+按“文件解析的隔离”的方案 B 和决定事项第 1、2、5 项实现，做法见 `docs/SERVER_DESIGN.md` 第 7.5 节。只建基础设施，不解析任何文档（6.6 起）；没有迁移，`client/` 未改动，没有新增 npm 依赖。要点：
+
+- **`SandboxDriver`**（`src/sandbox/driver.ts`）：`create / copyIn / exec / copyOut / destroy`，两个实现：sandbox-runner 进程内直接调用 Docker Engine API 的 `createDockerSandboxDriver`（`src/sandbox/docker.ts`，经 unix socket 的最小客户端 `dockerApi.ts`，无第三方依赖），和 worker 中经 HTTP 调用 sandbox-runner 的 `createSandboxRunnerClient`（`src/sandbox/client.ts`）；
+- **`parse` 模板**（`src/sandbox/templates.ts`，写死在代码中）：`--network none`、只读根文件系统、用户 10001、`cap-drop ALL`、`no-new-privileges`、`--init`、内存 2 GiB 无 swap、CPU 1 核、`pids` 256、`nofile` 1024，`/tmp`、`/input`、`/output` 为 `noexec,nosuid,nodev` 的 tmpfs（1 GiB / 256 MiB / 1 GiB），不挂载任何宿主目录和卷、不注入宿主环境变量、不保留容器日志；可执行的命令只有 `parse`（`node /opt/parse/entry.mjs` + 至多 8 个不含路径的参数，墙钟 10 分钟，超时即终止整个沙箱）；沙箱最长存活 15 分钟；
+- **sandbox-runner**（`src/sandbox-runner.ts`，与 api 同一镜像、入口 `dist/sandbox-runner.js`）：唯一挂载 Docker socket 的服务；接口只收“模板名 + 任务 id”和模板中的命令名与参数（多余字段 400），每个请求带共享令牌（Docker secret `sandbox_runner_token`），之后的操作带 `X-Sandbox-Job`。状态全在容器标签中（模板、任务 id、到期时间），本身无状态；每次操作按名称查出容器并核对标签，不是本服务创建的、任务不符、已到期或已停止的一律 404，不能借它在其他容器中执行命令。同时存在的沙箱数上限 8（`SANDBOX_MAX_ACTIVE`），到期的每 30 秒删除。启动时检查配置的运行时已在 Docker 中登记；生产环境 `SANDBOX_RUNTIME` 只能是 `runsc`、`SANDBOX_PARSE_IMAGE` 必须按摘要固定，否则拒绝启动；
+- **输入输出**：经 exec 中的 `tar` 传送（`src/sandbox/archive.ts`，读写 tar 均无第三方依赖）。放入前按模板检查（只有普通文件、一层路径、至多 4 个、单个 128 MiB）；取回的归档来自沙箱，按不可信输入在 worker 中逐项校验，任一项不符整体拒绝（`SANDBOX_OUTPUT_REJECTED`）：只收普通文件（拒绝符号链接、硬链接、设备文件、FIFO、稀疏文件等）、路径按段校验（`..`、绝对路径、隐藏在 ustar prefix / PAX / GNU 长名中的穿越）、至多两层、至多 2,010 个文件、单个 100 MiB、合计 1 GiB、扩展名只有 `md json png jpg jpeg gif webp bmp`、同一路径不能出现两次、头部校验和正确、必须有结束块；流的字节数超过上限即中止；
+- **镜像**（`server/sandbox/parse/Dockerfile`）：与 api 相同的 Node 24 基础镜像（按 digest 固定）+ `libreoffice-writer-nogui`、`libreoffice-calc-nogui` + `fonts-noto-cjk`、`fonts-dejavu-core`；删除 npm / corepack / yarn、去掉全部 setuid / setgid 位，建用户 10001；没有凭据、编译器、网络工具；
+- **compose**：新增 `sandbox-runner` 服务和 `internal: true` 的 `sandbox-control` 网络（只有 sandbox-runner，6.6 起 worker 加入），`init-dev-secrets.sh` 生成 `sandbox_runner_token`；开发环境先 `docker build -t zhibiao-parse:dev server/sandbox/parse`，Linux 上设置 `DOCKER_SOCKET_GID`；
+- **CI**：`server-checks` 安装 gVisor（`runsc` 20260810.0，Apache-2.0，按写死的 SHA-512 校验），登记为 Docker 运行时后 reload（不重启 Docker），构建 parse 镜像，在 `runsc` 下跑 `npm run test:sandbox`（含 LibreOffice 转换用例）；job 超时从 15 分钟改为 30 分钟；
+- **测试**：单元测试（`tests/sandbox/*.test.ts`）覆盖构造的恶意归档（各种条目类型、穿越、校验和、截断、超量、PAX 键）、模板参数、配置、sandbox-runner 接口（令牌、多余字段、未登记的命令、任务不符、worker 端校验）。隔离测试（`tests/sandbox/docker/isolation.test.ts`，真实 Docker）：只有 `lo`，连接 Docker 网桥网关上的监听端口、`169.254.169.254`、外网、内网地址、UDP 全部失败，`redis` / `postgres` 等名称解析失败；根文件系统只读（`EROFS`）、`/tmp` 不能执行、用户 10001、无能力、`NoNewPrivs`；没有 setuid 程序、网络工具、包管理器和编译器；容器参数与模板一致；超内存被杀、进程数受限、超时与中止时沙箱被终止；输入输出往返；取回时符号链接、硬链接、FIFO、超量文件、不允许的扩展名、过深路径、不安全文件名被拒绝；两个沙箱之间不共享任何文件；数量上限、到期清理；经 HTTP 的完整流程只能执行登记的命令、不能操作冒名的容器。**对照组**：去掉 `--network none` 后同一探测能连上宿主、去掉只读后写入不再是 `EROFS`、原始归档中确有被校验拒绝的符号链接条目，证明测试能发现这些加固被去掉。本机（runc、不含 LibreOffice 的镜像）25 项全部通过，gVisor 与 LibreOffice 的结果见 CI。
+
+偏离计划（均需确认）：
+
+1. **输入输出经 exec 中的 `tar` 传送，不用 `docker cp`**：gVisor 下 `docker cp` 写不进沙箱内的 tmpfs（只读根文件系统上也不能写）；由沙箱内的 tar 生成的归档按不可信输入在 worker 中校验，sandbox-runner 只原样转出并限制字节数，不在持有 Docker 权限的进程中解析沙箱的输出。
+2. **镜像暂不含 `doc2markdown/` 的 npm 依赖和解析入口**（计划写的是“Node 24 + `doc2markdown/` 所需的 npm 依赖 + LibreOffice + 中文字体”）：依赖与入口随 6.6 的分派实现一起加入（另列版本和许可证），6.5 的 `/opt/parse/entry.mjs` 是退出码 64 的占位。LibreOffice 关闭链接更新、不执行宏的全局设置随 6.7。
+3. **apt 包不按版本固定**：基础镜像按 digest 固定，LibreOffice 等取构建时 Debian bookworm 的当前版本（含安全更新）；部署时按构建出的镜像摘要引用（生产配置强制 `@sha256:`），镜像漏洞扫描随第 9 步。
+4. **新增 `sandbox-control` 网络**（设计第 8.1 节原写 sandbox-runner 在 `backend`）：只有 worker 需要调用它，放在单独的 internal 网络上，api、数据库、Redis 都连不到它，它也连不到它们。
+5. **worker 尚未接入**：`SANDBOX_RUNNER_URL`、令牌的配置和 `context.sandbox` 随 6.6（第一个使用它的任务）加入，6.5 的 worker 与之前相同。
+
+已知限制：Docker socket 等同宿主 root，sandbox-runner 被攻破即宿主被攻破，所以它只在 internal 网络上、只接受固定模板，生产优先 rootless Docker（第 9 步上线检查）；worker 共用一个令牌，以任务 id 绑定沙箱只防误用，不防被攻破的 worker。
 
 #### 决定事项（#23）
 
@@ -1261,5 +1284,6 @@ AI 网关加固，做法见 `docs/SERVER_DESIGN.md` 第 10.9 节。`client/` 未
    - 任务计费（#27、6.4a）：平台自身故障（worker 崩溃、租约收回、重启）导致的重复调用不向用户收费，6.4a 已完成且其“结算后、checkpoint 前崩溃只扣费一次”的测试在 CI 中通过；所有调用 AI 的业务任务都经步骤幂等（或同一事务提交）调用模型；
    - 实时推送（#26）：Caddy 对 `/api/events` 关闭响应缓冲和压缩（`flush_interval -1`、`encode` 排除 `text/event-stream`），开启 HTTP/2（每个页面一条长连接，HTTP/1.1 每域名只有 6 条）；Caddy 与 api 的空闲 / 读超时大于 25 秒的心跳间隔；`WebBridge` 在 `GET /api/events` 返回非 200 或连接断开时按退避间隔自己重建连接（浏览器 `EventSource` 遇到 503 不再重连），收到 `ready` 后再拉快照、收到 `resync` 时重新拉快照、收到 `closed`（`session`）时转登录页；在预发环境确认经 Caddy 的推送没有延迟、断线后能补发；**扩展为多个 api 实例前**，把 `GET /api/events` 的单用户连接数上限（目前每个 api 进程各自计数，见“SSE 推送（#26，6.3）”偏离第 4 项）改为跨实例计数（例如 Redis 中按用户计数并带过期时间）；
    - Redis（#24）：生产用与开发相同的 `server/redis/start-valkey.sh`（禁用 `default` 用户、ACL 用户 `bidtools`、禁止 `@admin` 与清空命令、不持久化、`noeviction`），`maxmemory` 按实例内存设置（`REDIS_MAXMEMORY`）；redis 只在 `internal: true` 的 `backend` 网络上、不映射端口；密码走 Docker secret；api 和 worker 都设置 `REDIS_URL`，确认 `/readyz` 在停掉 Redis 后返回 503；
+   - 解析沙箱（#28）：生产主机安装 gVisor 并在 Docker 中登记 `runsc`，`SANDBOX_RUNTIME=runsc`（配置强制）；优先 rootless Docker 或 Podman 运行 sandbox-runner；parse 镜像在 CI 中构建并做漏洞扫描，`SANDBOX_PARSE_IMAGE` 按摘要引用、部署前预先拉取；`sandbox-control` 为 `internal: true` 且只有 worker 与 sandbox-runner；令牌走 Docker secret；在生产主机上（实际的 gVisor 版本和内核）跑一遍 `npm run test:sandbox`；
    - 从大陆主要省份和运营商实测访问香港服务器的延迟和可用性（`docs/SERVER_DESIGN.md` 第 8.0 节）。
    - 文件存储（旧仓库 PR #34）：选定云厂商对象存储（与 KMS 同一家、香港地域），bucket 私有、禁止公开读和列目录，开启服务端加密（默认加密或 KMS 密钥），配置生命周期规则清理未完成的分片上传；api 使用只能访问该 bucket 的最小权限访问密钥；用真实服务跑一遍 `tests/db/files.test.ts` 确认 S3 兼容性；过期文件和遗留 `uploading` 记录的物理清理任务已上线（否则对象只增不减）；Caddy 层设置请求体上限（略大于 100 MB）；`S3_ENDPOINT` 为 https。
