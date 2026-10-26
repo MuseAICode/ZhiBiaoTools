@@ -93,6 +93,27 @@ export interface AppConfig {
   redis: RedisConfig | null;
 }
 
+/** sandbox-runner 进程的配置（docs/SERVER_DESIGN.md 第 7.5 节），与 api / worker 的配置分开读取。 */
+export interface SandboxRunnerConfig {
+  nodeEnv: NodeEnv;
+  host: string;
+  port: number;
+  logLevel: LogLevel;
+  /** Docker Engine API 的 unix socket；只有 sandbox-runner 挂载它。 */
+  dockerSocket: string;
+  /** 容器运行时：生产只允许 runsc（gVisor）；开发、测试可用参数相同的 runc（第 6 步决定事项第 2 项）。 */
+  runtime: SandboxRuntime;
+  /** 各模板的镜像引用；生产必须按摘要固定（name@sha256:...）。 */
+  images: { parse: string };
+  /** 同时存在的沙箱数上限。 */
+  maxActive: number;
+  /** worker 调用 sandbox-runner 的共享令牌（至少 32 个字符）。 */
+  token: string;
+}
+
+export const SANDBOX_RUNTIMES = ['runsc', 'runc'] as const;
+export type SandboxRuntime = (typeof SANDBOX_RUNTIMES)[number];
+
 export interface ConfigIssue {
   name: string;
   reason: string;
@@ -384,7 +405,11 @@ function createReader(env: Env, options: LoadConfigOptions) {
     return Object.freeze({ ...address, password });
   }
 
-  return { read, readDatabase, readAi, readStorage, readRedis, finish };
+  function fail(name: string, reason: string) {
+    issues.push({ name, reason });
+  }
+
+  return { read, readSecret, readDatabase, readAi, readStorage, readRedis, fail, finish };
 }
 
 export function loadConfig(env: Env, options: LoadConfigOptions = {}): AppConfig {
@@ -431,4 +456,47 @@ export function loadConfig(env: Env, options: LoadConfigOptions = {}): AppConfig
 export function loadMigrationConfig(env: Env, options: LoadConfigOptions = {}): DatabaseConfig {
   const { readDatabase, finish } = createReader(env, options);
   return finish(readDatabase('MIGRATION_DATABASE_USER', 'bidtools_owner', 'MIGRATION_DATABASE_PASSWORD'));
+}
+
+const IMAGE_REFERENCE = /^[a-z0-9][a-z0-9._/:@-]{0,254}$/;
+const PINNED_IMAGE_REFERENCE = /^[a-z0-9][a-z0-9._/:-]{0,254}@sha256:[a-f0-9]{64}$/;
+
+/**
+ * sandbox-runner 的配置。生产环境的运行时必须是 runsc、镜像必须按摘要固定；配置成 runc 或未固定的标签时拒绝启动。
+ * 镜像不在这里拉取：部署时预先拉好，sandbox-runner 不访问镜像仓库。
+ */
+export function loadSandboxRunnerConfig(env: Env, options: LoadConfigOptions = {}): SandboxRunnerConfig {
+  const { read, readSecret, fail, finish } = createReader(env, options);
+  const nodeEnv = read('NODE_ENV', { parse: oneOf(NODE_ENVS), expected: NODE_ENVS.join(' / ') });
+  const production = nodeEnv === 'production';
+  const runtime = read('SANDBOX_RUNTIME', {
+    ...(production ? {} : { default: 'runc' as const }),
+    parse: (raw) => {
+      const value = oneOf(SANDBOX_RUNTIMES)(raw);
+      return production && value !== 'runsc' ? undefined : value;
+    },
+    expected: production ? 'runsc（生产环境只允许 gVisor）' : SANDBOX_RUNTIMES.join(' / '),
+  });
+  const token = readSecret('SANDBOX_RUNNER_TOKEN');
+  if (token !== undefined && token !== '' && token.length < 32) fail('SANDBOX_RUNNER_TOKEN', '过短（至少 32 个字符）');
+  return finish<SandboxRunnerConfig>({
+    nodeEnv,
+    host: read('HOST', { ...HOST_SPEC, default: '127.0.0.1' }),
+    port: read('PORT', portSpec(3100)),
+    logLevel: read('LOG_LEVEL', { default: 'info', parse: oneOf(LOG_LEVELS), expected: LOG_LEVELS.join(' / ') }),
+    dockerSocket: read('DOCKER_SOCKET', {
+      default: '/var/run/docker.sock',
+      parse: (raw) => (/^\/[A-Za-z0-9._/-]{1,200}$/.test(raw) && !raw.split('/').includes('..') ? raw : undefined),
+      expected: 'unix socket 的绝对路径',
+    }),
+    runtime,
+    images: Object.freeze({
+      parse: read('SANDBOX_PARSE_IMAGE', {
+        parse: (raw) => ((production ? PINNED_IMAGE_REFERENCE : IMAGE_REFERENCE).test(raw) ? raw : undefined),
+        expected: production ? '按摘要固定的镜像引用（name@sha256:...）' : '镜像引用（生产环境必须按摘要固定）',
+      }),
+    }),
+    maxActive: read('SANDBOX_MAX_ACTIVE', intSpec(8, 1, 256)),
+    token,
+  });
 }

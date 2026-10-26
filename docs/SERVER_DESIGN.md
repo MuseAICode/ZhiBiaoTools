@@ -503,6 +503,17 @@ AI 网关（worker 内）── 解密 Key ──> 模型服务商
 
 **sandbox-runner**：创建容器需要容器运行时权限，等同于宿主 root，所以只给一个独立的小服务。它只暴露“按预定义模板创建 / 销毁沙箱”的接口，模板（镜像、资源、网络、只读）写死在代码中，调用方只能选模板名和传入任务令牌，不能传任意 Docker 参数。worker 和 api 都不挂载 Docker socket。优先使用 rootless Docker 或 Podman 进一步降低风险。
 
+### 7.5 实现（路线图 6.5）：解析沙箱
+
+第 6 步先建本节的公共部分和断网的 `parse` 模板（路线图第 6 步“文件解析的隔离”方案 B），第 8 步在同一套机制上加 `agent` 模板（`sandbox-gw` 网络、任务令牌、业务工具 RPC）。
+
+- **接口**：`SandboxDriver`（`server/src/sandbox/driver.ts`）的 `create / copyIn / exec / copyOut / destroy`。worker 用 HTTP 客户端（`client.ts`），sandbox-runner 用 Docker 实现（`docker.ts`）；换成微虚拟机时只换后者。
+- **模板**（`templates.ts`）：镜像、网络、用户、只读、资源、可写目录、命令、取回规则都写死在代码中，调用方只选模板名；`parse` 的参数见第 7.4 节的表，取值为路线图第 6 步决定事项第 5 项的起步值。容器的主进程只是 `sleep`，命令经 exec 执行，超时或调用方中止时终止整个容器。
+- **sandbox-runner**（`src/sandbox-runner.ts`）：唯一能访问容器运行时的服务，只在 internal 网络 `sandbox-control` 上监听（只有 worker 能连到；沙箱是 `--network none`，连不到它，有测试），每个请求在路由之前校验共享令牌（SHA-256 后 `timingSafeEqual`，缺失或不符 401）；生产环境不直接挂载完整权限的 Docker socket，经只放行必要接口并校验创建参数的 Docker API 代理或 rootless Docker（路线图第 9 步上线检查）；沙箱的模板、任务 id、到期时间写在容器标签中，每次操作核对标签，不是它创建的容器一律按不存在处理；到期的沙箱定期删除。生产环境只允许 `runsc`、镜像必须按摘要固定，启动时检查运行时已登记。
+- **输入输出**：经 exec 中的 `tar` 传送（gVisor 下 `docker cp` 不能写入只读根文件系统上的 tmpfs）。取回的归档按第 7.3 节“工作区取回”的规则在 worker 中逐项校验（`archive.ts`），任一项不符整体拒绝；sandbox-runner 只转出并限制字节数，不解析沙箱的输出。
+- **镜像**：`server/sandbox/parse/Dockerfile`，Node 24 + LibreOffice（Writer、Calc，无图形界面）+ 中文字体，删除包管理器和 setuid 位；解析入口和其 npm 依赖随 6.6 加入。
+- **测试**：`npm run test:sandbox`（CI 中在 gVisor 下运行，含 LibreOffice 转换）逐项验证断网、只读、无能力、资源上限、超时、取回校验和沙箱之间不共享，并用去掉加固的对照组证明测试有效；LibreOffice 在 gVisor 下的耗时记录在 CI 日志中。
+
 ## 8. 部署架构
 
 ### 8.0 部署位置（已决定，第 9 节第 13、14 项）
@@ -518,9 +529,9 @@ AI 网关（worker 内）── 解密 Key ──> 模型服务商
 |---|---|---|
 | `caddy` | 反向代理、TLS、静态文件 | `edge` |
 | `api` | Fastify | `edge`、`backend` |
-| `worker` | BullMQ 消费者 + AI 网关（可多副本） | `backend`、`sandbox-gw`、`egress` |
+| `worker` | BullMQ 消费者 + AI 网关（可多副本） | `backend`、`sandbox-control`、`sandbox-gw`、`egress` |
 | `openxml` | `openxmlhelper/` .NET 10 | `backend`（与 worker 共享临时卷） |
-| `sandbox-runner` | 唯一能访问容器运行时 | `backend` |
+| `sandbox-runner` | 唯一能访问容器运行时（6.5 实现，见第 7.5 节） | `sandbox-control`（`internal: true`，只有 worker 能访问） |
 | `postgres` | PostgreSQL 17，数据卷 | `backend` |
 | `redis` | Valkey 8（第 6 步决定替代 Redis 7，协议兼容），开启密码和 ACL，不持久化；启动脚本 `server/redis/start-valkey.sh`（6.1） | `backend` |
 | （云对象存储） | 生产环境用云厂商对象存储，不在本机；开发环境才在 Compose 中起本地 S3 兼容存储 | 经 `egress`，用实例角色访问 |

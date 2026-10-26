@@ -15,6 +15,7 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:db": "vitest run --config vitest.db.config.ts",
+    "test:sandbox": "vitest run --config vitest.sandbox.config.ts",
     "db:migrate": "node src/db/migrate.ts latest",
     "db:rollback": "node src/db/migrate.ts down",
     "admin:create": "node src/cli/create-admin.ts"
