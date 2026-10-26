@@ -168,7 +168,7 @@ jobs:
       - name: Unit tests (Vitest)
         run: npm run test
 
-      - name: Database tests (migrations, RLS, /readyz, file storage, redis, job queue)
+      - name: Database tests (migrations, RLS, /readyz, file storage, redis, job queue, events)
         run: npm run test:db
         env:
           TEST_DATABASE_ADMIN_URL: postgres://postgres:postgres@127.0.0.1:5432/postgres

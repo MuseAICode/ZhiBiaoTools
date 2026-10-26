@@ -4,7 +4,10 @@ import { buildApp } from './app.ts';
 import { expireStaleHolds } from './billing/usage.ts';
 import { ConfigError, loadConfig, type AppConfig } from './config.ts';
 import { createDatabase } from './db/database.ts';
+import { createEventHub } from './events/hub.ts';
+import { createEventPublisher } from './events/publisher.ts';
 import { createS3ObjectStore } from './files/objectStore.ts';
+import { createJobNotifier } from './jobs/notify.ts';
 import { createRedis } from './redis.ts';
 
 const SHUTDOWN_TIMEOUT_MS = 10_000;
@@ -44,10 +47,15 @@ const objectStore = config.storage ? createS3ObjectStore(config.storage) : null;
 const redis = config.redis
   ? createRedis(config.redis, { onError: (error) => app.log.warn({ err: error }, 'redis connection error') })
   : null;
-const app = await buildApp(config, { database, keyWrapper, objectStore, redis });
+// 事件推送（GET /api/events 与任务状态变化的推送）同样只在配置了 Redis 时开启；日志器在 buildApp 之后才有，先转一层。
+const eventLog = { warn: (obj: unknown, msg?: string) => app.log.warn(obj, msg) };
+const publisher = config.redis ? createEventPublisher(config.redis, { log: eventLog, connectionName: 'bidtools-api-publisher' }) : null;
+const hub = config.redis ? createEventHub(config.redis, { log: eventLog }) : null;
+const events = publisher && hub ? { hub, notifier: createJobNotifier({ db: database.db, publisher, log: eventLog }) } : null;
+const app = await buildApp(config, { database, keyWrapper, objectStore, redis, events });
 if (!keyWrapper) app.log.warn('AI_KEK_FILE is not set, AI gateway disabled');
 if (!objectStore) app.log.warn('S3_BUCKET is not set, file storage disabled');
-if (!redis) app.log.warn('REDIS_URL is not set, redis readiness check disabled');
+if (!redis) app.log.warn('REDIS_URL is not set, redis readiness check and event stream disabled');
 
 const sweeper = setInterval(() => {
   expireStaleHolds(database.db).then(
@@ -61,7 +69,7 @@ sweeper.unref();
 
 app.addHook('onClose', async () => {
   clearInterval(sweeper);
-  await Promise.all([database.destroy(), redis?.destroy()]);
+  await Promise.all([database.destroy(), redis?.destroy(), hub?.close(), publisher?.close()]);
 });
 
 let shuttingDown = false;

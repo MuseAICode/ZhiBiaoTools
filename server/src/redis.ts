@@ -1,5 +1,6 @@
 // Redis（Valkey）连接。连接参数来自 src/config.ts，密码不写日志。
-// createRedis 用于 /readyz 的连通性检查；任务队列（BullMQ，src/jobs/）用 bullmqConnection 的参数自建连接。
+// createRedis 用于 /readyz 的连通性检查；任务队列（BullMQ，src/jobs/）用 bullmqConnection 的参数自建连接；
+// 事件推送（src/events/）用 failFastRedisOptions 的参数自建发布、订阅连接。
 import type { RedisOptions as BullmqRedisOptions } from 'bullmq';
 import { Redis } from 'ioredis';
 import type { RedisConfig } from './config.ts';
@@ -20,21 +21,47 @@ const COMMAND_TIMEOUT_MS = 2_000;
 const CONNECT_TIMEOUT_MS = 5_000;
 const MAX_RECONNECT_DELAY_MS = 5_000;
 
-export function createRedis(config: RedisConfig, options: CreateRedisOptions = {}): RedisHandle {
-  const client = new Redis({
+/**
+ * 未连接时命令立即失败而不是排队等待重连的连接参数：/readyz 应当如实报告未就绪，事件发布失败即丢弃（事件可丢，
+ * 第 8.4 节），也不会在 Redis 长时间不可用时堆积命令。断线后按退避间隔自动重连。
+ */
+export function failFastRedisOptions(config: RedisConfig, connectionName: string) {
+  return {
     host: config.host,
     port: config.port,
     ...(config.username ? { username: config.username } : {}),
     password: config.password,
     ...(config.tls ? { tls: { servername: config.host } } : {}),
-    connectionName: options.connectionName ?? 'bidtools-api',
+    connectionName,
     connectTimeout: CONNECT_TIMEOUT_MS,
     commandTimeout: COMMAND_TIMEOUT_MS,
-    // 未连接时命令立即失败而不是排队等待重连：/readyz 应当如实报告未就绪，也不会在 Redis 长时间不可用时堆积命令。
     enableOfflineQueue: false,
     maxRetriesPerRequest: 1,
-    retryStrategy: (attempt) => Math.min(attempt * 200, MAX_RECONNECT_DELAY_MS),
+    retryStrategy: (attempt: number) => Math.min(attempt * 200, MAX_RECONNECT_DELAY_MS),
+  };
+}
+
+/**
+ * 等到连接就绪：failFastRedisOptions 的连接不排队命令，刚创建或正在重连时直接发命令会立即失败。
+ * 超过 timeoutMs 仍未就绪时抛错。
+ */
+export async function whenReady(client: Redis, timeoutMs: number = COMMAND_TIMEOUT_MS): Promise<void> {
+  if (client.status === 'ready') return;
+  await new Promise<void>((resolve, reject) => {
+    const onReady = () => {
+      clearTimeout(timer);
+      resolve();
+    };
+    const timer = setTimeout(() => {
+      client.off('ready', onReady);
+      reject(new Error('redis connection not ready'));
+    }, timeoutMs);
+    client.once('ready', onReady);
   });
+}
+
+export function createRedis(config: RedisConfig, options: CreateRedisOptions = {}): RedisHandle {
+  const client = new Redis(failFastRedisOptions(config, options.connectionName ?? 'bidtools-api'));
   // 不监听 error 事件时 ioredis 会把每次连接失败打印到 stderr；交给调用方写结构化日志。
   client.on('error', (error: Error) => options.onError?.(error));
 

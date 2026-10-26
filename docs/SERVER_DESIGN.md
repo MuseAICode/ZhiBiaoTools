@@ -348,18 +348,20 @@ Markdown 中远程图片的下载（`docs/EXTERNAL_SERVICES.md` §2.9）URL 来�
 
 ### 5.5 推送链路
 
-1. worker 产生事件（进度、日志、Agent 提问、任务结束）→ 写 `jobs` / `job_events`（需要持久化的）→ 向 Redis 发布到 `events:org:{orgId}`；
-2. 同时追加到 Redis Stream `stream:org:{orgId}`（只保留最近 10 分钟或 1000 条），每条带单调递增 ID；
-3. api 进程订阅 Redis，按连接的 `org_id` 和用户在该组织的权限过滤后写入 SSE，`id:` 字段即 Stream ID；
-4. 浏览器断线重连时带 `Last-Event-ID`，api 从 Stream 补发；超出保留窗口的，推一条 `resync` 事件，前端重新调用 `getActiveTasks` / `loadState` 拉快照（现有页面本来就会在挂载时拉快照，“页面卸载不取消任务”的语义不变）；
-5. 每 25 秒发一条注释行做心跳；Caddy 对 `/api/events` 关闭缓冲和压缩；
-6. `WebBridge` 中每个 `onXxx(callback)` 只是在这条连接上按事件名注册监听，返回取消函数，与 `AppBridge` 的签名一致。
+1. worker 产生事件（进度、日志、Agent 提问、任务结束）→ 写 `jobs` / `job_events`（需要持久化的）→ 事务提交后向 Redis 发布到 `events:org:{orgId}`；api 中改变任务状态的操作（入队、取消、暂停、继续）同样在提交后发布；
+2. 同时追加到 Redis Stream `stream:org:{orgId}`（只保留最近 10 分钟或 1000 条），每条带单调递增 ID；追加、裁剪、发布在同一个 Lua 脚本中原子完成（6.3，`src/events/stream.ts`）。发布尽力而为，Redis 不可用时丢弃并写日志，由第 4 条的 `resync` 兜底；
+3. api 进程用一条订阅连接按组织引用计数订阅，按连接的 `org_id` 过滤（事件可另指定只推给某个用户；任务事件在组织内共享，不按用户过滤）后写入 SSE，`id:` 字段即 Stream ID。新连接先订阅、再补发、最后按 ID 去重放出订阅期间缓存的实时事件，补发与实时之间不漏不重；
+4. 浏览器断线重连时带 `Last-Event-ID`，api 从 Stream 补发；超出保留窗口（上次的 ID 比 Stream 第一条还小）、Stream 不存在（过期、Redis 重启或被清空）或 ID 不认识的，推一条 `resync` 事件，前端重新调用 `getActiveTasks` / `loadState` 拉快照（现有页面本来就会在挂载时拉快照，“页面卸载不取消任务”的语义不变）。补发完成后推一条不带 id 的 `ready`，前端先等 `ready` 再拉快照；
+5. 每 25 秒发一条注释行做心跳；Caddy 对 `/api/events` 关闭缓冲和压缩；每 60 秒重新校验会话，会话失效或用户被移出组织后推 `closed` 并断开；Redis 订阅连接断开、服务关闭时同样推 `closed` 断开，由前端重连补发；每个用户在每个 api 进程中最多 10 条连接；
+6. `WebBridge` 中每个 `onXxx(callback)` 只是在这条连接上按事件名注册监听，返回取消函数，与 `AppBridge` 的签名一致。`GET /api/events` 返回非 200 时浏览器的 `EventSource` 不再自动重连，`WebBridge` 自己按退避间隔重建连接。
+
+任务事件（6.3，`src/jobs/notify.ts`）：`job`（任务当前状态，与 `GET /api/jobs/:jobId` 的任务部分相同；并发变化时到达顺序可能与提交顺序不同，按 `updatedAt` 取较新的一条）、`job.progress`、`job.log`；都不含任务参数、checkpoint 和事件数据。
 
 ### 5.6 取消、暂停与恢复
 
-- 取消 / 暂停：api 把 `jobs.status` 改为 `cancelling` / `paused` 并发布 `cancel:{jobId}`；worker 内每个任务持有 `AbortController`，收到信号后在下一个检查点退出（现有 `agentInterruption.cjs`、`pauseContentGeneration` 的语义保留）；
+- 取消 / 暂停：api 把 `jobs.status` 改为 `cancelling` / `paused`（执行中的暂停记为 `pause_requested`）并向控制频道 `{BullMQ 前缀}:jobs:control` 发布任务 id（6.3；原设计为每个任务一个 `cancel:{jobId}`）；worker 收到后对正在执行的该任务立即续租一次，从 `jobs` 读到请求，消息本身不被信任；worker 内每个任务持有 `AbortController`，收到信号后在下一个检查点退出（现有 `agentInterruption.cjs`、`pauseContentGeneration` 的语义保留）；
 - Agent 正在等用户回答（`ask-user`）时，任务状态为 `running` 并带 `waiting_for_user`，问题经 SSE 推送，回答经 `POST /api/jobs/:id/answer` 写入后通知 worker；等待超时按现有 `suppressQuestionAutoAnswer` / 自动确认规则处理；
-- 恢复：worker 崩溃后租约过期，由对账收回并交给其他 worker，任务从 `jobs.checkpoint` 继续（现有“重启恢复”逻辑改成读 `jobs` 表；不依赖 BullMQ 的 stalled 检测，它在 Redis 被清空后无从发现）。6.2 中取消、暂停由执行者续租时从 `jobs` 读到，`cancel:{jobId}` 发布随 6.3 接入。Agent 任务的会话文件和工作区在对象存储中有快照（第 7.3 节），可以从最近一次快照恢复。
+- 恢复：worker 崩溃后租约过期，由对账收回并交给其他 worker，任务从 `jobs.checkpoint` 继续（现有“重启恢复”逻辑改成读 `jobs` 表；不依赖 BullMQ 的 stalled 检测，它在 Redis 被清空后无从发现）。6.2 中取消、暂停由执行者续租时从 `jobs` 读到；6.3 接入控制频道后立即送达，错过消息时仍在下一次续租时发现。Agent 任务的会话文件和工作区在对象存储中有快照（第 7.3 节），可以从最近一次快照恢复。
 
 ## 6. 文件上传、存储与下载
 

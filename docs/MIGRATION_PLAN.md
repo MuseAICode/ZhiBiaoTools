@@ -14,7 +14,7 @@
 | 3 | 配置与 AI 网关 | 进行中 | 旧仓库 PR #31（计费账本：组织余额、只追加的账本、带版本的价格表、幂等扣费、管理员手动充值与冲正，不调用 AI）、旧仓库 PR #32（AI 网关：调用前预扣冻结、按实际用量结算、冻结超时自动释放、`usage_records`、平台 Key 信封加密、DeepSeek / 通义千问流式适配、`POST /api/ai/chat`）、旧仓库 PR #33（平台模型白名单 `platform_models`：只有登记且启用、并有生效价格的模型能调用，免费须显式标记；管理员登记 / 启用 / 停用接口；用户断开时中止上游请求的端到端测试） |
 | 4 | 文件上传 / 下载 / 资源协议 | 进行中 | 旧仓库 PR #34（文件存储：S3 兼容对象存储、本地 SeaweedFS、`files` 表与强制 RLS、按内容校验类型、大小上限与组织配额、附件方式下载、7 天恢复期）、#6（上传白名单补齐桌面版能导入的内容：OLE 内容的 `.docx`，`.doc/.wps` 的 RTF / HTML / MHT / Word 2003 XML，`.xls` 的 HTML 表格 / SpreadsheetML，`%PDF-` 前有多余字节的 PDF） |
 | 5 | 数据层迁移（按业务逐个） | 已完成 | 旧仓库 PR #35（拆分计划，见“第 5 步说明”；记录上传白名单与桌面版的差距）、#7（5.1 项目：`projects` 表、`files.project_id`、项目接口、路由层归属校验、项目级表的迁移与测试模板）、#8（5.2 生成产物存储：`artifacts` 表、Store、只读接口；项目软删除与其下文件、产物联动，由 RLS 强制）、#9（5.3 配置：`org_settings`、`user_settings`、`GET/PATCH /api/settings`；写权限与删除可见性由 RLS 强制）、#10（5.4 导出模板：`export_templates`、`/api/export-templates` 增删改查与复制；系统模板只读、修改删除权限由 RLS 强制，迁移命令同步系统模板）、#11（5.5 资信库：6 张表、`/api/credential-library`；权限与删除可见性由 RLS 强制，图片随所引用文件的生命周期）、#12（5.6 知识库（一）：`knowledge_folders`、`_documents`、`_document_steps`、`/api/knowledge-base` 文件夹与文档管理；权限与删除可见性由 RLS 强制，文档随原件的生命周期）、#14（5.7 知识库（二）：切块、条目、匹配结果等 7 张表，检索与读取条目 / 分析 / Markdown 接口；删除可见性与写权限由 RLS 强制，随文档可见）、#16（5.8 标书查重：13 张项目级表、`/api/projects/:projectId/duplicate-check` 状态 / 文件选择 / 页面状态 / 清空 / Excel 导出；删除可见性与写权限由 RLS 强制，随项目和所选原件可见）、#17（5.8 后续：`files.project_id` 设置后不能再改，由触发器强制；xlsx 写出器防公式注入，回车按原样写出）、#18（5.9 废标检查：7 张项目级表、`/api/projects/:projectId/rejection-check` 状态 / 导入与移除文档 / 页面状态 / 切换与删除问题 / 清空 / Excel 导出；删除可见性与写权限由 RLS 强制，文档随原件可见，签名由服务端现算）、#19（5.10 可研报告：4 张项目级表、`/api/projects/:projectId/feasibility-report` 状态 / 步骤 / 项目信息 / 资料分析 / 目录配置 / 目录（`reason` 协议）/ 关键参数 / 正文 / 资料导入与移除 / 资料 Markdown / 清空；删除可见性与写权限由 RLS 强制，资料随原件、引用随知识库文档可见）、#20（5.11 技术方案（一）：6 张项目级表、`/api/projects/:projectId/technical-plan` 状态 / 步骤 / 生成配置 / 招标解析配置 / 正文生成选项 / 招标文件导入与移除 / 招标文件与合并正文的 Markdown / 原方案 / 投标范围选择 / 清空；删除可见性与写权限由 RLS 强制，文档随原件、引用随知识库文档可见，导出模板只能是本组织的或系统模板）、#21（5.12 技术方案（二）：目录与全局事实 2 张项目级表、`PUT .../outline`（`reason` 协议，节点 UUID 稳定、编号现算）与 `PUT .../global-facts`，下游清空扩展到目录与全局事实；删除可见性与写权限由 RLS 强制））、#22（5.13 技术方案（三）：正文生成状态与编排 2 张项目级表、`PUT .../chapters/:nodeId`、`DELETE .../content-generation`，目录保存与全局事实、下游清空扩展到正文生成状态、编排与运行进度；废标检查 `POST .../tender-from-technical-plan` 复制原件与 Markdown；删除可见性与写权限由 RLS 强制） |
-| 6 | 任务队列与 worker | 进行中 | #23（拆分计划，见“第 6 步说明”）、#24（6.1 Redis 接入：Valkey 8 开启 ACL、`REDIS_URL` / `REDIS_PASSWORD[_FILE]`、`/readyz` 检查 Redis、CI 起 Valkey）、#25（6.2 `jobs` / `job_events` 表与 worker 骨架：BullMQ 只派发、`jobs` 为唯一权威，认领加 `run_id` 隔离令牌与数据库租约，Redis 重启或清空后从 `jobs` 对账恢复入队；新增定义者角色 `bidtools_jobs`） |
+| 6 | 任务队列与 worker | 进行中 | #23（拆分计划，见“第 6 步说明”）、#24（6.1 Redis 接入：Valkey 8 开启 ACL、`REDIS_URL` / `REDIS_PASSWORD[_FILE]`、`/readyz` 检查 Redis、CI 起 Valkey）、#25（6.2 `jobs` / `job_events` 表与 worker 骨架：BullMQ 只派发、`jobs` 为唯一权威，认领加 `run_id` 隔离令牌与数据库租约，Redis 重启或清空后从 `jobs` 对账恢复入队；新增定义者角色 `bidtools_jobs`）、#26（6.3 SSE 推送 `GET /api/events`：每组织一条 Stream + 频道，`Last-Event-ID` 补发与 `resync`、心跳、会话定期重新校验、单用户连接数上限；任务状态、进度、日志经 worker 推送，取消 / 暂停经控制频道立即送达 worker） |
 | 7 | OpenXmlHelper 容器化与离屏渲染（前置：CI 新增 .NET 编译与 OpenXmlHelper 测试，见“第 9 步说明”的品牌改名第三部分） | 未开始 | — |
 | 8 | Agent 沙箱 | 未开始 | — |
 | 9 | 收尾与上线 | 进行中 | #1（品牌改名第一部分：用户可见文字和文档）、#2（品牌改名第二部分：代码标识符、数据与协议、打包，新增 CI 禁用词检查）、#5（品牌改名第三部分：原产品名缩写前缀改为中性前缀 `app`，禁用词检查加入该缩写） |
@@ -874,7 +874,7 @@ AI 网关加固，做法见 `docs/SERVER_DESIGN.md` 第 10.9 节。`client/` 未
 | 6.0 | 拆分计划（本节）与 10 项决定 | — | 是（按本次要求，已确认） | 已完成 | #23 |
 | 6.1 | Redis 接入：`docker-compose.yml` 新增 `redis`（发行版见决定事项第 3 项；开启密码和 ACL，只在 `backend` 网络、开发时只绑 `127.0.0.1`）；配置 `REDIS_URL`、`REDIS_PASSWORD[_FILE]`（`init-dev-secrets.sh` 生成）；`/readyz` 加入 Redis 检查；CI 的 `server-checks` 加 Redis 服务容器。不含队列 | — | 否 | 已完成 | #24 |
 | 6.2 | `jobs` 表与 worker 骨架：迁移新建 `jobs`（`SERVER_DESIGN.md` 第 5.1 节的字段，`project_id` 可空供组织级任务，强制 RLS）和 `job_events`（取代 `task_logs`，只追加）；互斥用部分唯一索引（见下方“互斥”）；`src/jobs/`（入队、取消、暂停、继续、checkpoint、状态机，事务内检查互斥和组织级并发）；BullMQ 生产者与 `src/worker.ts` 消费者（同一镜像、不同入口，compose 新增 `worker` 服务）；stalled 恢复；`GET /api/jobs`、`GET /api/jobs/:jobId`、`POST /api/jobs/:jobId/cancel`。只注册一个测试用任务类型，不迁移业务任务 | 6.1 | **是**（实现时新增定义者角色 `bidtools_jobs`，见下方“jobs 表与 worker 骨架”） | 已完成 | #25 |
-| 6.3 | SSE 推送：`GET /api/events`，worker 发布到 Redis `events:org:{orgId}` 并追加 Stream，api 按连接的组织和用户过滤后写出；`Last-Event-ID` 补发、超出窗口推 `resync`、25 秒心跳；会话吊销、移出组织后关闭连接（定期重新校验会话）；单用户连接数上限 | 6.2 | 否 | 未开始 | — |
+| 6.3 | SSE 推送：`GET /api/events`，worker 发布到 Redis `events:org:{orgId}` 并追加 Stream，api 按连接的组织和用户过滤后写出；`Last-Event-ID` 补发、超出窗口推 `resync`、25 秒心跳；会话吊销、移出组织后关闭连接（定期重新校验会话）；单用户连接数上限 | 6.2 | 否 | 已完成 | #26 |
 | 6.4 | worker 接入 AI 网关与余额：网关在 worker 中运行，任务调用记 `job_id` / `job_type`；`usage_records.job_id` 不补外键（任务记录到保留期会被删除，用量记录不可修改、永久保留，见“决定事项”第 10 项），只保留 `job_id` / `job_type` 的值；`jobs.billed_amount` 与结算在同一事务中累加（改 `ai_usage_settle`）；入队前检查最低启动余额（决定事项第 7 项）；运行中冻结失败时暂停为 `paused` / `insufficient_balance`，经 SSE 推送（取代 `onBalanceInsufficient`），充值后继续不重复扣费；AI 网关按组织 + 服务商的并发上限改为 Redis 分布式信号量（取 `org_settings.concurrency_limit` 与平台上限的较小值） | 6.2、6.3 | **是**（计费） | 未开始 | — |
 | 6.5 | 解析沙箱基础设施：`sandbox-runner` 服务、`SandboxDriver` 接口、`parse` 模板、解析镜像（见下方“文件解析的隔离”）；隔离测试 | 6.2 | **是**（沙箱） | 未开始 | — |
 | 6.6 | 解析任务（一）二进制与纯文本格式：`parse` 队列；按记录的 MIME 分派（见下方分派表）；ZIP 炸弹、PDF 页数、超时检查；产出经 `writeArtifact` 写入；重新解析时替换旧产物（第 5 步 #8 留下）；接入技术方案、废标检查、可研报告三个模块的文档解析（`saveDocumentParse` / `saveSourceParse`），导入后自动入队 | 6.5 | 否 | 未开始 | — |
@@ -1005,6 +1005,27 @@ AI 网关加固，做法见 `docs/SERVER_DESIGN.md` 第 10.9 节。`client/` 未
 2. **崩溃恢复不依赖 BullMQ 的 stalled 检测**（拆分计划写的是“由 stalled 检测转交”）：Redis 被清空后 BullMQ 的执行中记录和锁都不在了，stalled 检测无从发现；改为数据库租约 + 对账，BullMQ 的 stalled 检测只会造成重复投递，由认领条件挡住。
 3. **取消、暂停信号经续租轮询数据库**（设计第 5.6 节写的是发布 `cancel:{jobId}`）：最长延迟一个续租间隔（15 秒）；6.3 接入 Redis 发布订阅后可以缩短，数据库仍是权威。
 4. **api 的 `REDIS_URL` 仍是可选**（6.1 写的是“6.2 接入任务队列时改为必需”）：6.2 没有入队接口，api 不使用队列；worker 未设置 `REDIS_URL` 时拒绝启动。第一个提供入队接口的业务 PR 给 api 接上派发，Redis 不可用时任务由对账派发。
+
+#### SSE 推送（#26，6.3）
+
+做法见 `docs/SERVER_DESIGN.md` 第 5.5、5.6 节。没有新增依赖、没有迁移，`client/` 未改动。要点：
+
+- **键与脚本**（`src/events/stream.ts`）：每个组织一条 Stream `stream:org:{orgId}` 和一个频道 `events:org:{orgId}`。发布是一个 Lua 脚本，原子地 `XADD`（ID 由 Redis 生成、单调递增）→ 按 1000 条和 10 分钟裁剪 → `PEXPIRE` 10 分钟 → 向频道 `PUBLISH` “ID 空格 JSON”。补发也是一个脚本：Stream 不存在、上次的 ID 比最后生成的还大、或比下限还小时返回 `resync`，否则返回之后的全部事件。事件 64 KB 以内，类型限 `[a-z][a-z0-9.-]*`；
+- **发布**（`src/events/publisher.ts`）：worker 和 api 在事务提交之后调用，尽力而为：Redis 不可用时写一条 warn 日志并丢弃，不影响任务（第 8.4 节“进度事件可丢”），丢了的由前端重连时的 `resync` 兜底。只在首次连上之前等待（最多 2 秒），之后断线期间立即丢弃，不拖慢任务；
+- **订阅**（`src/events/hub.ts`，api 进程）：一条订阅连接，按组织引用计数 `SUBSCRIBE`；新连接先订阅（等 Redis 确认），期间的实时事件先缓存，再按 `Last-Event-ID` 补发，最后按 ID 去重放出缓存，所以补发与实时之间不漏、不重。指定了 `userId` 的事件只送给该用户（任务事件不指定，组织内共享，与 `GET /api/jobs` 一致）；
+- **接口**（`src/routes/events.ts`）：`GET /api/events`，需要登录，组织和用户取自会话。开头 `retry: 3000`，补发之后推一条不带 id 的 `ready`（前端先等 `ready` 再拉快照），每 25 秒一条注释行心跳；每 60 秒经 `auth_session_lookup` 重新校验会话，会话过期、被吊销、用户被停用或移出组织后推 `closed`（`reason: session`）并断开；订阅连接断开（`unavailable`）、服务关闭（`shutdown`，在 `preClose` 中断开，不阻塞关闭）、客户端积压超过 1 MB（`overflow`）同样推 `closed` 后断开。每个用户在本进程中最多 10 条连接，超出 429 `EVENTS_TOO_MANY_CONNECTIONS`；未配置或连不上 Redis 时 503 `EVENTS_UNAVAILABLE`。响应带 helmet 的安全头、`Cache-Control: no-store`、`X-Accel-Buffering: no`、`Connection: close`；
+- **任务事件**（`src/jobs/notify.ts`）：`job`（任务当前状态，与 `GET /api/jobs/:jobId` 的任务部分相同，状态变化后重新读出再推送）、`job.progress`、`job.log`（与 `events` 相同，不含事件数据），都不含参数和 checkpoint。worker 在认领、进度、日志、结束、对账改变状态后推送；api 在入队、取消、暂停、继续后推送（`POST /api/jobs/:jobId/cancel` 已接入）。`jobBody` 从路由移到 `src/jobs/view.ts` 供两处共用；
+- **控制频道**：取消、暂停后 api 向 `{BullMQ 前缀}:jobs:control` 发布任务 id，worker 收到后对正在执行的该任务立即续租一次，从 `jobs` 读到请求并中止，不必等到下一次续租（6.2 最长 15 秒）。消息不被信任，只触发一次查询；错过时最迟在下一次续租发现。
+- **测试**：`tests/db/events.test.ts`（真实 PostgreSQL 与 Valkey）覆盖：组织隔离与按用户过滤、退订与重新订阅；补发、补发与并发发布交错时不漏不重；`resync` 的四种情况（ID 格式不对、不是这条 Stream 生成的、Stream 不存在、之后的事件已被裁剪）与仍在窗口内的补发、条数与过期时间；Redis 不可达；接口的 401 / 503、响应头、心跳、任务从入队到结束的推送（同组织的另一用户收到、其他组织收不到）、HTTP 上的 `Last-Event-ID`、会话吊销与移出组织、连接数上限、取消经控制频道在续租间隔 15 秒时立即生效、服务关闭；**真实重启 Valkey**（`TEST_REDIS_RESTART_COMMAND`）后连接推 `closed` 断开、重连得到 `resync`。`tests/events/stream.test.ts` 覆盖 ID 比较、事件解析与序列化（换行经 JSON 转义，不能伪造 SSE 字段）。
+
+偏离计划与设计：
+
+1. **控制频道是一个 `jobs:control`**（设计第 5.6 节写的是每个任务一个 `cancel:{jobId}`，并标为“随 6.3 接入”，拆分计划的 6.3 一行没有列出）：worker 不必按任务订阅、退订；暂停也走同一频道。消息只有任务 id，伪造的消息最多引起一次多余的查询。设计文档已同步；
+2. **补发的下限不用 `max-deleted-entry-id`**：实测 Redis 7 / Valkey 的 `XTRIM` / `XADD MAXLEN` 裁剪不更新这个字段（只有 `XDEL` 更新），所以改为“没有 `XDEL` 时以第一条的 ID 为下限”：上次的 ID 比第一条还小，就是之后的事件已被裁剪，或者来自已过期的上一条同名 Stream，都推 `resync`；
+3. **Redis 断开时关闭所有推送连接**，而不是在 api 中重连后逐个补发：订阅连接断开期间的实时事件已经错过，由浏览器重连时带 `Last-Event-ID` 补发，逻辑只有一份。Redis 不可用期间 `GET /api/events` 返回 503，浏览器的 `EventSource` 遇到非 200 会停止自动重连，所以**第 9 步的 `WebBridge` 要自己按退避间隔重建连接**（已加入第 9 步上线检查）；
+4. **连接数上限是每个 api 进程各自计数**：多实例时一个用户最多 实例数 × 10 条，作为资源上限足够，不为此引入 Redis 计数；
+5. **推送连接不延长会话**：建立连接时照常经登录钩子续期，之后长时间打开的页面不会让会话一直有效，到期后推 `closed` 断开；
+6. **`job` 事件的到达顺序可能与提交顺序不同**（并发变化时各自重新读出再推送），前端按 `updatedAt` 取较新的一条；任务状态的权威始终是 `jobs` 表。
 
 #### 决定事项（#23）
 
@@ -1208,6 +1229,7 @@ AI 网关加固，做法见 `docs/SERVER_DESIGN.md` 第 10.9 节。`client/` 未
    - 鉴权上线前提（旧仓库 PR #29）：数据库角色见上一条；发信接口换成正式发信服务的实现；登录、注册、找回密码的限流从进程内存换成 Redis（多实例部署前必须完成）；按反向代理拓扑设置 `TRUSTED_PROXIES`（旧仓库 PR #30，只填 Caddy 的固定地址），用两个不同出口的客户端确认限流和会话中的 IP 是真实客户端地址；用 `npm run admin:create` 创建首个平台管理员后，确认平台管理员已开启 TOTP（设计文档第 3.4 节，TOTP 尚未实现）；
    - 计费核对：价格表已录入并公示，计价函数测试通过，余额不足拒绝新任务和运行中耗尽暂停已实测，管理员充值的 TOTP 和双人复核已启用；旧仓库 PR #31 暂用重新输入密码做二次验证并禁用 1,000 元以上的单笔充值，TOTP 和双人复核实现后再用新迁移放开大额充值；`bidtools_billing` 角色见“数据库角色”一条；
    - AI 网关（旧仓库 PR #32）：主密钥从 `AI_KEK_FILE` 换成云 KMS 的 `KeyWrapper` 实现（第 9 节第 8 项），开启删除保护和调用审计；生产环境 `AI_UPSTREAM_PRIVATE_HOSTS` 为空；确定通义千问使用国内站还是国际站并在管理后台填写对应 Base URL；用真实 Key 在预发环境核对两家服务商流式响应中的用量字段与控制台账单一致；
+   - 实时推送（#26）：Caddy 对 `/api/events` 关闭响应缓冲和压缩（`flush_interval -1`、`encode` 排除 `text/event-stream`），开启 HTTP/2（每个页面一条长连接，HTTP/1.1 每域名只有 6 条）；Caddy 与 api 的空闲 / 读超时大于 25 秒的心跳间隔；`WebBridge` 在 `GET /api/events` 返回非 200 或连接断开时按退避间隔自己重建连接（浏览器 `EventSource` 遇到 503 不再重连），收到 `ready` 后再拉快照、收到 `resync` 时重新拉快照、收到 `closed`（`session`）时转登录页；在预发环境确认经 Caddy 的推送没有延迟、断线后能补发；
    - Redis（#24）：生产用与开发相同的 `server/redis/start-valkey.sh`（禁用 `default` 用户、ACL 用户 `bidtools`、禁止 `@admin` 与清空命令、不持久化、`noeviction`），`maxmemory` 按实例内存设置（`REDIS_MAXMEMORY`）；redis 只在 `internal: true` 的 `backend` 网络上、不映射端口；密码走 Docker secret；api 和 worker 都设置 `REDIS_URL`，确认 `/readyz` 在停掉 Redis 后返回 503；
    - 从大陆主要省份和运营商实测访问香港服务器的延迟和可用性（`docs/SERVER_DESIGN.md` 第 8.0 节）。
    - 文件存储（旧仓库 PR #34）：选定云厂商对象存储（与 KMS 同一家、香港地域），bucket 私有、禁止公开读和列目录，开启服务端加密（默认加密或 KMS 密钥），配置生命周期规则清理未完成的分片上传；api 使用只能访问该 bucket 的最小权限访问密钥；用真实服务跑一遍 `tests/db/files.test.ts` 确认 S3 兼容性；过期文件和遗留 `uploading` 记录的物理清理任务已上线（否则对象只增不减）；Caddy 层设置请求体上限（略大于 100 MB）；`S3_ENDPOINT` 为 https。

@@ -9,6 +9,10 @@
 // （执行者崩溃或失联）：可续跑的回到 queued 再派发、从 checkpoint 继续，不可续跑的标为失败。不依赖 BullMQ 的 stalled 检测。
 // 发现数据丢失：Redis 中放一个哨兵键，每次连上和每隔 redisCheckIntervalMs 用 SET NX 写一次；写入成功说明键不在了
 // （重启或被清空，清空时连接并不会断开），立即对账，不必等到下一次定期对账。
+//
+// 推送（6.3）：认领、进度、日志、结束、对账改变状态后经 notifier 推送（src/jobs/notify.ts）。另订阅任务控制频道
+// （src/events/publisher.ts 的 jobControlChannel）：收到正在执行的任务 id 时立即续租一次，从 jobs 读到取消、暂停请求，
+// 不必等到下一次续租；消息本身不被信任，只触发一次查询。
 import { randomUUID } from 'node:crypto';
 import { DelayedError, Worker, type Job, type RedisOptions as BullmqRedisOptions } from 'bullmq';
 import { Redis } from 'ioredis';
@@ -27,6 +31,8 @@ import {
   type JobQueueName,
   type JobTypeRegistry,
 } from './definitions.ts';
+import { jobControlChannel } from '../events/publisher.ts';
+import { NULL_JOB_NOTIFIER, type JobNotifier } from './notify.ts';
 import { DEFAULT_QUEUE_PREFIX, type DispatchPayload, type JobDispatcher } from './queue.ts';
 import {
   appendRunLog,
@@ -63,6 +69,8 @@ export interface JobRunnerOptions {
   deferDelayMs?: number;
   /** 检查 Redis 哨兵键（发现数据丢失）的间隔。 */
   redisCheckIntervalMs?: number;
+  /** 状态变化后的推送；不提供时不推送。 */
+  notifier?: JobNotifier;
 }
 
 export interface ReconcileResult {
@@ -100,12 +108,16 @@ export function createJobRunner(options: JobRunnerOptions): JobRunner {
   const prefix = options.prefix ?? DEFAULT_QUEUE_PREFIX;
   const redisCheckIntervalMs = options.redisCheckIntervalMs ?? DEFAULT_REDIS_CHECK_INTERVAL_MS;
   const sentinelKey = `${prefix}:jobs:sentinel`;
+  const notifier = options.notifier ?? NULL_JOB_NOTIFIER;
 
   const workers: Worker<DispatchPayload>[] = [];
   const active = new Map<string, { controller: AbortController; done: Promise<void> }>();
+  /** 正在执行的任务 id → 立即续租一次（收到控制消息时调用）。 */
+  const checks = new Map<string, () => void>();
   let reconcileTimer: NodeJS.Timeout | undefined;
   let sentinelTimer: NodeJS.Timeout | undefined;
   let monitor: Redis | null = null;
+  let control: Redis | null = null;
   let reconciling: Promise<ReconcileResult> | null = null;
   let closing = false;
 
@@ -129,6 +141,7 @@ export function createJobRunner(options: JobRunnerOptions): JobRunner {
     const definition = registry.get(job.type);
     if (!definition) throw new Error('claimed job has no definition');
     const run: RunRef = { orgId: job.orgId, jobId: job.id, runId };
+    const ref = { orgId: job.orgId, id: job.id, projectId: job.projectId, type: job.type };
     let lost = false;
 
     const apply = (state: RunState | null) => {
@@ -141,10 +154,12 @@ export function createJobRunner(options: JobRunnerOptions): JobRunner {
       if (reason && !controller.signal.aborted) controller.abort(reason);
       return state;
     };
-    const heartbeat = setInterval(() => {
+    const renew = () => {
       renewRun(db, run, leaseMs).then(apply, (error: unknown) => log.warn({ err: error, jobId: job.id }, 'job lease renewal failed'));
-    }, heartbeatMs);
+    };
+    const heartbeat = setInterval(renew, heartbeatMs);
     heartbeat.unref();
+    checks.set(job.id, renew);
 
     const context: JobContext<unknown> = {
       jobId: job.id,
@@ -158,17 +173,21 @@ export function createJobRunner(options: JobRunnerOptions): JobRunner {
       signal: controller.signal,
       async setProgress(progress) {
         if (!apply(await renewRun(db, run, leaseMs, { progress }))) throw new JobInterruptedError();
+        await notifier.progress(ref, progress);
       },
       async saveCheckpoint(checkpoint, progress) {
         if (!apply(await renewRun(db, run, leaseMs, { checkpoint, ...(progress !== undefined ? { progress } : {}) }))) {
           throw new JobInterruptedError();
         }
+        if (progress !== undefined) await notifier.progress(ref, progress);
       },
       async log(message, data) {
-        if (!(await appendRunLog(db, run, message, data))) {
+        const event = await appendRunLog(db, run, message, data);
+        if (!event) {
           apply(null);
           throw new JobInterruptedError();
         }
+        await notifier.logged(ref, event);
       },
     };
 
@@ -188,6 +207,7 @@ export function createJobRunner(options: JobRunnerOptions): JobRunner {
       }
     } finally {
       clearInterval(heartbeat);
+      if (checks.get(job.id) === renew) checks.delete(job.id);
     }
 
     if (lost) {
@@ -200,6 +220,7 @@ export function createJobRunner(options: JobRunnerOptions): JobRunner {
       return;
     }
     log.info({ jobId: job.id, jobType: job.type, status, attempt: job.attempt }, 'job run finished');
+    await notifier.changedById(job.orgId, job.id);
     if (status === 'queued' && !closing) {
       await dispatcher
         .dispatch({ id: job.id, orgId: job.orgId, type: job.type, queue: definition.queue })
@@ -229,7 +250,11 @@ export function createJobRunner(options: JobRunnerOptions): JobRunner {
       await bullJob.moveToDelayed(Date.now() + deferDelayMs, token);
       throw new DelayedError();
     }
-    if (claim.kind === 'skipped') return;
+    if (claim.kind === 'skipped') {
+      if (claim.reason === 'failed') await notifier.changedById(orgId, jobId);
+      return;
+    }
+    await notifier.changed(claim.job);
 
     const controller = new AbortController();
     const done = execute(claim.job, claim.role, runId, controller);
@@ -249,6 +274,7 @@ export function createJobRunner(options: JobRunnerOptions): JobRunner {
       for (const candidate of candidates) {
         try {
           const recovered = await recoverJob(db, candidate, (type) => registry.get(type)?.resumable ?? null);
+          if (recovered.changed) await notifier.changedById(candidate.orgId, candidate.id);
           if (recovered.kind !== 'dispatch') continue;
           const definition = registry.get(recovered.type);
           if (!definition) continue;
@@ -330,6 +356,16 @@ export function createJobRunner(options: JobRunnerOptions): JobRunner {
       await monitor.set(sentinelKey, String(Date.now()));
       // 之后每次重新连上都检查：Redis 重启后数据全部丢失。
       monitor.on('ready', checkSentinelInBackground);
+      // 控制频道：断线重连后自动重新订阅；错过的消息不影响正确性，最迟在下一次续租时发现请求。
+      control = new Redis({
+        ...options.connection,
+        connectionName: `${options.connection.connectionName ?? 'worker'}-control`,
+        lazyConnect: true,
+      });
+      control.on('error', (error: Error) => log.warn({ err: error }, 'job control connection error'));
+      control.on('message', (_channel: string, message: string) => checks.get(message)?.());
+      await control.connect();
+      await control.subscribe(jobControlChannel(prefix));
       await reconcile().catch((error: unknown) => log.warn({ err: error }, 'jobs reconcile failed'));
       reconcileTimer = setInterval(reconcileInBackground, reconcileIntervalMs);
       reconcileTimer.unref();
@@ -348,6 +384,10 @@ export function createJobRunner(options: JobRunnerOptions): JobRunner {
       if (monitor) {
         monitor.disconnect();
         monitor = null;
+      }
+      if (control) {
+        control.disconnect();
+        control = null;
       }
     },
   };
