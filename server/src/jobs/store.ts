@@ -8,6 +8,7 @@
 //     │                │ └──执行者失联（租约过期）──> queued（可续跑，从 checkpoint 继续）或 failed（JOB_INTERRUPTED）
 //     ├──取消──> cancelled
 //     └──暂停──> paused ──继续──> queued；paused ──取消──> cancelled
+//   running ──调用模型时余额不足以冻结──> paused（pause_reason = insufficient_balance，6.4）；充值后继续即回到 queued
 //
 // 用户发起的操作（新建、查询、取消、暂停、继续）经 withTenant；worker 的系统操作（认领、续租、结束、对账）经 withOrgContext，
 // 只设置组织、不代表任何用户。worker 的每一次写入都带 run_id 条件：租约被收回后，原执行者的写入只影响 0 行。
@@ -23,7 +24,8 @@ import {
   JOB_LOCK_KEY_MAX_LENGTH,
   JOB_PARAMS_MAX_BYTES,
 } from '../db/migrations/0021_jobs.ts';
-import type { Database, JobEventKind, JobsTable, JobStatus, MemberRole } from '../db/schema.ts';
+import type { Database, JobEventKind, JobPauseReason, JobsTable, JobStatus, MemberRole } from '../db/schema.ts';
+import { assertJobStartBalance } from '../billing/usage.ts';
 import { withOrgContext, withTenant, type TenantContext } from '../db/tenant.ts';
 import { AppError } from '../errors.ts';
 import { serializeJsonObject } from '../jsonObject.ts';
@@ -43,6 +45,10 @@ export interface JobRecord {
   errorCode: string | null;
   errorMessage: string | null;
   attempt: number;
+  /** 暂停原因：insufficient_balance（运行中余额不足，6.4）；用户手动暂停时为 null。 */
+  pauseReason: JobPauseReason | null;
+  /** 本任务已扣费的合计（计费单位），在结算的同一事务中累加。 */
+  billedAmount: bigint;
   createdAt: Date;
   updatedAt: Date;
   startedAt: Date | null;
@@ -76,6 +82,8 @@ function toRecord(row: JobRow): JobRecord {
     errorCode: row.error_code,
     errorMessage: row.error_message,
     attempt: row.attempt,
+    pauseReason: row.pause_reason,
+    billedAmount: BigInt(row.billed_amount),
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     startedAt: row.started_at,
@@ -137,6 +145,8 @@ export interface NewJob {
   /** 互斥键（例如 project:{projectId}:technical-plan）；为 null 时不互斥。 */
   lockKey?: string | null;
   params: Record<string, unknown>;
+  /** 入队前检查最低启动余额（会调用模型的任务类型，见 JobTypeDefinition.billable）。 */
+  checkBalance?: boolean;
 }
 
 /**
@@ -150,6 +160,7 @@ export async function insertJob(db: Kysely<Database>, context: TenantContext, in
   const params = serialize(input.params, JOB_PARAMS_MAX_BYTES, '任务参数');
   try {
     return await withTenant(db, context, async (trx) => {
+      if (input.checkBalance) await assertJobStartBalance(trx);
       const row = await trx
         .insertInto('jobs')
         .values({
@@ -239,7 +250,7 @@ export async function requestCancel(db: Kysely<Database>, context: TenantContext
     const update =
       row.status === 'running'
         ? { status: 'cancelling' as const, pause_requested: false }
-        : { status: 'cancelled' as const, finished_at: sql<Date>`now()` };
+        : { status: 'cancelled' as const, pause_reason: null, finished_at: sql<Date>`now()` };
     const updated = await trx.updateTable('jobs').set(update).where('id', '=', jobId).returningAll().executeTakeFirstOrThrow();
     const job = toRecord(updated);
     await appendEvent(trx, job, job.status === 'cancelled' ? 'cancelled' : 'cancel-requested', null, { userId: context.userId });
@@ -266,15 +277,27 @@ export async function requestPause(db: Kysely<Database>, context: TenantContext,
 }
 
 /**
- * 继续：paused 变回 queued（需要重新派发）；running 且已请求暂停时撤销暂停请求。其他未结束状态原样返回；已结束时抛 409。
+ * 继续：paused 变回 queued（需要重新派发），清除暂停原因；running 且已请求暂停时撤销暂停请求。其他未结束状态原样返回；
+ * 已结束时抛 409。会调用模型的任务类型（checkBalance 返回 true）从 paused 继续前检查最低启动余额，不足时抛 402、任务仍是 paused。
  */
-export async function requestResume(db: Kysely<Database>, context: TenantContext, jobId: string): Promise<JobChange> {
+export async function requestResume(
+  db: Kysely<Database>,
+  context: TenantContext,
+  jobId: string,
+  checkBalance: (type: string) => boolean = () => false,
+): Promise<JobChange> {
   return withTenant(db, context, async (trx) => {
     const row = await lockJob(trx, jobId);
     if (!row) throw jobNotFound();
     if (isFinalStatus(row.status)) throw jobFinished();
     if (row.status === 'paused') {
-      const updated = await trx.updateTable('jobs').set({ status: 'queued' }).where('id', '=', jobId).returningAll().executeTakeFirstOrThrow();
+      if (checkBalance(row.type)) await assertJobStartBalance(trx);
+      const updated = await trx
+        .updateTable('jobs')
+        .set({ status: 'queued', pause_reason: null })
+        .where('id', '=', jobId)
+        .returningAll()
+        .executeTakeFirstOrThrow();
       const job = toRecord(updated);
       await appendEvent(trx, job, 'resumed', null, { userId: context.userId });
       return { job, dispatch: true };
@@ -455,12 +478,14 @@ export type RunOutcome =
   | { kind: 'succeeded' }
   | { kind: 'failed'; code: string; message: string }
   /** 执行被中止（取消、暂停、worker 关闭）：按数据库中的状态收尾。 */
-  | { kind: 'interrupted' };
+  | { kind: 'interrupted' }
+  /** 调用模型时余额不足以冻结（6.4）：暂停为 paused / insufficient_balance，已请求取消时仍为 cancelled。 */
+  | { kind: 'insufficient-balance' };
 
 /**
  * 结束一次执行。成功即 succeeded（即使期间请求了取消，工作已完成）；失败即 failed，除非已请求取消（cancelled）；
  * 中止（取消、暂停、worker 关闭）按数据库中的请求收尾：cancelling → cancelled，pause_requested → paused，
- * 都没有时可续跑的回到 queued、不可续跑的 failed。
+ * 都没有时可续跑的回到 queued、不可续跑的 failed；余额不足即 paused（pause_reason = insufficient_balance），已请求取消时 cancelled。
  * 租约已不属于本执行者时返回 null，什么都不写（隔离令牌）。返回结束后的状态。
  */
 export async function finishRun(db: Kysely<Database>, run: RunRef, outcome: RunOutcome, resumable: boolean): Promise<JobStatus | null> {
@@ -480,6 +505,16 @@ export async function finishRun(db: Kysely<Database>, run: RunRef, outcome: RunO
     if (outcome.kind === 'failed' && row.status === 'running') {
       await failInTrx(trx, row, outcome.code, outcome.message);
       return 'failed';
+    }
+    if (outcome.kind === 'insufficient-balance' && row.status === 'running') {
+      const updated = await trx
+        .updateTable('jobs')
+        .set({ status: 'paused', pause_reason: 'insufficient_balance', pause_requested: false, run_id: null, lease_expires_at: null })
+        .where('id', '=', row.id)
+        .returningAll()
+        .executeTakeFirstOrThrow();
+      await appendEvent(trx, toRecord(updated), 'paused', '余额不足，任务已暂停，充值后可继续', { reason: 'insufficient_balance' });
+      return 'paused';
     }
     return releaseInTrx(trx, row, resumable, 'released');
   });

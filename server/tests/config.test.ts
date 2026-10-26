@@ -24,7 +24,16 @@ describe('loadConfig', () => {
       publicOrigin: 'https://bid.example.com',
       trustedProxies: [],
       database: { host: '127.0.0.1', port: 5432, name: 'bidtools', user: 'bidtools_app', password: 'pw' },
-      ai: { kekFile: null, kekVersion: 1, upstreamTimeoutMs: 300_000, holdTtlSeconds: 900, maxOutputTokens: 8192, upstreamPrivateHosts: [] },
+      ai: {
+        kekFile: null,
+        kekVersion: 1,
+        upstreamTimeoutMs: 300_000,
+        holdTtlSeconds: 900,
+        maxOutputTokens: 8192,
+        upstreamPrivateHosts: [],
+        concurrencyMax: 10,
+        concurrencyWaitMs: 30_000,
+      },
       storage: null,
       redis: null,
     });
@@ -49,6 +58,8 @@ describe('loadConfig', () => {
       AI_HOLD_TTL_SECONDS: '120',
       AI_MAX_OUTPUT_TOKENS: '4096',
       AI_UPSTREAM_PRIVATE_HOSTS: '127.0.0.1, LLM.internal',
+      AI_CONCURRENCY_MAX: '4',
+      AI_CONCURRENCY_WAIT_MS: '0',
       PATH: '/usr/bin',
       UNRELATED: 'x',
     });
@@ -67,6 +78,8 @@ describe('loadConfig', () => {
         holdTtlSeconds: 120,
         maxOutputTokens: 4096,
         upstreamPrivateHosts: ['127.0.0.1', 'llm.internal'],
+        concurrencyMax: 4,
+        concurrencyWaitMs: 0,
       },
       storage: null,
       redis: null,
@@ -110,6 +123,10 @@ describe('loadConfig', () => {
     ['AI_MAX_OUTPUT_TOKENS', '1.5'],
     ['AI_UPSTREAM_PRIVATE_HOSTS', 'http://127.0.0.1'],
     ['AI_UPSTREAM_PRIVATE_HOSTS', '127.0.0.1,'],
+    ['AI_CONCURRENCY_MAX', '0'],
+    ['AI_CONCURRENCY_MAX', '1001'],
+    ['AI_CONCURRENCY_WAIT_MS', '-1'],
+    ['AI_CONCURRENCY_WAIT_MS', '600001'],
   ])('%s=%s 不合法时失败', (name, value) => {
     const error = expectConfigError({ ...BASE_ENV, [name]: value });
     expect(error.issues).toEqual([{ name, reason: expect.stringContaining('不合法') }]);

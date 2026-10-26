@@ -328,10 +328,10 @@ Markdown 中远程图片的下载（`docs/EXTERNAL_SERVICES.md` §2.9）URL 来�
 - **互斥**：现有 `lockPolicy: 'group-exclusive'` 是“全机同组只能跑一个”。Web 版改为按通用的互斥键 `lock_key` 互斥（例如 `project:{projectId}:technical-plan` 即“同一项目内同组只能跑一个”，知识库按文档 `knowledge-document:{documentId}`，`lock_key` 为空的任务不互斥）：部分唯一索引 `UNIQUE (org_id, lock_key) WHERE status IN ('queued','running','paused','cancelling')` 保证并发入队也只有一个成功（6.2 实现，路线图第 6 步“任务模型的细化”）。
 - **两级并发**（路线图第 4 节）：
   - 组织级：同时运行的任务数（如 3）、同时运行的 Agent 任务数（如 1）；
-  - 全局：队列并发 + AI 网关对每个模型服务商的并发上限（`aiService` 现有并发设置改成 Redis 分布式信号量，键为 `org_id + provider`）。
+  - 全局：队列并发 + AI 网关对每个模型服务商的并发上限（`aiService` 现有并发设置改成 Redis 分布式信号量，键为 `org_id + provider`；6.4 实现，上限取 `org_settings.concurrency_limit` 与平台上限 `AI_CONCURRENCY_MAX` 的较小值，见第 10.10 节）。
   - 超出组织级上限的任务留在 `queued`，按入队时间排队，前端显示“排队中（前面还有 N 个）”。
 - **配额**：每组织每日 Agent 运行时长（8 小时，第 9 节第 15 项）、每任务最长时长（如正文生成 2 小时）、超时即取消并保留 checkpoint。
-- **余额**：入队前检查组织余额，余额不足时拒绝新任务；运行中的任务余额耗尽后的处理见第 10.3 节。
+- **余额**：入队前检查组织余额，余额不足时拒绝新任务；运行中的任务余额耗尽后的处理见第 10.3 节（6.4 实现，第 10.10 节）。
 
 ### 5.4 推送通道：SSE 与 WebSocket
 
@@ -667,8 +667,8 @@ AI 网关（worker 内）── 解密 Key ──> 模型服务商
 - **不收费**：服务商返回错误（含 4xx、5xx、限流）、超时、连接失败、流中途断开或响应不合法时**不向用户收费**，冻结全额释放；用户主动断开时按已产生的用量结算（第 10.1 节），服务商没有返回用量时本地估算并标 `estimated`；
 - **冻结超时自动释放**：冻结有到期时间（`AI_HOLD_TTL_SECONDS`，默认 15 分钟，必须比上游超时至少长 30 秒）。可用余额只计算未到期的冻结，进程中途崩溃、没有结算的冻结到期后**立即**不再占用余额，不依赖任何后台任务；到期后才到达的结算一律不收费。后台每分钟把到期未结算的记录标为 `abandoned`，只是收尾；
 - **并发**：同一组织的冻结在余额行锁下串行，并发调用不会冻结超过余额；不经冻结的直接扣费（`chargeUsage`）的余额检查同样扣除进行中的冻结。余额因此**不会为负**，原设计中“透支上界”一条不再需要；
-- **入队检查**：创建任务前要求组织余额 ≥ 该任务类型的最低启动额度（价格表中按任务类型配置，默认 1 元），余额不足时拒绝新任务（`INSUFFICIENT_BALANCE`），前端提示充值；现有 `onBalanceInsufficient` 事件改为推送这一状态（第 6 步实现）；
-- **运行中耗尽**：任务执行中某次调用冻结失败时，任务走现有暂停路径保存 checkpoint，状态为 `paused`、原因为 `insufficient_balance`，经 SSE 通知用户；充值后用户点“继续”从 checkpoint 恢复，不重复扣费（第 6 步实现）；
+- **入队检查**：创建会调用模型的任务前要求组织可用余额 ≥ 最低启动额度（第一版全局 1 元，写在迁移 `0022_job_billing` 中；按任务类型配置有需要时再加），余额不足时拒绝新任务（`INSUFFICIENT_BALANCE`），前端提示充值；从暂停继续前同样检查（6.4 实现，第 10.10 节）；
+- **运行中耗尽**：任务执行中某次调用冻结失败时，任务退出、保留上次的 checkpoint，状态为 `paused`、原因为 `insufficient_balance`，经 SSE 的 `job` 事件（`pauseReason`）通知用户，取代 `onBalanceInsufficient`；充值后用户点“继续”从 checkpoint 恢复，不重复扣费（6.4 实现，第 10.10 节）；
 - **可选消费上限**：组织 owner 可以设置每日消费上限，达到后效果同余额不足（防止误操作或 Agent 失控烧钱）；平台管理员可以对单个组织设置每日上限的上界（未实现）；
 - 交互式调用和任务调用共用同一余额，不另设额度池。
 
@@ -742,10 +742,10 @@ AI 网关（worker 内）── 解密 Key ──> 模型服务商
 - **测试**：全部对本机模拟服务商（`server/tests/ai/mockProvider.ts`），CI 不使用真实 Key、不访问外网。覆盖冻结与结算（调用中可用余额减少、结束后释放、按冻结时的价格版本、以冻结额封顶、用量缺失时估算、缓存 token）、余额不足以冻结时不调用服务商、12 个并发调用恰好成功可冻结的 5 个、直接扣费不占用他人冻结、结算与释放互斥、子进程在调用中途被 `SIGKILL` 后冻结到期自动释放、上游各类失败不收费、用户中途断开按估算结算、Key 不进入响应 / 日志 / 错误 / 数据库明文、AAD 被改动时拒绝解密、跨组织隔离和应用角色权限，以及出站地址校验。去掉冻结检查中的“进行中的冻结”、冻结到期条件、结算封顶、上游失败不收费、按冻结时价格结算、直接扣费扣除冻结，或把上游错误体带进错误信息，分别有 2、1、1、12、1、1、2 个用例失败；
 - **与设计的偏离 / 未做**：
   - `platform_models`（对用户展示的模型清单、上架状态）尚未建：请求直接给出服务商和模型名，只要价格表中有该模型、平台配置了该服务商的凭据即可调用。设置页的“选择模型 + 查看单价”在建 `platform_models` 时一并实现。**旧仓库 PR #33 已改为白名单，见第 10.9 节**；
-  - 第 10.1 节的 `jobs.billed_amount` 要等第 6 步建 `jobs` 表，目前 `usage_records.job_id` 不设外键；
-  - `cached_input_price_per_mtok` 未加：缓存命中 token 已记录，但暂按普通输入单价计费；生图、MinerU、`min_charge`、每日消费上限、按组织 + 服务商的并发信号量（第 5.3 节，依赖 Redis）未做；
+  - 第 10.1 节的 `jobs.billed_amount` 要等第 6 步建 `jobs` 表，目前 `usage_records.job_id` 不设外键（6.4 已加 `billed_amount`；`job_id` 按路线图决定事项第 10 项永久不加外键，见第 10.10 节）；
+  - `cached_input_price_per_mtok` 未加：缓存命中 token 已记录，但暂按普通输入单价计费；生图、MinerU、`min_charge`、每日消费上限、按组织 + 服务商的并发信号量（第 5.3 节，依赖 Redis；6.4 已实现，见第 10.10 节）未做；
   - `provider_credentials.last_used_at`、DEK 缓存未做（文件 KEK 解包几乎没有开销，换成 KMS 时再加缓存）；管理后台的“模型列表 / 连通性测试”未做；
-  - 网关目前在 `api` 进程中运行（交互式的 `ai.chat`），第 6 步 worker 建成后任务调用在 worker 中使用同一模块；
+  - 网关目前在 `api` 进程中运行（交互式的 `ai.chat`），第 6 步 worker 建成后任务调用在 worker 中使用同一模块（6.4 已接入，见第 10.10 节）；
   - 函数属主沿用 `bidtools_billing`，没有新增集群级角色。
 
 ### 10.9 实现（旧仓库 PR #33）：平台模型白名单
@@ -764,6 +764,15 @@ AI 网关（worker 内）── 解密 Key ──> 模型服务商
   - 免费标记登记后不能修改，要改需要后续提供专门的接口；登记、启用、停用暂只记在表的操作人字段和日志中，`audit_logs` 建好后补；
   - 不经冻结的直接扣费 `chargeUsage`（旧仓库 PR #31）不调用服务商，没有接入白名单；
   - 已有的开发数据库迁移后，所有模型都需要管理员登记并启用才能调用。
+
+### 10.10 实现（路线图 6.4）：worker 中的任务调用与余额
+
+- **网关在 worker 中运行**：worker 与 api 使用同一个 `src/ai/gateway.ts`，各自加载主密钥；任务经 `context.ai.chat()` 调用，`source = 'job'`、`job_id`、`job_type` 由执行者填写，任务代码不能指定。冻结时（`ai_usage_begin`）任务必须属于本组织且状态为 `running`，`job_type` 以任务记录为准；
+- **按任务聚合**：`jobs.billed_amount` 由 `ai_usage_settle` 在扣费的同一事务中累加，只增不减，应用角色不能写；任务结束后才到达的结算照常累加。`usage_records.job_id` 不加外键（任务记录有保留期，用量记录永久保留），任务删除后按任务的费用仍可从用量记录汇总；
+- **入队门槛**：会调用模型的任务类型（`billable`）入队和从暂停继续前，经 `billing_job_start_check()` 要求可用余额（余额 − 未到期的冻结）≥ 1 元，否则 402 `INSUFFICIENT_BALANCE`；
+- **运行中耗尽**：冻结失败时网关返回 402，执行者把任务改为 `paused`、`pause_reason = 'insufficient_balance'`，写带原因的 `paused` 事件并推送 `job` 事件；之后本次执行中的调用直接失败。充值后继续，从 checkpoint 开始，已扣费的调用不重做；
+- **并发信号量**（`src/ai/concurrency.ts`）：键 `ai:concurrency:{orgId}:{provider}` 的有序集合，Lua 脚本原子地清掉到期名额、判断上限、加入令牌；名额最长占用一个冻结时长，崩溃时到期自动收回。上限 = min(`org_settings.concurrency_limit`，`AI_CONCURRENCY_MAX`)；网关在白名单检查之后、解密 Key 和冻结之前取得名额。交互式调用最多等 `AI_CONCURRENCY_WAIT_MS` 后 429 `AI_CONCURRENCY_LIMITED`，任务中的调用一直等到被取消；Redis 不可用时不放行（503 `AI_CONCURRENCY_UNAVAILABLE`），api 未配置 Redis 时不限制。Redis 被清空时名额一起消失，短时间内可能超出上限，不影响计费；
+- 细节与偏离见路线图“worker 接入 AI 网关与余额（#27，6.4）”。
 
 ## 11. 合规待确认事项
 

@@ -8,8 +8,12 @@ export function jobBody(job: JobRecord) {
     projectId: job.projectId,
     status: job.status,
     pauseRequested: job.pauseRequested,
+    // 暂停原因：insufficient_balance 时前端提示充值后继续（取代桌面版设计中的 onBalanceInsufficient）。
+    pauseReason: job.pauseReason,
     progress: job.progress,
     attempt: job.attempt,
+    // 本任务已消费的金额：计费单位（0.0001 元）的十进制字符串。
+    billedAmount: job.billedAmount.toString(),
     error: job.errorCode ? { code: job.errorCode, message: job.errorMessage } : null,
     createdBy: job.userId,
     createdAt: job.createdAt.toISOString(),

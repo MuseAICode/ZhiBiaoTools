@@ -1,6 +1,7 @@
 // 任务类型的定义与登记（docs/SERVER_DESIGN.md 第 5.2 节）。6.2 只有骨架，业务任务类型由第 6 步各模块的 PR 登记到
 // src/jobs/registry.ts；测试用的任务类型在 tests/ 中定义，不进入构建产物。
 import type { Kysely } from 'kysely';
+import type { ChatDelta, ChatRequest, ChatResult } from '../ai/gateway.ts';
 import type { Database } from '../db/schema.ts';
 import type { TenantContext } from '../db/tenant.ts';
 import { JOB_TYPE_PATTERN } from '../db/migrations/0021_jobs.ts';
@@ -19,6 +20,22 @@ export const DEFAULT_QUEUE_CONCURRENCY: Readonly<Record<JobQueueName, number>> =
 
 /** 组织级同时运行的任务数（决定事项第 8 项）；超出的留在 queued，空出名额后再认领。 */
 export const ORG_RUNNING_JOB_LIMIT = 3;
+
+/** 任务中的模型调用：来源、任务编号和类型由执行者填写，不由任务代码指定。 */
+export type JobChatRequest = Omit<ChatRequest, 'source' | 'jobId' | 'jobType'>;
+
+export interface JobAi {
+  /**
+   * 经 AI 网关调用模型（docs/SERVER_DESIGN.md 第 10 节）：按“组织 + 服务商”的并发上限排队，冻结、结算记到本任务
+   * （usage_records.job_id / job_type，jobs.billed_amount）。任务被取消、暂停时随 signal 中止，已产生的用量照常结算。
+   * - 余额不足以冻结：抛 JobBalanceExhaustedError，任务应立即退出（不要吞掉这个错误），执行者把任务暂停为
+   *   paused / insufficient_balance；充值后继续时从上次的 checkpoint 开始，所以每次调用的结果写入后应保存 checkpoint，
+   *   已扣费的调用不会重做、不会重复扣费；
+   * - 网关的其他错误（上游失败、模型停用等）转成 JobError，代码和文案与接口相同（给用户看的），任务可以自行重试或失败；
+   * - worker 未配置主密钥（AI_KEK_FILE）时抛 JobError('AI_UNAVAILABLE')。
+   */
+  chat(request: JobChatRequest, options?: { onDelta?: (delta: ChatDelta) => void }): Promise<ChatResult>;
+}
 
 /** 任务执行中可以使用的上下文。 */
 export interface JobContext<P> {
@@ -42,6 +59,8 @@ export interface JobContext<P> {
   saveCheckpoint(checkpoint: Record<string, unknown>, progress?: number): Promise<void>;
   /** 写一条任务日志（job_events，经 SSE 推送）。不要写文档正文和 AI 输入输出全文（第 8.3 节）。 */
   log(message: string, data?: Record<string, unknown>): Promise<void>;
+  /** 模型调用（6.4）。 */
+  readonly ai: JobAi;
 }
 
 export interface JobTypeDefinition<P = unknown> {
@@ -54,6 +73,11 @@ export interface JobTypeDefinition<P = unknown> {
   readonly resumable: boolean;
   /** 最多开始执行几次（含崩溃恢复后的续跑），默认 3。 */
   readonly maxAttempts?: number;
+  /**
+   * 会调用模型（经 context.ai）：入队和从暂停继续前检查组织的可用余额不低于最低启动余额（1 元，迁移 0022_job_billing），
+   * 不足时拒绝（402 INSUFFICIENT_BALANCE）。不调用模型的任务（解析、导出、清理）不检查。
+   */
+  readonly billable?: boolean;
   /** 校验并归一化任务参数（入队时和执行前各一次），不合法时抛错。参数里只放 id 和少量选项。 */
   parseParams(raw: unknown): P;
   run(context: JobContext<P>): Promise<void>;
@@ -69,6 +93,14 @@ export class JobError extends Error {
     super(message, options);
     this.name = 'JobError';
     this.code = code;
+  }
+}
+
+/** 调用模型时余额不足以冻结：任务应立即退出，执行者把任务暂停为 paused / insufficient_balance。 */
+export class JobBalanceExhaustedError extends Error {
+  constructor(options?: ErrorOptions) {
+    super('organization balance is insufficient for the next model call', options);
+    this.name = 'JobBalanceExhaustedError';
   }
 }
 

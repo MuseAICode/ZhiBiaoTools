@@ -8,6 +8,7 @@
 # 旧仓库 PR #34 起新增 s3 服务：已有的开发环境需要重新运行 init-dev-secrets.sh 生成 s3_secret_key（已有的文件不会被覆盖）。
 # 6.1 起新增 redis 服务：同样需要重新运行 init-dev-secrets.sh 生成 redis_password。
 # 6.2 起新增 worker 服务和数据库角色 bidtools_jobs：已有的数据卷不会重跑初始化脚本，先 docker compose down -v 重建（或按 server/db/init/10-provision.sh 手工建角色）。
+# 6.4 起 worker 也拿 AI 主密钥（ai_kek），任务中的模型调用在 worker 中经 AI 网关进行；不需要新的 secret 或角色。
 # 重建数据库：docker compose down -v（会删除数据卷）。
 # 生产部署的 compose 与网络划分见 docs/SERVER_DESIGN.md 第 8.1 节，不使用本文件。
 name: bidtools-dev
@@ -183,7 +184,8 @@ services:
 
   # 任务队列的消费者（docs/SERVER_DESIGN.md 第 5 节）：与 api 同一镜像，入口为 dist/worker.js。不对外提供接口，
   # /healthz、/readyz 只监听容器内的回环地址，供镜像的 HEALTHCHECK 使用，不映射端口。
-  # 需要数据库（default 网络）和 Redis（backend 网络）。6.2 还没有业务任务，不需要 AI 主密钥和对象存储密钥（6.4、6.6 起加上）。
+  # 需要数据库（default 网络）和 Redis（backend 网络）。6.4 起拿 AI 主密钥：任务中的模型调用经 AI 网关，在 worker 中解密平台 Key、
+  # 冻结和结算；对象存储密钥 6.6 起加上。
   worker:
     image: bidtools-api:dev
     build:
@@ -196,10 +198,12 @@ services:
       <<: *database-env
       DATABASE_USER: bidtools_app
       DATABASE_PASSWORD_FILE: /run/secrets/db_app_password
+      AI_KEK_FILE: /run/secrets/ai_kek
       REDIS_URL: redis://bidtools@redis:6379
       REDIS_PASSWORD_FILE: /run/secrets/redis_password
     secrets:
       - db_app_password
+      - ai_kek
       - redis_password
     depends_on:
       migrate:
