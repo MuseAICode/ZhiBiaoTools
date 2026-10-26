@@ -147,6 +147,9 @@ describe('filesystem and privileges', () => {
     result.uid = process.getuid(); result.gid = process.getgid();
     result.capEff = field('CapEff'); result.capBnd = field('CapBnd'); result.noNewPrivs = field('NoNewPrivs');
     result.env = Object.keys(process.env).sort();
+    // 根挂载点的挂载选项：gVisor 对非 root 用户先检查权限（EACCES），写入失败不足以说明只读，直接看是否以 ro 挂载。
+    const root = fs.readFileSync('/proc/self/mounts', 'utf8').split('\\n').map((line) => line.split(' ')).find((fields) => fields[1] === '/');
+    result.rootReadOnly = Boolean(root && root[3].split(',').includes('ro'));
     console.log(JSON.stringify(result));
   `;
 
@@ -160,12 +163,15 @@ describe('filesystem and privileges', () => {
     capBnd?: string;
     noNewPrivs?: string;
     env: string[];
+    rootReadOnly: boolean;
   }
 
   it('has a read-only root filesystem, non-executable scratch space, no capabilities and no host environment', async () => {
     const ref = await createSandbox();
     const result = await probe<FsProbe>(ref, script);
-    for (const outcome of Object.values(result.root)) expect(outcome).toBe('EROFS');
+    expect(result.rootReadOnly).toBe(true);
+    // runc 下为 EROFS；gVisor 对非 root 用户先检查权限，得到 EACCES。
+    for (const outcome of Object.values(result.root)) expect(['EROFS', 'EACCES']).toContain(outcome);
     for (const outcome of Object.values(result.writable)) expect(outcome).toBe('written');
     expect(result.tmpExec).toBe('EACCES');
     expect([result.uid, result.gid]).toEqual([10001, 10001]);
@@ -175,12 +181,13 @@ describe('filesystem and privileges', () => {
     expect(result.env.filter((name) => !['HOME', 'LANG', 'TMPDIR', 'PATH', 'HOSTNAME', 'NODE_VERSION', 'YARN_VERSION'].includes(name))).toEqual([]);
   });
 
-  it('control: without a read-only root filesystem the same writes are no longer EROFS', async () => {
+  it('control: without a read-only root filesystem the root is mounted read-write', async () => {
     const weakened = weakenedDriver((spec) => {
       spec.HostConfig.ReadonlyRootfs = false;
     });
     const ref = await createSandbox(weakened);
     const result = await probe<FsProbe>(ref, script, weakened);
+    expect(result.rootReadOnly).toBe(false);
     expect(Object.values(result.root)).not.toContain('EROFS');
   });
 
@@ -389,16 +396,17 @@ describe.runIf(sandboxEnv.office)('LibreOffice in the sandbox', () => {
   const samples = new URL('../../files/samples/', import.meta.url);
 
   it.each([
-    ['input.rtf', 'rtf-word.doc'],
-    ['input.doc', 'ole-word.docx'],
-    ['input.html', 'html-word.doc'],
-  ])('converts %s to docx under the parse template', async (name, sample) => {
+    ['input.rtf', 'rtf-word.doc', []],
+    ['input.doc', 'ole-word.docx', []],
+    // HTML 默认按 Writer/Web 打开，没有 docx 导出过滤器；指定按 Writer 导入。
+    ['input.html', 'html-word.doc', ['--infilter=HTML (StarWriter)']],
+  ])('converts %s to docx under the parse template', async (name, sample, filters) => {
     const createStarted = Date.now();
     const ref = await createSandbox();
     const createMs = Date.now() - createStarted;
     await driver.copyIn(ref, [{ path: name, data: readFileSync(new URL(sample, samples)) }]);
     const started = Date.now();
-    const result = await run(ref, ['soffice', '--headless', '--norestore', '--nolockcheck', '--nologo', '--nodefault', '--convert-to', 'docx', '--outdir', '/tmp/out', `/input/${name}`], 180_000);
+    const result = await run(ref, ['soffice', '--headless', '--norestore', '--nolockcheck', '--nologo', '--nodefault', ...filters, '--convert-to', 'docx:MS Word 2007 XML', '--outdir', '/tmp/out', `/input/${name}`], 180_000);
     const convertMs = Date.now() - started;
     expect(result.exitCode, result.stderr).toBe(0);
     await sh(ref, `test -s /tmp/out/${name.replace(/\.[a-z]+$/, '')}.docx`);
