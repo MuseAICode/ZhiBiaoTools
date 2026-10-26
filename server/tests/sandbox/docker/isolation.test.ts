@@ -322,8 +322,15 @@ describe('resource limits', () => {
     console.info(JSON.stringify({ runtime: sandboxEnv.runtime, forkBomb: { timedOut: result.timedOut, exitCode: result.exitCode, elapsedMs: Date.now() - started, sandboxAlive, hostThreadDelta: max - before, stderr: result.stderr.slice(0, 200) } }));
     expect(result.timedOut || result.exitCode !== 0 || !sandboxAlive).toBe(true);
     if (result.timedOut) expect(sandboxAlive).toBe(false);
-    // runc 下沙箱内的进程都是宿主进程，最多 pids 上限个；gVisor 下沙箱内的进程不是宿主进程。
+    // 宿主线程的增量受 pids 上限约束（runc 下沙箱内的进程即宿主进程；gVisor 下是 Sentry 的线程，同样在容器的 cgroup 中）。
     expect(max - before).toBeLessThan(parse.pidsLimit + 64);
+    // gVisor 下炸弹会使 runsc 的控制通道断开（exec 以 128 返回），容器却仍在运行；调用方在任何非 0 退出后都必须销毁沙箱，
+    // 销毁后容器不存在、宿主线程数回落。
+    await driver.destroy(ref);
+    expect(await docker.inspectContainer(`zhibiao-sandbox-${ref.id}`)).toBeNull();
+    const deadline = Date.now() + 10_000;
+    while (hostThreads() - before >= 64 && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 200));
+    expect(hostThreads() - before).toBeLessThan(64);
     await expectHostHealthy();
   });
 

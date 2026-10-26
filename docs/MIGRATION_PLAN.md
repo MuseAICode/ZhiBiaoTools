@@ -1067,7 +1067,7 @@ AI 网关加固，做法见 `docs/SERVER_DESIGN.md` 第 10.9 节。`client/` 未
 - **镜像**（`server/sandbox/parse/Dockerfile`）：与 api 相同的 Node 24 基础镜像（按 digest 固定）+ `libreoffice-writer-nogui`、`libreoffice-calc-nogui` + `fonts-noto-cjk`、`fonts-dejavu-core`；删除 npm / corepack / yarn、去掉全部 setuid / setgid 位，建用户 10001；没有凭据、编译器、网络工具；
 - **compose**：新增 `sandbox-runner` 服务和 `internal: true` 的 `sandbox-control` 网络（只有 sandbox-runner，6.6 起 worker 加入），`init-dev-secrets.sh` 生成 `sandbox_runner_token`；开发环境先 `docker build -t zhibiao-parse:dev server/sandbox/parse`，Linux 上设置 `DOCKER_SOCKET_GID`；
 - **CI**：`server-checks` 安装 gVisor（`runsc` 20260810.0，Apache-2.0，按写死的 SHA-512 校验），登记为 Docker 运行时后 reload（不重启 Docker），构建 parse 镜像，在 `runsc` 下跑 `npm run test:sandbox`（含 LibreOffice 转换用例）；job 超时从 15 分钟改为 30 分钟；
-- **测试**：单元测试（`tests/sandbox/*.test.ts`）覆盖构造的恶意归档（各种条目类型、穿越、校验和、截断、超量、PAX 键）、模板参数、配置、sandbox-runner 接口（令牌、多余字段、未登记的命令、任务不符、worker 端校验）。隔离测试（`tests/sandbox/docker/isolation.test.ts`，真实 Docker）：只有 `lo`，连接 Docker 网桥网关上的监听端口、`169.254.169.254`、外网、内网地址、UDP 全部失败，`redis` / `postgres` 等名称解析失败；根文件系统只读（`EROFS`）、`/tmp` 不能执行、用户 10001、无能力、`NoNewPrivs`；没有 setuid 程序、网络工具、包管理器和编译器；容器参数与模板一致；资源上限见下方“资源上限实测”；输入输出往返；取回时符号链接、硬链接、FIFO、超量文件、不允许的扩展名、过深路径、不安全文件名被拒绝；两个沙箱之间不共享任何文件；数量上限、到期清理；经 HTTP 的完整流程只能执行登记的命令、不能操作冒名的容器。**对照组**：去掉 `--network none` 后同一探测能连上宿主（含 sandbox-runner）、去掉只读后根以 `rw` 挂载、去掉内存 / pids / CPU 上限后同样的分配、进程数、并行度能达到、原始归档中确有被校验拒绝的符号链接条目，证明测试能发现这些加固被去掉。#28 确认前补充了资源上限与访问控制的用例后共 35 项：本机（runc、不含 LibreOffice 的镜像）32 项通过、3 项 LibreOffice 用例跳过，CI（GitHub 托管运行器，gVisor `runsc` 20260810.0）结果见 #28。gVisor 下只读根文件系统对非 root 用户的写入返回 `EACCES`（先检查权限），所以测试改为核对根挂载的 `ro` 选项。
+- **测试**：单元测试（`tests/sandbox/*.test.ts`）覆盖构造的恶意归档（各种条目类型、穿越、校验和、截断、超量、PAX 键）、模板参数、配置、sandbox-runner 接口（令牌、多余字段、未登记的命令、任务不符、worker 端校验）。隔离测试（`tests/sandbox/docker/isolation.test.ts`，真实 Docker）：只有 `lo`，连接 Docker 网桥网关上的监听端口、`169.254.169.254`、外网、内网地址、UDP 全部失败，`redis` / `postgres` 等名称解析失败；根文件系统只读（`EROFS`）、`/tmp` 不能执行、用户 10001、无能力、`NoNewPrivs`；没有 setuid 程序、网络工具、包管理器和编译器；容器参数与模板一致；资源上限见下方“资源上限实测”；输入输出往返；取回时符号链接、硬链接、FIFO、超量文件、不允许的扩展名、过深路径、不安全文件名被拒绝；两个沙箱之间不共享任何文件；数量上限、到期清理；经 HTTP 的完整流程只能执行登记的命令、不能操作冒名的容器。**对照组**：去掉 `--network none` 后同一探测能连上宿主（含 sandbox-runner）、去掉只读后根以 `rw` 挂载、去掉内存 / pids / CPU 上限后同样的分配、进程数、并行度能达到、原始归档中确有被校验拒绝的符号链接条目，证明测试能发现这些加固被去掉。#28 确认前补充了资源上限与访问控制的用例后共 35 项：本机（runc、不含 LibreOffice 的镜像）32 项通过、3 项 LibreOffice 用例跳过，CI（GitHub 托管运行器，gVisor `runsc` 20260810.0）34 项通过、1 项跳过（CPU 对照组，要求宿主至少 3 核）。gVisor 下只读根文件系统对非 root 用户的写入返回 `EACCES`（先检查权限），所以测试改为核对根挂载的 `ro` 选项。
 
 **资源上限实测**（`tests/sandbox/docker/isolation.test.ts` 的 `resource limits`，每项都验证宿主不受影响：Docker 照常响应、新建的沙箱 15 秒内能执行命令）：
 
@@ -1075,10 +1075,12 @@ AI 网关加固，做法见 `docs/SERVER_DESIGN.md` 第 10.9 节。`client/` 未
 |---|---|---|---|---|
 | 内存超限（分配 4 GiB） | `kills a process that exceeds the memory limit without exhausting host memory` | 进程被终止（退出码非 0，没有输出“allocated”） | 期间宿主可用内存的最低值比开始时少不到 2 GiB + 768 MiB | 去掉内存上限后同样的分配成功 |
 | 进程数 | `limits the number of processes` | 同时启动 400 个进程，成功的少于 256 个，其余 `EAGAIN` | — | 去掉 pids 上限后 400 个全部启动 |
-| fork 炸弹 | `contains a fork bomb and terminates it at the time limit without flooding the host` | `bomb() { while :; do bomb & done; }` 在 pids 上限处被挡住，到 8 秒超时后整个沙箱被终止 | 期间宿主线程总数的增量少于 pids 上限 + 64（runc 下沙箱内的进程即宿主进程；gVisor 下不是） | （去掉 pids 上限的炸弹会拖垮 CI 运行器，用上一行的对照组代替） |
+| fork 炸弹 | `contains a fork bomb without flooding the host` | `bomb() { while :; do bomb & done; }` 在 pids 上限处被挡住。runc：`Cannot fork`，8 秒超时后整个沙箱被终止（宿主线程增量 257）。gVisor：约 0.4 秒后 runsc 的控制通道断开（exec 以 128 返回，`containerManager.WaitPID failed: EOF`），**容器仍在运行**（宿主线程增量 230），销毁后才结束 | 期间宿主线程总数的增量少于 pids 上限 + 64；销毁后容器不存在、10 秒内宿主线程数回落到基线 + 64 以内 | （去掉 pids 上限的炸弹会拖垮 CI 运行器，用上一行的对照组代替） |
 | 写满临时目录 | `stops writes when a scratch directory is full and does not touch the host disk` | `/tmp`、`/input`、`/output` 分别写到各自上限（1 GiB / 256 MiB / 1 GiB）时 `ENOSPC` | 宿主根文件系统的可用空间减少不到 64 MiB（可写目录都是 tmpfs，根只读） | — |
 | CPU 死循环 / 超时 | `limits a CPU busy loop to one core and terminates it at the time limit` | 4 个线程空转的总吞吐不到 1 个线程的 1.6 倍（限制为 1 核）；`for (;;) {}` 在 3 秒超时后整个沙箱被终止 | Docker 与新沙箱正常 | 去掉 CPU 上限后 4 线程吞吐超过 1 线程的 2 倍（宿主至少 3 核时运行） |
 | 命令超时、调用方中止 | `terminates the sandbox when a command exceeds its time limit`、`… when the caller aborts` | 沙箱被终止，之后的操作 404 | — | — |
+
+由 fork 炸弹的 gVisor 结果得出的约定：**exec 的任何非 0 结果（含超时、128 等运行时错误）之后，调用方都必须销毁沙箱，不再复用**；6.6 的解析任务在 `finally` 中 `destroy`，sandbox-runner 的到期清理（15 分钟）是兜底。沙箱内失控的进程在销毁前仍受内存、CPU、pids 上限约束。
 
 **sandbox-runner 的访问控制**：
 
