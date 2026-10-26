@@ -3,6 +3,8 @@
 // 证明测试确实能发现加固被去掉。
 import { randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
+import { statfs } from 'node:fs/promises';
+import { availableParallelism } from 'node:os';
 import { createServer, type Server } from 'node:net';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { readArchive } from '../../../src/sandbox/archive.ts';
@@ -222,24 +224,159 @@ describe('filesystem and privileges', () => {
   });
 });
 
+/** 宿主的可用内存（字节）。测试进程在宿主上（或 --network host 的容器中），/proc/meminfo 是宿主的。 */
+function hostMemAvailable(): number {
+  const match = /^MemAvailable:\s+(\d+) kB$/m.exec(readFileSync('/proc/meminfo', 'utf8'));
+  return Number(match![1]) * 1024;
+}
+
+/** 宿主上的线程总数（/proc/loadavg 第 4 项的分母）。runc 下沙箱内的每个进程都是宿主进程。 */
+function hostThreads(): number {
+  return Number(readFileSync('/proc/loadavg', 'utf8').split(' ')[3]!.split('/')[1]);
+}
+
+/** 在 operation 执行期间每 100 ms 采样一次，返回采到的最小值和最大值。 */
+async function sampleDuring<T>(read: () => number, operation: Promise<T>): Promise<{ result: T; min: number; max: number }> {
+  let min = read();
+  let max = min;
+  const timer = setInterval(() => {
+    const value = read();
+    min = Math.min(min, value);
+    max = Math.max(max, value);
+  }, 100);
+  try {
+    return { result: await operation, min, max };
+  } finally {
+    clearInterval(timer);
+  }
+}
+
+/** 宿主未受影响：Docker 照常响应，新建的沙箱能在 15 秒内执行命令。 */
+async function expectHostHealthy() {
+  const started = Date.now();
+  await docker.ping();
+  const ref = await createSandbox();
+  const result = await run(ref, ['echo', 'ok'], 15_000);
+  expect(result.stdout.trim()).toBe('ok');
+  expect(Date.now() - started).toBeLessThan(15_000);
+}
+
+const MIB = 1024 * 1024;
+const GIB = 1024 * MIB;
+
 describe('resource limits', () => {
-  it('kills a process that exceeds the memory limit', async () => {
+  const allocate = "const kept = []; for (let i = 0; i < 40; i += 1) kept.push(Buffer.alloc(100 * 1024 * 1024, 1)); console.log('allocated')";
+
+  it('kills a process that exceeds the memory limit without exhausting host memory', async () => {
     const ref = await createSandbox();
-    const result = await run(ref, ['node', '-e', "const kept = []; for (let i = 0; i < 40; i += 1) kept.push(Buffer.alloc(100 * 1024 * 1024, 1)); console.log('allocated')"]);
+    const before = hostMemAvailable();
+    const { result, min } = await sampleDuring(hostMemAvailable, run(ref, ['node', '-e', allocate]));
     expect(result.stdout).not.toContain('allocated');
     expect(result.exitCode).not.toBe(0);
+    // 尝试分配 4 GiB，宿主可用内存的下降不超过沙箱上限 2 GiB 加上运行时开销。
+    expect(before - min).toBeLessThan(parse.memoryBytes + 768 * MIB);
+    await expectHostHealthy();
   });
+
+  it('control: without the memory limit the same allocation succeeds', async () => {
+    const weakened = weakenedDriver((spec) => {
+      spec.HostConfig.Memory = 0;
+      spec.HostConfig.MemorySwap = 0;
+    });
+    const ref = await createSandbox(weakened);
+    const result = await run(ref, ['node', '-e', allocate], 60_000, weakened);
+    expect(result.stdout).toContain('allocated');
+  });
+
+  const spawnMany = `const { spawn } = require('child_process'); let spawned = 0, error = null;
+     for (let i = 0; i < 400; i += 1) { try { const child = spawn('sleep', ['30'], { stdio: 'ignore' }); child.on('spawn', () => { spawned += 1; }); child.on('error', (e) => { error = e.code; }); } catch (e) { error = e.code; break; } }
+     setTimeout(() => { console.log(JSON.stringify({ spawned, error })); process.exit(0); }, 3000);`;
 
   it('limits the number of processes', async () => {
     const ref = await createSandbox();
-    const result = await probe<{ spawned: number; error: string | null }>(
-      ref,
-      `const { spawn } = require('child_process'); let spawned = 0, error = null;
-       for (let i = 0; i < 400; i += 1) { try { const child = spawn('sleep', ['30']); child.on('spawn', () => { spawned += 1; }); child.on('error', (e) => { error = e.code; }); } catch (e) { error = e.code; break; } }
-       setTimeout(() => { console.log(JSON.stringify({ spawned, error })); process.exit(0); }, 3000);`,
-    );
+    const result = await probe<{ spawned: number; error: string | null }>(ref, spawnMany);
     expect(result.spawned).toBeLessThan(parse.pidsLimit);
     expect(result.error).not.toBeNull();
+  });
+
+  it('control: without the pids limit the same 400 processes start', async () => {
+    const weakened = weakenedDriver((spec) => {
+      spec.HostConfig.PidsLimit = 0;
+    });
+    const ref = await createSandbox(weakened);
+    const result = await probe<{ spawned: number; error: string | null }>(ref, spawnMany, weakened);
+    expect(result.spawned).toBe(400);
+  });
+
+  it('contains a fork bomb and terminates it at the time limit without flooding the host', async () => {
+    const ref = await createSandbox();
+    const before = hostThreads();
+    const { result, max } = await sampleDuring(hostThreads, run(ref, ['sh', '-c', 'bomb() { while :; do bomb & done; }; bomb & exec sleep 60'], 8_000));
+    // dash 在 fork 失败时退出，炸弹在 pids 上限处不断有进程退出、又不断重试；主进程（sleep）一直等到超时被终止。
+    expect(result.timedOut).toBe(true);
+    // runc 下沙箱内的进程都是宿主进程，最多 pids 上限个；gVisor 下沙箱内的进程不是宿主进程。
+    expect(max - before).toBeLessThan(parse.pidsLimit + 64);
+    await expect(driver.lookup(ref.id, ref.jobId)).rejects.toMatchObject({ code: 'SANDBOX_NOT_FOUND' });
+    await expectHostHealthy();
+  });
+
+  it('stops writes when a scratch directory is full and does not touch the host disk', async () => {
+    const ref = await createSandbox();
+    const hostFree = async () => {
+      const stats = await statfs('/');
+      return stats.bavail * stats.bsize;
+    };
+    const freeBefore = await hostFree();
+    const result = await probe<Record<string, { bytes: number; code: string | null }>>(
+      ref,
+      `const fs = require('fs');
+       const chunk = Buffer.alloc(16 * 1024 * 1024, 1);
+       const fill = (path) => {
+         let bytes = 0, code = null;
+         const fd = fs.openSync(path, 'w');
+         try { for (;;) { bytes += fs.writeSync(fd, chunk); if (bytes > 3 * 1024 ** 3) break; } } catch (error) { code = error.code; }
+         fs.closeSync(fd);
+         fs.unlinkSync(path);
+         return { bytes, code };
+       };
+       console.log(JSON.stringify({ '/tmp': fill('/tmp/fill'), '/input': fill('/input/fill'), '/output': fill('/output/fill.md') }));`,
+    );
+    for (const [path, outcome] of Object.entries(result)) {
+      expect(outcome.code, path).toBe('ENOSPC');
+      expect(outcome.bytes, path).toBeLessThanOrEqual(parse.tmpfs[path]!.bytes);
+    }
+    // 可写目录都是 tmpfs，根文件系统只读，宿主磁盘的可用空间不因此减少。
+    expect(freeBefore - (await hostFree())).toBeLessThan(64 * MIB);
+    await expectHostHealthy();
+  });
+
+  // 4 个线程同时空转与 1 个线程空转的总吞吐之比：限制为 1 核时约为 1，不限制时接近宿主的核数。
+  const cpuRatio = `const { Worker } = require('worker_threads');
+     const spin = (threads) => Promise.all(Array.from({ length: threads }, () => new Promise((resolve) => {
+       const worker = new Worker('const { parentPort } = require("worker_threads"); const end = Date.now() + 1500; let n = 0; while (Date.now() < end) n += 1; parentPort.postMessage(n);', { eval: true });
+       worker.once('message', resolve);
+     }))).then((counts) => counts.reduce((a, b) => a + b, 0));
+     (async () => { await spin(1); const one = await spin(1); const four = await spin(4); console.log(JSON.stringify({ ratio: four / one })); })();`;
+
+  it('limits a CPU busy loop to one core and terminates it at the time limit', async () => {
+    const ref = await createSandbox();
+    const { ratio } = await probe<{ ratio: number }>(ref, cpuRatio);
+    expect(ratio).toBeLessThan(1.6);
+    const started = Date.now();
+    const result = await run(ref, ['node', '-e', 'for (;;) {}'], 3_000);
+    expect(result.timedOut).toBe(true);
+    expect(Date.now() - started).toBeLessThan(20_000);
+    await expect(driver.lookup(ref.id, ref.jobId)).rejects.toMatchObject({ code: 'SANDBOX_NOT_FOUND' });
+    await expectHostHealthy();
+  });
+
+  it.runIf(availableParallelism() >= 3)('control: without the CPU limit four threads run in parallel', async () => {
+    const weakened = weakenedDriver((spec) => {
+      spec.HostConfig.NanoCpus = 0;
+    });
+    const ref = await createSandbox(weakened);
+    const { ratio } = await probe<{ ratio: number }>(ref, cpuRatio, weakened);
+    expect(ratio).toBeGreaterThan(2);
   });
 
   it('terminates the sandbox when a command exceeds its time limit', async () => {
@@ -364,6 +501,34 @@ describe('sandbox-runner over http', () => {
     expect(await docker.inspectContainer(`zhibiao-sandbox-${ref.id}`)).not.toBeNull();
     await client.destroy(ref);
     expect(await docker.inspectContainer(`zhibiao-sandbox-${ref.id}`)).toBeNull();
+  });
+
+  it('cannot be reached from inside a sandbox', async () => {
+    // 即使 sandbox-runner 监听所有地址（生产只在 sandbox-control 上），断网的沙箱也连不到它；对照组（网桥网络）能连到。
+    const exposed = await buildSandboxRunnerApp({ driver, docker, runtime: sandboxEnv.runtime, token, logLevel: 'silent' });
+    await exposed.listen({ host: '0.0.0.0', port: 0 });
+    try {
+      const port = (exposed.server.address() as { port: number }).port;
+      const network = await dockerRequest('GET', '/networks/bridge');
+      const gateway = (network.json as { IPAM: { Config: Array<{ Gateway?: string }> } }).IPAM.Config.find((entry) => entry.Gateway?.includes('.'))!.Gateway!;
+      const script = `const http = require('http');
+        const get = (host) => new Promise((resolve) => {
+          const req = http.get({ host, port: ${port}, path: '/healthz', timeout: 3000 }, (res) => { res.resume(); resolve('status:' + res.statusCode); });
+          req.on('timeout', () => { req.destroy(); resolve('timeout'); });
+          req.on('error', (error) => resolve(error.code));
+        });
+        (async () => console.log(JSON.stringify({ gateway: await get(${JSON.stringify(gateway)}), loopback: await get('127.0.0.1'), name: await get('sandbox-runner') })))();`;
+      const ref = await createSandbox();
+      const result = await probe<Record<string, string>>(ref, script);
+      for (const outcome of Object.values(result)) expect(outcome).not.toMatch(/^status:/);
+      const weakened = weakenedDriver((spec) => {
+        spec.HostConfig.NetworkMode = 'bridge';
+      });
+      const control = await createSandbox(weakened);
+      expect((await probe<Record<string, string>>(control, script, weakened)).gateway).toBe('status:200');
+    } finally {
+      await exposed.close();
+    }
   });
 
   it('refuses to operate on containers it did not create', async () => {

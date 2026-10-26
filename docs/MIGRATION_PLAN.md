@@ -878,7 +878,7 @@ AI 网关加固，做法见 `docs/SERVER_DESIGN.md` 第 10.9 节。`client/` 未
 | 6.4 | worker 接入 AI 网关与余额：网关在 worker 中运行，任务调用记 `job_id` / `job_type`；`usage_records.job_id` 不补外键（任务记录到保留期会被删除，用量记录不可修改、永久保留，见“决定事项”第 10 项），只保留 `job_id` / `job_type` 的值；`jobs.billed_amount` 与结算在同一事务中累加（改 `ai_usage_settle`）；入队前检查最低启动余额（决定事项第 7 项）；运行中冻结失败时暂停为 `paused` / `insufficient_balance`，经 SSE 推送（取代 `onBalanceInsufficient`），充值后继续不重复扣费；AI 网关按组织 + 服务商的并发上限改为 Redis 分布式信号量（取 `org_settings.concurrency_limit` 与平台上限的较小值） | 6.2、6.3 | **是**（计费） | 已完成 | #27 |
 | 6.4a | **步骤幂等，必做**（#27 确认时登记）：平台自身故障（worker 崩溃、租约收回、重启）导致的重复调用不向用户收费。现状：一次调用已结算、任务还没保存 checkpoint 时 worker 崩溃，续跑会重做这一步并再次扣费。二选一：步骤结果与 checkpoint 同一事务提交（结算、写结果、写 checkpoint 一起提交），或给每一步加幂等键（`jobId + 步骤键`，续跑时同一步已结算的调用直接复用结果或不再收费）；测试须覆盖“结算后、checkpoint 前崩溃”只扣费一次。**必须在第一个调用 AI 的业务任务 PR（6.9、6.11、6.12、6.13 中最先做的那个）之前完成** | 6.4 | **是**（计费） | 未开始 | — |
 | 6.5 | 解析沙箱基础设施：`sandbox-runner` 服务、`SandboxDriver` 接口、`parse` 模板、解析镜像（见下方“文件解析的隔离”）；隔离测试 | 6.2 | **是**（沙箱） | 已完成 | #28 |
-| 6.6 | 解析任务（一）二进制与纯文本格式：`parse` 队列；按记录的 MIME 分派（见下方分派表）；ZIP 炸弹、PDF 页数、超时检查；产出经 `writeArtifact` 写入；重新解析时替换旧产物（第 5 步 #8 留下）；接入技术方案、废标检查、可研报告三个模块的文档解析（`saveDocumentParse` / `saveSourceParse`），导入后自动入队 | 6.5 | 否 | 未开始 | — |
+| 6.6 | 解析任务（一）二进制与纯文本格式：`parse` 队列；按记录的 MIME 分派（见下方分派表）；ZIP 炸弹、PDF 页数、超时检查；产出经 `writeArtifact` 写入；重新解析时替换旧产物（第 5 步 #8 留下）；接入技术方案、废标检查、可研报告三个模块的文档解析（`saveDocumentParse` / `saveSourceParse`），导入后自动入队；parse 镜像加入解析入口与其 npm 依赖，并同时加入 LibreOffice 的全局设置：链接更新设为从不、禁用宏（从 6.7 提前，#28 确认时决定，与解析入口同时上线） | 6.5 | 否 | 未开始 | — |
 | 6.7 | 解析任务（二）文本类格式（#6 放行的 RTF、HTML、MHT、Word 2003 XML、SpreadsheetML）：逐项满足“第 6 步解析要求”，用恶意样本测试（XXE、实体膨胀、外链图片 / 样式 / `<iframe>`、RTF `INCLUDEPICTURE` / `INCLUDETEXT`、MHT 外部 `Content-Location`） | 6.6 | 否 | 未开始 | — |
 | 6.8 | 清理任务：过期文件、产物、项目的对象与行的物理删除，遗留 `uploading` 行，按对象键前缀找出的孤儿对象，冻结到期收尾（`expireStaleHolds` 从 api 的定时器移到 worker 的定时任务），超过保留期的 `jobs` / `job_events`；跨组织，用新的 `NOLOGIN` 定义者角色 `bidtools_cleanup` 写 `SECURITY DEFINER` 函数，要求见“决定事项”第 9、10 项 | 6.2 | **是**（新增数据库角色） | 未开始 | — |
 | 6.9 | 废标检查任务：`rejection-items-extraction`、`rejection-check-run`；任务按招标文件顺序合并正文，经 `computeSignatures` 写签名；`loadState` 返回任务状态 | 6.4、6.4a、6.6 | 否 | 未开始 | — |
@@ -1067,19 +1067,37 @@ AI 网关加固，做法见 `docs/SERVER_DESIGN.md` 第 10.9 节。`client/` 未
 - **镜像**（`server/sandbox/parse/Dockerfile`）：与 api 相同的 Node 24 基础镜像（按 digest 固定）+ `libreoffice-writer-nogui`、`libreoffice-calc-nogui` + `fonts-noto-cjk`、`fonts-dejavu-core`；删除 npm / corepack / yarn、去掉全部 setuid / setgid 位，建用户 10001；没有凭据、编译器、网络工具；
 - **compose**：新增 `sandbox-runner` 服务和 `internal: true` 的 `sandbox-control` 网络（只有 sandbox-runner，6.6 起 worker 加入），`init-dev-secrets.sh` 生成 `sandbox_runner_token`；开发环境先 `docker build -t zhibiao-parse:dev server/sandbox/parse`，Linux 上设置 `DOCKER_SOCKET_GID`；
 - **CI**：`server-checks` 安装 gVisor（`runsc` 20260810.0，Apache-2.0，按写死的 SHA-512 校验），登记为 Docker 运行时后 reload（不重启 Docker），构建 parse 镜像，在 `runsc` 下跑 `npm run test:sandbox`（含 LibreOffice 转换用例）；job 超时从 15 分钟改为 30 分钟；
-- **测试**：单元测试（`tests/sandbox/*.test.ts`）覆盖构造的恶意归档（各种条目类型、穿越、校验和、截断、超量、PAX 键）、模板参数、配置、sandbox-runner 接口（令牌、多余字段、未登记的命令、任务不符、worker 端校验）。隔离测试（`tests/sandbox/docker/isolation.test.ts`，真实 Docker）：只有 `lo`，连接 Docker 网桥网关上的监听端口、`169.254.169.254`、外网、内网地址、UDP 全部失败，`redis` / `postgres` 等名称解析失败；根文件系统只读（`EROFS`）、`/tmp` 不能执行、用户 10001、无能力、`NoNewPrivs`；没有 setuid 程序、网络工具、包管理器和编译器；容器参数与模板一致；超内存被杀、进程数受限、超时与中止时沙箱被终止；输入输出往返；取回时符号链接、硬链接、FIFO、超量文件、不允许的扩展名、过深路径、不安全文件名被拒绝；两个沙箱之间不共享任何文件；数量上限、到期清理；经 HTTP 的完整流程只能执行登记的命令、不能操作冒名的容器。**对照组**：去掉 `--network none` 后同一探测能连上宿主、去掉只读后写入不再是 `EROFS`、原始归档中确有被校验拒绝的符号链接条目，证明测试能发现这些加固被去掉。本机（runc、不含 LibreOffice 的镜像）25 项通过；CI（GitHub 托管运行器，gVisor `runsc` 20260810.0）28 项全部通过。gVisor 下只读根文件系统对非 root 用户的写入返回 `EACCES`（先检查权限），所以测试改为核对根挂载的 `ro` 选项。
+- **测试**：单元测试（`tests/sandbox/*.test.ts`）覆盖构造的恶意归档（各种条目类型、穿越、校验和、截断、超量、PAX 键）、模板参数、配置、sandbox-runner 接口（令牌、多余字段、未登记的命令、任务不符、worker 端校验）。隔离测试（`tests/sandbox/docker/isolation.test.ts`，真实 Docker）：只有 `lo`，连接 Docker 网桥网关上的监听端口、`169.254.169.254`、外网、内网地址、UDP 全部失败，`redis` / `postgres` 等名称解析失败；根文件系统只读（`EROFS`）、`/tmp` 不能执行、用户 10001、无能力、`NoNewPrivs`；没有 setuid 程序、网络工具、包管理器和编译器；容器参数与模板一致；资源上限见下方“资源上限实测”；输入输出往返；取回时符号链接、硬链接、FIFO、超量文件、不允许的扩展名、过深路径、不安全文件名被拒绝；两个沙箱之间不共享任何文件；数量上限、到期清理；经 HTTP 的完整流程只能执行登记的命令、不能操作冒名的容器。**对照组**：去掉 `--network none` 后同一探测能连上宿主（含 sandbox-runner）、去掉只读后根以 `rw` 挂载、去掉内存 / pids / CPU 上限后同样的分配、进程数、并行度能达到、原始归档中确有被校验拒绝的符号链接条目，证明测试能发现这些加固被去掉。#28 确认前补充了资源上限与访问控制的用例后共 35 项：本机（runc、不含 LibreOffice 的镜像）32 项通过、3 项 LibreOffice 用例跳过，CI（GitHub 托管运行器，gVisor `runsc` 20260810.0）结果见 #28。gVisor 下只读根文件系统对非 root 用户的写入返回 `EACCES`（先检查权限），所以测试改为核对根挂载的 `ro` 选项。
+
+**资源上限实测**（`tests/sandbox/docker/isolation.test.ts` 的 `resource limits`，每项都验证宿主不受影响：Docker 照常响应、新建的沙箱 15 秒内能执行命令）：
+
+| 场景 | 用例 | 结果 | 宿主侧的断言 | 对照组 |
+|---|---|---|---|---|
+| 内存超限（分配 4 GiB） | `kills a process that exceeds the memory limit without exhausting host memory` | 进程被终止（退出码非 0，没有输出“allocated”） | 期间宿主可用内存的最低值比开始时少不到 2 GiB + 768 MiB | 去掉内存上限后同样的分配成功 |
+| 进程数 | `limits the number of processes` | 同时启动 400 个进程，成功的少于 256 个，其余 `EAGAIN` | — | 去掉 pids 上限后 400 个全部启动 |
+| fork 炸弹 | `contains a fork bomb and terminates it at the time limit without flooding the host` | `bomb() { while :; do bomb & done; }` 在 pids 上限处被挡住，到 8 秒超时后整个沙箱被终止 | 期间宿主线程总数的增量少于 pids 上限 + 64（runc 下沙箱内的进程即宿主进程；gVisor 下不是） | （去掉 pids 上限的炸弹会拖垮 CI 运行器，用上一行的对照组代替） |
+| 写满临时目录 | `stops writes when a scratch directory is full and does not touch the host disk` | `/tmp`、`/input`、`/output` 分别写到各自上限（1 GiB / 256 MiB / 1 GiB）时 `ENOSPC` | 宿主根文件系统的可用空间减少不到 64 MiB（可写目录都是 tmpfs，根只读） | — |
+| CPU 死循环 / 超时 | `limits a CPU busy loop to one core and terminates it at the time limit` | 4 个线程空转的总吞吐不到 1 个线程的 1.6 倍（限制为 1 核）；`for (;;) {}` 在 3 秒超时后整个沙箱被终止 | Docker 与新沙箱正常 | 去掉 CPU 上限后 4 线程吞吐超过 1 线程的 2 倍（宿主至少 3 核时运行） |
+| 命令超时、调用方中止 | `terminates the sandbox when a command exceeds its time limit`、`… when the caller aborts` | 沙箱被终止，之后的操作 404 | — | — |
+
+**sandbox-runner 的访问控制**：
+
+- **哪些服务能连到它**：它只监听 `sandbox-control` 网络（`internal: true`：没有出口、不映射端口）。这个网络上只有 sandbox-runner 和（6.6 起）worker；api、postgres、redis、s3 都不在上面，解析不到也路由不到它。生产部署同样（设计第 8.1 节）。
+- **令牌如何校验**：每个请求（`/healthz`、`/readyz` 除外，它们只返回固定的 `status`）在路由处理之前由 `onRequest` 钩子检查 `Authorization: Bearer <令牌>`：对请求中的令牌和配置的令牌各取 SHA-256 后用 `timingSafeEqual` 比较（长度固定，不因长度不同提前返回），缺失或不符一律 401。令牌至少 32 个字符，只经 Docker secret（`SANDBOX_RUNNER_TOKEN_FILE`）给 sandbox-runner 和 worker，不写进日志（日志只记方法和路径，有测试）。令牌之外，每个沙箱还绑定任务 id，操作必须带同一个任务 id，并且只能操作本服务创建（带标签）的容器。
+- **沙箱容器能否访问它**：不能。沙箱是 `--network none`（只有 `lo`），不在 `sandbox-control` 上，也解析不到 `sandbox-runner`；沙箱内没有令牌。用例 `cannot be reached from inside a sandbox` 让 sandbox-runner 监听所有地址后，从沙箱经网桥网关、`127.0.0.1` 和名称访问都失败，对照组（网桥网络）能访问到。
+- **Docker 权限**：sandbox-runner 用到的 Docker API 只有 `GET /_ping`、`GET /info`、`GET /containers/json`（按标签过滤）、`POST /containers/create`、`POST /containers/{id}/start`、`GET /containers/{id}/json`、`POST /containers/{id}/kill`、`DELETE /containers/{id}`、`POST /containers/{id}/exec`、`POST /exec/{id}/start`、`GET /exec/{id}/json`。直接挂载 Docker socket 时它拥有全部 Docker 权限（等同宿主 root），所以生产环境要按第 9 步上线检查“解析沙箱”一条收窄。
 
 **LibreOffice 在 gVisor 下的实测**（“文件解析的隔离”中“以 6.5 的实测为准”）：RTF、OLE `.doc`、HTML（需 `--infilter=HTML (StarWriter)`）转 docx 均成功，沙箱创建约 140–220 ms，单个小文件转换（含 LibreOffice 冷启动）约 2.4–3.4 秒，与计划中“gVisor 约 150–500 ms + LibreOffice 冷启动 1~2 秒”量级一致。**不需要**启用设计第 7.2 节预留的“LibreOffice 改用 runc + 严格 seccomp”方案。
 
 偏离计划（均需确认）：
 
 1. **输入输出经 exec 中的 `tar` 传送，不用 `docker cp`**：gVisor 下 `docker cp` 写不进沙箱内的 tmpfs（只读根文件系统上也不能写）；由沙箱内的 tar 生成的归档按不可信输入在 worker 中校验，sandbox-runner 只原样转出并限制字节数，不在持有 Docker 权限的进程中解析沙箱的输出。
-2. **镜像暂不含 `doc2markdown/` 的 npm 依赖和解析入口**（计划写的是“Node 24 + `doc2markdown/` 所需的 npm 依赖 + LibreOffice + 中文字体”）：依赖与入口随 6.6 的分派实现一起加入（另列版本和许可证），6.5 的 `/opt/parse/entry.mjs` 是退出码 64 的占位。LibreOffice 关闭链接更新、不执行宏的全局设置随 6.7。
+2. **镜像暂不含 `doc2markdown/` 的 npm 依赖和解析入口**（计划写的是“Node 24 + `doc2markdown/` 所需的 npm 依赖 + LibreOffice + 中文字体”）：依赖与入口随 6.6 的分派实现一起加入（另列版本和许可证），6.5 的 `/opt/parse/entry.mjs` 是退出码 64 的占位。LibreOffice 关闭链接更新、不执行宏的全局设置原计划随 6.7，#28 确认时决定**提前到 6.6**，与解析入口同时上线（解析入口上线前镜像中的 LibreOffice 不处理任何上传文件）。
 3. **apt 包不按版本固定**：基础镜像按 digest 固定，LibreOffice 等取构建时 Debian bookworm 的当前版本（含安全更新）；部署时按构建出的镜像摘要引用（生产配置强制 `@sha256:`），镜像漏洞扫描随第 9 步。
 4. **新增 `sandbox-control` 网络**（设计第 8.1 节原写 sandbox-runner 在 `backend`）：只有 worker 需要调用它，放在单独的 internal 网络上，api、数据库、Redis 都连不到它，它也连不到它们。
 5. **worker 尚未接入**：`SANDBOX_RUNNER_URL`、令牌的配置和 `context.sandbox` 随 6.6（第一个使用它的任务）加入，6.5 的 worker 与之前相同。
 
-已知限制：Docker socket 等同宿主 root，sandbox-runner 被攻破即宿主被攻破，所以它只在 internal 网络上、只接受固定模板，生产优先 rootless Docker（第 9 步上线检查）；worker 共用一个令牌，以任务 id 绑定沙箱只防误用，不防被攻破的 worker。
+已知限制：开发环境直接挂载 Docker socket，等同宿主 root，sandbox-runner 被攻破即宿主被攻破，所以它只在 internal 网络上、只接受固定模板；生产环境须用 Docker API 代理或 rootless Docker 收窄（第 9 步上线检查）；worker 共用一个令牌，以任务 id 绑定沙箱只防误用，不防被攻破的 worker。
 
 #### 决定事项（#23）
 
@@ -1286,6 +1304,6 @@ AI 网关加固，做法见 `docs/SERVER_DESIGN.md` 第 10.9 节。`client/` 未
    - 任务计费（#27、6.4a）：平台自身故障（worker 崩溃、租约收回、重启）导致的重复调用不向用户收费，6.4a 已完成且其“结算后、checkpoint 前崩溃只扣费一次”的测试在 CI 中通过；所有调用 AI 的业务任务都经步骤幂等（或同一事务提交）调用模型；
    - 实时推送（#26）：Caddy 对 `/api/events` 关闭响应缓冲和压缩（`flush_interval -1`、`encode` 排除 `text/event-stream`），开启 HTTP/2（每个页面一条长连接，HTTP/1.1 每域名只有 6 条）；Caddy 与 api 的空闲 / 读超时大于 25 秒的心跳间隔；`WebBridge` 在 `GET /api/events` 返回非 200 或连接断开时按退避间隔自己重建连接（浏览器 `EventSource` 遇到 503 不再重连），收到 `ready` 后再拉快照、收到 `resync` 时重新拉快照、收到 `closed`（`session`）时转登录页；在预发环境确认经 Caddy 的推送没有延迟、断线后能补发；**扩展为多个 api 实例前**，把 `GET /api/events` 的单用户连接数上限（目前每个 api 进程各自计数，见“SSE 推送（#26，6.3）”偏离第 4 项）改为跨实例计数（例如 Redis 中按用户计数并带过期时间）；
    - Redis（#24）：生产用与开发相同的 `server/redis/start-valkey.sh`（禁用 `default` 用户、ACL 用户 `bidtools`、禁止 `@admin` 与清空命令、不持久化、`noeviction`），`maxmemory` 按实例内存设置（`REDIS_MAXMEMORY`）；redis 只在 `internal: true` 的 `backend` 网络上、不映射端口；密码走 Docker secret；api 和 worker 都设置 `REDIS_URL`，确认 `/readyz` 在停掉 Redis 后返回 503；
-   - 解析沙箱（#28）：生产主机安装 gVisor 并在 Docker 中登记 `runsc`，`SANDBOX_RUNTIME=runsc`（配置强制）；优先 rootless Docker 或 Podman 运行 sandbox-runner；parse 镜像在 CI 中构建并做漏洞扫描，`SANDBOX_PARSE_IMAGE` 按摘要引用、部署前预先拉取；`sandbox-control` 为 `internal: true` 且只有 worker 与 sandbox-runner；令牌走 Docker secret；在生产主机上（实际的 gVisor 版本和内核）跑一遍 `npm run test:sandbox`；
+   - 解析沙箱（#28）：生产主机安装 gVisor 并在 Docker 中登记 `runsc`，`SANDBOX_RUNTIME=runsc`（配置强制）；**限制 sandbox-runner 的 Docker 权限，不得直接挂载有完整权限的 Docker socket**，二选一：(a) 只放行必要接口的 Docker API 代理（只放行“sandbox-runner 的访问控制”中列出的接口，其余一律拒绝；`POST /containers/create` 还要校验请求体：只允许配置的 parse 镜像、`runsc` 运行时、`NetworkMode: none`、`ReadonlyRootfs: true`、`Privileged: false`、`CapDrop: [ALL]`、不带 `Binds` / `Mounts` / `Devices` / `CapAdd`，例如用 Docker 授权插件或自建的校验代理，只按路径放行的代理挡不住被攻破的 sandbox-runner 创建特权容器），或 (b) 在专用的非 root 用户下运行 rootless Docker（或 Podman），使 sandbox-runner 被攻破也拿不到宿主 root；上线前用一个伪造的特权容器创建请求、一个未放行的接口（如 `GET /images/json`、`POST /containers/{id}/attach`）确认被拒绝；parse 镜像在 CI 中构建并做漏洞扫描，`SANDBOX_PARSE_IMAGE` 按摘要引用、部署前预先拉取；`sandbox-control` 为 `internal: true` 且只有 worker 与 sandbox-runner；令牌走 Docker secret；在生产主机上（实际的 gVisor 版本和内核）跑一遍 `npm run test:sandbox`；
    - 从大陆主要省份和运营商实测访问香港服务器的延迟和可用性（`docs/SERVER_DESIGN.md` 第 8.0 节）。
    - 文件存储（旧仓库 PR #34）：选定云厂商对象存储（与 KMS 同一家、香港地域），bucket 私有、禁止公开读和列目录，开启服务端加密（默认加密或 KMS 密钥），配置生命周期规则清理未完成的分片上传；api 使用只能访问该 bucket 的最小权限访问密钥；用真实服务跑一遍 `tests/db/files.test.ts` 确认 S3 兼容性；过期文件和遗留 `uploading` 记录的物理清理任务已上线（否则对象只增不减）；Caddy 层设置请求体上限（略大于 100 MB）；`S3_ENDPOINT` 为 https。

@@ -8,7 +8,7 @@ ARG NODE_IMAGE=node:24.21.0-bookworm-slim@sha256:d6aa754f16b3197301076f047b5def2
 
 FROM ${NODE_IMAGE}
 # libreoffice-*-nogui：不带 X11 / GTK 前端，只能 headless 运行；fonts-noto-cjk：中日韩字体（SIL OFL 1.1），fonts-dejavu-core：西文字体。
-# LibreOffice 关闭链接更新、不执行宏的全局设置随 6.7（文本类格式的预处理）加入；断网是兜底。
+# LibreOffice 关闭链接更新、不执行宏的全局设置随 6.6 与解析入口同时加入（入口上线前 LibreOffice 不处理任何上传文件）；断网是兜底。
 # 安装后删除包管理器的缓存与列表，删除 Node 镜像自带的 npm / corepack / yarn，去掉所有 setuid / setgid 位。
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \

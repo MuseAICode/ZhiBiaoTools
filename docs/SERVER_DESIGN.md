@@ -509,7 +509,7 @@ AI 网关（worker 内）── 解密 Key ──> 模型服务商
 
 - **接口**：`SandboxDriver`（`server/src/sandbox/driver.ts`）的 `create / copyIn / exec / copyOut / destroy`。worker 用 HTTP 客户端（`client.ts`），sandbox-runner 用 Docker 实现（`docker.ts`）；换成微虚拟机时只换后者。
 - **模板**（`templates.ts`）：镜像、网络、用户、只读、资源、可写目录、命令、取回规则都写死在代码中，调用方只选模板名；`parse` 的参数见第 7.4 节的表，取值为路线图第 6 步决定事项第 5 项的起步值。容器的主进程只是 `sleep`，命令经 exec 执行，超时或调用方中止时终止整个容器。
-- **sandbox-runner**（`src/sandbox-runner.ts`）：唯一挂载 Docker socket 的服务，只在 internal 网络 `sandbox-control` 上监听，请求带共享令牌；沙箱的模板、任务 id、到期时间写在容器标签中，每次操作核对标签，不是它创建的容器一律按不存在处理；到期的沙箱定期删除。生产环境只允许 `runsc`、镜像必须按摘要固定，启动时检查运行时已登记。
+- **sandbox-runner**（`src/sandbox-runner.ts`）：唯一能访问容器运行时的服务，只在 internal 网络 `sandbox-control` 上监听（只有 worker 能连到；沙箱是 `--network none`，连不到它，有测试），每个请求在路由之前校验共享令牌（SHA-256 后 `timingSafeEqual`，缺失或不符 401）；生产环境不直接挂载完整权限的 Docker socket，经只放行必要接口并校验创建参数的 Docker API 代理或 rootless Docker（路线图第 9 步上线检查）；沙箱的模板、任务 id、到期时间写在容器标签中，每次操作核对标签，不是它创建的容器一律按不存在处理；到期的沙箱定期删除。生产环境只允许 `runsc`、镜像必须按摘要固定，启动时检查运行时已登记。
 - **输入输出**：经 exec 中的 `tar` 传送（gVisor 下 `docker cp` 不能写入只读根文件系统上的 tmpfs）。取回的归档按第 7.3 节“工作区取回”的规则在 worker 中逐项校验（`archive.ts`），任一项不符整体拒绝；sandbox-runner 只转出并限制字节数，不解析沙箱的输出。
 - **镜像**：`server/sandbox/parse/Dockerfile`，Node 24 + LibreOffice（Writer、Calc，无图形界面）+ 中文字体，删除包管理器和 setuid 位；解析入口和其 npm 依赖随 6.6 加入。
 - **测试**：`npm run test:sandbox`（CI 中在 gVisor 下运行，含 LibreOffice 转换）逐项验证断网、只读、无能力、资源上限、超时、取回校验和沙箱之间不共享，并用去掉加固的对照组证明测试有效；LibreOffice 在 gVisor 下的耗时记录在 CI 日志中。
