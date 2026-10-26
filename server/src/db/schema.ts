@@ -56,6 +56,7 @@ import type {
 } from './migrations/0018_technical_plan.ts';
 import type { TECHNICAL_PLAN_CONTENT_MODES } from './migrations/0019_technical_plan_outline.ts';
 import type { JOB_EVENT_KINDS, JOB_STATUSES } from './migrations/0021_jobs.ts';
+import type { JOB_PAUSE_REASONS } from './migrations/0022_job_billing.ts';
 import type { ProjectKind } from '../projects/store.ts';
 
 type Timestamp = ColumnType<Date, Date | string, Date | string>;
@@ -1123,6 +1124,7 @@ export interface TechnicalPlanBidItemsTable {
 
 export type JobStatus = (typeof JOB_STATUSES)[number];
 export type JobEventKind = (typeof JOB_EVENT_KINDS)[number];
+export type JobPauseReason = (typeof JOB_PAUSE_REASONS)[number];
 
 /** 任务（迁移 0021_jobs）：任务状态的唯一权威。jsonb 列写入时传 JSON 字符串。 */
 export interface JobsTable {
@@ -1146,6 +1148,10 @@ export interface JobsTable {
   updated_at: ColumnType<Date, never, never>;
   started_at: ColumnType<Date | null, never, Date | string | null>;
   finished_at: ColumnType<Date | null, never, Date | string | null>;
+  /** 本任务已扣费的合计（计费单位，bigint 读出为字符串），只由 ai_usage_settle 累加（迁移 0022_job_billing）。 */
+  billed_amount: ColumnType<string, never, never>;
+  /** 暂停原因（迁移 0022_job_billing），只在 paused 时可以有值。 */
+  pause_reason: ColumnType<JobPauseReason | null, never, JobPauseReason | null>;
 }
 
 /** 任务事件（迁移 0021_jobs），只追加。 */

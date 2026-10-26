@@ -25,6 +25,8 @@ export const testConfig: AppConfig = Object.freeze({
     holdTtlSeconds: 900,
     maxOutputTokens: 8192,
     upstreamPrivateHosts: Object.freeze([]),
+    concurrencyMax: 10,
+    concurrencyWaitMs: 30_000,
   }),
   storage: null,
   redis: null,

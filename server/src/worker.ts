@@ -1,7 +1,11 @@
 // worker 进程入口（docs/SERVER_DESIGN.md 第 1、5 节）：与 api 同一镜像、不同入口（node dist/worker.js）。
 // 执行任务队列中的全部长任务，不对外提供接口；只在容器内监听 /healthz、/readyz，供容器健康检查使用。
 // 收到 SIGTERM / SIGINT 时中止正在执行的任务（可续跑的回到 queued，由其他 worker 或重启后继续），再退出。
+// 任务中的模型调用经同一个 AI 网关模块（src/ai/gateway.ts），在 worker 进程中解密平台 Key、冻结和结算（6.4）。
 import Fastify from 'fastify';
+import { createAiConcurrencyLimiter } from './ai/concurrency.ts';
+import { createAiGateway } from './ai/gateway.ts';
+import { KeyringError, loadFileKeyWrapper, type KeyWrapper } from './ai/keyring.ts';
 import { ConfigError, loadConfig, type AppConfig } from './config.ts';
 import { createDatabase } from './db/database.ts';
 import { registerErrorHandlers } from './errors.ts';
@@ -32,6 +36,16 @@ try {
 const redisConfig = config.redis;
 if (!redisConfig) failStartup('配置不合法：REDIS_URL 缺失（worker 必需）');
 
+let keyWrapper: KeyWrapper | null = null;
+if (config.ai.kekFile) {
+  try {
+    keyWrapper = loadFileKeyWrapper(config.ai.kekFile, config.ai.kekVersion);
+  } catch (error) {
+    if (error instanceof KeyringError) failStartup(error.message);
+    throw error;
+  }
+}
+
 const app = Fastify({ logger: createLoggerOptions({ level: config.logLevel }) });
 registerErrorHandlers(app);
 
@@ -47,6 +61,10 @@ await app.register(registerHealthRoutes, { pingDatabase: () => database.ping(), 
 
 const dispatcher = createJobDispatcher({ connection: bullmqConnection(redisConfig, 'producer', 'bidtools-worker-dispatch') });
 const publisher = createEventPublisher(redisConfig, { log: app.log, connectionName: 'bidtools-worker-publisher' });
+const aiLimiter = createAiConcurrencyLimiter(redisConfig, { leaseMs: config.ai.holdTtlSeconds * 1000, log: app.log });
+// 未配置主密钥时任务调用模型一律失败（AI_UNAVAILABLE）；不调用模型的任务照常执行。
+const gateway = keyWrapper ? createAiGateway({ db: database.db, keyWrapper, settings: config.ai, log: app.log, limiter: aiLimiter }) : null;
+if (!gateway) app.log.warn('AI_KEK_FILE is not set, model calls in jobs will fail');
 const runner = createJobRunner({
   db: database.db,
   registry: jobTypeRegistry,
@@ -54,13 +72,14 @@ const runner = createJobRunner({
   connection: bullmqConnection(redisConfig, 'worker', 'bidtools-worker'),
   log: app.log,
   notifier: createJobNotifier({ db: database.db, publisher, log: app.log }),
+  gateway,
 });
 
 app.addHook('onClose', async () => {
   await runner.close();
   await dispatcher.close();
   await publisher.close();
-  await Promise.all([database.destroy(), redis.destroy()]);
+  await Promise.all([database.destroy(), redis.destroy(), aiLimiter.close()]);
 });
 
 let shuttingDown = false;

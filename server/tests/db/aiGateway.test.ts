@@ -293,6 +293,11 @@ describe('冻结与结算', () => {
   it('任务调用记录所属任务和任务类型', async () => {
     const ctx = await newOrg(1_000_000n);
     const jobId = randomUUID();
+    // 任务调用要求任务正在执行（迁移 0022_job_billing），这里由超级用户直接写入一条执行中的任务。
+    await superuser.insertInto('jobs').values({
+      id: jobId, org_id: ctx.orgId, user_id: ctx.userId, type: 'bid-analysis', status: 'running', run_id: randomUUID(),
+      lease_expires_at: new Date(Date.now() + 60_000), started_at: new Date(),
+    }).execute();
     await gateway.chat(ctx, chatRequest({ source: 'job', jobId, jobType: 'bid-analysis' }));
     const [record] = await usageRows(ctx.orgId);
     expect(record).toMatchObject({ source: 'job', job_id: jobId, job_type: 'bid-analysis' });

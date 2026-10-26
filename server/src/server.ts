@@ -1,4 +1,5 @@
 // 进程入口：校验配置 → 启动 → 收到 SIGTERM / SIGINT 时优雅退出。
+import { createAiConcurrencyLimiter } from './ai/concurrency.ts';
 import { KeyringError, loadFileKeyWrapper, type KeyWrapper } from './ai/keyring.ts';
 import { buildApp } from './app.ts';
 import { expireStaleHolds } from './billing/usage.ts';
@@ -52,7 +53,11 @@ const eventLog = { warn: (obj: unknown, msg?: string) => app.log.warn(obj, msg) 
 const publisher = config.redis ? createEventPublisher(config.redis, { log: eventLog, connectionName: 'bidtools-api-publisher' }) : null;
 const hub = config.redis ? createEventHub(config.redis, { log: eventLog }) : null;
 const events = publisher && hub ? { hub, notifier: createJobNotifier({ db: database.db, publisher, log: eventLog }) } : null;
-const app = await buildApp(config, { database, keyWrapper, objectStore, redis, events });
+// AI 网关的并发信号量（名额最长占用一个冻结时长）。未配置 Redis 时不限制并发。
+const aiLimiter = config.redis
+  ? createAiConcurrencyLimiter(config.redis, { leaseMs: config.ai.holdTtlSeconds * 1000, log: eventLog })
+  : null;
+const app = await buildApp(config, { database, keyWrapper, objectStore, redis, events, aiLimiter });
 if (!keyWrapper) app.log.warn('AI_KEK_FILE is not set, AI gateway disabled');
 if (!objectStore) app.log.warn('S3_BUCKET is not set, file storage disabled');
 if (!redis) app.log.warn('REDIS_URL is not set, redis readiness check and event stream disabled');
@@ -69,7 +74,7 @@ sweeper.unref();
 
 app.addHook('onClose', async () => {
   clearInterval(sweeper);
-  await Promise.all([database.destroy(), redis?.destroy(), hub?.close(), publisher?.close()]);
+  await Promise.all([database.destroy(), redis?.destroy(), hub?.close(), publisher?.close(), aiLimiter?.close()]);
 });
 
 let shuttingDown = false;

@@ -3,6 +3,7 @@
 // 每次调用：
 // 0. 检查平台模型白名单（src/ai/models.ts）：未登记、已停用、未定价（含未标记免费的零价格）、免费标记与价格矛盾的
 //    服务商 + 模型一律拒绝，不解密 Key、不冻结、不调用服务商；冻结时（ai_usage_begin）在同一事务中再检查一次；
+//    随后按“组织 + 服务商”的并发上限排队取得名额（src/ai/concurrency.ts，配置了 Redis 时），调用结束后释放；
 // 1. 读取并解密该服务商的平台凭据（明文只存在于本次调用的局部变量里，不缓存、不写日志、不进错误信息）；
 // 2. 按“输入 token 上界 + 最大输出 token”冻结最高费用（src/billing/usage.ts），余额不足时拒绝、不调用服务商；
 // 3. 以流式请求调用服务商，输出上限 max_tokens 就是冻结时的最大输出 token；
@@ -25,6 +26,8 @@ import {
 import { BILLING_PROVIDERS, type BillingProvider, type Database, type UsageSource } from '../db/schema.ts';
 import { withTenant, type TenantContext } from '../db/tenant.ts';
 import { AppError } from '../errors.ts';
+import { DEFAULT_CONCURRENCY_LIMIT } from '../db/migrations/0009_settings.ts';
+import type { AiConcurrencyLimiter } from './concurrency.ts';
 import { credentialAad } from './credentials.ts';
 import { estimateInputTokens, estimateTokens, inputTokenUpperBound } from './estimate.ts';
 import type { KeyWrapper } from './keyring.ts';
@@ -39,6 +42,10 @@ export interface GatewaySettings {
   holdTtlSeconds: number;
   maxOutputTokens: number;
   upstreamPrivateHosts: readonly string[];
+  /** 平台对每个“组织 + 服务商”的并发上限（AI_CONCURRENCY_MAX）；组织设置的上限更小时取组织的。 */
+  concurrencyMax?: number;
+  /** 交互式调用等待并发名额的最长时间（AI_CONCURRENCY_WAIT_MS），超过返回 429。 */
+  concurrencyWaitMs?: number;
 }
 
 export interface ChatRequest {
@@ -49,7 +56,7 @@ export interface ChatRequest {
   maxOutputTokens?: number | undefined;
   temperature?: number | undefined;
   source: UsageSource;
-  /** 所属任务（source = 'job' 时必填），写入 usage_records。 */
+  /** 所属任务（source = 'job' 时必填，任务必须正在执行），写入 usage_records；任务类型以任务记录为准。 */
   jobId?: string | null;
   jobType?: string | null;
 }
@@ -64,6 +71,8 @@ export interface ChatOptions {
   signal?: AbortSignal;
   onDelta?: (delta: ChatDelta) => void;
   log?: FastifyBaseLogger;
+  /** 等待并发名额的最长时间，默认取 settings.concurrencyWaitMs；任务中的调用传 Infinity（一直等到被取消）。 */
+  concurrencyWaitMs?: number;
 }
 
 export interface ChatResult {
@@ -87,6 +96,8 @@ const MAX_TOKENS = 1_000_000_000;
 const ROLES = new Set(['system', 'user', 'assistant']);
 const JOB_TYPE_PATTERN = /^[a-z][a-z0-9-]{0,63}$/;
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+export const DEFAULT_AI_CONCURRENCY_MAX = 10;
+export const DEFAULT_AI_CONCURRENCY_WAIT_MS = 30_000;
 
 interface CredentialRow {
   id: string;
@@ -154,10 +165,22 @@ export interface CreateAiGatewayOptions {
   keyWrapper: KeyWrapper;
   settings: GatewaySettings;
   log: FastifyBaseLogger;
+  /** 按“组织 + 服务商”的并发信号量；未配置 Redis 时为 null，不限制并发。 */
+  limiter?: AiConcurrencyLimiter | null;
 }
 
 export function createAiGateway(options: CreateAiGatewayOptions): AiGateway {
   const { db, keyWrapper, settings } = options;
+  const limiter = options.limiter ?? null;
+  const concurrencyMax = settings.concurrencyMax ?? DEFAULT_AI_CONCURRENCY_MAX;
+
+  /** 本组织的并发上限：组织设置（默认 10）与平台上限的较小值。 */
+  async function concurrencyLimitOf(context: TenantContext): Promise<number> {
+    const row = await withTenant(db, context, (trx) =>
+      trx.selectFrom('org_settings').select('concurrency_limit').where('org_id', '=', context.orgId).executeTakeFirst(),
+    );
+    return Math.min(row?.concurrency_limit ?? DEFAULT_CONCURRENCY_LIMIT, concurrencyMax);
+  }
 
   async function loadApiKey(context: TenantContext, provider: BillingProvider, log: FastifyBaseLogger): Promise<{ apiKey: string; baseUrl: string }> {
     const row = await withTenant(db, context, (trx) =>
@@ -178,141 +201,165 @@ export function createAiGateway(options: CreateAiGatewayOptions): AiGateway {
     }
   }
 
+  /** 取得并发名额之后的部分：解密 Key、冻结、调用服务商、结算或释放。 */
+  async function callWithSlot(
+    context: TenantContext,
+    request: ChatRequest,
+    chatOptions: ChatOptions,
+    log: FastifyBaseLogger,
+    maxOutputTokens: number,
+  ): Promise<ChatResult> {
+    const adapter = PROVIDER_ADAPTERS[request.provider];
+    const credential = await loadApiKey(context, request.provider, log);
+    // 调用方在此之前已经取消（例如用户在请求处理开始前就断开）：不冻结、不调用服务商。
+    if (chatOptions.signal?.aborted) throw new AppError(400, 'AI_REQUEST_ABORTED', '调用已取消');
+
+    const requestId = randomUUID();
+    const startedAt = Date.now();
+    const hold = await beginUsage(db, context, {
+      requestId,
+      source: request.source,
+      jobId: request.jobId ?? null,
+      jobType: request.jobType ?? null,
+      provider: request.provider,
+      model: request.model,
+      estimatedInputTokens: clampTokens(inputTokenUpperBound(request.messages)),
+      maxOutputTokens,
+      holdSeconds: settings.holdTtlSeconds,
+    });
+
+    const timeout = AbortSignal.timeout(settings.upstreamTimeoutMs);
+    const signal = chatOptions.signal ? AbortSignal.any([chatOptions.signal, timeout]) : timeout;
+    let content = '';
+    let reasoningContent = '';
+    let finishReason: string | null = null;
+    let providerUsage: ProviderUsage | null = null;
+    let failure: GatewayFailureReason | null = null;
+    let failureDetail: { status?: number; upstreamCode?: string } = {};
+    let aborted = false;
+
+    const events = streamChatCompletion({
+      baseUrl: credential.baseUrl,
+      path: adapter.chatPath,
+      apiKey: credential.apiKey,
+      body: adapter.buildBody({ model: request.model, messages: request.messages, maxOutputTokens, temperature: request.temperature }),
+      signal,
+      isTimeout: () => timeout.aborted,
+      privateHosts: settings.upstreamPrivateHosts,
+      maxResponseBytes: MAX_UPSTREAM_RESPONSE_BYTES,
+    });
+    try {
+      let step = await events.next();
+      while (!step.done) {
+        const event = step.value;
+        if ('error' in event) throw new UpstreamError('upstream_error');
+        if (event.usage != null) providerUsage = adapter.parseUsage(event.usage) ?? providerUsage;
+        const choice = Array.isArray(event.choices) ? (event.choices[0] as Record<string, unknown> | undefined) : undefined;
+        const delta = (choice?.delta ?? null) as { content?: unknown; reasoning_content?: unknown } | null;
+        const piece: ChatDelta = {};
+        if (typeof delta?.content === 'string' && delta.content !== '') piece.content = delta.content;
+        if (typeof delta?.reasoning_content === 'string' && delta.reasoning_content !== '') piece.reasoningContent = delta.reasoning_content;
+        if (piece.content !== undefined || piece.reasoningContent !== undefined) {
+          content += piece.content ?? '';
+          reasoningContent += piece.reasoningContent ?? '';
+          chatOptions.onDelta?.(piece);
+        }
+        if (typeof choice?.finish_reason === 'string') finishReason = choice.finish_reason;
+        step = await events.next();
+      }
+      // 既没有 [DONE] 也没有 finish_reason：输出被截断，按上游失败处理。
+      if (!step.value.done && finishReason === null) throw new UpstreamError('invalid_upstream_response');
+    } catch (error) {
+      if (error instanceof UpstreamAbortedError) {
+        aborted = true;
+      } else if (error instanceof UpstreamError) {
+        failure = error.reason;
+        failureDetail = { ...(error.status ? { status: error.status } : {}), ...(error.upstreamCode ? { upstreamCode: error.upstreamCode } : {}) };
+      } else {
+        failure = 'gateway_error';
+        log.error({ err: error, ai: { requestId } }, 'ai gateway error');
+      }
+    } finally {
+      // 提前结束时关闭上游连接。
+      await events.return({ done: false }).catch(() => undefined);
+    }
+
+    const summary = {
+      requestId,
+      usageId: hold.usageId,
+      provider: request.provider,
+      model: request.model,
+      source: request.source,
+      jobId: request.jobId ?? null,
+      holdAmount: hold.holdAmount.toString(),
+      durationMs: Date.now() - startedAt,
+    };
+
+    if (failure !== null) {
+      try {
+        await failUsage(db, context, hold.usageId, failure, providerUsage);
+      } catch (error) {
+        // 释放失败（如数据库不可用）：冻结到期后自动释放，不会收费。
+        log.error({ err: error, ai: summary }, 'ai usage release failed');
+      }
+      log.warn({ ai: { ...summary, status: 'unbilled', failureReason: failure, upstream: failureDetail } }, 'ai call failed');
+      throw failureError(failure);
+    }
+
+    const usage: SettleUsageInput = providerUsage
+      ? { ...providerUsage, usageSource: 'provider' }
+      : {
+          inputTokens: clampTokens(estimateInputTokens(request.messages)),
+          cachedInputTokens: 0,
+          outputTokens: clampTokens(estimateTokens(content) + estimateTokens(reasoningContent)),
+          usageSource: 'estimated',
+        };
+    const settlement = await settleUsage(db, context, hold.usageId, usage);
+    log.info(
+      {
+        ai: {
+          ...summary,
+          status: settlement.status,
+          aborted,
+          amount: settlement.amount.toString(),
+          inputTokens: usage.inputTokens,
+          cachedInputTokens: usage.cachedInputTokens,
+          outputTokens: usage.outputTokens,
+          usageSource: usage.usageSource,
+        },
+      },
+      'ai call settled',
+    );
+    return {
+      requestId,
+      content,
+      reasoningContent,
+      finishReason,
+      aborted,
+      usage,
+      billing: { status: settlement.status, amount: settlement.amount },
+    };
+  }
+
   return {
     async chat(context, request, chatOptions = {}) {
       const log = chatOptions.log ?? options.log;
       const maxOutputTokens = assertRequest(request, settings);
-      const adapter = PROVIDER_ADAPTERS[request.provider];
       await assertModelCallable(db, context, request.provider, request.model);
-      const credential = await loadApiKey(context, request.provider, log);
-      // 调用方在此之前已经取消（例如用户在请求处理开始前就断开）：不冻结、不调用服务商。
-      if (chatOptions.signal?.aborted) throw new AppError(400, 'AI_REQUEST_ABORTED', '调用已取消');
-
-      const requestId = randomUUID();
-      const startedAt = Date.now();
-      const hold = await beginUsage(db, context, {
-        requestId,
-        source: request.source,
-        jobId: request.jobId ?? null,
-        jobType: request.jobType ?? null,
-        provider: request.provider,
-        model: request.model,
-        estimatedInputTokens: clampTokens(inputTokenUpperBound(request.messages)),
-        maxOutputTokens,
-        holdSeconds: settings.holdTtlSeconds,
-      });
-
-      const timeout = AbortSignal.timeout(settings.upstreamTimeoutMs);
-      const signal = chatOptions.signal ? AbortSignal.any([chatOptions.signal, timeout]) : timeout;
-      let content = '';
-      let reasoningContent = '';
-      let finishReason: string | null = null;
-      let providerUsage: ProviderUsage | null = null;
-      let failure: GatewayFailureReason | null = null;
-      let failureDetail: { status?: number; upstreamCode?: string } = {};
-      let aborted = false;
-
-      const events = streamChatCompletion({
-        baseUrl: credential.baseUrl,
-        path: adapter.chatPath,
-        apiKey: credential.apiKey,
-        body: adapter.buildBody({ model: request.model, messages: request.messages, maxOutputTokens, temperature: request.temperature }),
-        signal,
-        isTimeout: () => timeout.aborted,
-        privateHosts: settings.upstreamPrivateHosts,
-        maxResponseBytes: MAX_UPSTREAM_RESPONSE_BYTES,
-      });
+      const release = limiter
+        ? await limiter.acquire({
+            orgId: context.orgId,
+            provider: request.provider,
+            limit: await concurrencyLimitOf(context),
+            waitMs: chatOptions.concurrencyWaitMs ?? settings.concurrencyWaitMs ?? DEFAULT_AI_CONCURRENCY_WAIT_MS,
+            signal: chatOptions.signal,
+          })
+        : null;
       try {
-        let step = await events.next();
-        while (!step.done) {
-          const event = step.value;
-          if ('error' in event) throw new UpstreamError('upstream_error');
-          if (event.usage != null) providerUsage = adapter.parseUsage(event.usage) ?? providerUsage;
-          const choice = Array.isArray(event.choices) ? (event.choices[0] as Record<string, unknown> | undefined) : undefined;
-          const delta = (choice?.delta ?? null) as { content?: unknown; reasoning_content?: unknown } | null;
-          const piece: ChatDelta = {};
-          if (typeof delta?.content === 'string' && delta.content !== '') piece.content = delta.content;
-          if (typeof delta?.reasoning_content === 'string' && delta.reasoning_content !== '') piece.reasoningContent = delta.reasoning_content;
-          if (piece.content !== undefined || piece.reasoningContent !== undefined) {
-            content += piece.content ?? '';
-            reasoningContent += piece.reasoningContent ?? '';
-            chatOptions.onDelta?.(piece);
-          }
-          if (typeof choice?.finish_reason === 'string') finishReason = choice.finish_reason;
-          step = await events.next();
-        }
-        // 既没有 [DONE] 也没有 finish_reason：输出被截断，按上游失败处理。
-        if (!step.value.done && finishReason === null) throw new UpstreamError('invalid_upstream_response');
-      } catch (error) {
-        if (error instanceof UpstreamAbortedError) {
-          aborted = true;
-        } else if (error instanceof UpstreamError) {
-          failure = error.reason;
-          failureDetail = { ...(error.status ? { status: error.status } : {}), ...(error.upstreamCode ? { upstreamCode: error.upstreamCode } : {}) };
-        } else {
-          failure = 'gateway_error';
-          log.error({ err: error, ai: { requestId } }, 'ai gateway error');
-        }
+        return await callWithSlot(context, request, chatOptions, log, maxOutputTokens);
       } finally {
-        // 提前结束时关闭上游连接。
-        await events.return({ done: false }).catch(() => undefined);
+        await release?.();
       }
-
-      const summary = {
-        requestId,
-        usageId: hold.usageId,
-        provider: request.provider,
-        model: request.model,
-        source: request.source,
-        jobId: request.jobId ?? null,
-        holdAmount: hold.holdAmount.toString(),
-        durationMs: Date.now() - startedAt,
-      };
-
-      if (failure !== null) {
-        try {
-          await failUsage(db, context, hold.usageId, failure, providerUsage);
-        } catch (error) {
-          // 释放失败（如数据库不可用）：冻结到期后自动释放，不会收费。
-          log.error({ err: error, ai: summary }, 'ai usage release failed');
-        }
-        log.warn({ ai: { ...summary, status: 'unbilled', failureReason: failure, upstream: failureDetail } }, 'ai call failed');
-        throw failureError(failure);
-      }
-
-      const usage: SettleUsageInput = providerUsage
-        ? { ...providerUsage, usageSource: 'provider' }
-        : {
-            inputTokens: clampTokens(estimateInputTokens(request.messages)),
-            cachedInputTokens: 0,
-            outputTokens: clampTokens(estimateTokens(content) + estimateTokens(reasoningContent)),
-            usageSource: 'estimated',
-          };
-      const settlement = await settleUsage(db, context, hold.usageId, usage);
-      log.info(
-        {
-          ai: {
-            ...summary,
-            status: settlement.status,
-            aborted,
-            amount: settlement.amount.toString(),
-            inputTokens: usage.inputTokens,
-            cachedInputTokens: usage.cachedInputTokens,
-            outputTokens: usage.outputTokens,
-            usageSource: usage.usageSource,
-          },
-        },
-        'ai call settled',
-      );
-      return {
-        requestId,
-        content,
-        reasoningContent,
-        finishReason,
-        aborted,
-        usage,
-        billing: { status: settlement.status, amount: settlement.amount },
-      };
     },
   };
 }

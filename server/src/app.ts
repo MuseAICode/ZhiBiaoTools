@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import helmet from '@fastify/helmet';
 import Fastify, { type FastifyInstance } from 'fastify';
+import type { AiConcurrencyLimiter } from './ai/concurrency.ts';
 import { createAiGateway } from './ai/gateway.ts';
 import type { KeyWrapper } from './ai/keyring.ts';
 import { registerAuthHooks } from './auth/hooks.ts';
@@ -51,6 +52,8 @@ export interface BuildAppOptions {
    * 主密钥只交给 AI 网关和凭据加密，不放进配置对象。
    */
   keyWrapper?: KeyWrapper | null;
+  /** AI 网关按“组织 + 服务商”的并发信号量（src/server.ts 按 REDIS_URL 创建，由调用方关闭）。未提供时不限制并发。 */
+  aiLimiter?: AiConcurrencyLimiter | null;
   /** 对象存储（src/server.ts 按 S3_* 创建）。未提供时文件接口和产物下载接口返回 503。 */
   objectStore?: ObjectStore | null;
   /** 测试用：替换上传并发上限和空闲超时。 */
@@ -129,7 +132,9 @@ export async function buildApp(config: AppConfig, options: BuildAppOptions): Pro
     keyWrapper,
     upstreamPrivateHosts: config.ai.upstreamPrivateHosts,
   });
-  const gateway = keyWrapper ? createAiGateway({ db, keyWrapper, settings: config.ai, log: app.log }) : null;
+  const gateway = keyWrapper
+    ? createAiGateway({ db, keyWrapper, settings: config.ai, log: app.log, limiter: options.aiLimiter ?? null })
+    : null;
   await app.register(registerAiRoutes, { prefix: '/api/ai', gateway, maxOutputTokens: config.ai.maxOutputTokens });
   await app.register(registerFileRoutes, { prefix: '/api/files', db, objectStore: options.objectStore ?? null, ...options.uploadLimits });
   await app.register(registerProjectRoutes, { prefix: '/api/projects', db });

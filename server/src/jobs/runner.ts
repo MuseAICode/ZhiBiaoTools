@@ -13,20 +13,27 @@
 // 推送（6.3）：认领、进度、日志、结束、对账改变状态后经 notifier 推送（src/jobs/notify.ts）。另订阅任务控制频道
 // （src/events/publisher.ts 的 jobControlChannel）：收到正在执行的任务 id 时立即续租一次，从 jobs 读到取消、暂停请求，
 // 不必等到下一次续租；消息本身不被信任，只触发一次查询。
+//
+// 模型调用（6.4）：任务经 context.ai 调用 AI 网关（在 worker 进程中运行），用量记到本任务；余额不足以冻结时
+// 任务退出、暂停为 paused / insufficient_balance，经 notifier 推送（job 事件的 pauseReason），充值后由用户继续。
 import { randomUUID } from 'node:crypto';
 import { DelayedError, Worker, type Job, type RedisOptions as BullmqRedisOptions } from 'bullmq';
 import { Redis } from 'ioredis';
 import type { FastifyBaseLogger } from 'fastify';
 import type { Kysely } from 'kysely';
 import { JOB_DISPATCH_BATCH_MAX } from '../db/migrations/0021_jobs.ts';
+import type { AiGateway } from '../ai/gateway.ts';
 import type { Database } from '../db/schema.ts';
+import { AppError } from '../errors.ts';
 import {
   DEFAULT_QUEUE_CONCURRENCY,
   JOB_QUEUES,
+  JobBalanceExhaustedError,
   JobError,
   JobInterruptedError,
   maxAttemptsOf,
   ORG_RUNNING_JOB_LIMIT,
+  type JobAi,
   type JobContext,
   type JobQueueName,
   type JobTypeRegistry,
@@ -71,6 +78,8 @@ export interface JobRunnerOptions {
   redisCheckIntervalMs?: number;
   /** 状态变化后的推送；不提供时不推送。 */
   notifier?: JobNotifier;
+  /** AI 网关；未配置主密钥时为 null，任务调用模型时失败（AI_UNAVAILABLE）。 */
+  gateway?: AiGateway | null;
 }
 
 export interface ReconcileResult {
@@ -109,6 +118,7 @@ export function createJobRunner(options: JobRunnerOptions): JobRunner {
   const redisCheckIntervalMs = options.redisCheckIntervalMs ?? DEFAULT_REDIS_CHECK_INTERVAL_MS;
   const sentinelKey = `${prefix}:jobs:sentinel`;
   const notifier = options.notifier ?? NULL_JOB_NOTIFIER;
+  const gateway = options.gateway ?? null;
 
   const workers: Worker<DispatchPayload>[] = [];
   const active = new Map<string, { controller: AbortController; done: Promise<void> }>();
@@ -157,6 +167,37 @@ export function createJobRunner(options: JobRunnerOptions): JobRunner {
     const renew = () => {
       renewRun(db, run, leaseMs).then(apply, (error: unknown) => log.warn({ err: error, jobId: job.id }, 'job lease renewal failed'));
     };
+    // 余额不足以冻结：之后的调用不再发起，执行结束后暂停（不中止进行中的其他调用，它们照常结算）。
+    let balanceExhausted = false;
+    const tenant = { orgId: job.orgId, userId: job.userId, role };
+    const ai: JobAi = {
+      async chat(request, chatOptions = {}) {
+        if (balanceExhausted) throw new JobBalanceExhaustedError();
+        if (!gateway) throw new JobError('AI_UNAVAILABLE', '模型服务暂不可用，请稍后再试');
+        try {
+          return await gateway.chat(
+            tenant,
+            { ...request, source: 'job', jobId: job.id, jobType: job.type },
+            {
+              signal: controller.signal,
+              log,
+              // 任务中的调用一直排队等并发名额，直到任务被取消或暂停。
+              concurrencyWaitMs: Number.POSITIVE_INFINITY,
+              ...(chatOptions.onDelta ? { onDelta: chatOptions.onDelta } : {}),
+            },
+          );
+        } catch (error) {
+          if (error instanceof AppError && error.code === 'INSUFFICIENT_BALANCE') {
+            balanceExhausted = true;
+            throw new JobBalanceExhaustedError({ cause: error });
+          }
+          if (controller.signal.aborted) throw error;
+          if (error instanceof AppError) throw new JobError(error.code, error.message, { cause: error });
+          throw error;
+        }
+      },
+    };
+
     const heartbeat = setInterval(renew, heartbeatMs);
     heartbeat.unref();
     checks.set(job.id, renew);
@@ -168,8 +209,9 @@ export function createJobRunner(options: JobRunnerOptions): JobRunner {
       attempt: job.attempt,
       params: undefined,
       checkpoint: job.checkpoint,
-      tenant: { orgId: job.orgId, userId: job.userId, role },
+      tenant,
       db,
+      ai,
       signal: controller.signal,
       async setProgress(progress) {
         if (!apply(await renewRun(db, run, leaseMs, { progress }))) throw new JobInterruptedError();
@@ -197,7 +239,9 @@ export function createJobRunner(options: JobRunnerOptions): JobRunner {
       await definition.run({ ...context, params });
       outcome = { kind: 'succeeded' };
     } catch (error) {
-      if (controller.signal.aborted || error instanceof JobInterruptedError) {
+      if (balanceExhausted && !lost) {
+        outcome = { kind: 'insufficient-balance' };
+      } else if (controller.signal.aborted || error instanceof JobInterruptedError) {
         outcome = { kind: 'interrupted' };
       } else if (error instanceof JobError) {
         outcome = { kind: 'failed', code: error.code, message: error.message };

@@ -37,6 +37,13 @@ export interface AiGatewayConfig {
    * 默认空：Base URL 只能是 https，且连接时拒绝私有、回环、链路本地等地址（第 4.4 节）。
    */
   upstreamPrivateHosts: readonly string[];
+  /**
+   * 每个“组织 + 服务商”同时进行的模型调用数的平台上限（Redis 分布式信号量，src/ai/concurrency.ts）；组织设置
+   * org_settings.concurrency_limit 更小时取组织的。未配置 Redis 时不限制。
+   */
+  concurrencyMax: number;
+  /** 交互式调用等待并发名额的最长时间（毫秒），超过返回 429；任务中的调用一直等到被取消。 */
+  concurrencyWaitMs: number;
 }
 
 /** 对象存储（docs/SERVER_DESIGN.md 第 6.3 节），S3 兼容接口。 */
@@ -323,6 +330,8 @@ function createReader(env: Env, options: LoadConfigOptions) {
         parse: parseHostList,
         expected: '逗号分隔的小写主机名或 IP（如 127.0.0.1,llm.internal）',
       }),
+      concurrencyMax: read('AI_CONCURRENCY_MAX', intSpec(10, 1, 1000)),
+      concurrencyWaitMs: read('AI_CONCURRENCY_WAIT_MS', intSpec(30_000, 0, 600_000)),
     });
   }
 

@@ -1,7 +1,7 @@
 // AI 调用的预扣冻结与结算（docs/SERVER_DESIGN.md 第 10.3 节），数据库层见迁移 0004_ai_gateway：
 // ai_usage_begin 冻结、ai_usage_settle 按实际用量结算、ai_usage_fail 不收费并释放冻结、ai_usage_expire_holds 清理到期冻结。
 // 金额一律是 BigInt（计费单位）。组织和用户来自 TenantContext，不来自请求参数。
-import { sql, type Kysely } from 'kysely';
+import { sql, type Kysely, type Transaction } from 'kysely';
 import { GATEWAY_FAILURE_REASONS } from '../db/migrations/0004_ai_gateway.ts';
 import type { BillingProvider, Database, UsageSource } from '../db/schema.ts';
 import { withTenant, type TenantContext } from '../db/tenant.ts';
@@ -136,6 +136,18 @@ export async function failUsage(
 export async function expireStaleHolds(db: Kysely<Database>): Promise<number> {
   const result = await sql<{ expired: number }>`SELECT ai_usage_expire_holds() AS expired`.execute(db);
   return result.rows[0]!.expired;
+}
+
+/**
+ * 入队、继续任务前的余额门槛（迁移 0022_job_billing 的 billing_job_start_check）：可用余额低于最低启动余额（1 元）时
+ * 抛 INSUFFICIENT_BALANCE（402）。在调用方的事务中执行（组织取该事务的 app.org_id），失败时整个事务回滚。
+ */
+export async function assertJobStartBalance(trx: Transaction<Database>): Promise<void> {
+  try {
+    await sql`SELECT billing_job_start_check()`.execute(trx);
+  } catch (error) {
+    throw mapUsageError(error);
+  }
 }
 
 /** 可用余额 = 余额 − 进行中（未到期）的冻结，在同一事务中读取。 */
