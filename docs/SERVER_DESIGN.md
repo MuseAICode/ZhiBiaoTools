@@ -772,6 +772,7 @@ AI 网关（worker 内）── 解密 Key ──> 模型服务商
 - **入队门槛**：会调用模型的任务类型（`billable`）入队和从暂停继续前，经 `billing_job_start_check()` 要求可用余额（余额 − 未到期的冻结）≥ 1 元，否则 402 `INSUFFICIENT_BALANCE`；
 - **运行中耗尽**：冻结失败时网关返回 402，执行者把任务改为 `paused`、`pause_reason = 'insufficient_balance'`，写带原因的 `paused` 事件并推送 `job` 事件；之后本次执行中的调用直接失败。充值后继续，从 checkpoint 开始，已扣费的调用不重做；
 - **并发信号量**（`src/ai/concurrency.ts`）：键 `ai:concurrency:{orgId}:{provider}` 的有序集合，Lua 脚本原子地清掉到期名额、判断上限、加入令牌；名额最长占用一个冻结时长，崩溃时到期自动收回。上限 = min(`org_settings.concurrency_limit`，`AI_CONCURRENCY_MAX`)；网关在白名单检查之后、解密 Key 和冻结之前取得名额。交互式调用最多等 `AI_CONCURRENCY_WAIT_MS` 后 429 `AI_CONCURRENCY_LIMITED`，任务中的调用一直等到被取消；Redis 不可用时不放行（503 `AI_CONCURRENCY_UNAVAILABLE`），api 未配置 Redis 时不限制。Redis 被清空时名额一起消失，短时间内可能超出上限，不影响计费；
+- **待补（路线图 6.4a，必做）**：平台自身故障导致的重复调用不向用户收费。一次调用已结算、任务还没保存 checkpoint 时 worker 崩溃，续跑会重做这一步并再次扣费；在第一个调用 AI 的业务任务之前，用“步骤结果与 checkpoint 同一事务提交”或“步骤幂等键”消除；
 - 细节与偏离见路线图“worker 接入 AI 网关与余额（#27，6.4）”。
 
 ## 11. 合规待确认事项

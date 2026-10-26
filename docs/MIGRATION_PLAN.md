@@ -876,19 +876,20 @@ AI 网关加固，做法见 `docs/SERVER_DESIGN.md` 第 10.9 节。`client/` 未
 | 6.2 | `jobs` 表与 worker 骨架：迁移新建 `jobs`（`SERVER_DESIGN.md` 第 5.1 节的字段，`project_id` 可空供组织级任务，强制 RLS）和 `job_events`（取代 `task_logs`，只追加）；互斥用部分唯一索引（见下方“互斥”）；`src/jobs/`（入队、取消、暂停、继续、checkpoint、状态机，事务内检查互斥和组织级并发）；BullMQ 生产者与 `src/worker.ts` 消费者（同一镜像、不同入口，compose 新增 `worker` 服务）；stalled 恢复；`GET /api/jobs`、`GET /api/jobs/:jobId`、`POST /api/jobs/:jobId/cancel`。只注册一个测试用任务类型，不迁移业务任务 | 6.1 | **是**（实现时新增定义者角色 `bidtools_jobs`，见下方“jobs 表与 worker 骨架”） | 已完成 | #25 |
 | 6.3 | SSE 推送：`GET /api/events`，worker 发布到 Redis `events:org:{orgId}` 并追加 Stream，api 按连接的组织和用户过滤后写出；`Last-Event-ID` 补发、超出窗口推 `resync`、25 秒心跳；会话吊销、移出组织后关闭连接（定期重新校验会话）；单用户连接数上限 | 6.2 | 否 | 已完成 | #26 |
 | 6.4 | worker 接入 AI 网关与余额：网关在 worker 中运行，任务调用记 `job_id` / `job_type`；`usage_records.job_id` 不补外键（任务记录到保留期会被删除，用量记录不可修改、永久保留，见“决定事项”第 10 项），只保留 `job_id` / `job_type` 的值；`jobs.billed_amount` 与结算在同一事务中累加（改 `ai_usage_settle`）；入队前检查最低启动余额（决定事项第 7 项）；运行中冻结失败时暂停为 `paused` / `insufficient_balance`，经 SSE 推送（取代 `onBalanceInsufficient`），充值后继续不重复扣费；AI 网关按组织 + 服务商的并发上限改为 Redis 分布式信号量（取 `org_settings.concurrency_limit` 与平台上限的较小值） | 6.2、6.3 | **是**（计费） | 已完成 | #27 |
+| 6.4a | **步骤幂等，必做**（#27 确认时登记）：平台自身故障（worker 崩溃、租约收回、重启）导致的重复调用不向用户收费。现状：一次调用已结算、任务还没保存 checkpoint 时 worker 崩溃，续跑会重做这一步并再次扣费。二选一：步骤结果与 checkpoint 同一事务提交（结算、写结果、写 checkpoint 一起提交），或给每一步加幂等键（`jobId + 步骤键`，续跑时同一步已结算的调用直接复用结果或不再收费）；测试须覆盖“结算后、checkpoint 前崩溃”只扣费一次。**必须在第一个调用 AI 的业务任务 PR（6.9、6.11、6.12、6.13 中最先做的那个）之前完成** | 6.4 | **是**（计费） | 未开始 | — |
 | 6.5 | 解析沙箱基础设施：`sandbox-runner` 服务、`SandboxDriver` 接口、`parse` 模板、解析镜像（见下方“文件解析的隔离”）；隔离测试 | 6.2 | **是**（沙箱） | 未开始 | — |
 | 6.6 | 解析任务（一）二进制与纯文本格式：`parse` 队列；按记录的 MIME 分派（见下方分派表）；ZIP 炸弹、PDF 页数、超时检查；产出经 `writeArtifact` 写入；重新解析时替换旧产物（第 5 步 #8 留下）；接入技术方案、废标检查、可研报告三个模块的文档解析（`saveDocumentParse` / `saveSourceParse`），导入后自动入队 | 6.5 | 否 | 未开始 | — |
 | 6.7 | 解析任务（二）文本类格式（#6 放行的 RTF、HTML、MHT、Word 2003 XML、SpreadsheetML）：逐项满足“第 6 步解析要求”，用恶意样本测试（XXE、实体膨胀、外链图片 / 样式 / `<iframe>`、RTF `INCLUDEPICTURE` / `INCLUDETEXT`、MHT 外部 `Content-Location`） | 6.6 | 否 | 未开始 | — |
 | 6.8 | 清理任务：过期文件、产物、项目的对象与行的物理删除，遗留 `uploading` 行，按对象键前缀找出的孤儿对象，冻结到期收尾（`expireStaleHolds` 从 api 的定时器移到 worker 的定时任务），超过保留期的 `jobs` / `job_events`；跨组织，用新的 `NOLOGIN` 定义者角色 `bidtools_cleanup` 写 `SECURITY DEFINER` 函数，要求见“决定事项”第 9、10 项 | 6.2 | **是**（新增数据库角色） | 未开始 | — |
-| 6.9 | 废标检查任务：`rejection-items-extraction`、`rejection-check-run`；任务按招标文件顺序合并正文，经 `computeSignatures` 写签名；`loadState` 返回任务状态 | 6.4、6.6 | 否 | 未开始 | — |
+| 6.9 | 废标检查任务：`rejection-items-extraction`、`rejection-check-run`；任务按招标文件顺序合并正文，经 `computeSignatures` 写签名；`loadState` 返回任务状态 | 6.4、6.4a、6.6 | 否 | 未开始 | — |
 | 6.10 | 标书查重任务：`duplicate-analysis`。`duplicateCheckService.cjs` 自己用 `adm-zip`、`cfb`、`cheerio`、`pdf-parse` 读原件（正文、元数据、目录、图片），这部分提取放进 `parse` 沙箱，产出正文与图片产物；比对计算在 worker 中进行，经 `saveAnalysisSection` 写入 | 6.5、6.6 | 否 | 未开始 | — |
-| 6.11 | 技术方案任务（一）：招标解析 `bid-analysis`、多标段识别 `bid-section-extraction`；`checkBidSections`（疑似多标段检测）在 worker 中计算并写入状态，改写正则消除平方级回溯（#20 留下）；导入招标文件前取消本项目的技术方案任务（#20 留下） | 6.4、6.6 | 否 | 未开始 | — |
-| 6.12 | 可研报告任务：`feasibility-analysis`、`feasibility-parameters`、`feasibility-content`、`feasibility-human-writing`（后两项按“决定事项”第 4 项提前到第 6 步）；服务端合并资料（取代 `readCombinedSourceMarkdown`）；正文生成或审校运行、暂停时不能修改目录和手工改正文（`assertContentUnlocked`，#19 留下） | 6.4、6.6 | 否 | 未开始 | — |
-| 6.13 | 知识库任务：文档准备（解析、切块、条目抽取）、`retryDocument`、`startMatching`、`knowledgeBase.onEvent` 改为 SSE；文档在处理中被删除时任务停止（写入影响 0 行即退出，#12 留下）；取代 `recoverInterruptedDocuments` | 6.4、6.6 | 否 | 未开始 | — |
+| 6.11 | 技术方案任务（一）：招标解析 `bid-analysis`、多标段识别 `bid-section-extraction`；`checkBidSections`（疑似多标段检测）在 worker 中计算并写入状态，改写正则消除平方级回溯（#20 留下）；导入招标文件前取消本项目的技术方案任务（#20 留下） | 6.4、6.4a、6.6 | 否 | 未开始 | — |
+| 6.12 | 可研报告任务：`feasibility-analysis`、`feasibility-parameters`、`feasibility-content`、`feasibility-human-writing`（后两项按“决定事项”第 4 项提前到第 6 步）；服务端合并资料（取代 `readCombinedSourceMarkdown`）；正文生成或审校运行、暂停时不能修改目录和手工改正文（`assertContentUnlocked`，#19 留下） | 6.4、6.4a、6.6 | 否 | 未开始 | — |
+| 6.13 | 知识库任务：文档准备（解析、切块、条目抽取）、`retryDocument`、`startMatching`、`knowledgeBase.onEvent` 改为 SSE；文档在处理中被删除时任务停止（写入影响 0 行即退出，#12 留下）；取代 `recoverInterruptedDocuments` | 6.4、6.4a、6.6 | 否 | 未开始 | — |
 | 6.14 | 登录、注册、找回密码的限流从进程内存换成 Redis（旧仓库 PR #29 留下，多实例部署前必须完成），接口与参数不变 | 6.1 | **是**（鉴权） | 未开始 | — |
 | 6.15 | MinerU 解析（决定事项第 6 项：第一版不提供，以后决定提供时才做） | 6.6 | 视决定 | 不做（第一版） | — |
 
-顺序说明：6.1~6.3 是所有任务的基础；6.4 让任务能调模型；6.5~6.7 让文档能被解析，第 5 步所有“导入后读 Markdown”的模块都依赖它。6.8 只依赖 6.2，可与 6.5~6.7 并行，宜早做：6.6 起重新解析会产生被替换的旧产物。业务任务按路线图第 6 节“先迁无 Agent 的短任务（查重、废标、招标解析）”排在后面，废标检查结构最简单、最先做。6.14 只依赖 6.1，可随时插入。“需确认后合并”按 `CLAUDE.md`“自动合并”判断：涉及计费、鉴权、沙箱、数据库角色的不自行合并。
+顺序说明：6.1~6.3 是所有任务的基础；6.4 让任务能调模型，6.4a 保证平台故障导致的重复调用不收费，是所有调用 AI 的业务任务（6.9、6.11、6.12、6.13）的前置；6.5~6.7 让文档能被解析，第 5 步所有“导入后读 Markdown”的模块都依赖它。6.8 只依赖 6.2，可与 6.5~6.7 并行，宜早做：6.6 起重新解析会产生被替换的旧产物。业务任务按路线图第 6 节“先迁无 Agent 的短任务（查重、废标、招标解析）”排在后面，废标检查结构最简单、最先做。6.14 只依赖 6.1，可随时插入。“需确认后合并”按 `CLAUDE.md`“自动合并”判断：涉及计费、鉴权、沙箱、数据库角色的不自行合并。
 
 **第 6 步完成后仍不在服务端的任务**（随第 7、8 步）：技术方案目录生成 / 调整、全局事实生成 / 调整、正文生成、章节重写、原方案还原、格式自检，可研目录生成 / 调整，模板提取、Word 导出与样张；技术方案“正文生成运行或暂停中不能调整目录 / 手工改正文”的检查随第 8 步的正文生成任务一起做（第 6 步中技术方案没有会持有这个锁的任务）。
 
@@ -972,6 +973,7 @@ AI 网关加固，做法见 `docs/SERVER_DESIGN.md` 第 10.9 节。`client/` 未
 | 22 | 知识库文档处理中被删除时任务停止；`recoverInterruptedDocuments` 由任务队列负责 | 5.6（#12） | 6.13 |
 | 23 | 废标检查由任务合并招标正文、经 `computeSignatures` 写签名 | 5.9（#18） | 6.9 |
 | 24 | 冻结到期收尾从 api 定时器移到 worker | 第 3 步（旧仓库 PR #32，现由 `src/server.ts` 定时执行） | 6.8 |
+| 25 | 平台故障导致的重复调用不收费：结算后、checkpoint 前崩溃的步骤续跑时不再扣费（步骤结果与 checkpoint 同一事务提交，或步骤幂等键） | 6.4（#27 确认时登记） | 6.4a，必须在第一个调用 AI 的业务任务 PR 之前完成 |
 
 #### Redis 接入（#24，6.1）
 
@@ -1051,6 +1053,8 @@ AI 网关加固，做法见 `docs/SERVER_DESIGN.md` 第 10.9 节。`client/` 未
 4. **余额不足的暂停不经 `pause_requested`**：执行者在本次执行结束时直接写入 `paused` / `insufficient_balance`，不需要等一次续租；
 5. **新配置 `AI_CONCURRENCY_MAX`、`AI_CONCURRENCY_WAIT_MS`**（拆分计划只写了“平台上限”）；
 6. **冻结到期收尾（`expireStaleHolds`）仍在 api 的定时器中**，按拆分计划随 6.8 移到 worker。
+
+**已知缺口（#27 确认时登记为 6.4a，必做）**：任务中的一次调用已结算、任务还没保存 checkpoint 时 worker 崩溃，续跑会重做这一步并再次扣费（两次调用在服务商侧都真实发生）。原则是平台自身故障导致的重复调用不向用户收费，所以在第一个调用 AI 的业务任务 PR 之前，用“步骤结果与 checkpoint 同一事务提交”或“步骤幂等键”消除这个窗口，并加入第 9 步上线检查。其余情况已有测试：冻结后、结算前崩溃的调用不收费，已保存 checkpoint 的步骤不重做。
 
 #### 决定事项（#23）
 
@@ -1254,6 +1258,7 @@ AI 网关加固，做法见 `docs/SERVER_DESIGN.md` 第 10.9 节。`client/` 未
    - 鉴权上线前提（旧仓库 PR #29）：数据库角色见上一条；发信接口换成正式发信服务的实现；登录、注册、找回密码的限流从进程内存换成 Redis（多实例部署前必须完成）；按反向代理拓扑设置 `TRUSTED_PROXIES`（旧仓库 PR #30，只填 Caddy 的固定地址），用两个不同出口的客户端确认限流和会话中的 IP 是真实客户端地址；用 `npm run admin:create` 创建首个平台管理员后，确认平台管理员已开启 TOTP（设计文档第 3.4 节，TOTP 尚未实现）；
    - 计费核对：价格表已录入并公示，计价函数测试通过，余额不足拒绝新任务和运行中耗尽暂停已实测，管理员充值的 TOTP 和双人复核已启用；旧仓库 PR #31 暂用重新输入密码做二次验证并禁用 1,000 元以上的单笔充值，TOTP 和双人复核实现后再用新迁移放开大额充值；`bidtools_billing` 角色见“数据库角色”一条；
    - AI 网关（旧仓库 PR #32）：主密钥从 `AI_KEK_FILE` 换成云 KMS 的 `KeyWrapper` 实现（第 9 节第 8 项），开启删除保护和调用审计；6.4（#27）起 worker 同样解密平台 Key，KMS 的解密权限同时授给 api 和 worker 的身份；按真实服务商的限流设置 `AI_CONCURRENCY_MAX`；生产环境 `AI_UPSTREAM_PRIVATE_HOSTS` 为空；确定通义千问使用国内站还是国际站并在管理后台填写对应 Base URL；用真实 Key 在预发环境核对两家服务商流式响应中的用量字段与控制台账单一致；
+   - 任务计费（#27、6.4a）：平台自身故障（worker 崩溃、租约收回、重启）导致的重复调用不向用户收费，6.4a 已完成且其“结算后、checkpoint 前崩溃只扣费一次”的测试在 CI 中通过；所有调用 AI 的业务任务都经步骤幂等（或同一事务提交）调用模型；
    - 实时推送（#26）：Caddy 对 `/api/events` 关闭响应缓冲和压缩（`flush_interval -1`、`encode` 排除 `text/event-stream`），开启 HTTP/2（每个页面一条长连接，HTTP/1.1 每域名只有 6 条）；Caddy 与 api 的空闲 / 读超时大于 25 秒的心跳间隔；`WebBridge` 在 `GET /api/events` 返回非 200 或连接断开时按退避间隔自己重建连接（浏览器 `EventSource` 遇到 503 不再重连），收到 `ready` 后再拉快照、收到 `resync` 时重新拉快照、收到 `closed`（`session`）时转登录页；在预发环境确认经 Caddy 的推送没有延迟、断线后能补发；**扩展为多个 api 实例前**，把 `GET /api/events` 的单用户连接数上限（目前每个 api 进程各自计数，见“SSE 推送（#26，6.3）”偏离第 4 项）改为跨实例计数（例如 Redis 中按用户计数并带过期时间）；
    - Redis（#24）：生产用与开发相同的 `server/redis/start-valkey.sh`（禁用 `default` 用户、ACL 用户 `bidtools`、禁止 `@admin` 与清空命令、不持久化、`noeviction`），`maxmemory` 按实例内存设置（`REDIS_MAXMEMORY`）；redis 只在 `internal: true` 的 `backend` 网络上、不映射端口；密码走 Docker secret；api 和 worker 都设置 `REDIS_URL`，确认 `/readyz` 在停掉 Redis 后返回 503；
    - 从大陆主要省份和运营商实测访问香港服务器的延迟和可用性（`docs/SERVER_DESIGN.md` 第 8.0 节）。
