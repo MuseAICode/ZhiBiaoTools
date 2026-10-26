@@ -1023,7 +1023,7 @@ AI 网关加固，做法见 `docs/SERVER_DESIGN.md` 第 10.9 节。`client/` 未
 1. **控制频道是一个 `jobs:control`**（设计第 5.6 节写的是每个任务一个 `cancel:{jobId}`，并标为“随 6.3 接入”，拆分计划的 6.3 一行没有列出）：worker 不必按任务订阅、退订；暂停也走同一频道。消息只有任务 id，伪造的消息最多引起一次多余的查询。设计文档已同步；
 2. **补发的下限不用 `max-deleted-entry-id`**：实测 Redis 7 / Valkey 的 `XTRIM` / `XADD MAXLEN` 裁剪不更新这个字段（只有 `XDEL` 更新），所以改为“没有 `XDEL` 时以第一条的 ID 为下限”：上次的 ID 比第一条还小，就是之后的事件已被裁剪，或者来自已过期的上一条同名 Stream，都推 `resync`；
 3. **Redis 断开时关闭所有推送连接**，而不是在 api 中重连后逐个补发：订阅连接断开期间的实时事件已经错过，由浏览器重连时带 `Last-Event-ID` 补发，逻辑只有一份。Redis 不可用期间 `GET /api/events` 返回 503，浏览器的 `EventSource` 遇到非 200 会停止自动重连，所以**第 9 步的 `WebBridge` 要自己按退避间隔重建连接**（已加入第 9 步上线检查）；
-4. **连接数上限是每个 api 进程各自计数**：多实例时一个用户最多 实例数 × 10 条，作为资源上限足够，不为此引入 Redis 计数；
+4. **连接数上限是每个 api 进程各自计数**：多实例时一个用户最多 实例数 × 10 条；扩展为多个 api 实例前改为跨实例计数（已加入第 9 步上线检查“实时推送”一条）；
 5. **推送连接不延长会话**：建立连接时照常经登录钩子续期，之后长时间打开的页面不会让会话一直有效，到期后推 `closed` 断开；
 6. **`job` 事件的到达顺序可能与提交顺序不同**（并发变化时各自重新读出再推送），前端按 `updatedAt` 取较新的一条；任务状态的权威始终是 `jobs` 表。
 
@@ -1229,7 +1229,7 @@ AI 网关加固，做法见 `docs/SERVER_DESIGN.md` 第 10.9 节。`client/` 未
    - 鉴权上线前提（旧仓库 PR #29）：数据库角色见上一条；发信接口换成正式发信服务的实现；登录、注册、找回密码的限流从进程内存换成 Redis（多实例部署前必须完成）；按反向代理拓扑设置 `TRUSTED_PROXIES`（旧仓库 PR #30，只填 Caddy 的固定地址），用两个不同出口的客户端确认限流和会话中的 IP 是真实客户端地址；用 `npm run admin:create` 创建首个平台管理员后，确认平台管理员已开启 TOTP（设计文档第 3.4 节，TOTP 尚未实现）；
    - 计费核对：价格表已录入并公示，计价函数测试通过，余额不足拒绝新任务和运行中耗尽暂停已实测，管理员充值的 TOTP 和双人复核已启用；旧仓库 PR #31 暂用重新输入密码做二次验证并禁用 1,000 元以上的单笔充值，TOTP 和双人复核实现后再用新迁移放开大额充值；`bidtools_billing` 角色见“数据库角色”一条；
    - AI 网关（旧仓库 PR #32）：主密钥从 `AI_KEK_FILE` 换成云 KMS 的 `KeyWrapper` 实现（第 9 节第 8 项），开启删除保护和调用审计；生产环境 `AI_UPSTREAM_PRIVATE_HOSTS` 为空；确定通义千问使用国内站还是国际站并在管理后台填写对应 Base URL；用真实 Key 在预发环境核对两家服务商流式响应中的用量字段与控制台账单一致；
-   - 实时推送（#26）：Caddy 对 `/api/events` 关闭响应缓冲和压缩（`flush_interval -1`、`encode` 排除 `text/event-stream`），开启 HTTP/2（每个页面一条长连接，HTTP/1.1 每域名只有 6 条）；Caddy 与 api 的空闲 / 读超时大于 25 秒的心跳间隔；`WebBridge` 在 `GET /api/events` 返回非 200 或连接断开时按退避间隔自己重建连接（浏览器 `EventSource` 遇到 503 不再重连），收到 `ready` 后再拉快照、收到 `resync` 时重新拉快照、收到 `closed`（`session`）时转登录页；在预发环境确认经 Caddy 的推送没有延迟、断线后能补发；
+   - 实时推送（#26）：Caddy 对 `/api/events` 关闭响应缓冲和压缩（`flush_interval -1`、`encode` 排除 `text/event-stream`），开启 HTTP/2（每个页面一条长连接，HTTP/1.1 每域名只有 6 条）；Caddy 与 api 的空闲 / 读超时大于 25 秒的心跳间隔；`WebBridge` 在 `GET /api/events` 返回非 200 或连接断开时按退避间隔自己重建连接（浏览器 `EventSource` 遇到 503 不再重连），收到 `ready` 后再拉快照、收到 `resync` 时重新拉快照、收到 `closed`（`session`）时转登录页；在预发环境确认经 Caddy 的推送没有延迟、断线后能补发；**扩展为多个 api 实例前**，把 `GET /api/events` 的单用户连接数上限（目前每个 api 进程各自计数，见“SSE 推送（#26，6.3）”偏离第 4 项）改为跨实例计数（例如 Redis 中按用户计数并带过期时间）；
    - Redis（#24）：生产用与开发相同的 `server/redis/start-valkey.sh`（禁用 `default` 用户、ACL 用户 `bidtools`、禁止 `@admin` 与清空命令、不持久化、`noeviction`），`maxmemory` 按实例内存设置（`REDIS_MAXMEMORY`）；redis 只在 `internal: true` 的 `backend` 网络上、不映射端口；密码走 Docker secret；api 和 worker 都设置 `REDIS_URL`，确认 `/readyz` 在停掉 Redis 后返回 503；
    - 从大陆主要省份和运营商实测访问香港服务器的延迟和可用性（`docs/SERVER_DESIGN.md` 第 8.0 节）。
    - 文件存储（旧仓库 PR #34）：选定云厂商对象存储（与 KMS 同一家、香港地域），bucket 私有、禁止公开读和列目录，开启服务端加密（默认加密或 KMS 密钥），配置生命周期规则清理未完成的分片上传；api 使用只能访问该 bucket 的最小权限访问密钥；用真实服务跑一遍 `tests/db/files.test.ts` 确认 S3 兼容性；过期文件和遗留 `uploading` 记录的物理清理任务已上线（否则对象只增不减）；Caddy 层设置请求体上限（略大于 100 MB）；`S3_ENDPOINT` 为 https。
