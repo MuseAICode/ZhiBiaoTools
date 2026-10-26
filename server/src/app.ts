@@ -9,8 +9,10 @@ import { createAuthRateLimiters, DEFAULT_AUTH_RATE_LIMITS, type AuthRateLimitSet
 import type { AppConfig } from './config.ts';
 import type { DatabaseHandle } from './db/database.ts';
 import { registerErrorHandlers } from './errors.ts';
+import type { EventHub } from './events/hub.ts';
 import type { ObjectStore } from './files/objectStore.ts';
 import { createLoggerOptions } from './logger.ts';
+import { NULL_JOB_NOTIFIER, type JobNotifier } from './jobs/notify.ts';
 import { createLogMailer, type Mailer } from './mail/mailer.ts';
 import type { RedisHandle } from './redis.ts';
 import { registerAdminRoutes } from './routes/admin.ts';
@@ -19,6 +21,7 @@ import { registerArtifactRoutes } from './routes/artifacts.ts';
 import { registerAuthRoutes } from './routes/auth.ts';
 import { registerCredentialLibraryRoutes } from './routes/credentialLibrary.ts';
 import { registerDuplicateCheckRoutes } from './routes/duplicateCheck.ts';
+import { registerEventRoutes, type EventRouteDependencies } from './routes/events.ts';
 import { registerFeasibilityReportRoutes } from './routes/feasibilityReport.ts';
 import { registerFileRoutes, type FileRouteDependencies } from './routes/files.ts';
 import { registerHealthRoutes } from './routes/health.ts';
@@ -52,6 +55,10 @@ export interface BuildAppOptions {
   objectStore?: ObjectStore | null;
   /** 测试用：替换上传并发上限和空闲超时。 */
   uploadLimits?: Pick<FileRouteDependencies, 'maxConcurrentUploads' | 'uploadIdleTimeoutMs'>;
+  /** 事件推送（src/server.ts 按 REDIS_URL 创建，由调用方关闭）。未提供时 GET /api/events 返回 503，任务状态变化不推送。 */
+  events?: { hub: EventHub; notifier: JobNotifier } | null;
+  /** 测试用：替换推送连接的心跳、会话重新校验间隔和连接数上限。 */
+  eventLimits?: Pick<EventRouteDependencies, 'heartbeatMs' | 'sessionCheckMs' | 'maxConnectionsPerUser'>;
 }
 
 export async function buildApp(config: AppConfig, options: BuildAppOptions): Promise<FastifyInstance> {
@@ -126,7 +133,8 @@ export async function buildApp(config: AppConfig, options: BuildAppOptions): Pro
   await app.register(registerAiRoutes, { prefix: '/api/ai', gateway, maxOutputTokens: config.ai.maxOutputTokens });
   await app.register(registerFileRoutes, { prefix: '/api/files', db, objectStore: options.objectStore ?? null, ...options.uploadLimits });
   await app.register(registerProjectRoutes, { prefix: '/api/projects', db });
-  await app.register(registerJobRoutes, { prefix: '/api/jobs', db });
+  await app.register(registerJobRoutes, { prefix: '/api/jobs', db, notifier: options.events?.notifier ?? NULL_JOB_NOTIFIER });
+  await app.register(registerEventRoutes, { prefix: '/api/events', db, hub: options.events?.hub ?? null, ...options.eventLimits });
   await app.register(registerArtifactRoutes, { prefix: '/api/artifacts', db, objectStore: options.objectStore ?? null });
   await app.register(registerSettingsRoutes, { prefix: '/api/settings', db });
   await app.register(registerTemplateRoutes, { prefix: '/api/export-templates', db });

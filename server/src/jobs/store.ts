@@ -104,8 +104,8 @@ async function appendEvent(
   kind: JobEventKind,
   message: string | null = null,
   data: Record<string, unknown> | null = null,
-): Promise<void> {
-  await trx
+): Promise<JobEventRecord> {
+  const row = await trx
     .insertInto('job_events')
     .values({
       org_id: job.orgId,
@@ -114,7 +114,9 @@ async function appendEvent(
       message: message === null || message === '' ? null : truncate(message, JOB_EVENT_MESSAGE_MAX_LENGTH),
       data: data ? serialize(data, JOB_EVENT_DATA_MAX_BYTES, '任务事件数据') : null,
     })
-    .execute();
+    .returning(['id', 'kind', 'message', 'data', 'created_at'])
+    .executeTakeFirstOrThrow();
+  return { id: String(row.id), kind: row.kind, message: row.message, data: row.data, createdAt: row.created_at };
 }
 
 function jobNotFound(): AppError {
@@ -429,14 +431,24 @@ export async function renewRun(
   return row ? { status: row.status, pauseRequested: row.pause_requested } : null;
 }
 
-/** 执行者写一条日志；租约已丢失时返回 false，不写。 */
-export async function appendRunLog(db: Kysely<Database>, run: RunRef, message: string, data?: Record<string, unknown>): Promise<boolean> {
+/** 执行者写一条日志，返回写入的事件；租约已丢失时返回 null，不写。 */
+export async function appendRunLog(
+  db: Kysely<Database>,
+  run: RunRef,
+  message: string,
+  data?: Record<string, unknown>,
+): Promise<JobEventRecord | null> {
   return withOrgContext(db, run.orgId, async (trx) => {
     const row = await trx.selectFrom('jobs').select('id').where('id', '=', run.jobId).where('run_id', '=', run.runId).forShare().executeTakeFirst();
-    if (!row) return false;
-    await appendEvent(trx, { orgId: run.orgId, id: run.jobId }, 'log', message, data ?? null);
-    return true;
+    if (!row) return null;
+    return appendEvent(trx, { orgId: run.orgId, id: run.jobId }, 'log', message, data ?? null);
   });
+}
+
+/** worker 读出任务的当前状态（用于推送，src/jobs/notify.ts）；不存在时返回 null。 */
+export async function findJobForOrg(db: Kysely<Database>, orgId: string, jobId: string): Promise<JobRecord | null> {
+  const row = await withOrgContext(db, orgId, (trx) => trx.selectFrom('jobs').selectAll().where('id', '=', jobId).executeTakeFirst());
+  return row ? toRecord(row) : null;
 }
 
 export type RunOutcome =
@@ -522,9 +534,10 @@ export async function listDispatchCandidates(
   return rows.map((row) => ({ id: row.id, orgId: row.org_id, cursor: row.cursor }));
 }
 
+/** changed：本次对账改变了任务的状态（需要推送）。 */
 export type RecoverResult =
-  | { kind: 'dispatch'; type: string }
-  | { kind: 'none' };
+  | { kind: 'dispatch'; type: string; changed: boolean }
+  | { kind: 'none'; changed: boolean };
 
 /**
  * 对账一个任务：queued 的需要（重新）放进 BullMQ；租约已过期的 running / cancelling 按 releaseInTrx 收尾，回到 queued 的也要派发。
@@ -543,19 +556,19 @@ export async function recoverJob(
       .where('id', '=', candidate.id)
       .forUpdate()
       .executeTakeFirst();
-    if (!row) return { kind: 'none' };
+    if (!row) return { kind: 'none', changed: false };
     const resumable = resumableFor(row.type);
     if (row.status === 'queued') {
       if (resumable === null) {
         await failInTrx(trx, row, 'JOB_TYPE_UNKNOWN', '任务类型不受支持');
-        return { kind: 'none' };
+        return { kind: 'none', changed: true };
       }
-      return { kind: 'dispatch', type: row.type };
+      return { kind: 'dispatch', type: row.type, changed: false };
     }
     if ((row.status === 'running' || row.status === 'cancelling') && row.lease_expired) {
       const status = await releaseInTrx(trx, row, resumable ?? false, 'recovered');
-      return status === 'queued' ? { kind: 'dispatch', type: row.type } : { kind: 'none' };
+      return status === 'queued' ? { kind: 'dispatch', type: row.type, changed: true } : { kind: 'none', changed: true };
     }
-    return { kind: 'none' };
+    return { kind: 'none', changed: false };
   });
 }

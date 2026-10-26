@@ -5,6 +5,8 @@ import Fastify from 'fastify';
 import { ConfigError, loadConfig, type AppConfig } from './config.ts';
 import { createDatabase } from './db/database.ts';
 import { registerErrorHandlers } from './errors.ts';
+import { createEventPublisher } from './events/publisher.ts';
+import { createJobNotifier } from './jobs/notify.ts';
 import { createJobDispatcher } from './jobs/queue.ts';
 import { jobTypeRegistry } from './jobs/registry.ts';
 import { createJobRunner } from './jobs/runner.ts';
@@ -44,17 +46,20 @@ const redis = createRedis(redisConfig, {
 await app.register(registerHealthRoutes, { pingDatabase: () => database.ping(), pingRedis: () => redis.ping() });
 
 const dispatcher = createJobDispatcher({ connection: bullmqConnection(redisConfig, 'producer', 'bidtools-worker-dispatch') });
+const publisher = createEventPublisher(redisConfig, { log: app.log, connectionName: 'bidtools-worker-publisher' });
 const runner = createJobRunner({
   db: database.db,
   registry: jobTypeRegistry,
   dispatcher,
   connection: bullmqConnection(redisConfig, 'worker', 'bidtools-worker'),
   log: app.log,
+  notifier: createJobNotifier({ db: database.db, publisher, log: app.log }),
 });
 
 app.addHook('onClose', async () => {
   await runner.close();
   await dispatcher.close();
+  await publisher.close();
   await Promise.all([database.destroy(), redis.destroy()]);
 });
 
