@@ -16,7 +16,7 @@ import { inputTokenUpperBound } from '../../src/ai/estimate.ts';
 import { createAiGateway, type AiGateway, type GatewaySettings } from '../../src/ai/gateway.ts';
 import { createFileKeyWrapper } from '../../src/ai/keyring.ts';
 import { creditOrganization } from '../../src/billing/ledger.ts';
-import { beginUsage, settleUsage } from '../../src/billing/usage.ts';
+import { beginUsage, expireStaleHolds, getAvailableBalance, settleUsage } from '../../src/billing/usage.ts';
 import { JOB_MIN_START_BALANCE } from '../../src/db/migrations/0022_job_billing.ts';
 import { APP_ROLE, BILLING_ROLE } from '../../src/db/roles.ts';
 import type { Database, JobStatus } from '../../src/db/schema.ts';
@@ -33,7 +33,7 @@ import type { JobNotifier } from '../../src/jobs/notify.ts';
 import { createJobDispatcher, type JobDispatcher } from '../../src/jobs/queue.ts';
 import { createJobRunner, type JobRunner, type JobRunnerOptions } from '../../src/jobs/runner.ts';
 import { cancelJob, enqueueJob, resumeJob, type JobServiceDependencies } from '../../src/jobs/service.ts';
-import { findJobForOrg } from '../../src/jobs/store.ts';
+import { claimJob, findJobForOrg, renewRun } from '../../src/jobs/store.ts';
 import { jobBody } from '../../src/jobs/view.ts';
 import { bullmqConnection } from '../../src/redis.ts';
 import { startMockProvider, streamCompletion, type MockProvider } from '../ai/mockProvider.ts';
@@ -444,8 +444,14 @@ describe('worker 中的任务调用', () => {
     expect(notifier.jobs.at(-1)).toMatchObject({ id: job.id, status: 'paused', pauseReason: 'insufficient_balance', billedAmount: String(2n * CHARGE) });
     const events = await superuser.selectFrom('job_events').select(['kind', 'data']).where('job_id', '=', job.id).orderBy('id').execute();
     expect(events.at(-1)).toEqual({ kind: 'paused', data: { reason: 'insufficient_balance' } });
-    // 冻结失败的那次调用不写用量记录、没有进行中的冻结。
+    // 已完成的两次调用按实际用量扣费；冻结失败的那次调用不写用量记录，暂停后没有任何进行中的冻结。
     expect((await usageOf(ctx.orgId)).map((row) => row.status)).toEqual(['billed', 'billed']);
+    expect(await getAvailableBalance(appDb, ctx)).toEqual({
+      balance: JOB_MIN_START_BALANCE - 2n * CHARGE,
+      held: 0n,
+      available: JOB_MIN_START_BALANCE - 2n * CHARGE,
+    });
+    expect(await ledgerChargesForJob(ctx.orgId, job.id)).toBe(2n * CHARGE);
 
     // 余额仍不足时不能继续。
     await expectAppError(resumeJob(service(registry), ctx, job.id), 402, 'INSUFFICIENT_BALANCE');
@@ -530,6 +536,77 @@ describe('worker 中的任务调用', () => {
     expect(provider.requests).toHaveLength(0);
     expect(await usageOf(ctx.orgId)).toEqual([]);
     await release();
+  });
+
+  it('调用进行中取消任务：立即关闭到服务商的连接，按已产生的用量结算（不超过冻结额）、冻结释放，任务为 cancelled，不再发起后续调用', async () => {
+    const ctx = await newMember(10n * JOB_MIN_START_BALANCE);
+    let upstreamClosed = false;
+    // 服务商输出一段内容后一直不结束。
+    provider.setHandler(async (_request, response) => {
+      response.on('close', () => (upstreamClosed = true));
+      await streamCompletion(response, { pieces: ['第一段内容'], usage: USAGE, beforeDone: new Promise(() => {}) });
+    });
+    const { registry } = chatJobTypes();
+    await startRunner(registry, { gateway: newGateway() });
+    const job = await enqueueJob(service(registry), ctx, { type: 'test-chat', params: { steps: 3 } });
+    await waitFor(async () => (provider.requests.length === 1 ? true : null));
+    await waitFor(async () => ((await usageOf(ctx.orgId))[0]?.status === 'pending' ? true : null));
+    expect((await getAvailableBalance(appDb, ctx)).held).toBe(HOLD);
+
+    await cancelJob(service(registry), ctx, job.id);
+    const cancelled = await waitForStatus(job.id, 'cancelled');
+    await waitFor(async () => (upstreamClosed ? true : null), 5_000, 'upstream connection closed');
+
+    const [usage] = await usageOf(ctx.orgId);
+    // 服务商没有返回用量（[DONE] 之前被中止）：按已产生的输出本地估算，不超过冻结额。
+    expect(usage).toMatchObject({ status: 'billed', usage_source: 'estimated', job_id: job.id });
+    const charged = BigInt(usage.amount);
+    expect(charged).toBeGreaterThan(0n);
+    expect(charged).toBeLessThanOrEqual(HOLD);
+    expect(cancelled.billed_amount).toBe(String(charged));
+    expect(await ledgerChargesForJob(ctx.orgId, job.id)).toBe(charged);
+    expect(await getAvailableBalance(appDb, ctx)).toEqual({ balance: 10n * JOB_MIN_START_BALANCE - charged, held: 0n, available: 10n * JOB_MIN_START_BALANCE - charged });
+    // 取消后不再发起后续调用。
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(provider.requests).toHaveLength(1);
+    expect(await usageOf(ctx.orgId)).toHaveLength(1);
+  });
+
+  it('worker 在调用中途崩溃：冻结到期后不再占用余额、不收费；任务被收回后从 checkpoint 续跑，已扣费的步骤不重做、不重复扣费', async () => {
+    const ctx = await newMember(10n * JOB_MIN_START_BALANCE);
+    const { registry, runs } = chatJobTypes();
+    const job = await enqueueJob({ ...service(registry), dispatcher: null }, ctx, { type: 'test-chat', params: { steps: 3 } });
+
+    // 模拟崩溃的执行者在数据库中留下的状态：认领（租约很短）、完成第 0 步（扣费并保存 checkpoint）、
+    // 第 1 步已冻结但还没有结算时进程消失（不续租、不结算、不结束）。
+    const runId = randomUUID();
+    const claim = await claimJob(appDb, { orgId: ctx.orgId, jobId: job.id, runId, leaseMs: 500, orgRunningLimit: 3, attemptsFor: () => 3 });
+    expect(claim.kind).toBe('claimed');
+    const gateway = newGateway();
+    const first = await gateway.chat(ctx, { provider: 'deepseek', model: 'deepseek-chat', messages: MESSAGES, maxOutputTokens: MAX_OUTPUT, source: 'job', jobId: job.id, jobType: 'test-chat' });
+    expect(first.billing).toEqual({ status: 'billed', amount: CHARGE });
+    expect(await renewRun(appDb, { orgId: ctx.orgId, jobId: job.id, runId }, 500, { checkpoint: { step: 1 } })).not.toBeNull();
+    const orphan = await hold(ctx, job.id, { estimatedInputTokens: inputTokenUpperBound(MESSAGES), maxOutputTokens: MAX_OUTPUT, holdSeconds: 2 });
+    expect((await getAvailableBalance(appDb, ctx)).held).toBe(HOLD);
+
+    // 租约过期后由新的 worker 对账收回，从 checkpoint（第 1 步）继续。
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    const runner = await startRunner(registry, { gateway });
+    await runner.reconcile();
+    const done = await waitForStatus(job.id, 'succeeded');
+    expect(runs.get(job.id)).toEqual([{ startStep: 1, calls: 2 }]);
+    expect(provider.requests).toHaveLength(3);
+
+    // 崩溃留下的冻结到期后不再占用余额，不需要任何清理任务；清理任务只把它标为 abandoned，不收费。
+    await new Promise((resolve) => setTimeout(resolve, Math.max(0, orphan.holdExpiresAt.getTime() - Date.now()) + 200));
+    expect(await getAvailableBalance(appDb, ctx)).toEqual({ balance: 10n * JOB_MIN_START_BALANCE - 3n * CHARGE, held: 0n, available: 10n * JOB_MIN_START_BALANCE - 3n * CHARGE });
+    expect(await expireStaleHolds(appDb)).toBeGreaterThanOrEqual(1);
+    const usage = await usageOf(ctx.orgId);
+    expect(usage.find((row) => row.id === orphan.usageId)).toMatchObject({ status: 'unbilled', failure_reason: 'abandoned', amount: '0', ledger_entry_id: null });
+    // 共 3 步各扣费一次：崩溃前的第 0 步 + 续跑的第 1、2 步。
+    expect(usage.filter((row) => row.status === 'billed')).toHaveLength(3);
+    expect(done.billed_amount).toBe(String(3n * CHARGE));
+    expect(await ledgerChargesForJob(ctx.orgId, job.id)).toBe(3n * CHARGE);
   });
 });
 
