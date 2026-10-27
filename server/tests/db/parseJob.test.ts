@@ -475,6 +475,13 @@ describe('失败', () => {
     ['office_conversion_timeout', 'PARSE_OFFICE_CONVERSION_TIMEOUT', '老式 Word 文件转换超时（超过 8 分钟），请另存为 docx 后重新导入'],
     ['pdf_text_layer_missing', 'PARSE_PDF_TEXT_LAYER_MISSING', 'PDF 未检测到可选中文字层'],
     ['too_many_images', 'PARSE_TOO_MANY_IMAGES', '文件中的图片超过 2,000 张，已拒绝解析'],
+    ['xml_doctype', 'PARSE_XML_DOCTYPE', 'XML 文件含 DTD 声明（<!DOCTYPE> 等），为防止外部实体与实体膨胀已拒绝解析，请另存为 docx / xlsx 后重新导入'],
+    ['xml_external_reference', 'PARSE_XML_EXTERNAL_REFERENCE', 'XML 文件含外部引用（XInclude 或样式表），已拒绝解析，请另存为 docx / xlsx 后重新导入'],
+    ['xml_invalid', 'PARSE_XML_INVALID', 'XML 文件格式不正确（须为 UTF-8 编码的 Office 2003 XML），请另存为 docx / xlsx 后重新导入'],
+    ['rtf_invalid', 'PARSE_RTF_INVALID', 'RTF 文件格式不正确，请另存为 docx 后重新导入'],
+    ['mht_invalid', 'PARSE_MHT_INVALID', 'MHT 文件格式不正确（MIME 结构无法解析），请另存为 docx 后重新导入'],
+    ['mht_too_complex', 'PARSE_MHT_TOO_COMPLEX', 'MHT 文件的 MIME 结构超过上限（嵌套层数、部分数或头部大小），已拒绝解析'],
+    ['mht_no_html', 'PARSE_MHT_NO_HTML', 'MHT 文件中没有网页正文，请另存为 docx 后重新导入'],
     ['something <script>', 'PARSE_CONVERSION_FAILED', '文件解析失败'],
   ])('解析入口报告 %s：文档标为失败，文案由代码决定，沙箱照样销毁', async (code, jobCode, message) => {
     const { sandbox, error, document } = await failed({ kind: 'exit', exitCode: 65, stdout: `${JSON.stringify({ error: code })}\n` });
@@ -517,14 +524,31 @@ describe('失败', () => {
     expect(await listArtifacts(appDb, empty.member.context, { sourceFileId: empty.fileId, limit: 10 })).toEqual([]);
   });
 
-  it('6.7 的文本类格式与不支持的类型：不创建沙箱，直接失败', async () => {
-    for (const mime of ['application/rtf', 'text/html', 'message/rfc822', 'application/xml']) {
-      const result = await failed(output('x'), { mime });
-      expect(result.error).toMatchObject({ code: 'PARSE_FORMAT_NOT_READY' });
-      expect(result.sandbox.calls).toEqual([]);
+  it('文本类格式（6.7）按记录的 MIME 与登记的扩展名分派到沙箱；扩展名不符与不支持的类型不创建沙箱，直接失败', async () => {
+    const member = await newMember();
+    for (const [mime, extension, format] of [
+      ['application/rtf', 'doc', 'rtf'],
+      ['text/html', 'wps', 'html-word'],
+      ['text/html', 'xls', 'html-sheet'],
+      ['message/rfc822', 'doc', 'mht'],
+      ['application/xml', 'wps', 'word-xml'],
+      ['application/xml', 'xls', 'spreadsheet-xml'],
+    ] as const) {
+      const { projectId, fileId } = await importTender(member, { name: `招标.${extension}`, mime, extension });
+      const sandbox = fakeSandbox(output('正文\n'));
+      expect((await runParse(member, projectId, fileId, { sandbox })).error).toBeNull();
+      expect(sandbox.calls).toEqual(['create', 'copyIn', `exec:parse format=${format} images=0`, 'copyOut', 'destroy:36']);
+      const document = await technicalPlanDocument(member, projectId);
+      expect(document.status).toBe('success');
+      // 表格类格式以文件名作一级标题。
+      expect(await markdownOf(member, document.markdownArtifactId!)).toBe(extension === 'xls' ? `# 招标.xls\n\n正文\n` : '正文\n');
     }
-    const unsupported = await failed(output('x'), { mime: 'application/octet-stream' });
-    expect(unsupported.error).toMatchObject({ code: 'PARSE_UNSUPPORTED_FORMAT', message: '不支持的文件格式' });
+    for (const [mime, extension] of [['application/xml', 'docx'], ['text/html', 'pdf'], ['application/octet-stream', 'docx']] as const) {
+      const { projectId, fileId } = await importTender(member, { name: `招标.${extension}`, mime, extension });
+      const sandbox = fakeSandbox(output('x'));
+      expect((await runParse(member, projectId, fileId, { sandbox })).error).toMatchObject({ code: 'PARSE_UNSUPPORTED_FORMAT', message: '不支持的文件格式' });
+      expect(sandbox.calls).toEqual([]);
+    }
   });
 
   it('worker 未配置沙箱或对象存储时失败（PARSE_UNAVAILABLE），原件不存在时 PARSE_SOURCE_MISSING', async () => {

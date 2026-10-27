@@ -10,6 +10,7 @@ import { entryErrorCode, validateParseOutput, type ParsedOutput } from '../../..
 import { createDockerSandboxDriver } from '../../../src/sandbox/docker.ts';
 import type { SandboxRef } from '../../../src/sandbox/driver.ts';
 import { buildPdf } from '../pdfFixtures.ts';
+import { markupSample } from '../markupFixtures.ts';
 import { buildZip } from '../zipFixtures.ts';
 import { docker, sandboxEnv, silentLog } from './env.ts';
 import { STUCK_OFFICE_STATS, stuckOfficeScript } from './stuckOffice.ts';
@@ -114,13 +115,20 @@ describe('parse entry in the sandbox', () => {
     }
   });
 
-  it.runIf(sandboxEnv.office)('kills the whole LibreOffice process group when the conversion times out (LibreOffice stuck)', async () => {
+  // 6.7 的文本类 Word 格式（RTF、HTML、MHT、Word 2003 XML）经同一个转换函数调用 LibreOffice，沿用同样的超时与进程组终止。
+  it.runIf(sandboxEnv.office).each([
+    ['word-ole', () => sample('sample.doc')],
+    ['rtf', () => markupSample('rtf-word.doc')],
+    ['html-word', () => markupSample('html-word.doc')],
+    ['mht', () => markupSample('mht-word.doc')],
+    ['word-xml', () => markupSample('word2003-xml.wps')],
+  ] as const)('kills the whole LibreOffice process group when the conversion times out (LibreOffice stuck, %s)', async (format, source) => {
     // soffice 是 shell 脚本，exec 成 oosplash，转换由其子进程 soffice.bin 进行。转换上限（生产 8 分钟，这里调为 5 秒）到时，
     // 入口对整个进程组发 SIGKILL（不依赖 SIGTERM），返回 office_conversion_timeout；之后沙箱中没有活着的 LibreOffice 进程。
     const ref = await driver.create('parse', { jobId: randomUUID() });
     created.push({ owner: driver, ref });
-    await driver.copyIn(ref, [{ path: 'source', data: sample('sample.doc') }]);
-    const result = await driver.execArgv(ref, ['sh', '-c', stuckOfficeScript(['format=word-ole', 'images=0'], 5_000)], { timeoutMs: 100_000 });
+    await driver.copyIn(ref, [{ path: 'source', data: source() }]);
+    const result = await driver.execArgv(ref, ['sh', '-c', stuckOfficeScript([`format=${format}`, 'images=0'], 5_000)], { timeoutMs: 100_000 });
     expect(result.timedOut).toBe(false);
     expect(result.exitCode).toBe(65);
     expect(entryErrorCode(result.stdout)).toBe('office_conversion_timeout');

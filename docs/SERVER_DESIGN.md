@@ -517,12 +517,23 @@ AI 网关（worker 内）── 解密 Key ──> 模型服务商
 ### 7.6 实现（路线图 6.6）：文档解析任务
 
 - **任务**：`document-parse`（`server/src/parse/job.ts`），`parse` 队列。技术方案、废标检查、可研报告导入文件后每个新文件入队一个任务（`src/parse/enqueue.ts`），互斥键 `document-parse:{fileId}`。worker 只取原件、调用 sandbox-runner、校验结果、写产物，不运行任何文档解析器；
-- **分派**：按 `files.mime`（上传时按内容决定）选择解析入口的 `format`（`src/parse/dispatch.ts`），不看扩展名、不重新嗅探；RTF、HTML、MHT、Office 2003 XML 等 6.7 开放；
+- **分派**：按 `files.mime`（上传时按内容决定）选择解析入口的 `format`（`src/parse/dispatch.ts`），不重新嗅探；只有 `text/html` 与 `application/xml` 按登记的扩展名区分 Word（`.doc` / `.wps`）与表格（`.xls`）；文本类格式见第 7.7 节；
 - **解析入口**：`server/sandbox/parse/entry.mjs`，输入固定为 `/input/source`，输出 `/output/content.md`、`/output/images/*`、`/output/manifest.json`；docx / xlsx（含 LibreOffice 转出的 docx）先做 ZIP 炸弹检查（`zipGuard.mjs`：条目数、声明的总大小与压缩比，并按实际解压大小核对），PDF 先检查页数；失败只给错误代码；
 - **结果校验**（`src/parse/output.ts`）：清单与文件一一对应、图片文件头与 MIME 一致、Markdown 为 UTF-8；图片引用只保留本次输出中的图片并改写为 `/api/artifacts/{id}/content`，引用缺失的图片整体拒绝，其他图片去掉；
 - **写入**：图片和 Markdown 经 `writeArtifact`（配额检查），文档经各模块的 `saveDocumentParse` / `saveSourceParse` 写回；之前的产物经 `supersedeArtifacts` 标为已被替换（迁移 0023 的 `artifacts.superseded_at`），读取时不再返回，由清理任务删除；
 - **沙箱生命周期**：每个任务一个沙箱，`finally` 中销毁；`SANDBOX_BUSY` 与 sandbox-runner 不可用按退避重试。时限：LibreOffice 转换 8 分钟（对整个进程组 SIGKILL）、解析命令 10 分钟（终止整个沙箱）、worker 请求 10 分 30 秒、沙箱最长存活 15 分钟（到期清理兜底）；
 - **LibreOffice**：镜像中 `share/registry/zhibiao-security.xcd` 以 finalized 设置禁止宏、链接与域不在加载时更新、阻止不受信任的外部资源，用户配置不能覆盖。
+
+### 7.7 实现（路线图 6.7）：文本类格式
+
+RTF、HTML、MHT、Word 2003 XML、SpreadsheetML 在沙箱中先检查或清理，再交给解析器（`server/sandbox/parse/markupGuard.mjs`、`htmlSanitize.mjs`），细节与实测见路线图第 6 步“解析任务（二）”：
+
+- **Office 2003 XML**：严格 UTF-8、必须有 XML 声明且编码为 UTF-8；除注释与 CDATA 外出现任何 `<!` 声明（DTD、实体等）即拒绝，含 XInclude 或 `xml-stylesheet` 即拒绝。不解析 DTD，因而不存在外部实体与实体膨胀；
+- **RTF**：按组结构去掉域指令（`fldinst`）、OLE 对象（只留显示结果）、附加模板、子文档、字体文件、超链接目标、链接图片的形状属性；结构不合法或切分有歧义的写法拒绝；
+- **HTML**：识别字符集后按元素与属性白名单重新生成，图片只留 `data:` 位图；任何远程或本地地址都不进入交给 LibreOffice / SheetJS 的文档（超链接只留 http / https / mailto，不会被加载）。实测 LibreOffice 在镜像的安全设置下仍会请求 HTML 中的样式表与 CSS 背景图片，所以清理是必需的，不是可选的纵深；
+- **MHT**：自写的 MIME 解析（嵌套 8 层、部分 2,000 个、头部 64 KiB 的上限），取 HTML 部分按其编码与字符集解码，图片只在包内查找，地址从不跟随；之后按 HTML 处理；
+- **转换**：Word 类由 LibreOffice 按指定的导入过滤器转成 docx（与 OLE Word 同一函数：独立进程组、8 分钟后对整个进程组 SIGKILL），表格类由 SheetJS 读取；
+- **纵深**：沙箱完全断网（第 7.5 节）是兜底；parse 镜像不装 CA 证书包，LibreOffice 的网络组件因此不发出 HTTP 请求，但测试不依赖这一点——远程资源测试在加了证书包的派生镜像中断言没有任何连接。
 
 ## 8. 部署架构
 

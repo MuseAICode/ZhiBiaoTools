@@ -4,6 +4,9 @@
 //   TEST_SANDBOX_DOCKER_SOCKET  默认 /var/run/docker.sock
 //   TEST_SANDBOX_OFFICE=1 镜像中有 LibreOffice 时运行转换用例（CI 构建的完整镜像）
 //   TEST_SANDBOX_CONTROL_IMAGE  对照镜像：同一 parse 镜像去掉 zhibiao-security.xcd（CI 中由完整镜像派生），宏安全测试的对照组用
+//   TEST_SANDBOX_REMOTE_IMAGE   同一 parse 镜像只加入 CA 证书包（CI 中由完整镜像派生）。LibreOffice 的网络组件在固定路径找不到
+//                         CA 证书包时不发出任何 HTTP 请求，正式镜像中没有证书包；远程资源测试在这个镜像中运行，才能证明“解析器本身
+//                         不尝试加载”（而不是因为缺少证书包），对照组（未经清理的 HTML 直接交给 LibreOffice）也只在其中能连上
 //   TEST_DATABASE_ADMIN_URL  解析卡住时的任务测试（parseJob.test.ts）用的数据库，未设置时跳过，见 tests/db/harness.ts
 // 测试进程需要能在宿主网络上监听端口（控制组的沙箱经 Docker 网桥网关连接它），在容器中运行时用 --network host。
 import { request } from 'node:http';
@@ -18,6 +21,7 @@ export const sandboxEnv = Object.freeze({
   socketPath: process.env.TEST_SANDBOX_DOCKER_SOCKET ?? '/var/run/docker.sock',
   office: process.env.TEST_SANDBOX_OFFICE === '1',
   controlImage: process.env.TEST_SANDBOX_CONTROL_IMAGE ?? null,
+  remoteImage: process.env.TEST_SANDBOX_REMOTE_IMAGE ?? null,
 });
 
 export const docker = createDockerApi(sandboxEnv.socketPath);

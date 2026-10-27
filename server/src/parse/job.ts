@@ -88,6 +88,13 @@ const ENTRY_MESSAGES: Readonly<Record<ParseEntryErrorCode, string>> = Object.fre
   office_conversion_failed: '老式 Word 文件转换失败，请另存为 docx 后重新导入',
   office_conversion_timeout: '老式 Word 文件转换超时（超过 8 分钟），请另存为 docx 后重新导入',
   too_many_images: '文件中的图片超过 2,000 张，已拒绝解析',
+  xml_invalid: 'XML 文件格式不正确（须为 UTF-8 编码的 Office 2003 XML），请另存为 docx / xlsx 后重新导入',
+  xml_doctype: 'XML 文件含 DTD 声明（<!DOCTYPE> 等），为防止外部实体与实体膨胀已拒绝解析，请另存为 docx / xlsx 后重新导入',
+  xml_external_reference: 'XML 文件含外部引用（XInclude 或样式表），已拒绝解析，请另存为 docx / xlsx 后重新导入',
+  rtf_invalid: 'RTF 文件格式不正确，请另存为 docx 后重新导入',
+  mht_invalid: 'MHT 文件格式不正确（MIME 结构无法解析），请另存为 docx 后重新导入',
+  mht_too_complex: 'MHT 文件的 MIME 结构超过上限（嵌套层数、部分数或头部大小），已拒绝解析',
+  mht_no_html: 'MHT 文件中没有网页正文，请另存为 docx 后重新导入',
   conversion_failed: '文件解析失败',
 });
 
@@ -177,10 +184,7 @@ export function createDocumentParseJob(options: DocumentParseJobOptions = {}): J
     const file = await findFile(db, tenant, params.fileId);
     // 原件已删除，或不属于本项目（参数由服务端生成，这里只是防御）：按文档已移除处理。
     if (!file || file.projectId !== projectId) return;
-    const dispatch = dispatchParse(file.mime);
-    if (dispatch.kind === 'not-yet-supported') {
-      throw new JobError('PARSE_FORMAT_NOT_READY', '该格式（RTF、HTML、MHT、Office 2003 XML）暂不支持解析，请另存为 docx / xlsx 后重新导入');
-    }
+    const dispatch = dispatchParse(file.mime, file.extension);
     if (dispatch.kind === 'unsupported') throw new JobError('PARSE_UNSUPPORTED_FORMAT', '不支持的文件格式');
     if (!context.objectStore || !context.sandbox) throw new JobError('PARSE_UNAVAILABLE', '解析服务暂不可用，请稍后重新导入');
     const objectStore = context.objectStore;

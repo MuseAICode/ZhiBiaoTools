@@ -9,7 +9,10 @@
 // 本进程没有网络、没有凭据；它的输出在 worker 中按不可信输入逐项校验（src/sandbox/archive.ts、src/parse/output.ts）。
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 
-const FORMATS = new Set(['pdf', 'docx', 'xlsx', 'word-ole', 'xls-ole', 'text', 'markdown']);
+const FORMATS = new Set([
+  'pdf', 'docx', 'xlsx', 'word-ole', 'xls-ole', 'text', 'markdown',
+  'rtf', 'html-word', 'html-sheet', 'mht', 'word-xml', 'spreadsheet-xml',
+]);
 const CHARSETS = new Set(['utf-8', 'gb18030']);
 const INPUT = '/input/source';
 const OUTPUT = '/output';
@@ -38,6 +41,13 @@ const KNOWN_CODES = new Set([
   'office_conversion_failed',
   'office_conversion_timeout',
   'too_many_images',
+  'xml_invalid',
+  'xml_doctype',
+  'xml_external_reference',
+  'rtf_invalid',
+  'mht_invalid',
+  'mht_too_complex',
+  'mht_no_html',
 ]);
 
 function fail(code, exitCode) {
