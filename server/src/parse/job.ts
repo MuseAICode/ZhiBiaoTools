@@ -86,6 +86,7 @@ const ENTRY_MESSAGES: Readonly<Record<ParseEntryErrorCode, string>> = Object.fre
   pdf_text_layer_missing: 'PDF 未检测到可选中文字层',
   spreadsheet_empty: 'Excel 文件未包含工作表',
   office_conversion_failed: '老式 Word 文件转换失败，请另存为 docx 后重新导入',
+  office_conversion_timeout: '老式 Word 文件转换超时（超过 8 分钟），请另存为 docx 后重新导入',
   too_many_images: '文件中的图片超过 2,000 张，已拒绝解析',
   conversion_failed: '文件解析失败',
 });

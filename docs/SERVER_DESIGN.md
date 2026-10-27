@@ -521,7 +521,7 @@ AI 网关（worker 内）── 解密 Key ──> 模型服务商
 - **解析入口**：`server/sandbox/parse/entry.mjs`，输入固定为 `/input/source`，输出 `/output/content.md`、`/output/images/*`、`/output/manifest.json`；docx / xlsx（含 LibreOffice 转出的 docx）先做 ZIP 炸弹检查（`zipGuard.mjs`：条目数、声明的总大小与压缩比，并按实际解压大小核对），PDF 先检查页数；失败只给错误代码；
 - **结果校验**（`src/parse/output.ts`）：清单与文件一一对应、图片文件头与 MIME 一致、Markdown 为 UTF-8；图片引用只保留本次输出中的图片并改写为 `/api/artifacts/{id}/content`，引用缺失的图片整体拒绝，其他图片去掉；
 - **写入**：图片和 Markdown 经 `writeArtifact`（配额检查），文档经各模块的 `saveDocumentParse` / `saveSourceParse` 写回；之前的产物经 `supersedeArtifacts` 标为已被替换（迁移 0023 的 `artifacts.superseded_at`），读取时不再返回，由清理任务删除；
-- **沙箱生命周期**：每个任务一个沙箱，`finally` 中销毁；`SANDBOX_BUSY` 与 sandbox-runner 不可用按退避重试；
+- **沙箱生命周期**：每个任务一个沙箱，`finally` 中销毁；`SANDBOX_BUSY` 与 sandbox-runner 不可用按退避重试。时限：LibreOffice 转换 8 分钟（对整个进程组 SIGKILL）、解析命令 10 分钟（终止整个沙箱）、worker 请求 10 分 30 秒、沙箱最长存活 15 分钟（到期清理兜底）；
 - **LibreOffice**：镜像中 `share/registry/zhibiao-security.xcd` 以 finalized 设置禁止宏、链接与域不在加载时更新、阻止不受信任的外部资源，用户配置不能覆盖。
 
 ## 8. 部署架构

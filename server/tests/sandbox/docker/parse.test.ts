@@ -12,6 +12,7 @@ import type { SandboxRef } from '../../../src/sandbox/driver.ts';
 import { buildPdf } from '../pdfFixtures.ts';
 import { buildZip } from '../zipFixtures.ts';
 import { docker, sandboxEnv, silentLog } from './env.ts';
+import { STUCK_OFFICE_STATS, stuckOfficeScript } from './stuckOffice.ts';
 
 const driver = createDockerSandboxDriver({ docker, runtime: sandboxEnv.runtime, images: { parse: sandboxEnv.image }, maxActive: 32, log: silentLog });
 const created: Array<{ owner: typeof driver; ref: SandboxRef }> = [];
@@ -111,6 +112,25 @@ describe('parse entry in the sandbox', () => {
     ]) {
       expect(result.stdout).toContain(fragment);
     }
+  });
+
+  it.runIf(sandboxEnv.office)('kills the whole LibreOffice process group when the conversion times out (LibreOffice stuck)', async () => {
+    // soffice 是 shell 脚本，exec 成 oosplash，转换由其子进程 soffice.bin 进行。转换上限（生产 8 分钟，这里调为 5 秒）到时，
+    // 入口对整个进程组发 SIGKILL（不依赖 SIGTERM），返回 office_conversion_timeout；之后沙箱中没有活着的 LibreOffice 进程。
+    const ref = await driver.create('parse', { jobId: randomUUID() });
+    created.push({ owner: driver, ref });
+    await driver.copyIn(ref, [{ path: 'source', data: sample('sample.doc') }]);
+    const result = await driver.execArgv(ref, ['sh', '-c', stuckOfficeScript(['format=word-ole', 'images=0'], 5_000)], { timeoutMs: 100_000 });
+    expect(result.timedOut).toBe(false);
+    expect(result.exitCode).toBe(65);
+    expect(entryErrorCode(result.stdout)).toBe('office_conversion_timeout');
+    const stats = STUCK_OFFICE_STATS.exec(result.stderr);
+    expect(stats, result.stderr).not.toBeNull();
+    expect(stats![1]).toBe('yes');
+    // 5 秒上限 + 进程组结束与入口退出的开销。
+    expect(Number(stats![2])).toBeGreaterThanOrEqual(5_000);
+    expect(Number(stats![2])).toBeLessThan(20_000);
+    expect(stats![3]).toBe('0');
   });
 
   it.runIf(sandboxEnv.office)('converts OLE Word through LibreOffice with the security settings loaded', async () => {

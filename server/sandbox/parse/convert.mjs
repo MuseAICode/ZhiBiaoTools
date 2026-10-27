@@ -24,8 +24,17 @@ import { assertSafeZip } from './zipGuard.mjs';
 
 /** PDF 页数上限（决定事项第 5 项）。 */
 export const PDF_MAX_PAGES = 3_000;
-/** LibreOffice 转换的墙钟上限；整个解析命令另受模板的 10 分钟上限约束。 */
-const OFFICE_CONVERSION_TIMEOUT_MS = 8 * 60_000;
+/** LibreOffice 转换的墙钟上限；整个解析命令另受模板的 10 分钟上限约束（到时 sandbox-runner 终止整个沙箱）。 */
+export const OFFICE_CONVERSION_TIMEOUT_MS = 8 * 60_000;
+
+/**
+ * 实际使用的转换上限。环境变量 ZHIBIAO_PARSE_OFFICE_TIMEOUT_MS 只能把上限调小，供沙箱测试模拟 LibreOffice 卡住：
+ * 沙箱的环境变量写死在模板中、解析命令的 argv 也是固定的，经 sandbox-runner 的接口无法设置它。
+ */
+function officeConversionTimeoutMs() {
+  const override = Number(process.env.ZHIBIAO_PARSE_OFFICE_TIMEOUT_MS);
+  return Number.isInteger(override) && override > 0 ? Math.min(override, OFFICE_CONVERSION_TIMEOUT_MS) : OFFICE_CONVERSION_TIMEOUT_MS;
+}
 const MARKDOWN_IMAGE_PATTERN = /!\[(?<alt>[^\]]*)\]\((?<target><[^>]+>|[^)\s]+)(?<title>\s+"[^"]*")?\)/gi;
 const SPREADSHEET_TABLE_CHUNK_ROWS = 200;
 const PDF_POINT_TOLERANCE = 2.5;
@@ -1011,8 +1020,9 @@ async function convertLegacyWordToDocx(buffer) {
         '--outdir',
         outputDir,
         input,
-      ], { timeoutMs: OFFICE_CONVERSION_TIMEOUT_MS });
-    } catch {
+      ], { timeoutMs: officeConversionTimeoutMs() });
+    } catch (error) {
+      if (error?.code === 'timeout') throw new ConversionError('office_conversion_timeout', 'LibreOffice 转换超时');
       throw new ConversionError('office_conversion_failed', 'LibreOffice 转换失败');
     }
     const docxName = (await readdir(outputDir)).find((file) => path.extname(file).toLowerCase() === '.docx');
@@ -1028,27 +1038,43 @@ async function convertLegacyWordToDocx(buffer) {
   }
 }
 
+/**
+ * 运行 LibreOffice。soffice 是一个 shell 脚本，exec 成 oosplash，真正转换的 soffice.bin 是它的子进程，所以只对直接子进程
+ * 发信号终止不了 soffice.bin。这里让它在独立的进程组中运行（detached，即 setsid），超时后对整个进程组发 SIGKILL，
+ * 并等进程组的首进程结束再返回；不依赖 SIGTERM（gVisor 下 LibreOffice 不响应 SIGTERM）。正常结束后同样清理一次进程组，
+ * 不留下残留的 soffice.bin。
+ */
 function runProcess(command, args, options = {}) {
   return new Promise((resolve, reject) => {
-    const child = spawn(command, args, { stdio: ['ignore', 'ignore', 'ignore'], env: { HOME: '/tmp', LANG: 'C.UTF-8', TMPDIR: '/tmp', PATH: '/usr/bin:/bin' } });
-    let settled = false;
+    const child = spawn(command, args, {
+      detached: true,
+      stdio: ['ignore', 'ignore', 'ignore'],
+      env: { HOME: '/tmp', LANG: 'C.UTF-8', TMPDIR: '/tmp', PATH: '/usr/bin:/bin' },
+    });
+    const killGroup = () => {
+      try {
+        process.kill(-child.pid, 'SIGKILL');
+      } catch {
+        // 进程组已不存在。
+      }
+    };
+    let timedOut = false;
     const timeout = setTimeout(() => {
-      if (settled) return;
-      settled = true;
-      child.kill('SIGKILL');
-      reject(new Error(`command timed out: ${command}`));
+      timedOut = true;
+      killGroup();
     }, options.timeoutMs);
     child.on('error', (error) => {
-      if (settled) return;
-      settled = true;
       clearTimeout(timeout);
       reject(error);
     });
     child.on('close', (code) => {
-      if (settled) return;
-      settled = true;
       clearTimeout(timeout);
-      if (code === 0) resolve();
+      killGroup();
+      if (timedOut) {
+        const error = new Error(`command timed out: ${command}`);
+        error.code = 'timeout';
+        reject(error);
+      } else if (code === 0) resolve();
       else reject(new Error(`command failed (${code}): ${command}`));
     });
   });

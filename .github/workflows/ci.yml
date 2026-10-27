@@ -221,6 +221,8 @@ jobs:
           TEST_SANDBOX_RUNTIME: runsc
           TEST_SANDBOX_OFFICE: '1'
           TEST_SANDBOX_CONTROL_IMAGE: zhibiao-parse:ci-control
+          # 解析卡住时的解析任务测试（tests/sandbox/docker/parseJob.test.ts）在真实沙箱和数据库上执行任务。
+          TEST_DATABASE_ADMIN_URL: postgres://postgres:postgres@127.0.0.1:5432/postgres
 
       - name: Shell script syntax (bash -n)
         run: bash -n db/init/10-provision.sh && bash -n scripts/init-dev-secrets.sh && sh -n redis/start-valkey.sh

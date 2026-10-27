@@ -36,6 +36,7 @@ const KNOWN_CODES = new Set([
   'pdf_text_layer_missing',
   'spreadsheet_empty',
   'office_conversion_failed',
+  'office_conversion_timeout',
   'too_many_images',
 ]);
 
