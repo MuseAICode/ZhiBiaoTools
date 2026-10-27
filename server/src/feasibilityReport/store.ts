@@ -690,6 +690,8 @@ async function trashFiles(trx: Trx, context: TenantContext, fileIds: string[]): 
 
 export interface ImportSourcesResult {
   addedCount: number;
+  /** 新导入的文件（待解析，由接口入队解析任务）。 */
+  addedFileIds: string[];
   /** 被替换掉的旧资料数（原件进回收站）。 */
   removedCount: number;
   state: FeasibilityReportState;
@@ -697,7 +699,7 @@ export interface ImportSourcesResult {
 
 /**
  * 导入可研资料（取代桌面版 importSourceDocuments）：与桌面版相同整体替换。给出的文件按顺序成为全部资料：新文件挂到本项目
- * （files.project_id）并登记，资料停在待解析（解析随第 6 步）；已登记的保留并按新顺序排列；不在其中的旧资料原件软删除
+ * （files.project_id）并登记，资料停在待解析（由接口入队解析任务，6.6）；已登记的保留并按新顺序排列；不在其中的旧资料原件软删除
  * （进回收站）。同时清空资料分析、目录和关键参数。文件不可用（不存在、其他组织的、未上传完成、已删除、用途不是 tender、
  * 属于其他项目）时整体失败，返回 400。
  */
@@ -749,7 +751,7 @@ export async function importSources(db: Kysely<Database>, context: TenantContext
     }
     const removedCount = await trashFiles(trx, context, removed);
     await clearDownstreamFromMaterials(trx, context, projectId);
-    return { addedCount: added.length, removedCount, state: await readState(trx, projectId) };
+    return { addedCount: added.length, addedFileIds: added, removedCount, state: await readState(trx, projectId) };
   });
 }
 

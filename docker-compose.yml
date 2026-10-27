@@ -9,6 +9,7 @@
 # 6.1 起新增 redis 服务：同样需要重新运行 init-dev-secrets.sh 生成 redis_password。
 # 6.2 起新增 worker 服务和数据库角色 bidtools_jobs：已有的数据卷不会重跑初始化脚本，先 docker compose down -v 重建（或按 server/db/init/10-provision.sh 手工建角色）。
 # 6.4 起 worker 也拿 AI 主密钥（ai_kek），任务中的模型调用在 worker 中经 AI 网关进行；不需要新的 secret 或角色。
+# 6.6 起 worker 加入 sandbox-control 网络、拿对象存储密钥和沙箱服务令牌执行文档解析；parse 镜像加入了解析入口，改过后重新构建。
 # 6.5 起新增 sandbox-runner 服务（解析沙箱，docs/SERVER_DESIGN.md 第 7.5 节）：
 #   - 重新运行 init-dev-secrets.sh 生成 sandbox_runner_token；
 #   - 先构建 parse 沙箱镜像：docker build -t zhibiao-parse:dev server/sandbox/parse
@@ -190,7 +191,8 @@ services:
   # 任务队列的消费者（docs/SERVER_DESIGN.md 第 5 节）：与 api 同一镜像，入口为 dist/worker.js。不对外提供接口，
   # /healthz、/readyz 只监听容器内的回环地址，供镜像的 HEALTHCHECK 使用，不映射端口。
   # 需要数据库（default 网络）和 Redis（backend 网络）。6.4 起拿 AI 主密钥：任务中的模型调用经 AI 网关，在 worker 中解密平台 Key、
-  # 冻结和结算；对象存储密钥 6.6 起加上。
+  # 冻结和结算。6.6 起执行文档解析：拿对象存储密钥（读原件、写产物）和沙箱服务令牌，加入 sandbox-control 网络调用 sandbox-runner；
+  # 解析只在 sandbox-runner 创建的断网沙箱中进行，worker 不挂载 Docker socket。
   worker:
     image: bidtools-api:dev
     build:
@@ -206,18 +208,33 @@ services:
       AI_KEK_FILE: /run/secrets/ai_kek
       REDIS_URL: redis://bidtools@redis:6379
       REDIS_PASSWORD_FILE: /run/secrets/redis_password
+      S3_ENDPOINT: http://s3:8333
+      S3_REGION: us-east-1
+      S3_BUCKET: bidtools-dev
+      S3_FORCE_PATH_STYLE: "true"
+      S3_ACCESS_KEY_ID: bidtools-dev
+      S3_SECRET_ACCESS_KEY_FILE: /run/secrets/s3_secret_key
+      SANDBOX_RUNNER_URL: http://sandbox-runner:3100
+      SANDBOX_RUNNER_TOKEN_FILE: /run/secrets/sandbox_runner_token
     secrets:
       - db_app_password
       - ai_kek
       - redis_password
+      - s3_secret_key
+      - sandbox_runner_token
     depends_on:
       migrate:
         condition: service_completed_successfully
       redis:
         condition: service_healthy
+      s3:
+        condition: service_healthy
+      sandbox-runner:
+        condition: service_started
     networks:
       - default
       - backend
+      - sandbox-control
     # 收到 SIGTERM 后中止执行中的任务（可续跑的回到 queued），最多等 25 秒（src/worker.ts）。
     stop_grace_period: 30s
     <<: *hardening
@@ -225,7 +242,7 @@ services:
 
   # 解析沙箱的管理服务（docs/SERVER_DESIGN.md 第 7.4、7.5 节）：与 api 同一镜像，入口为 dist/sandbox-runner.js。
   # 唯一挂载 Docker socket 的服务（能创建容器即等同宿主 root），只按代码中写死的 parse 模板创建断网的沙箱容器；
-  # 只在 internal 网络 sandbox-control 上监听，不映射端口、不能访问外网和其他服务。worker 6.6 起加入该网络并拿令牌调用它。
+  # 只在 internal 网络 sandbox-control 上监听，不映射端口、不能访问外网和其他服务。只有 worker（6.6 起）加入该网络并拿令牌调用它。
   # 沙箱容器由它经宿主的 Docker 创建，不在本 compose 项目中；到期（15 分钟）的沙箱由它定期删除。
   sandbox-runner:
     image: bidtools-api:dev
@@ -270,7 +287,7 @@ secrets:
 
 # backend：Redis 所在的网络，只有 api 和 worker 加入。开发环境需要把 Redis 端口映射到本机供集成测试使用，
 # 所以没有设为 internal（internal 网络不能映射端口）；生产部署的网络划分见 docs/SERVER_DESIGN.md 第 8.1 节。
-# sandbox-control：sandbox-runner 所在的内部网络（internal，不能访问外网）；6.6 起 worker 加入以调用它，api 不加入。
+# sandbox-control：sandbox-runner 所在的内部网络（internal，不能访问外网）；只有 worker 加入以调用它（6.6），api 不加入。
 networks:
   backend:
   sandbox-control:

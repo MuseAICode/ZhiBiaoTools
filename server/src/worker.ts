@@ -2,6 +2,8 @@
 // 执行任务队列中的全部长任务，不对外提供接口；只在容器内监听 /healthz、/readyz，供容器健康检查使用。
 // 收到 SIGTERM / SIGINT 时中止正在执行的任务（可续跑的回到 queued，由其他 worker 或重启后继续），再退出。
 // 任务中的模型调用经同一个 AI 网关模块（src/ai/gateway.ts），在 worker 进程中解密平台 Key、冻结和结算（6.4）。
+// 文档解析（6.6）经 sandbox-runner 在断网沙箱中执行（SANDBOX_RUNNER_URL + 令牌），worker 只取原件、校验结果、写产物，
+// 不运行任何文档解析器，也不挂载 Docker socket。
 import Fastify from 'fastify';
 import { createAiConcurrencyLimiter } from './ai/concurrency.ts';
 import { createAiGateway } from './ai/gateway.ts';
@@ -10,6 +12,7 @@ import { ConfigError, loadConfig, type AppConfig } from './config.ts';
 import { createDatabase } from './db/database.ts';
 import { registerErrorHandlers } from './errors.ts';
 import { createEventPublisher } from './events/publisher.ts';
+import { createS3ObjectStore } from './files/objectStore.ts';
 import { createJobNotifier } from './jobs/notify.ts';
 import { createJobDispatcher } from './jobs/queue.ts';
 import { jobTypeRegistry } from './jobs/registry.ts';
@@ -17,6 +20,7 @@ import { createJobRunner } from './jobs/runner.ts';
 import { createLoggerOptions } from './logger.ts';
 import { bullmqConnection, createRedis } from './redis.ts';
 import { registerHealthRoutes } from './routes/health.ts';
+import { createSandboxRunnerClient } from './sandbox/client.ts';
 
 /** 等待正在执行的任务在检查点退出的上限；docker-compose.yml 的 stop_grace_period 要比它长。 */
 const SHUTDOWN_TIMEOUT_MS = 25_000;
@@ -65,6 +69,11 @@ const aiLimiter = createAiConcurrencyLimiter(redisConfig, { leaseMs: config.ai.h
 // 未配置主密钥时任务调用模型一律失败（AI_UNAVAILABLE）；不调用模型的任务照常执行。
 const gateway = keyWrapper ? createAiGateway({ db: database.db, keyWrapper, settings: config.ai, log: app.log, limiter: aiLimiter }) : null;
 if (!gateway) app.log.warn('AI_KEK_FILE is not set, model calls in jobs will fail');
+// 未配置对象存储或 sandbox-runner 时解析任务失败（PARSE_UNAVAILABLE），其他任务照常执行。
+const objectStore = config.storage ? createS3ObjectStore(config.storage) : null;
+if (!objectStore) app.log.warn('S3_BUCKET is not set, document parse jobs will fail');
+const sandbox = config.sandbox ? createSandboxRunnerClient({ url: config.sandbox.url, token: config.sandbox.token }) : null;
+if (!sandbox) app.log.warn('SANDBOX_RUNNER_URL is not set, document parse jobs will fail');
 const runner = createJobRunner({
   db: database.db,
   registry: jobTypeRegistry,
@@ -73,6 +82,8 @@ const runner = createJobRunner({
   log: app.log,
   notifier: createJobNotifier({ db: database.db, publisher, log: app.log }),
   gateway,
+  objectStore,
+  sandbox,
 });
 
 app.addHook('onClose', async () => {

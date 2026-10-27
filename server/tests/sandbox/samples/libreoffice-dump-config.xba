@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE script:module PUBLIC "-//OpenOffice.org//DTD OfficeDocument 1.0//EN" "module.dtd">
+<!-- 读取 LibreOffice 有效配置的应用级 Basic 宏（放在用户配置的“我的宏”中，以 macro:/// 调用），把宏安全与链接更新的取值写到
+     /tmp/zhibiao-effective-config。xcd 禁止的是文档中的宏，应用级宏不受影响，所以能在同一镜像中读出有效配置。 -->
+<script:module xmlns:script="http://openoffice.org/2000/script" script:name="Module1" script:language="StarBasic">Function ReadNode(path As String)
+  Dim provider As Object, arg As New com.sun.star.beans.PropertyValue
+  provider = CreateUnoService(&quot;com.sun.star.configuration.ConfigurationProvider&quot;)
+  arg.Name = &quot;nodepath&quot;
+  arg.Value = path
+  ReadNode = provider.createInstanceWithArguments(&quot;com.sun.star.configuration.ConfigurationAccess&quot;, Array(arg))
+End Function
+
+Sub Dump
+  Dim s As Object, w As Object, c As Object, n As Integer
+  s = ReadNode(&quot;/org.openoffice.Office.Common/Security/Scripting&quot;)
+  w = ReadNode(&quot;/org.openoffice.Office.Writer/Content/Update&quot;)
+  c = ReadNode(&quot;/org.openoffice.Office.Calc/Content/Update&quot;)
+  n = FreeFile()
+  Open &quot;/tmp/zhibiao-effective-config&quot; For Output As #n
+  Print #n, &quot;MacroSecurityLevel=&quot; &amp; s.MacroSecurityLevel
+  Print #n, &quot;DisableMacrosExecution=&quot; &amp; s.DisableMacrosExecution
+  Print #n, &quot;BlockUntrustedRefererLinks=&quot; &amp; s.BlockUntrustedRefererLinks
+  Print #n, &quot;WriterLink=&quot; &amp; w.Link
+  Print #n, &quot;WriterField=&quot; &amp; w.Field
+  Print #n, &quot;WriterChart=&quot; &amp; w.Chart
+  Print #n, &quot;CalcLink=&quot; &amp; c.Link
+  Close #n
+End Sub
+</script:module>

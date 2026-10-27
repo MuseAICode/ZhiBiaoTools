@@ -969,6 +969,8 @@ async function visibleDocuments(trx: Trx, projectId: string, role: TechnicalPlan
 
 export interface ImportTenderFilesResult {
   addedCount: number;
+  /** 新导入的文件（待解析，由接口入队解析任务）。 */
+  addedFileIds: string[];
   /** 已导入到本项目的文件（跳过）。 */
   skippedCount: number;
   state: TechnicalPlanState;
@@ -976,7 +978,7 @@ export interface ImportTenderFilesResult {
 
 /**
  * 导入招标文件（取代桌面版 importTenderDocument）：与桌面版相同追加到已有招标文件之后，已导入到本项目的文件跳过。新文件
- * 挂到本项目（files.project_id）并登记，停在待解析（解析随第 6 步）。有新文件时清空下游（clearDownstreamFromTender）；
+ * 挂到本项目（files.project_id）并登记，停在待解析（由接口入队解析任务，6.6）。有新文件时清空下游（clearDownstreamFromTender）；
  * 全部跳过时不做改动。文件不可用（不存在、其他组织的、未上传完成、已删除、用途不是 tender、属于其他项目或已是原方案）时
  * 整体失败，返回 400；每个项目最多 TECHNICAL_PLAN_TENDER_FILES_MAX 份。
  */
@@ -987,14 +989,14 @@ export async function importTenderFiles(db: Kysely<Database>, context: TenantCon
     const existing = await visibleDocuments(trx, projectId, 'tender');
     const existingIds = new Set(existing.map((row) => row.file_id));
     const added = ids.filter((id) => !existingIds.has(id));
-    if (added.length === 0) return { addedCount: 0, skippedCount: ids.length, state: await readState(trx, projectId) };
+    if (added.length === 0) return { addedCount: 0, addedFileIds: [], skippedCount: ids.length, state: await readState(trx, projectId) };
     if (existing.length + added.length > TECHNICAL_PLAN_TENDER_FILES_MAX) {
       throw new AppError(400, 'TECHNICAL_PLAN_DOCUMENT_LIMIT', `每个项目最多导入 ${TECHNICAL_PLAN_TENDER_FILES_MAX} 份招标文件`);
     }
     const next = existing.reduce((max, row) => Math.max(max, row.sort_order + 1), 0);
     await attachDocuments(trx, context, projectId, 'tender', added, next);
     await clearDownstreamFromTender(trx, context, projectId);
-    return { addedCount: added.length, skippedCount: ids.length - added.length, state: await readState(trx, projectId) };
+    return { addedCount: added.length, addedFileIds: added, skippedCount: ids.length - added.length, state: await readState(trx, projectId) };
   });
 }
 

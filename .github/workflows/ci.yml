@@ -200,18 +200,35 @@ jobs:
           docker info
           exit 1
 
+      # 6.6 起镜像含解析入口与其 npm 依赖（按 sandbox/parse/package-lock.json 在构建阶段安装）和 LibreOffice 的安全设置。
       - name: Build parse sandbox image
         run: docker build -t zhibiao-parse:ci sandbox/parse
 
-      - name: Sandbox isolation tests (gVisor)
+      # 宏安全测试的对照镜像：同一镜像只去掉 LibreOffice 的安全设置（zhibiao-security.xcd），证明测试能发现设置被去掉。只用于测试，不发布。
+      - name: Build control image without the LibreOffice security settings
+        run: |
+          docker build -t zhibiao-parse:ci-control - <<'EOF'
+          FROM zhibiao-parse:ci
+          USER root
+          RUN rm /usr/lib/libreoffice/share/registry/zhibiao-security.xcd
+          USER 10001:10001
+          EOF
+
+      - name: Sandbox isolation and parse tests (gVisor)
         run: npm run test:sandbox
         env:
           TEST_SANDBOX_IMAGE: zhibiao-parse:ci
           TEST_SANDBOX_RUNTIME: runsc
           TEST_SANDBOX_OFFICE: '1'
+          TEST_SANDBOX_CONTROL_IMAGE: zhibiao-parse:ci-control
 
       - name: Shell script syntax (bash -n)
         run: bash -n db/init/10-provision.sh && bash -n scripts/init-dev-secrets.sh && sh -n redis/start-valkey.sh
 
       - name: npm audit (fail on high)
+        run: npm audit --audit-level=high
+
+      # parse 沙箱镜像中的解析依赖（mammoth、pdfjs、SheetJS 等）单独一份 lockfile。
+      - name: npm audit parse sandbox dependencies (fail on high)
+        working-directory: server/sandbox/parse
         run: npm audit --audit-level=high

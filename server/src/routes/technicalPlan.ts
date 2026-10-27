@@ -23,7 +23,7 @@
 // DELETE /api/projects/:projectId/technical-plan/content-generation                 重置正文阶段（保留目录、全局事实和生成配置）
 // DELETE /api/projects/:projectId/technical-plan                                    清空（招标文件与原方案进回收站）
 //
-// 文档解析、多标段识别、招标解析随第 6 步的任务队列；checkBidSections（疑似多标段的检测）随第 6 步由任务在服务端计算；
+// 导入招标文件、上传原方案后自动入队文档解析（6.6，src/parse/）；多标段识别、招标解析随第 6 步的任务队列；checkBidSections（疑似多标段的检测）随第 6 步由任务在服务端计算；
 // 目录生成 / 调整、全局事实生成 / 调整随第 6 步（或第 8 步）；正文生成随第 8 步；openBidTemplate、previewContentWord 随第 7 步。
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import type { Kysely } from 'kysely';
@@ -49,6 +49,8 @@ import type { Database, TechnicalPlanStep } from '../db/schema.ts';
 import { attachmentDisposition } from '../files/filename.ts';
 import type { ObjectStore } from '../files/objectStore.ts';
 import { storageDisabled } from '../knowledgeBase/content.ts';
+import type { JobServiceDependencies } from '../jobs/service.ts';
+import { enqueueDocumentParses } from '../parse/enqueue.ts';
 import { PROJECT_ID_PARAMS, requireProject } from '../projects/access.ts';
 import {
   TECHNICAL_PLAN_FACT_GROUPS_MAX,
@@ -85,6 +87,8 @@ export interface TechnicalPlanRouteDependencies {
   db: Kysely<Database>;
   /** 读取招标文件的 Markdown 用；未配置时读取已解析的文件返回 503（还没有 Markdown 时除外）。 */
   objectStore: ObjectStore | null;
+  /** 导入后入队文档解析任务（6.6）。 */
+  jobs: JobServiceDependencies;
 }
 
 const UUID = { type: 'string', pattern: '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$' } as const;
@@ -303,7 +307,12 @@ export async function registerTechnicalPlanRoutes(app: FastifyInstance, deps: Te
   app.post<ProjectParams & { Body: { fileIds: string[] } }>(
     '/:projectId/technical-plan/tender-files',
     { schema: { params: PROJECT_ID_PARAMS, body: TENDER_FILES_SCHEMA } },
-    async (request) => importTenderFiles(db, tenantOf(request), await project(request), request.body.fileIds),
+    async (request) => {
+      const projectId = await project(request);
+      const result = await importTenderFiles(db, tenantOf(request), projectId, request.body.fileIds);
+      await enqueueDocumentParses(deps.jobs, tenantOf(request), projectId, 'technical-plan-tender', result.addedFileIds);
+      return result;
+    },
   );
 
   app.delete<FileParams>('/:projectId/technical-plan/tender-files/:fileId', { schema: { params: FILE_PARAMS } }, async (request) =>
@@ -333,7 +342,16 @@ export async function registerTechnicalPlanRoutes(app: FastifyInstance, deps: Te
   app.put<ProjectParams & { Body: { fileId: string } }>(
     '/:projectId/technical-plan/original-plan',
     { schema: { params: PROJECT_ID_PARAMS, body: ORIGINAL_PLAN_SCHEMA } },
-    async (request) => setOriginalPlan(db, tenantOf(request), await project(request), request.body.fileId),
+    async (request) => {
+      const projectId = await project(request);
+      const state = await setOriginalPlan(db, tenantOf(request), projectId, request.body.fileId);
+      // 新上传的原方案（待解析）入队；已是本项目原方案的文件不重复入队。
+      const plan = state.originalPlanFile;
+      if (plan && plan.id === request.body.fileId.toLowerCase() && plan.status === 'pending') {
+        await enqueueDocumentParses(deps.jobs, tenantOf(request), projectId, 'technical-plan-original-plan', [plan.id]);
+      }
+      return state;
+    },
   );
 
   app.delete<ProjectParams>('/:projectId/technical-plan/original-plan', { schema: { params: PROJECT_ID_PARAMS } }, async (request) =>

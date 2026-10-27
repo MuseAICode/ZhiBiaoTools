@@ -15,6 +15,7 @@ import { createArchive, maxArchiveBytes, readArchive, SandboxArchiveError, type 
 import { DockerApiError, type DockerApi } from './dockerApi.ts';
 import {
   SandboxError,
+  SANDBOX_BUSY_MESSAGE,
   SANDBOX_OUTPUT_PREVIEW_BYTES,
   type SandboxDriver,
   type SandboxExecResult,
@@ -289,8 +290,9 @@ export function createDockerSandboxDriver(options: DockerSandboxDriverOptions): 
       }
       const template = SANDBOX_TEMPLATES[templateName];
       const run = async (): Promise<SandboxRef> => {
+        // 计入全部带沙箱标签的容器（listContainers 含已停止的），含已停止、已到期但尚未清理的残留沙箱。
         const existing = await docker.listContainers(`${SANDBOX_LABEL}=1`);
-        if (existing.length >= options.maxActive) throw new SandboxError('SANDBOX_BUSY', '沙箱数已达上限，请稍后重试');
+        if (existing.length >= options.maxActive) throw new SandboxError('SANDBOX_BUSY', SANDBOX_BUSY_MESSAGE);
         const id = randomUUID();
         const expiresAt = new Date(now().getTime() + template.lifetimeMs);
         const spec = buildSpec(template, { image: options.images[templateName], runtime: options.runtime, jobId: createOptions.jobId, expiresAt });

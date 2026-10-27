@@ -3,6 +3,7 @@
 //   TEST_SANDBOX_RUNTIME  runsc（CI）或 runc（本机），默认 runc
 //   TEST_SANDBOX_DOCKER_SOCKET  默认 /var/run/docker.sock
 //   TEST_SANDBOX_OFFICE=1 镜像中有 LibreOffice 时运行转换用例（CI 构建的完整镜像）
+//   TEST_SANDBOX_CONTROL_IMAGE  对照镜像：同一 parse 镜像去掉 zhibiao-security.xcd（CI 中由完整镜像派生），宏安全测试的对照组用
 // 测试进程需要能在宿主网络上监听端口（控制组的沙箱经 Docker 网桥网关连接它），在容器中运行时用 --network host。
 import { request } from 'node:http';
 import { createDockerApi } from '../../../src/sandbox/dockerApi.ts';
@@ -15,6 +16,7 @@ export const sandboxEnv = Object.freeze({
   runtime: process.env.TEST_SANDBOX_RUNTIME ?? 'runc',
   socketPath: process.env.TEST_SANDBOX_DOCKER_SOCKET ?? '/var/run/docker.sock',
   office: process.env.TEST_SANDBOX_OFFICE === '1',
+  controlImage: process.env.TEST_SANDBOX_CONTROL_IMAGE ?? null,
 });
 
 export const docker = createDockerApi(sandboxEnv.socketPath);

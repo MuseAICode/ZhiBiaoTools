@@ -2,7 +2,7 @@
 // worker 不挂载 Docker socket，只持有调用 sandbox-runner 的共享令牌。取回的归档在这里按模板校验
 // （src/sandbox/archive.ts），不信任 sandbox-runner 转出的内容（它来自沙箱）。
 import { createArchive, readArchive, SandboxArchiveError } from './archive.ts';
-import { isSandboxErrorCode, SandboxError, type SandboxDriver, type SandboxExecResult, type SandboxRef } from './driver.ts';
+import { isSandboxErrorCode, SandboxError, SANDBOX_BUSY_MESSAGE, type SandboxDriver, type SandboxExecResult, type SandboxRef } from './driver.ts';
 import { SANDBOX_JOB_HEADER } from './runnerApp.ts';
 import { isSandboxTemplateName, SANDBOX_TEMPLATES } from './templates.ts';
 
@@ -44,6 +44,7 @@ export function createSandboxRunnerClient(options: SandboxRunnerClientOptions): 
       } catch {
         code = undefined;
       }
+      if (code === 'SANDBOX_BUSY') throw new SandboxError(code, SANDBOX_BUSY_MESSAGE);
       if (isSandboxErrorCode(code)) throw new SandboxError(code, `沙箱操作失败（${code}）`);
       throw new SandboxError(response.status >= 500 ? 'SANDBOX_UNAVAILABLE' : 'SANDBOX_FAILED', `沙箱服务返回 ${response.status}`);
     }
