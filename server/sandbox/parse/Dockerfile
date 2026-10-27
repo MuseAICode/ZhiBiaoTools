@@ -3,12 +3,21 @@
 # 只由 sandbox-runner 按 parse 模板启动：断网、只读根文件系统、非 root、无任何能力，输入输出经 exec 中的 tar 传送。
 # 镜像中没有凭据、编译器、网络工具和包管理器（npm、corepack、yarn 已删除），也没有 setuid / setgid 程序。
 # 基础镜像与 server/Dockerfile 相同，按 digest 固定；部署时按构建出的镜像摘要引用（SANDBOX_PARSE_IMAGE=...@sha256:...）。
-# 解析入口（/opt/parse/entry.mjs）与其 npm 依赖（mammoth、pdfjs 等）由 6.6 加入；6.5 只有占位入口。
+# 解析入口（/opt/parse/entry.mjs）与其 npm 依赖（mammoth、pdfjs 等，6.6 加入）在单独的构建阶段按 package-lock.json 安装
+# （不执行依赖的安装脚本），最终镜像只复制安装结果，不含 npm。
 ARG NODE_IMAGE=node:24.21.0-bookworm-slim@sha256:d6aa754f16b3197301076f047b5def2f02ea1dbbc2ca920407d46d7ec7f87b20
+
+FROM ${NODE_IMAGE} AS deps
+WORKDIR /opt/parse
+COPY package.json package-lock.json .npmrc ./
+COPY vendor ./vendor
+RUN npm ci --omit=dev --ignore-scripts --no-audit --no-fund \
+ && rm -rf vendor
 
 FROM ${NODE_IMAGE}
 # libreoffice-*-nogui：不带 X11 / GTK 前端，只能 headless 运行；fonts-noto-cjk：中日韩字体（SIL OFL 1.1），fonts-dejavu-core：西文字体。
-# LibreOffice 关闭链接更新、不执行宏的全局设置随 6.6 与解析入口同时加入（入口上线前 LibreOffice 不处理任何上传文件）；断网是兜底。
+# LibreOffice 的全局安全设置（不执行宏、链接与域不在加载时更新、阻止不受信任的外部资源）与解析入口同时加入（6.6），
+# 放在 share/registry 下、各项 finalized，每次转换新建的用户配置不能覆盖；断网是兜底。
 # 安装后删除包管理器的缓存与列表，删除 Node 镜像自带的 npm / corepack / yarn，去掉所有 setuid / setgid 位。
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
@@ -25,7 +34,9 @@ RUN apt-get update \
  && useradd --uid 10001 --gid 10001 --no-create-home --home-dir /tmp --shell /usr/sbin/nologin sandbox \
  && mkdir -p /input /output /opt/parse
 
-COPY --chmod=0644 entry.mjs /opt/parse/entry.mjs
+COPY --chmod=0644 libreoffice/zhibiao-security.xcd /usr/lib/libreoffice/share/registry/zhibiao-security.xcd
+COPY --from=deps /opt/parse/node_modules /opt/parse/node_modules
+COPY --chmod=0644 package.json entry.mjs convert.mjs zipGuard.mjs /opt/parse/
 
 ENV HOME=/tmp LANG=C.UTF-8 TMPDIR=/tmp
 USER 10001:10001

@@ -25,6 +25,8 @@ import { JOB_DISPATCH_BATCH_MAX } from '../db/migrations/0021_jobs.ts';
 import type { AiGateway } from '../ai/gateway.ts';
 import type { Database } from '../db/schema.ts';
 import { AppError } from '../errors.ts';
+import type { ObjectStore } from '../files/objectStore.ts';
+import type { SandboxDriver } from '../sandbox/driver.ts';
 import {
   DEFAULT_QUEUE_CONCURRENCY,
   JOB_QUEUES,
@@ -80,6 +82,10 @@ export interface JobRunnerOptions {
   notifier?: JobNotifier;
   /** AI 网关；未配置主密钥时为 null，任务调用模型时失败（AI_UNAVAILABLE）。 */
   gateway?: AiGateway | null;
+  /** 对象存储；未配置时为 null。 */
+  objectStore?: ObjectStore | null;
+  /** 解析沙箱（经 sandbox-runner）；未配置时为 null。 */
+  sandbox?: SandboxDriver | null;
 }
 
 export interface ReconcileResult {
@@ -212,6 +218,8 @@ export function createJobRunner(options: JobRunnerOptions): JobRunner {
       tenant,
       db,
       ai,
+      objectStore: options.objectStore ?? null,
+      sandbox: options.sandbox ?? null,
       signal: controller.signal,
       async setProgress(progress) {
         if (!apply(await renewRun(db, run, leaseMs, { progress }))) throw new JobInterruptedError();

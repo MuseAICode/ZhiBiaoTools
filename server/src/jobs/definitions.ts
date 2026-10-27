@@ -4,6 +4,8 @@ import type { Kysely } from 'kysely';
 import type { ChatDelta, ChatRequest, ChatResult } from '../ai/gateway.ts';
 import type { Database } from '../db/schema.ts';
 import type { TenantContext } from '../db/tenant.ts';
+import type { ObjectStore } from '../files/objectStore.ts';
+import type { SandboxDriver } from '../sandbox/driver.ts';
 import { JOB_TYPE_PATTERN } from '../db/migrations/0021_jobs.ts';
 
 /** BullMQ 队列（第 5.2 节），每个队列在 worker 中单独设置并发。 */
@@ -61,6 +63,13 @@ export interface JobContext<P> {
   log(message: string, data?: Record<string, unknown>): Promise<void>;
   /** 模型调用（6.4）。 */
   readonly ai: JobAi;
+  /** 对象存储（读原件、写产物）；worker 未配置 S3 时为 null。 */
+  readonly objectStore: ObjectStore | null;
+  /**
+   * 解析沙箱（6.6，经 sandbox-runner）；worker 未配置 SANDBOX_RUNNER_URL 时为 null。上传的文件只在沙箱中解析，
+   * 任务进程内不运行任何文档解析器。exec 的任何非 0 结果之后都要销毁沙箱，任务在 finally 中 destroy。
+   */
+  readonly sandbox: SandboxDriver | null;
 }
 
 export interface JobTypeDefinition<P = unknown> {

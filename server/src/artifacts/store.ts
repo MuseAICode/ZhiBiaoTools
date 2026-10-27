@@ -2,6 +2,7 @@
 // 由 RLS 保证只能看到、修改本组织的产物；跨组织的 artifactId 与不存在的一样返回 null。
 //
 // 写入方是第 6 步的解析任务：writeArtifact 一次完成“登记 → 写对象 → 完成（检查配额）”，失败时删除对象和登记行。
+// 重新解析时旧产物经 supersedeArtifacts 标为已被替换（迁移 0023），读取时不再返回，由清理任务（6.8）删除。
 // 项目或来源文件已删除时产物不可访问，由 RLS 保证（迁移 0008_artifacts），这里不再重复判断。
 import { createHash } from 'node:crypto';
 import { Readable } from 'node:stream';
@@ -160,7 +161,30 @@ export async function writeArtifact(
   }
 }
 
-/** 已完成、可访问的产物；其他组织的、写入中的、项目或来源文件已删除的都返回 null。 */
+/**
+ * 把来源文件之前的产物标为已被替换（重新解析后调用）：除 keepIds 之外、该来源文件下全部已完成且未被替换的产物。
+ * 返回标记的数量。
+ */
+export async function supersedeArtifacts(
+  db: Kysely<Database>,
+  context: TenantContext,
+  sourceFileId: string,
+  keepIds: readonly string[],
+): Promise<number> {
+  return withTenant(db, context, async (trx) => {
+    let query = trx
+      .updateTable('artifacts')
+      .set({ superseded_at: new Date() })
+      .where('source_file_id', '=', sourceFileId)
+      .where('status', '=', 'ready')
+      .where('superseded_at', 'is', null);
+    if (keepIds.length > 0) query = query.where('id', 'not in', [...keepIds]);
+    const result = await query.executeTakeFirst();
+    return Number(result.numUpdatedRows);
+  });
+}
+
+/** 已完成、可访问的产物；其他组织的、写入中的、已被替换的、项目或来源文件已删除的都返回 null。 */
 export async function findArtifact(db: Kysely<Database>, context: TenantContext, artifactId: string): Promise<ArtifactRecord | null> {
   const row = await withTenant(db, context, (trx) =>
     trx
@@ -168,6 +192,7 @@ export async function findArtifact(db: Kysely<Database>, context: TenantContext,
       .selectAll()
       .where('id', '=', artifactId)
       .where('status', '=', 'ready')
+      .where('superseded_at', 'is', null)
       .executeTakeFirst(),
   );
   return row ? toRecord(row) : null;
@@ -178,13 +203,14 @@ export type ListArtifactsOptions = ({ projectId: string; sourceFileId?: undefine
   limit: number;
 };
 
-/** 某个项目或某个来源文件下可访问的产物，按生成时间排列。 */
+/** 某个项目或某个来源文件下可访问、未被替换的产物，按生成时间排列。 */
 export async function listArtifacts(db: Kysely<Database>, context: TenantContext, options: ListArtifactsOptions): Promise<ArtifactRecord[]> {
   const rows = await withTenant(db, context, (trx) => {
     let query = trx
       .selectFrom('artifacts')
       .selectAll()
-      .where('status', '=', 'ready');
+      .where('status', '=', 'ready')
+      .where('superseded_at', 'is', null);
     query = options.projectId !== undefined
       ? query.where('project_id', '=', options.projectId)
       : query.where('source_file_id', '=', options.sourceFileId!);

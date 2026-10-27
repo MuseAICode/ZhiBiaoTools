@@ -25,8 +25,11 @@ describe('任务类型登记', () => {
     expect(maxAttemptsOf(definition('a', { maxAttempts: 1 }))).toBe(1);
   });
 
-  it('6.2 还没有登记任何业务任务类型', () => {
-    expect(JOB_TYPES).toEqual([]);
-    expect(jobTypeRegistry.types).toEqual([]);
+  it('登记的业务任务类型：6.6 的文档解析（parse 队列、可续跑、不调用模型）', () => {
+    expect(JOB_TYPES.map((item) => item.type)).toEqual(['document-parse']);
+    const parse = jobTypeRegistry.get('document-parse')!;
+    expect(parse.queue).toBe('parse');
+    expect(parse.resumable).toBe(true);
+    expect(parse.billable).toBeFalsy();
   });
 });

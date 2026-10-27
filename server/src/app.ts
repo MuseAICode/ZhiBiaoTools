@@ -14,6 +14,9 @@ import type { EventHub } from './events/hub.ts';
 import type { ObjectStore } from './files/objectStore.ts';
 import { createLoggerOptions } from './logger.ts';
 import { NULL_JOB_NOTIFIER, type JobNotifier } from './jobs/notify.ts';
+import type { JobDispatcher } from './jobs/queue.ts';
+import { jobTypeRegistry } from './jobs/registry.ts';
+import type { JobServiceDependencies } from './jobs/service.ts';
 import { createLogMailer, type Mailer } from './mail/mailer.ts';
 import type { RedisHandle } from './redis.ts';
 import { registerAdminRoutes } from './routes/admin.ts';
@@ -62,6 +65,11 @@ export interface BuildAppOptions {
   events?: { hub: EventHub; notifier: JobNotifier } | null;
   /** 测试用：替换推送连接的心跳、会话重新校验间隔和连接数上限。 */
   eventLimits?: Pick<EventRouteDependencies, 'heartbeatMs' | 'sessionCheckMs' | 'maxConnectionsPerUser'>;
+  /**
+   * 任务派发（src/server.ts 按 REDIS_URL 创建，由调用方关闭）。未提供时入队只写 jobs，由 worker 的对账派发（最长约 15 秒）。
+   * 6.6 起导入文档后入队解析任务。
+   */
+  dispatcher?: JobDispatcher | null;
 }
 
 export async function buildApp(config: AppConfig, options: BuildAppOptions): Promise<FastifyInstance> {
@@ -140,15 +148,23 @@ export async function buildApp(config: AppConfig, options: BuildAppOptions): Pro
   await app.register(registerProjectRoutes, { prefix: '/api/projects', db });
   await app.register(registerJobRoutes, { prefix: '/api/jobs', db, notifier: options.events?.notifier ?? NULL_JOB_NOTIFIER });
   await app.register(registerEventRoutes, { prefix: '/api/events', db, hub: options.events?.hub ?? null, ...options.eventLimits });
+  // 业务接口入队任务（6.6 起：导入后的文档解析）。先写 jobs，提交后放进 BullMQ；放入失败时由 worker 的对账派发。
+  const jobs: JobServiceDependencies = {
+    db,
+    registry: jobTypeRegistry,
+    dispatcher: options.dispatcher ?? null,
+    log: app.log,
+    notifier: options.events?.notifier ?? NULL_JOB_NOTIFIER,
+  };
   await app.register(registerArtifactRoutes, { prefix: '/api/artifacts', db, objectStore: options.objectStore ?? null });
   await app.register(registerSettingsRoutes, { prefix: '/api/settings', db });
   await app.register(registerTemplateRoutes, { prefix: '/api/export-templates', db });
   await app.register(registerCredentialLibraryRoutes, { prefix: '/api/credential-library', db });
   await app.register(registerKnowledgeBaseRoutes, { prefix: '/api/knowledge-base', db, objectStore: options.objectStore ?? null });
   await app.register(registerDuplicateCheckRoutes, { prefix: '/api/projects', db });
-  await app.register(registerRejectionCheckRoutes, { prefix: '/api/projects', db, objectStore: options.objectStore ?? null });
-  await app.register(registerFeasibilityReportRoutes, { prefix: '/api/projects', db, objectStore: options.objectStore ?? null });
-  await app.register(registerTechnicalPlanRoutes, { prefix: '/api/projects', db, objectStore: options.objectStore ?? null });
+  await app.register(registerRejectionCheckRoutes, { prefix: '/api/projects', db, objectStore: options.objectStore ?? null, jobs });
+  await app.register(registerFeasibilityReportRoutes, { prefix: '/api/projects', db, objectStore: options.objectStore ?? null, jobs });
+  await app.register(registerTechnicalPlanRoutes, { prefix: '/api/projects', db, objectStore: options.objectStore ?? null, jobs });
 
   return app;
 }

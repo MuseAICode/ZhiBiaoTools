@@ -569,6 +569,8 @@ export interface ImportDocumentsInput {
 
 export interface ImportDocumentsResult {
   addedCount: number;
+  /** 新导入的文件（待解析，由接口入队解析任务）。 */
+  addedFileIds: string[];
   /** 已导入到本项目的文件（与桌面版跳过重复文件相同，不再导入）。 */
   skippedCount: number;
   state: RejectionCheckState;
@@ -576,7 +578,7 @@ export interface ImportDocumentsResult {
 
 /**
  * 导入招标文件或投标文件（取代桌面版 importDocument）：把已上传的 tender 文件挂到本项目（files.project_id）并按给出的
- * 顺序追加到同类文档之后，文档停在待解析（解析随第 6 步）。已导入到本项目的文件跳过。有新文档时与桌面版相同：招标文件
+ * 顺序追加到同类文档之后，文档停在待解析（由接口入队解析任务，6.6）。已导入到本项目的文件跳过。有新文档时与桌面版相同：招标文件
  * 清空解析结果和三类检查结果，当前页签回到合并的招标正文；投标文件清空三类检查结果，当前页签切到第一份新投标文件。
  * 文件不可用（不存在、其他组织的、未上传完成、已删除、用途不是 tender、属于其他项目）时整体失败，返回 400。
  */
@@ -635,7 +637,7 @@ export async function importDocuments(
       else await clearCheckResults(trx, projectId);
       await writeMeta(trx, context, projectId, { active_document_tab: role === 'tender' ? TENDER_TAB : added[0]! });
     }
-    return { addedCount: added.length, skippedCount: ids.length - added.length, state: await readState(trx, projectId) };
+    return { addedCount: added.length, addedFileIds: added, skippedCount: ids.length - added.length, state: await readState(trx, projectId) };
   });
 }
 

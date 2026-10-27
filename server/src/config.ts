@@ -91,6 +91,17 @@ export interface AppConfig {
   storage: ObjectStorageConfig | null;
   /** 未设置 REDIS_URL 时为 null，/readyz 不检查 Redis（第 6 步的任务队列接入后改为必需）。 */
   redis: RedisConfig | null;
+  /**
+   * worker 调用 sandbox-runner 的地址和令牌（6.6 起）。未设置 SANDBOX_RUNNER_URL 时为 null：解析任务失败（PARSE_UNAVAILABLE）。
+   * 只有 worker 使用；api 不读取令牌文件以外的内容，也不调用 sandbox-runner。
+   */
+  sandbox: SandboxClientConfig | null;
+}
+
+export interface SandboxClientConfig {
+  /** sandbox-runner 的源（如 http://sandbox-runner:3100），只在内部网络 sandbox-control 上。 */
+  url: string;
+  token: string;
 }
 
 /** sandbox-runner 进程的配置（docs/SERVER_DESIGN.md 第 7.5 节），与 api / worker 的配置分开读取。 */
@@ -405,15 +416,27 @@ function createReader(env: Env, options: LoadConfigOptions) {
     return Object.freeze({ ...address, password });
   }
 
+  /** 设置了 SANDBOX_RUNNER_URL 才启用；启用后令牌必需（SANDBOX_RUNNER_TOKEN 或 SANDBOX_RUNNER_TOKEN_FILE，至少 32 个字符）。 */
+  function readSandboxClient(): SandboxClientConfig | null {
+    if (!env.SANDBOX_RUNNER_URL?.trim()) return null;
+    const url = read('SANDBOX_RUNNER_URL', {
+      parse: parseOrigin,
+      expected: 'http(s) 地址（不带路径，如 http://sandbox-runner:3100）',
+    });
+    const token = readSecret('SANDBOX_RUNNER_TOKEN');
+    if (token !== undefined && token !== '' && token.length < 32) fail('SANDBOX_RUNNER_TOKEN', '过短（至少 32 个字符）');
+    return Object.freeze({ url, token });
+  }
+
   function fail(name: string, reason: string) {
     issues.push({ name, reason });
   }
 
-  return { read, readSecret, readDatabase, readAi, readStorage, readRedis, fail, finish };
+  return { read, readSecret, readDatabase, readAi, readStorage, readRedis, readSandboxClient, fail, finish };
 }
 
 export function loadConfig(env: Env, options: LoadConfigOptions = {}): AppConfig {
-  const { read, readDatabase, readAi, readStorage, readRedis, finish } = createReader(env, options);
+  const { read, readDatabase, readAi, readStorage, readRedis, readSandboxClient, finish } = createReader(env, options);
   const nodeEnv = read('NODE_ENV', {
     parse: oneOf(NODE_ENVS),
     expected: NODE_ENVS.join(' / '),
@@ -446,6 +469,7 @@ export function loadConfig(env: Env, options: LoadConfigOptions = {}): AppConfig
     ai: readAi(),
     storage: readStorage(production),
     redis: readRedis(),
+    sandbox: readSandboxClient(),
   });
 }
 

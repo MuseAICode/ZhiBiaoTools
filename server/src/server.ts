@@ -9,7 +9,8 @@ import { createEventHub } from './events/hub.ts';
 import { createEventPublisher } from './events/publisher.ts';
 import { createS3ObjectStore } from './files/objectStore.ts';
 import { createJobNotifier } from './jobs/notify.ts';
-import { createRedis } from './redis.ts';
+import { createJobDispatcher } from './jobs/queue.ts';
+import { bullmqConnection, createRedis } from './redis.ts';
 
 const SHUTDOWN_TIMEOUT_MS = 10_000;
 /** 清理到期冻结的间隔。到期的冻结本来就不占用余额，这里只把记录标为 abandoned。 */
@@ -57,7 +58,9 @@ const events = publisher && hub ? { hub, notifier: createJobNotifier({ db: datab
 const aiLimiter = config.redis
   ? createAiConcurrencyLimiter(config.redis, { leaseMs: config.ai.holdTtlSeconds * 1000, log: eventLog })
   : null;
-const app = await buildApp(config, { database, keyWrapper, objectStore, redis, events, aiLimiter });
+// 任务派发（6.6 起导入文档后入队解析）。未配置 Redis 时只写 jobs，由 worker 的对账派发。
+const dispatcher = config.redis ? createJobDispatcher({ connection: bullmqConnection(config.redis, 'producer', 'bidtools-api-dispatch') }) : null;
+const app = await buildApp(config, { database, keyWrapper, objectStore, redis, events, aiLimiter, dispatcher });
 if (!keyWrapper) app.log.warn('AI_KEK_FILE is not set, AI gateway disabled');
 if (!objectStore) app.log.warn('S3_BUCKET is not set, file storage disabled');
 if (!redis) app.log.warn('REDIS_URL is not set, redis readiness check and event stream disabled');
@@ -74,7 +77,7 @@ sweeper.unref();
 
 app.addHook('onClose', async () => {
   clearInterval(sweeper);
-  await Promise.all([database.destroy(), redis?.destroy(), hub?.close(), publisher?.close(), aiLimiter?.close()]);
+  await Promise.all([database.destroy(), redis?.destroy(), hub?.close(), publisher?.close(), aiLimiter?.close(), dispatcher?.close()]);
 });
 
 let shuttingDown = false;

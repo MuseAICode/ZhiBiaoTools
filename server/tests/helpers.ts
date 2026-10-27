@@ -30,6 +30,7 @@ export const testConfig: AppConfig = Object.freeze({
   }),
   storage: null,
   redis: null,
+  sandbox: null,
 });
 
 /** 数据库桩：单元测试不连接真实数据库，/readyz 的结果由 ping 决定；访问 db 即抛错，确保单元测试不会意外查库。 */

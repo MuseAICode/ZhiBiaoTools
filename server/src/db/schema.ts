@@ -340,6 +340,8 @@ export interface ArtifactsTable {
   created_by: ColumnType<string, string, never>;
   created_at: ColumnType<Date, never, never>;
   completed_at: ColumnType<Date | null, never, never>;
+  /** 重新解析后被替换的时间（迁移 0023，触发器写入 now()）；之后由清理任务删除。 */
+  superseded_at: ColumnType<Date | null, never, Date>;
 }
 
 /**

@@ -17,7 +17,7 @@
 // GET    /api/projects/:projectId/feasibility-report/sources/:fileId/markdown     资料解析出的 Markdown 原文（附件下载，还没有解析时为空）
 // DELETE /api/projects/:projectId/feasibility-report                              清空（资料进回收站）
 //
-// 资料解析、资料分析、关键参数随第 6 步的任务队列，目录生成 / 调整第 6 步核实（可能第 8 步），正文生成随第 8 步；
+// 导入资料后自动入队资料解析（6.6，src/parse/）；资料分析、关键参数随第 6 步的任务队列，目录生成 / 调整第 6 步核实（可能第 8 步），正文生成随第 8 步；
 // readCombinedSourceMarkdown（Renderer 未调用）由任务在服务端合并，不开放为接口；Word 导出随第 7 步。
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import type { Kysely } from 'kysely';
@@ -58,12 +58,16 @@ import {
 import { attachmentDisposition } from '../files/filename.ts';
 import type { ObjectStore } from '../files/objectStore.ts';
 import { storageDisabled } from '../knowledgeBase/content.ts';
+import type { JobServiceDependencies } from '../jobs/service.ts';
+import { enqueueDocumentParses } from '../parse/enqueue.ts';
 import { PROJECT_ID_PARAMS, requireProject } from '../projects/access.ts';
 
 export interface FeasibilityReportRouteDependencies {
   db: Kysely<Database>;
   /** 读取资料的 Markdown 用；未配置时读取已解析的资料返回 503（还没有 Markdown 时除外）。 */
   objectStore: ObjectStore | null;
+  /** 导入后入队文档解析任务（6.6）。 */
+  jobs: JobServiceDependencies;
 }
 
 const UUID = { type: 'string', pattern: '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$' } as const;
@@ -233,7 +237,12 @@ export async function registerFeasibilityReportRoutes(app: FastifyInstance, deps
   app.put<ProjectParams & { Body: { fileIds: string[] } }>(
     '/:projectId/feasibility-report/sources',
     { schema: { params: PROJECT_ID_PARAMS, body: SOURCES_SCHEMA } },
-    async (request) => importSources(db, tenantOf(request), await project(request), request.body.fileIds),
+    async (request) => {
+      const projectId = await project(request);
+      const result = await importSources(db, tenantOf(request), projectId, request.body.fileIds);
+      await enqueueDocumentParses(deps.jobs, tenantOf(request), projectId, 'feasibility-report', result.addedFileIds);
+      return result;
+    },
   );
 
   app.delete<SourceParams>('/:projectId/feasibility-report/sources/:fileId', { schema: { params: SOURCE_PARAMS } }, async (request) =>

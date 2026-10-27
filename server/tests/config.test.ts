@@ -36,6 +36,7 @@ describe('loadConfig', () => {
       },
       storage: null,
       redis: null,
+      sandbox: null,
     });
   });
 
@@ -83,6 +84,7 @@ describe('loadConfig', () => {
       },
       storage: null,
       redis: null,
+      sandbox: null,
     });
     expect(Object.isFrozen(config)).toBe(true);
     expect(Object.isFrozen(config.database)).toBe(true);

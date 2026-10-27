@@ -477,6 +477,31 @@ describe('sandbox lifecycle', () => {
     await createSandbox(limited);
   });
 
+  it('counts stopped and expired-but-unswept sandboxes toward the cap, and allows creating again after cleanup', async () => {
+    // 路线图 6.6（#28 确认时登记）：计入全部带沙箱标签的容器，含已停止、已到期但尚未清理的残留沙箱。
+    const existing = (await docker.listContainers('zhibiao.sandbox=1')).length;
+    const limited = makeDriver({ maxActive: existing + 2 });
+    // 已到期但还没被清理：创建时的时钟早于一个生命周期，标签中的到期时间已过。
+    const past = makeDriver({ maxActive: existing + 2, now: () => new Date(Date.now() - parse.lifetimeMs - 60_000) });
+    const expired = await createSandbox(past);
+    const stopped = await createSandbox(limited);
+    // 已停止（超时被终止的沙箱就是这样）：容器仍在，计数。
+    await docker.killContainer(`zhibiao-sandbox-${stopped.id}`);
+    expect((await docker.inspectContainer(`zhibiao-sandbox-${stopped.id}`))?.State.Running).toBe(false);
+    await expect(limited.lookup(expired.id, expired.jobId)).rejects.toMatchObject({ code: 'SANDBOX_NOT_FOUND' });
+
+    const busy = await limited.create('parse', { jobId: randomUUID() }).then(() => null, (error: unknown) => error);
+    expect(busy).toMatchObject({ code: 'SANDBOX_BUSY', message: '沙箱数已达上限，请稍后重试' });
+
+    // 到期清理删掉已到期的残留后可以再创建；销毁已停止的残留后同样。
+    expect(await limited.sweep()).toBeGreaterThanOrEqual(1);
+    expect(await docker.inspectContainer(`zhibiao-sandbox-${expired.id}`)).toBeNull();
+    await createSandbox(limited);
+    await expect(limited.create('parse', { jobId: randomUUID() })).rejects.toMatchObject({ code: 'SANDBOX_BUSY' });
+    await limited.destroy(stopped);
+    await createSandbox(limited);
+  });
+
   it('expires sandboxes and sweeps them', async () => {
     const ref = await createSandbox();
     const later = makeDriver({ now: () => new Date(Date.now() + parse.lifetimeMs + 1_000) });
@@ -506,8 +531,9 @@ describe('sandbox-runner over http', () => {
     created.push({ driver, ref });
     await client.copyIn(ref, [{ path: 'original.docx', data: Buffer.from('PK') }]);
     const result = await client.exec(ref, 'parse', []);
-    // 6.5 的占位入口：退出码 64。
+    // 没有给出格式：解析入口以 64（参数不合法）退出，不读输入。
     expect(result.exitCode).toBe(64);
+    expect(result.stdout.trim()).toBe('{"error":"bad_arguments"}');
     await expect(client.exec(ref, 'sh', ['-c', 'id'])).rejects.toMatchObject({ code: 'SANDBOX_BAD_REQUEST' });
     expect(await client.copyOut(ref)).toEqual([]);
     await expect(client.exec({ ...ref, jobId: randomUUID() }, 'parse', [])).rejects.toMatchObject({ code: 'SANDBOX_NOT_FOUND' });

@@ -514,6 +514,16 @@ AI 网关（worker 内）── 解密 Key ──> 模型服务商
 - **镜像**：`server/sandbox/parse/Dockerfile`，Node 24 + LibreOffice（Writer、Calc，无图形界面）+ 中文字体，删除包管理器和 setuid 位；解析入口和其 npm 依赖随 6.6 加入。
 - **测试**：`npm run test:sandbox`（CI 中在 gVisor 下运行，含 LibreOffice 转换）逐项验证断网、只读、无能力、资源上限、超时、取回校验和沙箱之间不共享，并用去掉加固的对照组证明测试有效；LibreOffice 在 gVisor 下的耗时记录在 CI 日志中。
 
+### 7.6 实现（路线图 6.6）：文档解析任务
+
+- **任务**：`document-parse`（`server/src/parse/job.ts`），`parse` 队列。技术方案、废标检查、可研报告导入文件后每个新文件入队一个任务（`src/parse/enqueue.ts`），互斥键 `document-parse:{fileId}`。worker 只取原件、调用 sandbox-runner、校验结果、写产物，不运行任何文档解析器；
+- **分派**：按 `files.mime`（上传时按内容决定）选择解析入口的 `format`（`src/parse/dispatch.ts`），不看扩展名、不重新嗅探；RTF、HTML、MHT、Office 2003 XML 等 6.7 开放；
+- **解析入口**：`server/sandbox/parse/entry.mjs`，输入固定为 `/input/source`，输出 `/output/content.md`、`/output/images/*`、`/output/manifest.json`；docx / xlsx（含 LibreOffice 转出的 docx）先做 ZIP 炸弹检查（`zipGuard.mjs`：条目数、声明的总大小与压缩比，并按实际解压大小核对），PDF 先检查页数；失败只给错误代码；
+- **结果校验**（`src/parse/output.ts`）：清单与文件一一对应、图片文件头与 MIME 一致、Markdown 为 UTF-8；图片引用只保留本次输出中的图片并改写为 `/api/artifacts/{id}/content`，引用缺失的图片整体拒绝，其他图片去掉；
+- **写入**：图片和 Markdown 经 `writeArtifact`（配额检查），文档经各模块的 `saveDocumentParse` / `saveSourceParse` 写回；之前的产物经 `supersedeArtifacts` 标为已被替换（迁移 0023 的 `artifacts.superseded_at`），读取时不再返回，由清理任务删除；
+- **沙箱生命周期**：每个任务一个沙箱，`finally` 中销毁；`SANDBOX_BUSY` 与 sandbox-runner 不可用按退避重试；
+- **LibreOffice**：镜像中 `share/registry/zhibiao-security.xcd` 以 finalized 设置禁止宏、链接与域不在加载时更新、阻止不受信任的外部资源，用户配置不能覆盖。
+
 ## 8. 部署架构
 
 ### 8.0 部署位置（已决定，第 9 节第 13、14 项）

@@ -13,7 +13,7 @@
 // DELETE /api/projects/:projectId/rejection-check                                    清空（导入的文档进回收站）
 // GET    /api/projects/:projectId/rejection-check/export                             当前结果导出为 Excel（附件下载）
 //
-// 文档解析、废标项解析与三类检查随第 6 步的任务队列，结果由任务经 saveDocumentParse / saveExtraction / saveCheckResult
+// 导入文档后自动入队文档解析（6.6，src/parse/）；废标项解析与三类检查随第 6 步的任务队列，结果由任务经 saveDocumentParse / saveExtraction / saveCheckResult
 // 写入；桌面版 updateState 中任务写入的部分不开放为接口。
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import type { Kysely } from 'kysely';
@@ -30,6 +30,8 @@ import type { Database, RejectionCheckResultType } from '../db/schema.ts';
 import { AppError } from '../errors.ts';
 import { attachmentDisposition } from '../files/filename.ts';
 import type { ObjectStore } from '../files/objectStore.ts';
+import type { JobServiceDependencies } from '../jobs/service.ts';
+import { enqueueDocumentParses } from '../parse/enqueue.ts';
 import { PROJECT_ID_PARAMS, requireProject } from '../projects/access.ts';
 import { importTenderFromTechnicalPlan } from '../rejectionCheck/fromTechnicalPlan.ts';
 import { buildRejectionWorkbook, exportFileName, isExportable } from '../rejectionCheck/export.ts';
@@ -50,6 +52,8 @@ export interface RejectionCheckRouteDependencies {
   db: Kysely<Database>;
   /** 从技术方案复制招标文件用；未配置时该接口返回 503。 */
   objectStore: ObjectStore | null;
+  /** 导入后入队文档解析任务（6.6）。 */
+  jobs: JobServiceDependencies;
   /** 测试用：导出时间。 */
   now?: () => Date;
 }
@@ -149,7 +153,12 @@ export async function registerRejectionCheckRoutes(app: FastifyInstance, deps: R
   app.post<ProjectParams & { Body: ImportDocumentsInput }>(
     '/:projectId/rejection-check/documents',
     { schema: { params: PROJECT_ID_PARAMS, body: IMPORT_SCHEMA } },
-    async (request) => importDocuments(db, tenantOf(request), await project(request), request.body),
+    async (request) => {
+      const projectId = await project(request);
+      const result = await importDocuments(db, tenantOf(request), projectId, request.body);
+      await enqueueDocumentParses(deps.jobs, tenantOf(request), projectId, 'rejection-check', result.addedFileIds);
+      return result;
+    },
   );
 
   app.delete<DocumentParams>('/:projectId/rejection-check/documents/:fileId', { schema: { params: DOCUMENT_PARAMS } }, async (request) =>

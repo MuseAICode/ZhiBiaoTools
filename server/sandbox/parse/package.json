@@ -1,0 +1,20 @@
+{
+  "name": "zhibiao-parse-sandbox",
+  "version": "0.1.0",
+  "private": true,
+  "description": "parse 沙箱镜像中的解析入口（docs/SERVER_DESIGN.md 第 7.5 节），只在断网沙箱中运行",
+  "license": "UNLICENSED",
+  "type": "module",
+  "engines": {
+    "node": ">=24.21.0 <25"
+  },
+  "dependencies": {
+    "cheerio": "1.2.0",
+    "mammoth": "1.13.0",
+    "pdf-parse": "2.4.5",
+    "pdfjs-dist": "6.4.299",
+    "turndown": "7.2.4",
+    "turndown-plugin-gfm": "1.0.2",
+    "xlsx": "file:vendor/xlsx-0.20.3.tgz"
+  }
+}
