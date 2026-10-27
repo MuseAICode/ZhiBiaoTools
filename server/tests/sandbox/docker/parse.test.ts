@@ -133,20 +133,21 @@ describe.runIf(sandboxEnv.office)('LibreOffice macro and link-update settings in
     { path: 'permissive.xcu', data: sample('libreoffice-permissive.xcu') },
     { path: 'dump.xba', data: sample('libreoffice-dump-config.xba') },
   ];
-  // 用最宽松的用户配置“打开”样本（不是转换），最多 30 秒；之后看标记文件。
+  // 用最宽松的用户配置“打开”样本（不是转换），20 秒后结束 LibreOffice，之后看标记文件。打开文档后 LibreOffice 不会自己退出；
+  // gVisor 下它不响应 SIGTERM（timeout 会一直等），所以 5 秒后改发 SIGKILL（-k 5）。宏在加载时执行，标记文件此时已写好。
   const OPEN_SCRIPT = `P=/tmp/zhibiao-lo-open
 mkdir -p "$P/user"
 cp /input/permissive.xcu "$P/user/registrymodifications.xcu"
 cp /input/source /tmp/zhibiao-macro-doc.odt
-timeout 30 soffice --headless --norestore "-env:UserInstallation=file://$P" /tmp/zhibiao-macro-doc.odt >/dev/null 2>&1
+timeout -k 5 20 soffice --headless --norestore "-env:UserInstallation=file://$P" /tmp/zhibiao-macro-doc.odt >/dev/null 2>&1
 if [ -e ${MARKER} ]; then echo marker=present; else echo marker=absent; fi`;
   // 初始化用户配置 → 放入读取配置的宏 → 叠加最宽松的用户设置 → 以 macro:/// 调用，输出有效配置。
   const CONFIG_SCRIPT = `P=/tmp/zhibiao-lo-config
-timeout 60 soffice --headless --norestore "-env:UserInstallation=file://$P" --terminate_after_init >/dev/null 2>&1
+timeout -k 5 40 soffice --headless --norestore "-env:UserInstallation=file://$P" --terminate_after_init >/dev/null 2>&1
 cp /input/dump.xba "$P/user/basic/Standard/Module1.xba"
 items=$(sed -n '/^<item /p' /input/permissive.xcu | tr -d '\\n')
 sed -i "s|</oor:items>|$items</oor:items>|" "$P/user/registrymodifications.xcu"
-timeout 60 soffice --headless --norestore "-env:UserInstallation=file://$P" "macro:///Standard.Module1.Dump" >/dev/null 2>&1
+timeout -k 5 40 soffice --headless --norestore "-env:UserInstallation=file://$P" "macro:///Standard.Module1.Dump" >/dev/null 2>&1
 cat /tmp/zhibiao-effective-config`;
 
   const controlDriver = sandboxEnv.controlImage
@@ -157,8 +158,9 @@ cat /tmp/zhibiao-effective-config`;
     const ref = await owner.create('parse', { jobId: randomUUID() });
     created.push({ owner, ref });
     await owner.copyIn(ref, inputs());
-    const result = await owner.execArgv(ref, ['sh', '-c', script], { timeoutMs: 180_000 });
-    expect(result.timedOut).toBe(false);
+    // 比用例的超时短：卡住时报“沙箱命令超时”，而不是只报用例超时。
+    const result = await owner.execArgv(ref, ['sh', '-c', script], { timeoutMs: 100_000 });
+    expect(result.timedOut, 'sandbox command timed out').toBe(false);
     return result.stdout.trim();
   }
 
