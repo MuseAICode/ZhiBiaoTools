@@ -36,18 +36,47 @@ export function rawRedis(config: RedisConfig = redisConfig()): Redis {
 }
 
 /**
- * 删除某个 BullMQ 前缀下的全部键：应用用户没有 FLUSHALL / FLUSHDB 权限（6.1 的 ACL），按前缀删除对本测试等同于清空。
- * 返回删除的键数。
+ * 删除某个 BullMQ 前缀下的全部键，模拟 Redis 重启或被清空：应用用户没有 FLUSHALL / FLUSHDB 权限（6.1 的 ACL），按前缀删除对本测试等同于清空。
+ * 在一个 Lua 脚本中 SCAN + DEL，执行期间其他客户端的命令不能插入，与真实的清空一样是原子的：分批 SCAN、DEL 时，运行中的 worker
+ * 可以在两批之间取走一个任务并写下锁，使锁逃过删除，留下真实清空不会出现的残留。返回删除的键数。
  */
+const WIPE_SCRIPT = `
+local cursor = '0'
+local deleted = 0
+repeat
+  local reply = redis.call('SCAN', cursor, 'MATCH', ARGV[1], 'COUNT', 1000)
+  cursor = reply[1]
+  for _, key in ipairs(reply[2]) do deleted = deleted + redis.call('DEL', key) end
+until cursor == '0'
+return deleted`;
+
 export async function wipeQueueKeys(redis: Redis, prefix: string): Promise<number> {
+  return Number(await redis.eval(WIPE_SCRIPT, 0, `${prefix}:*`));
+}
+
+/**
+ * 某个前缀下仍然引用这些任务的键：键名中含任务 id（任务记录、锁等），或列表、有序集合、集合中含任务 id（等待、延后、执行中等）。
+ * Stream（BullMQ 的事件日志）不是任务状态，不检查。清空之后运行中的 worker 会重建与任务无关的通用键（如 delayed、meta、events），
+ * 与真实重启后一致，不计入。
+ */
+export async function queueKeysReferencing(redis: Redis, prefix: string, jobIds: readonly string[]): Promise<string[]> {
+  const found: string[] = [];
   let cursor = '0';
-  let deleted = 0;
   do {
     const [next, keys] = await redis.scan(cursor, 'MATCH', `${prefix}:*`, 'COUNT', 500);
     cursor = next;
-    if (keys.length > 0) deleted += await redis.del(...keys);
+    for (const key of keys) {
+      if (jobIds.some((id) => key.includes(id))) {
+        found.push(key);
+        continue;
+      }
+      const type = await redis.type(key);
+      const members =
+        type === 'list' ? await redis.lrange(key, 0, -1) : type === 'zset' ? await redis.zrange(key, '0', '-1') : type === 'set' ? await redis.smembers(key) : [];
+      if (members.some((member) => jobIds.some((id) => member.includes(id)))) found.push(key);
+    }
   } while (cursor !== '0');
-  return deleted;
+  return found;
 }
 
 export async function countQueueKeys(redis: Redis, prefix: string): Promise<number> {
