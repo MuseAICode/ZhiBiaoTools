@@ -214,17 +214,6 @@ jobs:
           USER 10001:10001
           EOF
 
-      # 远程资源测试（6.7）用的镜像：同一镜像只加入运行器的 CA 证书包。LibreOffice 的网络组件在固定路径找不到证书包时不发出任何
-      # HTTP 请求，正式镜像中没有证书包；在能发出请求的镜像中断言“解析过程没有任何连接”，才能证明解析器本身不尝试加载。只用于测试，不发布。
-      - name: Build image with a CA bundle for the remote-resource tests
-        run: |
-          docker build -t zhibiao-parse:ci-remote -f - /etc/ssl/certs <<'EOF'
-          FROM zhibiao-parse:ci
-          USER root
-          COPY ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
-          USER 10001:10001
-          EOF
-
       - name: Sandbox isolation and parse tests (gVisor)
         run: npm run test:sandbox
         env:
@@ -232,7 +221,6 @@ jobs:
           TEST_SANDBOX_RUNTIME: runsc
           TEST_SANDBOX_OFFICE: '1'
           TEST_SANDBOX_CONTROL_IMAGE: zhibiao-parse:ci-control
-          TEST_SANDBOX_REMOTE_IMAGE: zhibiao-parse:ci-remote
           # 解析卡住时的解析任务测试（tests/sandbox/docker/parseJob.test.ts）在真实沙箱和数据库上执行任务。
           TEST_DATABASE_ADMIN_URL: postgres://postgres:postgres@127.0.0.1:5432/postgres
 

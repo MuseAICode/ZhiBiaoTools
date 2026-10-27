@@ -5,8 +5,7 @@
 # 基础镜像与 server/Dockerfile 相同，按 digest 固定；部署时按构建出的镜像摘要引用（SANDBOX_PARSE_IMAGE=...@sha256:...）。
 # 解析入口（/opt/parse/entry.mjs）与其 npm 依赖（mammoth、pdfjs 等，6.6 加入）在单独的构建阶段按 package-lock.json 安装
 # （不执行依赖的安装脚本），最终镜像只复制安装结果，不含 npm。文本类格式（6.7）的检查与清理是 markupGuard.mjs（只用 Node 内置模块）
-# 和 htmlSanitize.mjs（cheerio），没有新增依赖。镜像中不装 CA 证书包（ca-certificates）：LibreOffice 的网络组件找不到证书包时
-# 不发出任何 HTTP 请求，这是断网与预处理之外的又一层，但不依赖它（远程资源测试在加了证书包的派生镜像中运行，见 CI）。
+# 和 htmlSanitize.mjs（cheerio），没有新增依赖。
 ARG NODE_IMAGE=node:24.21.0-bookworm-slim@sha256:d6aa754f16b3197301076f047b5def2f02ea1dbbc2ca920407d46d7ec7f87b20
 
 FROM ${NODE_IMAGE} AS deps

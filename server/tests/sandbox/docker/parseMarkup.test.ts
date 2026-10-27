@@ -3,10 +3,10 @@
 //    UTF-7 声明，经解析入口一律被拒绝（错误代码），用时很短、没有任何连接；对照组：去掉 DTD 的同一文档能解析，正文中原样含
 //    /etc/passwd 特征的文档能在输出中看到该特征（证明“输出中没有”的断言有效），去掉检查直接交给 SheetJS 时文档会被解析。
 // 2. HTML / MHT / RTF（及 Word 2003 XML）禁止加载远程资源：沙箱内只有 lo，在 127.0.0.1 上起一个记录一切连接的监听端口，
-//    样本中所有远程地址都指向它；断言解析过程中没有任何连接（断网之外，解析器本身也不尝试加载）。这些用例在加入了 CA 证书包的
-//    同一镜像中运行（TEST_SANDBOX_REMOTE_IMAGE）：LibreOffice 的网络组件在固定路径找不到证书包时不发出任何请求，正式镜像中没有
-//    证书包（另有用例核对），“没有连接”只有在它能发出请求时才说明问题。对照组：在该镜像中把未经清理的同一 HTML 直接交给
-//    LibreOffice，监听端口收到连接（证明监听有效，也证明只靠 LibreOffice 的安全设置不够）。
+//    样本中所有远程地址都指向它；断言解析过程中没有任何连接（断网之外，解析器本身也不尝试加载）。对照组：同一镜像中把未经清理的
+//    同一 HTML 直接交给 LibreOffice（镜像的安全设置已加载），监听收到样式表与背景图片的请求——证明监听有效、镜像中的 LibreOffice
+//    确实会加载远程资源，“没有连接”来自清理而不是别的原因（例如缺少 CA 证书包：宿主的 LibreOffice 24.2 没有证书包时不发请求，
+//    bookworm 的 7.4 照样发，所以对照组必须在正式镜像中做）。
 // 3. MHT 的 MIME 边界情况（畸形、嵌套过深、部分过多、超大）经解析入口的错误代码。
 // LibreOffice 的转换超时与进程组终止（沿用 6.6）见 parse.test.ts。需要 LibreOffice 的用例只在 TEST_SANDBOX_OFFICE=1 时运行。
 import { randomUUID } from 'node:crypto';
@@ -34,19 +34,11 @@ import {
 import { docker, sandboxEnv, silentLog } from './env.ts';
 
 const driver = createDockerSandboxDriver({ docker, runtime: sandboxEnv.runtime, images: { parse: sandboxEnv.image }, maxActive: 32, log: silentLog });
-// 远程资源测试用加入了 CA 证书包的同一镜像（见 env.ts 的 TEST_SANDBOX_REMOTE_IMAGE）：LibreOffice 在那里能发出 HTTP 请求，
-// “没有连接”才说明解析器本身没有尝试加载。没有配置时退回正式镜像（本机），对照组跳过。
-const remoteDriver = sandboxEnv.remoteImage
-  ? createDockerSandboxDriver({ docker, runtime: sandboxEnv.runtime, images: { parse: sandboxEnv.remoteImage }, maxActive: 32, log: silentLog })
-  : driver;
 const created: Array<{ owner: typeof driver; ref: SandboxRef }> = [];
 
 afterEach(async () => {
   for (const { owner, ref } of created.splice(0)) await owner.destroy(ref);
 });
-
-/** LibreOffice（24.2 与 bookworm 的 7.4）查找 CA 证书包的固定路径（没有环境变量可改）。 */
-const CA_BUNDLE_PATHS = ['/etc/ssl/certs/ca-certificates.crt', '/etc/pki/tls/certs/ca-bundle.crt', '/etc/pki/tls/certs/ca-bundle.trust.crt', '/var/lib/ca-certificates/ca-bundle.pem'];
 
 const PORT = 18080;
 const BASE = `http://127.0.0.1:${PORT}`;
@@ -230,14 +222,14 @@ process.stdout.write(sanitizeHtml(html, { resolveImage: resolveResource }));`,
   });
 
   it('html-sheet (SheetJS): parses the table without any connection', async () => {
-    const run = await parseListened(Buffer.from(remoteSheetHtml(BASE)), 'html-sheet', remoteDriver);
+    const run = await parseListened(Buffer.from(remoteSheetHtml(BASE)), 'html-sheet');
     expect(run.code).toBeNull();
     expect(run.output!.markdown).toContain('|服务器|2|');
     expect(run.connections).toEqual([]);
   });
 
   it.runIf(sandboxEnv.office)('html-word: converts through LibreOffice without any connection; the data: image is kept', async () => {
-    const run = await parseListened(Buffer.from(remoteHtml(BASE)), 'html-word', remoteDriver);
+    const run = await parseListened(Buffer.from(remoteHtml(BASE)), 'html-word');
     expect(run.code, run.stdout).toBeNull();
     expect(run.connections).toEqual([]);
     expect(run.output!.markdown).toContain('远程资源样本开始');
@@ -247,7 +239,7 @@ process.stdout.write(sanitizeHtml(html, { resolveImage: resolveResource }));`,
   });
 
   it.runIf(sandboxEnv.office)('mht: converts through LibreOffice without any connection; the three in-package images are kept', async () => {
-    const run = await parseListened(remoteMht(BASE), 'mht', remoteDriver);
+    const run = await parseListened(remoteMht(BASE), 'mht');
     expect(run.code, run.stdout).toBeNull();
     expect(run.connections).toEqual([]);
     expect(run.output!.markdown).toContain('MHT 正文开始');
@@ -256,7 +248,7 @@ process.stdout.write(sanitizeHtml(html, { resolveImage: resolveResource }));`,
   });
 
   it.runIf(sandboxEnv.office)('rtf: converts through LibreOffice without any connection; field results are kept, /etc/passwd is not read', async () => {
-    const run = await parseListened(remoteRtf(BASE), 'rtf', remoteDriver);
+    const run = await parseListened(remoteRtf(BASE), 'rtf');
     expect(run.code, run.stdout).toBeNull();
     expect(run.connections).toEqual([]);
     for (const text of ['RTF 远程样本开始', '缓存的本地文件结果', '缓存的远程结果', 'OLE 对象的显示结果', 'RTF 远程样本结束']) expect(run.output!.markdown).toContain(text);
@@ -264,7 +256,7 @@ process.stdout.write(sanitizeHtml(html, { resolveImage: resolveResource }));`,
   });
 
   it.runIf(sandboxEnv.office)('word-xml: converts through LibreOffice without any connection; /etc/passwd is not read', async () => {
-    const run = await parseListened(remoteWordXml(BASE), 'word-xml', remoteDriver);
+    const run = await parseListened(remoteWordXml(BASE), 'word-xml');
     expect(run.code, run.stdout).toBeNull();
     expect(run.connections).toEqual([]);
     expect(run.output!.markdown).toContain('Word XML 远程样本开始');
@@ -275,30 +267,12 @@ process.stdout.write(sanitizeHtml(html, { resolveImage: resolveResource }));`,
   const RAW_HTML_CONVERSION =
     'timeout -k 5 60 soffice --headless --norestore -env:UserInstallation=file:///tmp/zhibiao-lo "--infilter=HTML (StarWriter)" --convert-to "docx:MS Word 2007 XML" --outdir /tmp/zhibiao-out /input/source';
 
-  it.runIf(sandboxEnv.office && sandboxEnv.remoteImage !== null)(
-    'control: the unsanitized HTML given straight to LibreOffice (security settings loaded) does connect to the listener',
-    async () => {
-      const run = await runListened(Buffer.from(remoteHtml(BASE)), RAW_HTML_CONVERSION, remoteDriver);
-      expect(run.exitCode).toBe(0);
-      expect(run.connections.filter((line) => line === 'connection').length).toBeGreaterThan(0);
-      // 镜像的安全设置（BlockUntrustedRefererLinks 等）挡住了 <img>，挡不住样式表和 CSS 背景图片。
-      expect(run.connections.some((line) => line.startsWith('request ') && /\/(style\.css|background\.png) /.test(line))).toBe(true);
-    },
-  );
-
-  it('the parse image has no CA bundle where LibreOffice looks for one (its HTTP client cannot start: an extra layer, not relied on)', async () => {
-    const output = await nodeInSandbox(
-      Buffer.from(''),
-      `import { existsSync } from 'node:fs';
-process.stdout.write(JSON.stringify(${JSON.stringify(CA_BUNDLE_PATHS)}.filter((path) => existsSync(path))));`,
-    );
-    expect(JSON.parse(output)).toEqual([]);
-  });
-
-  it.runIf(sandboxEnv.office)('control: in the parse image itself the same unsanitized HTML makes no connection (no CA bundle)', async () => {
+  it.runIf(sandboxEnv.office)('control: the unsanitized HTML given straight to LibreOffice in the same image (security settings loaded) does connect', async () => {
     const run = await runListened(Buffer.from(remoteHtml(BASE)), RAW_HTML_CONVERSION);
     expect(run.exitCode).toBe(0);
-    expect(run.connections).toEqual([]);
+    expect(run.connections.filter((line) => line === 'connection').length).toBeGreaterThan(0);
+    // 镜像的安全设置（BlockUntrustedRefererLinks 等）挡住了 <img>，挡不住样式表和 CSS 背景图片。
+    expect(run.connections.some((line) => line.startsWith('request ') && /\/(style\.css|background\.png) /.test(line))).toBe(true);
   });
 
   it.runIf(sandboxEnv.office)('control: the unsanitized RTF keeps its INCLUDETEXT field through LibreOffice; the sanitized one does not', async () => {
