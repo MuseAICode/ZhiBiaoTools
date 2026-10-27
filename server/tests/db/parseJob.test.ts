@@ -472,6 +472,7 @@ describe('失败', () => {
     ['zip_too_many_entries', 'PARSE_ZIP_TOO_MANY_ENTRIES', '文件内部条目超过 10,000 个，已拒绝解析'],
     ['zip_too_large', 'PARSE_ZIP_TOO_LARGE', '文件解压后超过 1 GiB，已拒绝解析'],
     ['pdf_too_many_pages', 'PARSE_PDF_TOO_MANY_PAGES', 'PDF 超过 3,000 页，已拒绝解析'],
+    ['office_conversion_timeout', 'PARSE_OFFICE_CONVERSION_TIMEOUT', '老式 Word 文件转换超时（超过 8 分钟），请另存为 docx 后重新导入'],
     ['pdf_text_layer_missing', 'PARSE_PDF_TEXT_LAYER_MISSING', 'PDF 未检测到可选中文字层'],
     ['too_many_images', 'PARSE_TOO_MANY_IMAGES', '文件中的图片超过 2,000 张，已拒绝解析'],
     ['something <script>', 'PARSE_CONVERSION_FAILED', '文件解析失败'],
