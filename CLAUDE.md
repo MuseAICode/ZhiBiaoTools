@@ -43,6 +43,7 @@ c) **构建与类型检查**：在 `client/` 下运行 `npm run build`（含 `ts
 
 d) **依赖漏洞**：在 `client/` 下运行 `npm audit`，列出 high 和 critical 漏洞；没有则写明“无”。
    - 已接受风险：`client/` 中 `patch-package` → `find-yarn-workspace-root` → `micromatch` → `braces` 依赖链的 4 个 high（路线图 0.4，仅开发期 `postinstall` 使用）。只要仍是这 4 个、没有新增，审计报告中写“已知接受风险，无变化”即可，不需要再建议另开 PR；出现其他 high 或 critical 时照常列出。
+   - 已计划修复：`client/` 中 `electron`（<=42.11.15）、`undici`（8.0.0–8.12.1，经 `@earendil-works/pi-coding-agent`）、`zod`（<4.6.6）的 3 个 high（#30 审计时发现，`main` 上已有），计划 2026-11-03 统一升级。在此之前只要仍是这 3 个，审计报告中写“已计划 11-03 修复，无变化”即可，不需要再询问；升级完成后删除本条。
 
 e) **许可证合规**：本项目为闭源商业授权。新增第三方依赖须逐个列出名称、版本和许可证；出现 GPL、AGPL 等强传染性许可证时，在审计报告中单独标出，并暂停、等待用户确认后再继续。没有新增依赖时写明“无新增依赖”。
 

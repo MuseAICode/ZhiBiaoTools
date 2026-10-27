@@ -1,7 +1,7 @@
 // 解析入口在 parse 沙箱中的端到端测试（路线图第 6 步 6.6）：按 parse 模板创建真实的沙箱（CI 中为 gVisor），放入原件、
 // 执行解析入口、取回结果并按 worker 的规则校验（src/sandbox/archive.ts、src/parse/output.ts）。覆盖 6.6 开放的格式、
 // ZIP 炸弹与 PDF 页数检查、解析入口的错误代码，以及镜像中 LibreOffice 的安全设置。需要 LibreOffice 的用例只在
-// TEST_SANDBOX_OFFICE=1（CI 构建的完整镜像）时运行。
+// TEST_SANDBOX_OFFICE=1（CI 构建的完整镜像）时运行；宏安全的对照组另需 TEST_SANDBOX_CONTROL_IMAGE（去掉 xcd 的同一镜像）。
 import { randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -14,19 +14,19 @@ import { buildZip } from '../zipFixtures.ts';
 import { docker, sandboxEnv, silentLog } from './env.ts';
 
 const driver = createDockerSandboxDriver({ docker, runtime: sandboxEnv.runtime, images: { parse: sandboxEnv.image }, maxActive: 32, log: silentLog });
-const created: SandboxRef[] = [];
+const created: Array<{ owner: typeof driver; ref: SandboxRef }> = [];
 const samples = new URL('../samples/', import.meta.url);
 const sample = (name: string) => readFileSync(new URL(name, samples));
 
 afterEach(async () => {
-  for (const ref of created.splice(0)) await driver.destroy(ref);
+  for (const { owner, ref } of created.splice(0)) await owner.destroy(ref);
 });
 
 type Outcome = { ok: true; output: ParsedOutput } | { ok: false; exitCode: number | null; code: string; stdout: string };
 
 async function parseIn(source: Buffer, format: ParseFormat, options: { images?: boolean; charset?: ParseCharset } = {}): Promise<Outcome> {
   const ref = await driver.create('parse', { jobId: randomUUID() });
-  created.push(ref);
+  created.push({ owner: driver, ref });
   await driver.copyIn(ref, [{ path: 'source', data: source }]);
   const result = await driver.exec(ref, 'parse', parseCommandArgs({ format, charset: options.charset ?? null }, options.images ?? false));
   if (result.exitCode !== 0) return { ok: false, exitCode: result.exitCode, code: entryErrorCode(result.stdout), stdout: result.stdout };
@@ -99,7 +99,7 @@ describe('parse entry in the sandbox', () => {
 
   it('ships the LibreOffice security settings in the image', async () => {
     const ref = await driver.create('parse', { jobId: randomUUID() });
-    created.push(ref);
+    created.push({ owner: driver, ref });
     const result = await driver.execArgv(ref, ['cat', '/usr/lib/libreoffice/share/registry/zhibiao-security.xcd'], { timeoutMs: 30_000 });
     expect(result.exitCode).toBe(0);
     for (const fragment of [
@@ -118,5 +118,94 @@ describe('parse entry in the sandbox', () => {
     expect(output.markdown).toContain('招标文件样本');
     expect(output.markdown).toContain('交换机');
     expect(output.images.length).toBeGreaterThanOrEqual(1);
+  });
+});
+
+// LibreOffice 的宏与链接更新设置（server/sandbox/parse/libreoffice/zhibiao-security.xcd）在 parse 镜像中实际生效（#30 确认前补充）。
+// 样本 macro-autorun.odt（samples/make-macro-sample.py 生成）的 Basic 宏绑定在“打开文档”等事件上，执行时写 /tmp/zhibiao-macro-marker。
+// 实测：LibreOffice 以 --convert-to 转换时（解析入口的路径）不触发任何文档事件宏，即使宏安全级别为 0、没有 xcd 也不执行，
+// 所以这条路径上做不出对照组；对照组改在“打开文档”的路径上做：用户配置写成最宽松（级别 0、允许执行），对照镜像（去掉 xcd）中宏执行，
+// 正式镜像中不执行。有效配置用用户配置中的应用级 Basic 宏读取（xcd 禁止的是文档中的宏），同样叠加最宽松的用户配置。
+describe.runIf(sandboxEnv.office)('LibreOffice macro and link-update settings in the parse image', () => {
+  const MARKER = '/tmp/zhibiao-macro-marker';
+  const inputs = () => [
+    { path: 'source', data: sample('macro-autorun.odt') },
+    { path: 'permissive.xcu', data: sample('libreoffice-permissive.xcu') },
+    { path: 'dump.xba', data: sample('libreoffice-dump-config.xba') },
+  ];
+  // 用最宽松的用户配置“打开”样本（不是转换），最多 30 秒；之后看标记文件。
+  const OPEN_SCRIPT = `P=/tmp/zhibiao-lo-open
+mkdir -p "$P/user"
+cp /input/permissive.xcu "$P/user/registrymodifications.xcu"
+cp /input/source /tmp/zhibiao-macro-doc.odt
+timeout 30 soffice --headless --norestore "-env:UserInstallation=file://$P" /tmp/zhibiao-macro-doc.odt >/dev/null 2>&1
+if [ -e ${MARKER} ]; then echo marker=present; else echo marker=absent; fi`;
+  // 初始化用户配置 → 放入读取配置的宏 → 叠加最宽松的用户设置 → 以 macro:/// 调用，输出有效配置。
+  const CONFIG_SCRIPT = `P=/tmp/zhibiao-lo-config
+timeout 60 soffice --headless --norestore "-env:UserInstallation=file://$P" --terminate_after_init >/dev/null 2>&1
+cp /input/dump.xba "$P/user/basic/Standard/Module1.xba"
+items=$(sed -n '/^<item /p' /input/permissive.xcu | tr -d '\\n')
+sed -i "s|</oor:items>|$items</oor:items>|" "$P/user/registrymodifications.xcu"
+timeout 60 soffice --headless --norestore "-env:UserInstallation=file://$P" "macro:///Standard.Module1.Dump" >/dev/null 2>&1
+cat /tmp/zhibiao-effective-config`;
+
+  const controlDriver = sandboxEnv.controlImage
+    ? createDockerSandboxDriver({ docker, runtime: sandboxEnv.runtime, images: { parse: sandboxEnv.controlImage }, maxActive: 32, log: silentLog })
+    : null;
+
+  async function inSandbox(owner: typeof driver, script: string): Promise<string> {
+    const ref = await owner.create('parse', { jobId: randomUUID() });
+    created.push({ owner, ref });
+    await owner.copyIn(ref, inputs());
+    const result = await owner.execArgv(ref, ['sh', '-c', script], { timeoutMs: 180_000 });
+    expect(result.timedOut).toBe(false);
+    return result.stdout.trim();
+  }
+
+  function config(output: string): Record<string, string> {
+    return Object.fromEntries(output.split('\n').map((line) => line.trim().split('=') as [string, string]));
+  }
+
+  it('parses the auto-run macro sample through the parse entry without running the macro', async () => {
+    const ref = await driver.create('parse', { jobId: randomUUID() });
+    created.push({ owner: driver, ref });
+    await driver.copyIn(ref, [{ path: 'source', data: sample('macro-autorun.odt') }]);
+    // 解析入口按老式 Word 分派（LibreOffice 按内容识别格式，转成 docx 后由 mammoth 解析）。
+    const result = await driver.exec(ref, 'parse', parseCommandArgs({ format: 'word-ole', charset: null }, false));
+    expect(result.exitCode, result.stdout).toBe(0);
+    const output = validateParseOutput(await driver.copyOut(ref));
+    expect(output.markdown).toContain('宏样本：打开文档时自动运行的宏不应执行。');
+    const marker = await driver.execArgv(ref, ['sh', '-c', `test -e ${MARKER} && echo present || echo absent`], { timeoutMs: 30_000 });
+    expect(marker.stdout.trim()).toBe('absent');
+  });
+
+  it('does not run the macro when the document is opened, even with the most permissive user profile', async () => {
+    expect(await inSandbox(driver, OPEN_SCRIPT)).toBe('marker=absent');
+  });
+
+  it('reads the effective configuration: macro security and link updates are enforced over the user profile', async () => {
+    expect(config(await inSandbox(driver, CONFIG_SCRIPT))).toEqual({
+      MacroSecurityLevel: '3',
+      DisableMacrosExecution: 'True',
+      BlockUntrustedRefererLinks: 'True',
+      WriterLink: '2',
+      WriterField: 'False',
+      WriterChart: 'False',
+      CalcLink: '2',
+    });
+  });
+
+  it.runIf(sandboxEnv.controlImage !== null)('control: without zhibiao-security.xcd the same macro runs and the user profile wins', async () => {
+    expect(await inSandbox(controlDriver!, 'test -e /usr/lib/libreoffice/share/registry/zhibiao-security.xcd && echo present || echo absent')).toBe('absent');
+    expect(await inSandbox(controlDriver!, OPEN_SCRIPT)).toBe('marker=present');
+    expect(config(await inSandbox(controlDriver!, CONFIG_SCRIPT))).toEqual({
+      MacroSecurityLevel: '0',
+      DisableMacrosExecution: 'False',
+      BlockUntrustedRefererLinks: 'False',
+      WriterLink: '0',
+      WriterField: 'True',
+      WriterChart: 'True',
+      CalcLink: '0',
+    });
   });
 });
