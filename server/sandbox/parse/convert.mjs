@@ -4,7 +4,10 @@
 // - 只读内存中的原件字节，不读取原件旁的其他文件（桌面版 Markdown 会内联同目录的图片）；
 // - 老式 Word（OLE 的 .doc / .wps）只用 LibreOffice 转换（没有 WPS / Word 的 COM 组件），转换出的 docx 同样做 ZIP 检查；
 // - docx、xlsx 先做 ZIP 炸弹检查（zipGuard.mjs），PDF 先检查页数上限；
-// - 图片交给 imageSink 写进 /output/images，Markdown 中只引用 images/ 下的相对路径，其他图片丢弃。
+// - 图片交给 imageSink 写进 /output/images，Markdown 中只引用 images/ 下的相对路径，其他图片丢弃；
+// - 文本类格式（6.7）交给解析器之前先检查或清理（markupGuard.mjs、htmlSanitize.mjs）：Office 2003 XML 含 DTD 即拒绝，
+//   RTF 去掉域指令、OLE 对象等外部引用，HTML 按白名单重新生成（不留任何远程资源），MHT 先解开 MIME 取出 HTML 再按 HTML 处理。
+//   之后 Word 类（RTF、HTML、MHT、Word 2003 XML）由 LibreOffice 按指定的导入过滤器转成 docx，表格类（HTML 表格、SpreadsheetML）由 SheetJS 读取。
 import { spawn } from 'node:child_process';
 import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
@@ -20,10 +23,23 @@ import TurndownService from 'turndown';
 import turndownPluginGfm from 'turndown-plugin-gfm';
 import * as XLSX from 'xlsx';
 
+import { sanitizeHtml } from './htmlSanitize.mjs';
+import { assertSafeXml, decodeHtmlBytes, extractMht, sanitizeRtf } from './markupGuard.mjs';
 import { assertSafeZip } from './zipGuard.mjs';
 
 /** PDF 页数上限（决定事项第 5 项）。 */
 export const PDF_MAX_PAGES = 3_000;
+/**
+ * 交给 LibreOffice 的格式：原件在临时目录中的文件名与导入过滤器。文本类格式都指定过滤器，不让 LibreOffice 按内容另行识别
+ * （例如把 XML 当作其他格式打开）；老式 Word（OLE）沿用 6.6 的按内容识别。
+ */
+const OFFICE_INPUTS = Object.freeze({
+  'word-ole': { name: 'source.doc', filter: null },
+  rtf: { name: 'source.rtf', filter: 'Rich Text Format' },
+  html: { name: 'source.html', filter: 'HTML (StarWriter)' },
+  'word-xml': { name: 'source.xml', filter: 'MS Word 2003 XML' },
+});
+
 /** LibreOffice 转换的墙钟上限；整个解析命令另受模板的 10 分钟上限约束（到时 sandbox-runner 终止整个沙箱）。 */
 export const OFFICE_CONVERSION_TIMEOUT_MS = 8 * 60_000;
 
@@ -60,7 +76,8 @@ export class ConversionError extends Error {
 
 /**
  * 按分派结果转换。
- * @param {{ format: 'pdf' | 'docx' | 'xlsx' | 'word-ole' | 'xls-ole' | 'text' | 'markdown', buffer: Buffer, charset?: string,
+ * @param {{ format: 'pdf' | 'docx' | 'xlsx' | 'word-ole' | 'xls-ole' | 'text' | 'markdown' | 'rtf' | 'html-word' | 'html-sheet' | 'mht'
+ *   | 'word-xml' | 'spreadsheet-xml', buffer: Buffer, charset?: string,
  *   imageSink?: ((image: { buffer: Buffer, mime: string }) => Promise<string>) | null }} input
  *   imageSink 返回 Markdown 中引用的相对路径；返回空字符串表示丢弃该图片。为 null 时不提取图片。
  */
@@ -72,7 +89,21 @@ export async function convertToMarkdown({ format, buffer, charset, imageSink = n
       await assertSafeZip(buffer);
       return convertDocx(buffer, imageSink);
     case 'word-ole':
-      return convertDocx(await convertLegacyWordToDocx(buffer), imageSink);
+      return convertDocx(await convertWithOffice(buffer, OFFICE_INPUTS['word-ole']), imageSink);
+    case 'rtf':
+      return convertDocx(await convertWithOffice(sanitizeRtf(buffer), OFFICE_INPUTS.rtf), imageSink);
+    case 'html-word':
+      return convertDocx(await convertWithOffice(htmlForOffice(sanitizeHtml(decodeHtmlBytes(buffer))), OFFICE_INPUTS.html), imageSink);
+    case 'mht': {
+      const { html, resolveResource } = extractMht(buffer);
+      return convertDocx(await convertWithOffice(htmlForOffice(sanitizeHtml(html, { resolveImage: resolveResource })), OFFICE_INPUTS.html), imageSink);
+    }
+    case 'word-xml':
+      return convertDocx(await convertWithOffice(assertSafeXml(buffer).bytes, OFFICE_INPUTS['word-xml']), imageSink);
+    case 'html-sheet':
+      return convertSpreadsheet(sanitizeHtml(decodeHtmlBytes(buffer)), 'string');
+    case 'spreadsheet-xml':
+      return convertSpreadsheet(assertSafeXml(buffer).text, 'string');
     case 'xlsx':
       await assertSafeZip(buffer);
       return convertSpreadsheet(buffer);
@@ -100,8 +131,8 @@ function decodeText(buffer, charset) {
   return normalizeNewlinesOnly(text.replace(/^﻿/, '').replace(/\u0000/g, ''));
 }
 
-function convertSpreadsheet(buffer) {
-  const workbook = readSpreadsheetWorkbook(buffer);
+function convertSpreadsheet(data, type = 'buffer') {
+  const workbook = readSpreadsheetWorkbook(data, type);
   const sheetNames = Array.isArray(workbook.SheetNames) ? workbook.SheetNames : [];
   if (sheetNames.length === 0) {
     throw new ConversionError('spreadsheet_empty', 'Excel 文件未包含工作表');
@@ -127,11 +158,11 @@ function convertSpreadsheet(buffer) {
   return normalizeGeneratedMarkdown(parts.join('\n\n'));
 }
 
-// 从内存中的字节读取；不读取任何外部文件或链接。
-function readSpreadsheetWorkbook(buffer) {
+// 从内存中的字节或字符串（已检查的 SpreadsheetML、已清理的 HTML）读取；不读取任何外部文件或链接。
+function readSpreadsheetWorkbook(data, type) {
   const xlsx = getXlsxModule();
-  return xlsx.read(buffer, {
-    type: 'buffer',
+  return xlsx.read(data, {
+    type,
     cellDates: true,
     cellNF: true,
     cellStyles: false,
@@ -993,19 +1024,24 @@ function renderMarkdownTableRow(row) {
   return `|${row.join('|')}|`;
 }
 
+function htmlForOffice(html) {
+  return Buffer.from(html, 'utf8');
+}
+
 /**
- * 老式 Word（OLE 的 .doc / .wps）经 LibreOffice 转成 docx。LibreOffice 的宏、链接更新等全局设置在镜像中
- * （libreoffice/zhibiao-security.xcd，finalized，用户配置不能覆盖）；每次转换新建临时用户配置，用完删除。
+ * 老式 Word（OLE 的 .doc / .wps）和文本类 Word 格式（已检查或清理过的 RTF、HTML、Word 2003 XML）经 LibreOffice 转成 docx。
+ * LibreOffice 的宏、链接更新等全局设置在镜像中（libreoffice/zhibiao-security.xcd，finalized，用户配置不能覆盖）；
+ * 每次转换新建临时用户配置，用完删除。超时与进程组终止见 runProcess（6.6）。
  */
-async function convertLegacyWordToDocx(buffer) {
+async function convertWithOffice(buffer, input) {
   const workDir = await mkdtemp('/tmp/office-');
   try {
     const inputDir = path.join(workDir, 'in');
     const outputDir = path.join(workDir, 'out');
     await mkdir(inputDir);
     await mkdir(outputDir);
-    const input = path.join(inputDir, 'source.doc');
-    await writeFile(input, buffer);
+    const inputPath = path.join(inputDir, input.name);
+    await writeFile(inputPath, buffer);
     try {
       await runProcess('soffice', [
         '--headless',
@@ -1015,11 +1051,12 @@ async function convertLegacyWordToDocx(buffer) {
         '--nodefault',
         '--nofirststartwizard',
         `-env:UserInstallation=${pathToFileURL(path.join(workDir, 'profile')).href}`,
+        ...(input.filter ? [`--infilter=${input.filter}`] : []),
         '--convert-to',
         'docx:MS Word 2007 XML',
         '--outdir',
         outputDir,
-        input,
+        inputPath,
       ], { timeoutMs: officeConversionTimeoutMs() });
     } catch (error) {
       if (error?.code === 'timeout') throw new ConversionError('office_conversion_timeout', 'LibreOffice 转换超时');

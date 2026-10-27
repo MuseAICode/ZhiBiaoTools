@@ -35,6 +35,13 @@ export const PARSE_ENTRY_ERROR_CODES = [
   'office_conversion_failed',
   'office_conversion_timeout',
   'too_many_images',
+  'xml_invalid',
+  'xml_doctype',
+  'xml_external_reference',
+  'rtf_invalid',
+  'mht_invalid',
+  'mht_too_complex',
+  'mht_no_html',
   'conversion_failed',
 ] as const;
 export type ParseEntryErrorCode = (typeof PARSE_ENTRY_ERROR_CODES)[number];

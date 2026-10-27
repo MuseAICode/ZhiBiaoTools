@@ -4,7 +4,8 @@
 # 镜像中没有凭据、编译器、网络工具和包管理器（npm、corepack、yarn 已删除），也没有 setuid / setgid 程序。
 # 基础镜像与 server/Dockerfile 相同，按 digest 固定；部署时按构建出的镜像摘要引用（SANDBOX_PARSE_IMAGE=...@sha256:...）。
 # 解析入口（/opt/parse/entry.mjs）与其 npm 依赖（mammoth、pdfjs 等，6.6 加入）在单独的构建阶段按 package-lock.json 安装
-# （不执行依赖的安装脚本），最终镜像只复制安装结果，不含 npm。
+# （不执行依赖的安装脚本），最终镜像只复制安装结果，不含 npm。文本类格式（6.7）的检查与清理是 markupGuard.mjs（只用 Node 内置模块）
+# 和 htmlSanitize.mjs（cheerio），没有新增依赖。
 ARG NODE_IMAGE=node:24.21.0-bookworm-slim@sha256:d6aa754f16b3197301076f047b5def2f02ea1dbbc2ca920407d46d7ec7f87b20
 
 FROM ${NODE_IMAGE} AS deps
@@ -36,7 +37,7 @@ RUN apt-get update \
 
 COPY --chmod=0644 libreoffice/zhibiao-security.xcd /usr/lib/libreoffice/share/registry/zhibiao-security.xcd
 COPY --from=deps /opt/parse/node_modules /opt/parse/node_modules
-COPY --chmod=0644 package.json entry.mjs convert.mjs zipGuard.mjs /opt/parse/
+COPY --chmod=0644 package.json entry.mjs convert.mjs zipGuard.mjs markupGuard.mjs htmlSanitize.mjs /opt/parse/
 
 ENV HOME=/tmp LANG=C.UTF-8 TMPDIR=/tmp
 USER 10001:10001
