@@ -11,7 +11,7 @@ import { beginArtifact, completeArtifact, findArtifact, writeArtifact, type NewA
 import { DEFAULT_AUTH_RATE_LIMITS, type AuthRateLimitSettings } from '../../src/auth/rateLimit.ts';
 import { createDatabase, type DatabaseHandle } from '../../src/db/database.ts';
 import { migrateToLatest } from '../../src/db/migrator.ts';
-import { STORAGE_ROLE } from '../../src/db/roles.ts';
+import { CLEANUP_ROLE, STORAGE_ROLE } from '../../src/db/roles.ts';
 import type { Database } from '../../src/db/schema.ts';
 import { withTenant, type TenantContext } from '../../src/db/tenant.ts';
 import type { ObjectStore } from '../../src/files/objectStore.ts';
@@ -208,6 +208,7 @@ describe('artifacts 表', () => {
       onProjectDelete: 'restrict',
       projectIdNullable: true,
       definerRoles: [STORAGE_ROLE],
+      cleanupRoles: [CLEANUP_ROLE],
     },
     { admin: () => superuser, app: () => appDb },
   );
