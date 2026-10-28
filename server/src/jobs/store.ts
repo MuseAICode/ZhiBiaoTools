@@ -209,6 +209,25 @@ export async function listJobs(db: Kysely<Database>, context: TenantContext, opt
   return rows.map(toRecord);
 }
 
+/**
+ * 在已设置上下文的事务中读取项目下每种任务类型最近的一个任务（各业务模块的 loadState 类接口返回任务状态用，取代桌面版
+ * 各模块的 *_tasks 表）。没有的类型不出现在结果中。
+ */
+export async function latestProjectJobs(trx: Trx, projectId: string, types: readonly string[]): Promise<Map<string, JobRecord>> {
+  if (types.length === 0) return new Map();
+  const rows = await trx
+    .selectFrom('jobs')
+    .selectAll()
+    .distinctOn('type')
+    .where('project_id', '=', projectId)
+    .where('type', 'in', [...types])
+    .orderBy('type')
+    .orderBy('created_at', 'desc')
+    .orderBy('id', 'desc')
+    .execute();
+  return new Map(rows.map((row) => [row.type, toRecord(row)]));
+}
+
 export async function listJobEvents(
   db: Kysely<Database>,
   context: TenantContext,
