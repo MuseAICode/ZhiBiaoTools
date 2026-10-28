@@ -56,9 +56,17 @@ export function dispatchParse(mime: string, extension: string): ParseDispatch {
   return { kind: 'unsupported' };
 }
 
-/** 解析入口的参数（只有分派结果，不含路径和文件名）。 */
-export function parseCommandArgs(dispatch: { format: ParseFormat; charset: ParseCharset | null }, images: boolean): string[] {
-  return [`format=${dispatch.format}`, `images=${images ? '1' : '0'}`, ...(dispatch.charset ? [`charset=${dispatch.charset}`] : [])];
+/** 解析入口另做的逐文档提取（输出 analysis.json）：duplicate-check 为标书查重的目录、句子、图片位置（6.10）。 */
+export type ParseAnalysis = 'duplicate-check';
+
+/** 解析入口的参数（只有分派结果与选项，不含路径和文件名）。 */
+export function parseCommandArgs(dispatch: { format: ParseFormat; charset: ParseCharset | null }, images: boolean, analysis?: ParseAnalysis): string[] {
+  return [
+    `format=${dispatch.format}`,
+    `images=${images ? '1' : '0'}`,
+    ...(dispatch.charset ? [`charset=${dispatch.charset}`] : []),
+    ...(analysis ? [`analysis=${analysis}`] : []),
+  ];
 }
 
 /** 表格类格式：桌面版以文件名作一级标题，沙箱中不知道文件名，由 worker 加上。 */

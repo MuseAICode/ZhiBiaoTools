@@ -535,6 +535,14 @@ RTF、HTML、MHT、Word 2003 XML、SpreadsheetML 在沙箱中先检查或清理�
 - **转换**：Word 类由 LibreOffice 按指定的导入过滤器转成 docx（与 OLE Word 同一函数：独立进程组、8 分钟后对整个进程组 SIGKILL），表格类由 SheetJS 读取；
 - **纵深**：沙箱完全断网（第 7.5 节）是兜底；远程资源测试在正式镜像中断言解析过程没有任何连接，对照组证明同一镜像中的 LibreOffice 对未经清理的 HTML 确实会发出请求。
 
+### 7.8 实现（路线图 6.10）：标书查重任务
+
+`duplicate-analysis`（`server/src/duplicateCheck/job.ts`），`ai` 队列（第 5.2 节），不调用模型，互斥键 `project:{projectId}:duplicate-check`：
+
+- **提取在沙箱中**：每份招标、投标文件一个 parse 沙箱，解析入口加参数 `analysis=duplicate-check`（保留图片），除正文与图片外另写 `analysis.json`：逐文档的目录、句子（HTML 表格经 cheerio 读取）与图片位置（`server/sandbox/parse/duplicateText.mjs`、`duplicateTables.mjs`）。表格类格式的文件名由 worker 放入 `/input/title`，提取时作一级标题；
+- **比对在 worker 中**（`src/duplicateCheck/analysis.ts`）：先按不可信输入校验 `analysis.json`（结构、数量、目录编号与父子关系、图片只能引用本次输出），再做招标原文白名单、目录重复 / 相似组与两两相似度、重复句、重复图片（按写入的图片产物内容的 SHA-256）。worker 不运行 HTML 解析器；
+- **写入**：正文与图片经第 7.6 节的同一流程写为产物（`src/parse/run.ts`，两类任务共用），分析结果经 `saveAnalysisSection` 带任务开始时的文件选择签名写入，选择变化后写入被拒绝；重新选择文件、清空时取消进行中的任务。
+
 ## 8. 部署架构
 
 ### 8.0 部署位置（已决定，第 9 节第 13、14 项）

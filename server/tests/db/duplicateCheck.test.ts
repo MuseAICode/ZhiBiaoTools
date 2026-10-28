@@ -836,9 +836,10 @@ describe('Store', () => {
 
   it('部分写入只改给出的字段，统计按字段合并，结果字段给出时整体替换；null 删除这一类', async () => {
     const filled = await fillProject(a);
-    await saveAnalysisSection(appDb, a.context, filled.projectId, 'content', { status: 'running', progress: 150.4, totalSentenceCount: 7 });
+    // running 而没有进行中的任务时按未完成显示（6.10），这里写 success 只看字段合并。
+    await saveAnalysisSection(appDb, a.context, filled.projectId, 'content', { status: 'success', progress: 150.4, totalSentenceCount: 7 });
     let content = (await loadDuplicateCheck(appDb, a.context, filled.projectId)).contentAnalysis!;
-    expect(content).toMatchObject({ status: 'running', progress: 100, totalSentenceCount: 7, tenderMatchedSentenceCount: 4 });
+    expect(content).toMatchObject({ status: 'success', progress: 100, totalSentenceCount: 7, tenderMatchedSentenceCount: 4 });
     expect(content.duplicateSentences).toHaveLength(2);
     await saveAnalysisSection(appDb, a.context, filled.projectId, 'content', { duplicateSentences: [], signature: null, message: 'x\u0000y'.repeat(2000) });
     content = (await loadDuplicateCheck(appDb, a.context, filled.projectId)).contentAnalysis!;

@@ -25,8 +25,8 @@ describe('任务类型登记', () => {
     expect(maxAttemptsOf(definition('a', { maxAttempts: 1 }))).toBe(1);
   });
 
-  it('登记的业务任务类型：6.6 的文档解析（parse 队列、可续跑、不调用模型），6.9 的废标检查两类（ai 队列、可续跑、调用模型）', () => {
-    expect(JOB_TYPES.map((item) => item.type)).toEqual(['document-parse', 'rejection-items-extraction', 'rejection-check-run']);
+  it('登记的业务任务类型：6.6 的文档解析（parse 队列、可续跑、不调用模型），6.9 的废标检查两类（ai 队列、可续跑、调用模型），6.10 的标书查重（ai 队列、可续跑、不调用模型）', () => {
+    expect(JOB_TYPES.map((item) => item.type)).toEqual(['document-parse', 'rejection-items-extraction', 'rejection-check-run', 'duplicate-analysis']);
     const parse = jobTypeRegistry.get('document-parse')!;
     expect(parse.queue).toBe('parse');
     expect(parse.resumable).toBe(true);
@@ -37,5 +37,9 @@ describe('任务类型登记', () => {
       expect(definition.resumable).toBe(true);
       expect(definition.billable).toBe(true);
     }
+    const duplicate = jobTypeRegistry.get('duplicate-analysis')!;
+    expect(duplicate.queue).toBe('ai');
+    expect(duplicate.resumable).toBe(true);
+    expect(duplicate.billable).toBeFalsy();
   });
 });

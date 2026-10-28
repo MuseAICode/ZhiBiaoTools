@@ -47,6 +47,15 @@ describe('validateParseOutput', () => {
     expect(reason([file('content.md', 'x'), manifest([{ path: 'images/image-0001.png', mime: 'image/png' }]), file('other.md', 'y')])).toMatch(/missing/);
   });
 
+  it('requires analysis.json only when the per-document analysis was asked for (6.10), and keeps its bytes as they are', () => {
+    const base = [file('content.md', 'x'), manifest([])];
+    expect(validateParseOutput(base).analysis).toBeNull();
+    expect(reason([...base, file('analysis.json', '{}')])).toMatch(/not listed/);
+    expect(() => validateParseOutput(base, { analysis: true })).toThrow(/analysis.json is missing/);
+    expect(validateParseOutput([...base, file('analysis.json', '{"version":1}')], { analysis: true }).analysis?.toString('utf8')).toBe('{"version":1}');
+    expect(() => validateParseOutput([...base, file('analysis.json', '{}'), file('extra.json', '{}')], { analysis: true })).toThrow(/not listed/);
+  });
+
   it('rejects malformed manifests', () => {
     const md = file('content.md', 'x');
     expect(reason([md, file('manifest.json', 'not json')])).toMatch(/json/);

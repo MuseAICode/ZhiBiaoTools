@@ -50,6 +50,10 @@ describe('dispatchParse', () => {
     expect(args).toEqual(['format=markdown', 'images=1', 'charset=gb18030']);
     expect(resolveCommand(SANDBOX_TEMPLATES.parse, 'parse', args)).not.toBeNull();
     expect(parseCommandArgs({ format: 'pdf', charset: null }, false)).toEqual(['format=pdf', 'images=0']);
+    // 标书查重的逐文档提取（6.10）。
+    const analysis = parseCommandArgs({ format: 'xlsx', charset: null }, true, 'duplicate-check');
+    expect(analysis).toEqual(['format=xlsx', 'images=1', 'analysis=duplicate-check']);
+    expect(resolveCommand(SANDBOX_TEMPLATES.parse, 'parse', analysis)).not.toBeNull();
   });
 
   it('marks spreadsheet formats (the title comes from the file name)', () => {
