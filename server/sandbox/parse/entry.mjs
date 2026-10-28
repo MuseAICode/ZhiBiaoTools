@@ -1,9 +1,11 @@
 // parse 沙箱的解析入口（路线图第 6 步 6.6；docs/SERVER_DESIGN.md 第 7.5 节）。由 sandbox-runner 按 parse 模板执行：
-//   node /opt/parse/entry.mjs format=<格式> [images=0|1] [charset=utf-8|gb18030]
+//   node /opt/parse/entry.mjs format=<格式> [images=0|1] [charset=utf-8|gb18030] [analysis=duplicate-check]
 // 原件固定在 /input/source（worker 经 copyIn 放入），结果固定写到 /output：
 //   content.md      Markdown（UTF-8）
 //   images/…        提取的图片（只在 images=1 时；只收 png / jpeg / gif / webp / bmp，至多 2,000 张）
 //   manifest.json   { version: 1, images: [{ path, mime }] }
+//   analysis.json   只在 analysis=duplicate-check 时：标书查重的逐文档提取结果（目录、句子、图片位置，duplicateText.mjs，6.10）。
+//                   表格类格式另由 worker 放入 /input/title（文件名，UTF-8 一行），提取时与桌面版相同以它作一级标题。
 // 格式由 worker 按上传时记录的 MIME 分派，这里不再猜测。失败时不写结果，在标准输出写一行 {"error":"代码"}：
 // 参数不合法退出码 64，转换失败 65。错误只给代码，给用户看的文案由 worker 按代码决定，不采用沙箱输出的文字。
 // 本进程没有网络、没有凭据；它的输出在 worker 中按不可信输入逐项校验（src/sandbox/archive.ts、src/parse/output.ts）。
@@ -14,7 +16,11 @@ const FORMATS = new Set([
   'rtf', 'html-word', 'html-sheet', 'mht', 'word-xml', 'spreadsheet-xml',
 ]);
 const CHARSETS = new Set(['utf-8', 'gb18030']);
+const ANALYSES = new Set(['duplicate-check']);
 const INPUT = '/input/source';
+const TITLE_INPUT = '/input/title';
+/** 标题文件的上限（字节）。worker 只放入整理过的文件名。 */
+const TITLE_MAX_BYTES = 4096;
 const OUTPUT = '/output';
 /** 单个文件产出的图片上限（决定事项第 5 项）。 */
 const MAX_IMAGES = 2_000;
@@ -56,10 +62,10 @@ function fail(code, exitCode) {
 }
 
 function parseArgs(argv) {
-  const options = { format: null, images: false, charset: null };
+  const options = { format: null, images: false, charset: null, analysis: null };
   const seen = new Set();
   for (const arg of argv) {
-    const match = /^(format|images|charset)=(.+)$/.exec(arg);
+    const match = /^(format|images|charset|analysis)=(.+)$/.exec(arg);
     if (!match || seen.has(match[1])) return null;
     seen.add(match[1]);
     const [, key, value] = match;
@@ -69,6 +75,9 @@ function parseArgs(argv) {
     } else if (key === 'images') {
       if (value !== '0' && value !== '1') return null;
       options.images = value === '1';
+    } else if (key === 'analysis') {
+      if (!ANALYSES.has(value)) return null;
+      options.analysis = value;
     } else {
       if (!CHARSETS.has(value)) return null;
       options.charset = value;
@@ -110,6 +119,25 @@ async function imageSink({ buffer, mime }) {
   return path;
 }
 
+/** worker 放入的标题（表格类格式的文件名）；没有时为空。 */
+async function readTitle() {
+  let data;
+  try {
+    data = await readFile(TITLE_INPUT);
+  } catch (error) {
+    if (error?.code === 'ENOENT') return '';
+    throw error;
+  }
+  if (data.length > TITLE_MAX_BYTES) return '';
+  let text;
+  try {
+    text = new TextDecoder('utf-8', { fatal: true }).decode(data);
+  } catch {
+    return '';
+  }
+  return text.replace(/[\r\n]+/g, ' ').replace(/\s+/g, ' ').trim();
+}
+
 try {
   const buffer = await readFile(INPUT);
   const markdown = await convertToMarkdown({
@@ -120,6 +148,14 @@ try {
   });
   await writeFile(`${OUTPUT}/content.md`, markdown, { encoding: 'utf8', flag: 'wx' });
   await writeFile(`${OUTPUT}/manifest.json`, JSON.stringify({ version: 1, images }), { encoding: 'utf8', flag: 'wx' });
+  if (options.analysis === 'duplicate-check') {
+    const { analyzeDuplicateCheckDocument } = await import('./duplicateText.mjs');
+    const { extractHtmlTableTextBlocks } = await import('./duplicateTables.mjs');
+    const title = await readTitle();
+    const source = (title ? `# ${title}\n\n${markdown}` : markdown).trim();
+    const analysis = analyzeDuplicateCheckDocument(source, extractHtmlTableTextBlocks);
+    await writeFile(`${OUTPUT}/analysis.json`, JSON.stringify(analysis), { encoding: 'utf8', flag: 'wx' });
+  }
 } catch (error) {
   const code = KNOWN_CODES.has(error?.code) ? error.code : 'conversion_failed';
   // 标准错误只写错误类型和代码，不写消息（可能含文档内容），供排查。

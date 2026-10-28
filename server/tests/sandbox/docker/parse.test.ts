@@ -2,9 +2,11 @@
 // 执行解析入口、取回结果并按 worker 的规则校验（src/sandbox/archive.ts、src/parse/output.ts）。覆盖 6.6 开放的格式、
 // ZIP 炸弹与 PDF 页数检查、解析入口的错误代码，以及镜像中 LibreOffice 的安全设置。需要 LibreOffice 的用例只在
 // TEST_SANDBOX_OFFICE=1（CI 构建的完整镜像）时运行；宏安全的对照组另需 TEST_SANDBOX_CONTROL_IMAGE（去掉 xcd 的同一镜像）。
+// 6.10：标书查重的逐文档提取（analysis=duplicate-check，输出 analysis.json，HTML 表格经镜像中的 cheerio 读取）。
 import { randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { afterEach, describe, expect, it } from 'vitest';
+import { DuplicateAnalysisError, parseDuplicateAnalysis } from '../../../src/duplicateCheck/analysis.ts';
 import { parseCommandArgs, type ParseCharset, type ParseFormat } from '../../../src/parse/dispatch.ts';
 import { entryErrorCode, validateParseOutput, type ParsedOutput } from '../../../src/parse/output.ts';
 import { createDockerSandboxDriver } from '../../../src/sandbox/docker.ts';
@@ -146,6 +148,53 @@ describe('parse entry in the sandbox', () => {
     expect(output.markdown).toContain('招标文件样本');
     expect(output.markdown).toContain('交换机');
     expect(output.images.length).toBeGreaterThanOrEqual(1);
+  });
+});
+
+describe('duplicate-check analysis in the sandbox', () => {
+  async function analyze(source: Buffer, format: ParseFormat, options: { charset?: ParseCharset; title?: string } = {}) {
+    const ref = await driver.create('parse', { jobId: randomUUID() });
+    created.push({ owner: driver, ref });
+    await driver.copyIn(ref, [{ path: 'source', data: source }, ...(options.title ? [{ path: 'title', data: Buffer.from(options.title, 'utf8') }] : [])]);
+    const result = await driver.exec(ref, 'parse', parseCommandArgs({ format, charset: options.charset ?? null }, true, 'duplicate-check'));
+    if (result.exitCode !== 0) throw new Error(`parse failed: ${entryErrorCode(result.stdout)}`);
+    const output = validateParseOutput(await driver.copyOut(ref), { analysis: true });
+    return { output, analysis: parseDuplicateAnalysis(output.analysis!, new Set(output.images.map((image) => image.path))) };
+  }
+
+  it('writes analysis.json next to the markdown: outline, sentences and image positions that pass the worker checks', async () => {
+    const { output, analysis } = await analyze(sample('sample.docx'), 'docx');
+    expect(output.markdown).toContain('![](images/image-0001.png)');
+    expect(analysis.outline).toMatchObject({ source: 'heading', items: [{ id: 'O00001', title: '招标文件样本', level: 1 }] });
+    expect(analysis.sentences.map((item) => item.normalized)).toEqual(['项目概况：本项目为智标解析测试样本，用于验证沙箱中的文档解析。']);
+    expect(analysis.tenderSentences.map((item) => item.normalized)).toContain('序号名称1服务器2交换机');
+    expect(analysis.images).toEqual([{ path: 'images/image-0001.png', index: 1, directory: '招标文件样本', previousSentence: '交换机' }]);
+  });
+
+  it('reads text inside HTML tables with cheerio (cells and their paragraphs)', async () => {
+    const markdown = '# 技术响应\n\n<table><tr><th>要求</th><th>响应</th></tr><tr><td><p>采用国产化服务器</p></td><td>完全满足招标文件的全部技术要求<br>并提供原厂质保服务</td></tr></table>\n\n正文段落写在这里，用于测试。\n';
+    const { analysis } = await analyze(Buffer.from(markdown, 'utf8'), 'markdown', { charset: 'utf-8' });
+    expect(analysis.sentences.map((item) => item.sentence)).toEqual(['完全满足招标文件的全部技术要求并提供原厂质保服务', '正文段落写在这里，用于测试。']);
+  });
+
+  it('uses the title file as the top heading for spreadsheets, without changing content.md', async () => {
+    const { output, analysis } = await analyze(sample('sample.xlsx'), 'xlsx', { title: '报价表.xlsx' });
+    expect(output.markdown.startsWith('## 工作表：sample')).toBe(true);
+    expect(analysis.outline.items.map((item) => [item.title, item.level])).toEqual([
+      ['报价表.xlsx', 1],
+      ['工作表:sample', 2],
+    ]);
+  });
+
+  it('rejects an unknown analysis and does not write analysis.json unless asked', async () => {
+    const ref = await driver.create('parse', { jobId: randomUUID() });
+    created.push({ owner: driver, ref });
+    await driver.copyIn(ref, [{ path: 'source', data: sample('sample.docx') }]);
+    const bad = await driver.exec(ref, 'parse', ['format=docx', 'analysis=other']);
+    expect([bad.exitCode, entryErrorCode(bad.stdout)]).toEqual([64, 'bad_arguments']);
+    const plain = success(await parseIn(sample('sample.docx'), 'docx'));
+    expect(plain.analysis).toBeNull();
+    expect(() => parseDuplicateAnalysis(Buffer.from('{}'), new Set())).toThrow(DuplicateAnalysisError);
   });
 });
 

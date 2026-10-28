@@ -1,6 +1,7 @@
 // 解析入口输出的校验（路线图第 6 步：“解析结果按不可信输入校验”）。归档本身（文件类型、路径、数量、大小、扩展名）已由
 // src/sandbox/archive.ts 按 parse 模板校验；这里再校验内容：
-// - 只能有 content.md、manifest.json 和清单中登记的 images/image-NNNN.<扩展名>，不多不少；
+// - 只能有 content.md、manifest.json 和清单中登记的 images/image-NNNN.<扩展名>，不多不少（要求逐文档提取时另有 analysis.json，
+//   其内容由使用它的模块校验，如 src/duplicateCheck/analysis.ts）；
 // - 清单的结构、图片数量（至多 2,000 张）、MIME 与扩展名一致，图片的文件头与 MIME 一致；
 // - content.md 是合法 UTF-8；
 // - Markdown 中的图片引用只保留指向本次输出图片的（改写为产物地址），其他（远程地址、data: 等）一律去掉；
@@ -70,6 +71,8 @@ export interface ParsedImage {
 export interface ParsedOutput {
   markdown: string;
   images: ParsedImage[];
+  /** 逐文档提取的结果（analysis.json 的原始字节）；没有要求时为 null。 */
+  analysis: Buffer | null;
 }
 
 /** 标准输出最后一个非空行的 {"error":"代码"}；不是白名单内的代码时返回 conversion_failed。 */
@@ -129,14 +132,19 @@ function parseManifest(data: Buffer): Array<{ path: string; mime: string }> {
   });
 }
 
-/** 校验解析输出（归档已由 src/sandbox/archive.ts 校验）。不符时抛 ParseOutputError。 */
-export function validateParseOutput(files: readonly SandboxFile[]): ParsedOutput {
+/**
+ * 校验解析输出（归档已由 src/sandbox/archive.ts 校验）。不符时抛 ParseOutputError。
+ * options.analysis：要求了逐文档提取，输出中必须有 analysis.json；没有要求时不能有。
+ */
+export function validateParseOutput(files: readonly SandboxFile[], options: { analysis?: boolean } = {}): ParsedOutput {
   const byPath = new Map(files.map((file) => [file.path, file.data]));
   const content = byPath.get('content.md');
   const manifestData = byPath.get('manifest.json');
   if (!content || !manifestData) throw new ParseOutputError('content.md or manifest.json is missing');
+  const analysis = options.analysis ? (byPath.get('analysis.json') ?? null) : null;
+  if (options.analysis && !analysis) throw new ParseOutputError('analysis.json is missing');
   const declared = parseManifest(manifestData);
-  if (files.length !== declared.length + 2) throw new ParseOutputError('output contains files not listed in the manifest');
+  if (files.length !== declared.length + 2 + (analysis ? 1 : 0)) throw new ParseOutputError('output contains files not listed in the manifest');
   const images = declared.map(({ path, mime }) => {
     const data = byPath.get(path);
     if (!data) throw new ParseOutputError('image listed in the manifest is missing');
@@ -149,7 +157,7 @@ export function validateParseOutput(files: readonly SandboxFile[]): ParsedOutput
   } catch {
     throw new ParseOutputError('content.md is not valid utf-8');
   }
-  return { markdown: markdown.replace(/^﻿/, '').replace(/\u0000/g, ''), images };
+  return { markdown: markdown.replace(/^﻿/, '').replace(/\u0000/g, ''), images, analysis };
 }
 
 const MARKDOWN_IMAGE = /!\[([^\]]*)\]\((<[^>]+>|[^)\s]+)(\s+"[^"]*")?\)/g;
