@@ -735,15 +735,16 @@ describe('Store', () => {
       { id: 'typo-finding-1', bidDocumentId: filled.bidB, wrongText: '帐号', correctText: '账号', originalExcerpt: '请填写帐号', reason: '用字不规范', locationHint: '第 3 页' },
     ]);
 
-    await saveCheckResult(appDb, a.context, filled.projectId, 'rejection', { status: 'running', progressMessage: 'x\u0000y'.repeat(2000) });
+    // 没有对应的任务时 running 按未完成显示（见 tests/db/rejectionCheckJobs.test.ts），这里写入其他状态。
+    await saveCheckResult(appDb, a.context, filled.projectId, 'rejection', { status: 'error', progressMessage: 'x\u0000y'.repeat(2000) });
     state = await loadRejectionCheck(appDb, a.context, filled.projectId);
-    expect(state.rejectionCheckResult.status).toBe('running');
+    expect(state.rejectionCheckResult.status).toBe('error');
     expect(state.rejectionCheckResult.findings).toHaveLength(2);
     expect([...state.rejectionCheckResult.progressMessage!].length).toBe(2000);
     expect(state.rejectionCheckResult.progressMessage).not.toContain('\u0000');
     await saveCheckResult(appDb, a.context, filled.projectId, 'rejection', { findings: [], inputSignature: null });
     state = await loadRejectionCheck(appDb, a.context, filled.projectId);
-    expect(state.rejectionCheckResult).toMatchObject({ status: 'running', findings: [], inputSignature: null });
+    expect(state.rejectionCheckResult).toMatchObject({ status: 'error', findings: [], inputSignature: null });
     await saveCheckResult(appDb, a.context, filled.projectId, 'typo', null);
     state = await loadRejectionCheck(appDb, a.context, filled.projectId);
     expect(state.typoCheckResult).toMatchObject({ status: 'idle', findings: [], updatedAt: null });

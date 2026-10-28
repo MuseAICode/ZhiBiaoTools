@@ -23,6 +23,8 @@ export function jobBody(job: JobRecord) {
   };
 }
 
+export type JobBody = ReturnType<typeof jobBody>;
+
 export function jobEventBody(event: JobEventRecord) {
   return { id: event.id, kind: event.kind, message: event.message, createdAt: event.createdAt.toISOString() };
 }
