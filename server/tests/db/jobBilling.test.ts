@@ -938,4 +938,35 @@ describe('步骤幂等（6.4a）：平台自身故障导致的重复调用不向
     expect(await stepRows(jobId)).toEqual([]);
     expect((await usageOf(ctx.orgId)).filter((row) => row.job_id === jobId)).toHaveLength(2);
   });
+
+  it('项目被物理删除时，其下任务的 job_step_results 随任务记录一并删除（任务结束不满 90 天也删），用量记录与账本保留', async () => {
+    const ctx = await newMember(10n * JOB_MIN_START_BALANCE);
+    const project = await superuser.insertInto('projects')
+      .values({ org_id: ctx.orgId, kind: 'technical-plan', name: '项目', created_by: ctx.userId })
+      .returning('id').executeTakeFirstOrThrow();
+    const jobId = randomUUID();
+    await superuser.insertInto('jobs').values({
+      id: jobId, org_id: ctx.orgId, project_id: project.id, user_id: ctx.userId, type: 'test-chat', status: 'running', run_id: randomUUID(),
+      lease_expires_at: new Date(Date.now() + 60_000), started_at: new Date(),
+    }).execute();
+    await newGateway().chat(ctx, jobRequest(jobId, 'step:0'));
+    expect(await stepRows(jobId)).toHaveLength(1);
+
+    // 任务刚结束（远不满 90 天）；项目已删除超过 7 天恢复期。
+    await superuser.updateTable('jobs').set({ status: 'succeeded', run_id: null, lease_expires_at: null, finished_at: new Date() })
+      .where('id', '=', jobId).execute();
+    await superuser.updateTable('projects')
+      .set({ deleted_at: new Date(Date.now() - 8 * 86_400_000), deleted_by: ctx.userId }).where('id', '=', project.id).execute();
+    // 任务记录未过期，单独的任务清理不删它。
+    await sql`SELECT cleanup_delete_jobs(1000)`.execute(appDb);
+    expect(await stepRows(jobId)).toHaveLength(1);
+
+    expect((await sql<{ n: number }>`SELECT cleanup_delete_projects(1000) AS n`.execute(appDb)).rows[0]!.n).toBeGreaterThanOrEqual(1);
+    expect(await superuser.selectFrom('projects').select('id').where('id', '=', project.id).execute()).toEqual([]);
+    expect(await superuser.selectFrom('jobs').select('id').where('id', '=', jobId).execute()).toEqual([]);
+    expect(await stepRows(jobId)).toEqual([]);
+    const usage = (await usageOf(ctx.orgId)).filter((row) => row.job_id === jobId);
+    expect(usage.map((row) => row.status)).toEqual(['billed']);
+    expect(await ledgerChargesForJob(ctx.orgId, jobId)).toBe(CHARGE);
+  });
 });
