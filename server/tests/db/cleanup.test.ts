@@ -323,12 +323,13 @@ describe('角色与权限', () => {
       SELECT c.relname,
         array(SELECT p FROM unnest(${TABLE_PRIVILEGES}::text[]) p WHERE has_table_privilege(${CLEANUP_ROLE}, c.oid, p)
               UNION SELECT 'column ' || p FROM unnest(${COLUMN_PRIVILEGES}::text[]) p WHERE has_any_column_privilege(${CLEANUP_ROLE}, c.oid, p)
-              ORDER BY 1) AS privileges
+              ) AS privileges
       FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
       WHERE n.nspname = 'public' AND c.relkind IN ('r', 'p', 'v', 'm', 'S') ORDER BY c.relname`.execute(superuser);
     const granted = rows.filter((row) => row.privileges.length > 0);
     expect(granted.map((row) => row.relname)).toEqual(CLEANUP_TABLES);
-    for (const row of granted) expect(row.privileges, row.relname).toEqual(['DELETE', 'column SELECT']);
+    // 在 JS 中排序：CI 的数据库按 en_US 排序规则比较字符串，与本机的 C 排序不同。
+    for (const row of granted) expect([...row.privileges].sort(), row.relname).toEqual(['DELETE', 'column SELECT']);
   });
 
   it('以清理角色直接读写计费表一律被拒绝', async () => {
