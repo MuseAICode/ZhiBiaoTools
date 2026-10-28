@@ -23,16 +23,22 @@ export const DEFAULT_QUEUE_CONCURRENCY: Readonly<Record<JobQueueName, number>> =
 /** 组织级同时运行的任务数（决定事项第 8 项）；超出的留在 queued，空出名额后再认领。 */
 export const ORG_RUNNING_JOB_LIMIT = 3;
 
-/** 任务中的模型调用：来源、任务编号和类型由执行者填写，不由任务代码指定。 */
-export type JobChatRequest = Omit<ChatRequest, 'source' | 'jobId' | 'jobType'>;
+/**
+ * 任务中的模型调用：来源、任务编号和类型由执行者填写，不由任务代码指定。步骤键必填（路线图 6.4a，迁移 0025_job_step_results）：
+ * 在本任务内标识“同一次逻辑调用”，取值须在续跑时可以重新算出（如 section:<id>、outline），不能含随机数或时间；
+ * 同一任务中不同的调用用不同的键，有意重试（输出不合格再调一次）也要换键（如 section:<id>:try-2）。
+ */
+export type JobChatRequest = Omit<ChatRequest, 'source' | 'jobId' | 'jobType' | 'stepKey'> & { stepKey: string };
 
 export interface JobAi {
   /**
    * 经 AI 网关调用模型（docs/SERVER_DESIGN.md 第 10 节）：按“组织 + 服务商”的并发上限排队，冻结、结算记到本任务
    * （usage_records.job_id / job_type，jobs.billed_amount）。任务被取消、暂停时随 signal 中止，已产生的用量照常结算。
    * - 余额不足以冻结：抛 JobBalanceExhaustedError，任务应立即退出（不要吞掉这个错误），执行者把任务暂停为
-   *   paused / insufficient_balance；充值后继续时从上次的 checkpoint 开始，所以每次调用的结果写入后应保存 checkpoint，
-   *   已扣费的调用不会重做、不会重复扣费；
+   *   paused / insufficient_balance；充值后继续时从上次的 checkpoint 开始，所以每次调用的结果写入后应保存 checkpoint；
+   * - 步骤幂等：完整的调用结果与结算在同一事务中保存。调用已结算、checkpoint 还没保存时 worker 崩溃，续跑时同一步骤键、
+   *   同一请求内容的调用直接返回已保存的结果（reused），不再调用服务商、不再扣费；因 worker 关闭、租约丢失而中止的调用
+   *   不收费。平台自身故障导致的重复调用不向用户收费；
    * - 网关的其他错误（上游失败、模型停用等）转成 JobError，代码和文案与接口相同（给用户看的），任务可以自行重试或失败；
    * - worker 未配置主密钥（AI_KEK_FILE）时抛 JobError('AI_UNAVAILABLE')。
    */

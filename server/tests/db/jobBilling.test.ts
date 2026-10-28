@@ -4,7 +4,9 @@
 // - 冻结时任务必须属于本组织且正在执行；
 // - 入队、从暂停继续前检查最低启动余额（1 元）；
 // - 运行中余额不足以冻结时任务暂停为 paused / insufficient_balance 并推送，充值后继续，不重复调用、不重复扣费；
-// - 按“组织 + 服务商”的 Redis 分布式信号量，上限取组织设置与平台上限的较小值。
+// - 按“组织 + 服务商”的 Redis 分布式信号量，上限取组织设置与平台上限的较小值；
+// - 步骤幂等（6.4a，迁移 0025_job_step_results）：调用已结算、checkpoint 未保存时崩溃，续跑不再调用服务商、不再扣费；
+//   结果与结算同一事务提交；并发完成同一步骤只扣费一次；worker 关闭、租约丢失中止的调用不收费。
 // 需要 TEST_DATABASE_ADMIN_URL 和 TEST_REDIS_URL / TEST_REDIS_PASSWORD。
 import { randomBytes, randomUUID } from 'node:crypto';
 import type { Redis } from 'ioredis';
@@ -13,10 +15,18 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from
 import { createAiConcurrencyLimiter, type AiConcurrencyLimiter } from '../../src/ai/concurrency.ts';
 import { putCredential } from '../../src/ai/credentials.ts';
 import { inputTokenUpperBound } from '../../src/ai/estimate.ts';
-import { createAiGateway, type AiGateway, type GatewaySettings } from '../../src/ai/gateway.ts';
+import { createAiGateway, type AiGateway, type ChatRequest, type GatewaySettings } from '../../src/ai/gateway.ts';
 import { createFileKeyWrapper } from '../../src/ai/keyring.ts';
 import { creditOrganization } from '../../src/billing/ledger.ts';
-import { beginUsage, expireStaleHolds, getAvailableBalance, settleUsage } from '../../src/billing/usage.ts';
+import {
+  beginUsage,
+  expireStaleHolds,
+  failUsage,
+  findJobStepResult,
+  getAvailableBalance,
+  settleJobStep,
+  settleUsage,
+} from '../../src/billing/usage.ts';
 import { JOB_MIN_START_BALANCE } from '../../src/db/migrations/0022_job_billing.ts';
 import { APP_ROLE, BILLING_ROLE } from '../../src/db/roles.ts';
 import type { Database, JobStatus } from '../../src/db/schema.ts';
@@ -108,14 +118,15 @@ interface ChatParams {
 }
 
 function chatJobTypes() {
-  const runs = new Map<string, { startStep: number; calls: number }[]>();
+  const runs = new Map<string, { startStep: number; calls: number; reused: number }[]>();
   async function run(context: JobContext<ChatParams>) {
     const startStep = typeof context.checkpoint?.step === 'number' ? context.checkpoint.step : 0;
-    const record = { startStep, calls: 0 };
+    const record = { startStep, calls: 0, reused: 0 };
     runs.set(context.jobId, [...(runs.get(context.jobId) ?? []), record]);
     for (let step = startStep; step < context.params.steps; step += 1) {
-      await context.ai.chat({ provider: 'deepseek', model: 'deepseek-chat', messages: MESSAGES, maxOutputTokens: MAX_OUTPUT });
+      const result = await context.ai.chat({ provider: 'deepseek', model: 'deepseek-chat', messages: MESSAGES, maxOutputTokens: MAX_OUTPUT, stepKey: `step:${step}` });
       record.calls += 1;
+      if (result.reused) record.reused += 1;
       await context.saveCheckpoint({ step: step + 1 });
     }
   }
@@ -460,8 +471,8 @@ describe('worker 中的任务调用', () => {
     const done = await waitForStatus(job.id, 'succeeded');
 
     expect(runs.get(job.id)).toEqual([
-      { startStep: 0, calls: 2 },
-      { startStep: 2, calls: 2 },
+      { startStep: 0, calls: 2, reused: 0 },
+      { startStep: 2, calls: 2, reused: 0 },
     ]);
     expect(provider.requests).toHaveLength(4);
     const usage = await usageOf(ctx.orgId);
@@ -486,7 +497,7 @@ describe('worker 中的任务调用', () => {
       async run(context) {
         for (let step = 0; step < 5; step += 1) {
           try {
-            await context.ai.chat({ provider: 'deepseek', model: 'deepseek-chat', messages: MESSAGES, maxOutputTokens: MAX_OUTPUT });
+            await context.ai.chat({ provider: 'deepseek', model: 'deepseek-chat', messages: MESSAGES, maxOutputTokens: MAX_OUTPUT, stepKey: `greedy:${step}` });
             attempts.push('ok');
           } catch (error) {
             attempts.push(error instanceof JobBalanceExhaustedError ? 'exhausted' : 'other');
@@ -583,7 +594,7 @@ describe('worker 中的任务调用', () => {
     const claim = await claimJob(appDb, { orgId: ctx.orgId, jobId: job.id, runId, leaseMs: 500, orgRunningLimit: 3, attemptsFor: () => 3 });
     expect(claim.kind).toBe('claimed');
     const gateway = newGateway();
-    const first = await gateway.chat(ctx, { provider: 'deepseek', model: 'deepseek-chat', messages: MESSAGES, maxOutputTokens: MAX_OUTPUT, source: 'job', jobId: job.id, jobType: 'test-chat' });
+    const first = await gateway.chat(ctx, { provider: 'deepseek', model: 'deepseek-chat', messages: MESSAGES, maxOutputTokens: MAX_OUTPUT, source: 'job', jobId: job.id, jobType: 'test-chat', stepKey: 'step:0' });
     expect(first.billing).toEqual({ status: 'billed', amount: CHARGE });
     expect(await renewRun(appDb, { orgId: ctx.orgId, jobId: job.id, runId }, 500, { checkpoint: { step: 1 } })).not.toBeNull();
     const orphan = await hold(ctx, job.id, { estimatedInputTokens: inputTokenUpperBound(MESSAGES), maxOutputTokens: MAX_OUTPUT, holdSeconds: 2 });
@@ -594,7 +605,7 @@ describe('worker 中的任务调用', () => {
     const runner = await startRunner(registry, { gateway });
     await runner.reconcile();
     const done = await waitForStatus(job.id, 'succeeded');
-    expect(runs.get(job.id)).toEqual([{ startStep: 1, calls: 2 }]);
+    expect(runs.get(job.id)).toEqual([{ startStep: 1, calls: 2, reused: 0 }]);
     expect(provider.requests).toHaveLength(3);
 
     // 崩溃留下的冻结到期后不再占用余额，不需要任何清理任务；清理任务只把它标为 abandoned，不收费。
@@ -701,5 +712,261 @@ describe('按“组织 + 服务商”的并发信号量', () => {
     // 名额已释放，可以再次调用。
     await gateway.chat(ctx, request);
     await gateway.chat(ctx, request);
+  });
+});
+
+describe('步骤幂等（6.4a）：平台自身故障导致的重复调用不向用户收费', () => {
+  const jobRequest = (jobId: string, stepKey: string, overrides: Partial<ChatRequest> = {}): ChatRequest => ({
+    provider: 'deepseek', model: 'deepseek-chat', messages: MESSAGES, maxOutputTokens: MAX_OUTPUT,
+    source: 'job', jobId, jobType: 'test-chat', stepKey, ...overrides,
+  });
+  const stepRows = (jobId: string) =>
+    superuser.selectFrom('job_step_results').selectAll().where('job_id', '=', jobId).orderBy('step_key').execute();
+  const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+  it('调用已结算、checkpoint 未保存时 worker 崩溃：续跑时这一步取回已保存的结果，服务商不再被调用，只扣费一次', async () => {
+    const ctx = await newMember(10n * JOB_MIN_START_BALANCE);
+    const { registry, runs } = chatJobTypes();
+    const job = await enqueueJob({ ...service(registry), dispatcher: null }, ctx, { type: 'test-chat', params: { steps: 3 } });
+
+    // 崩溃的执行者：认领（租约很短），第 0 步的调用完成并结算，还没保存 checkpoint 时进程消失。
+    const runId = randomUUID();
+    const claim = await claimJob(appDb, { orgId: ctx.orgId, jobId: job.id, runId, leaseMs: 500, orgRunningLimit: 3, attemptsFor: () => 3 });
+    expect(claim.kind).toBe('claimed');
+    const gateway = newGateway();
+    const first = await gateway.chat(ctx, jobRequest(job.id, 'step:0'));
+    expect(first).toMatchObject({ reused: false, billing: { status: 'billed', amount: CHARGE } });
+    expect((await jobRow(job.id)).checkpoint).toBeNull();
+    expect(provider.requests).toHaveLength(1);
+
+    // 租约过期后由新的 worker 收回，从头（没有 checkpoint）续跑。
+    await sleep(600);
+    const runner = await startRunner(registry, { gateway });
+    await runner.reconcile();
+    const done = await waitForStatus(job.id, 'succeeded');
+    expect(done.attempt).toBe(2);
+    // 续跑重新执行了第 0 步，但取回的是已保存的结果：服务商共收到 3 次请求（崩溃前 1 次 + 第 1、2 步），不是 4 次。
+    expect(runs.get(job.id)).toEqual([{ startStep: 0, calls: 3, reused: 1 }]);
+    expect(provider.requests).toHaveLength(3);
+    const usage = await usageOf(ctx.orgId);
+    expect(usage.map((row) => row.status)).toEqual(['billed', 'billed', 'billed']);
+    expect(done.billed_amount).toBe(String(3n * CHARGE));
+    expect(await ledgerChargesForJob(ctx.orgId, job.id)).toBe(3n * CHARGE);
+    expect(await getAvailableBalance(appDb, ctx)).toEqual({
+      balance: 10n * JOB_MIN_START_BALANCE - 3n * CHARGE, held: 0n, available: 10n * JOB_MIN_START_BALANCE - 3n * CHARGE,
+    });
+    const steps = await stepRows(job.id);
+    expect(steps.map((row) => row.step_key)).toEqual(['step:0', 'step:1', 'step:2']);
+    expect(steps[0]).toMatchObject({ usage_id: usage[0].id, content: first.content, input_tokens: '3000', output_tokens: '1000' });
+  });
+
+  it('结果与结算在同一事务中提交：结算失败时结果不保存；结果写不进时不扣费；提交前崩溃则两者都没有，冻结到期后不收费', async () => {
+    const ctx = await newMember(10n * JOB_MIN_START_BALANCE);
+    const jobId = await runningJob(ctx);
+    const otherJob = await runningJob(ctx);
+    const step = { jobId, stepKey: 'step:0', requestHash: randomBytes(32) };
+    const result = { requestId: randomUUID(), content: '结果', reasoningContent: '', finishReason: 'stop' };
+    const usage = { inputTokens: 10, cachedInputTokens: 0, outputTokens: 10, usageSource: 'provider' as const };
+
+    // 用量记录已经释放：结算失败，结果不保存。
+    const released = await hold(ctx, jobId);
+    await failUsage(appDb, ctx, released.usageId, 'upstream_error');
+    await expectAppError(settleJobStep(appDb, ctx, released.usageId, step, result, usage), 409, 'USAGE_NOT_PENDING');
+    expect(await stepRows(jobId)).toEqual([]);
+
+    // 用量记录属于另一个任务：结果写不进，也不结算（冻结仍在，到期后不收费）。
+    const foreign = await hold(ctx, otherJob);
+    await expectAppError(settleJobStep(appDb, ctx, foreign.usageId, step, result, usage), 409, 'USAGE_NOT_PENDING');
+    expect((await usageOf(ctx.orgId)).find((row) => row.id === foreign.usageId)).toMatchObject({ status: 'pending', amount: '0' });
+
+    // 结果已写入、扣费时出错（注入的故障，相当于提交前崩溃）：整个事务回滚，结果和扣费都没有。
+    const injected = await hold(ctx, jobId, { holdSeconds: 2 });
+    await sql`CREATE FUNCTION test_fail_charge() RETURNS trigger LANGUAGE plpgsql AS $$
+      BEGIN
+        IF NEW.usage_id = ${sql.lit(injected.usageId)}::uuid THEN RAISE EXCEPTION 'injected failure' USING ERRCODE = 'XX001'; END IF;
+        RETURN NEW;
+      END $$`.execute(superuser);
+    await sql`CREATE TRIGGER test_fail_charge BEFORE INSERT ON billing_ledger FOR EACH ROW EXECUTE FUNCTION test_fail_charge()`.execute(superuser);
+    try {
+      await expect(settleJobStep(appDb, ctx, injected.usageId, step, result, usage)).rejects.toMatchObject({ code: 'XX001' });
+    } finally {
+      await sql`DROP TRIGGER test_fail_charge ON billing_ledger`.execute(superuser);
+      await sql`DROP FUNCTION test_fail_charge()`.execute(superuser);
+    }
+    expect(await stepRows(jobId)).toEqual([]);
+    expect(await findJobStepResult(appDb, ctx, step)).toBeNull();
+    await sleep(Math.max(0, injected.holdExpiresAt.getTime() - Date.now()) + 200);
+    expect(await expireStaleHolds(appDb)).toBeGreaterThanOrEqual(1);
+    expect((await usageOf(ctx.orgId)).find((row) => row.id === injected.usageId)).toMatchObject({ status: 'unbilled', failure_reason: 'abandoned', amount: '0' });
+
+    // 正常提交：结果和扣费同时存在，之后可以取回。
+    const ok = await hold(ctx, jobId);
+    const settled = await settleJobStep(appDb, ctx, ok.usageId, step, result, usage);
+    expect(settled).toMatchObject({ stored: true, settlement: { status: 'billed', amount: 20n } });
+    expect(await findJobStepResult(appDb, ctx, step)).toEqual({ ...result, requestId: (await usageOf(ctx.orgId)).find((row) => row.id === ok.usageId).request_id, usage });
+    expect(await ledgerChargesForJob(ctx.orgId, jobId)).toBe(20n);
+  });
+
+  it('同一步骤被两个执行者同时完成（原执行者失联后仍在运行）：只扣费一次，后提交的不收费（duplicate_step），两边拿到同一结果', async () => {
+    const ctx = await newMember(10n * JOB_MIN_START_BALANCE);
+    const jobId = await runningJob(ctx);
+    let arrived = 0;
+    let releaseBoth!: () => void;
+    const barrier = new Promise<void>((resolve) => (releaseBoth = resolve));
+    provider.setHandler(async (_request, response) => {
+      const n = (arrived += 1);
+      if (n === 2) releaseBoth();
+      await barrier;
+      await streamCompletion(response, { pieces: [`第 ${n} 次的输出`], usage: USAGE });
+    });
+    const gateway = newGateway();
+    const [a, b] = await Promise.all([gateway.chat(ctx, jobRequest(jobId, 'step:0')), gateway.chat(ctx, jobRequest(jobId, 'step:0'))]);
+    expect(provider.requests).toHaveLength(2);
+    expect(a.content).toBe(b.content);
+    expect([a.reused, b.reused].sort()).toEqual([false, true]);
+    const usage = await usageOf(ctx.orgId);
+    expect(usage.map((row) => `${row.status}:${row.failure_reason}`).sort()).toEqual(['billed:null', 'unbilled:duplicate_step']);
+    expect((await jobRow(jobId)).billed_amount).toBe(String(CHARGE));
+    expect(await ledgerChargesForJob(ctx.orgId, jobId)).toBe(CHARGE);
+    expect(await stepRows(jobId)).toHaveLength(1);
+    expect((await getAvailableBalance(appDb, ctx)).held).toBe(0n);
+  });
+
+  it('同一步骤、同一请求直接取回，不冻结、不调用服务商；请求内容不同（如暂停期间改了输入）、步骤不同、任务不同都是新的调用，照常收费', async () => {
+    const ctx = await newMember(10n * JOB_MIN_START_BALANCE);
+    const jobId = await runningJob(ctx);
+    const otherJob = await runningJob(ctx);
+    const gateway = newGateway();
+    expect((await gateway.chat(ctx, jobRequest(jobId, 'a'))).billing).toEqual({ status: 'billed', amount: CHARGE });
+    const again = await gateway.chat(ctx, jobRequest(jobId, 'a'));
+    expect(again).toMatchObject({ reused: true, billing: { status: 'unbilled', amount: 0n } });
+    expect(provider.requests).toHaveLength(1);
+    expect(await usageOf(ctx.orgId)).toHaveLength(1);
+
+    const changed = [
+      jobRequest(jobId, 'a', { messages: [{ role: 'user', content: '改过的输入' }] }),
+      jobRequest(jobId, 'a', { maxOutputTokens: MAX_OUTPUT - 1 }),
+      jobRequest(jobId, 'a', { temperature: 0.5 }),
+      jobRequest(jobId, 'b'),
+      jobRequest(otherJob, 'a'),
+    ];
+    for (const request of changed) {
+      expect(await gateway.chat(ctx, request)).toMatchObject({ reused: false, billing: { status: 'billed' } });
+    }
+    expect(provider.requests).toHaveLength(1 + changed.length);
+    expect((await usageOf(ctx.orgId)).every((row) => row.status === 'billed')).toBe(true);
+  });
+
+  it('worker 关闭时中止进行中的调用：按平台原因不收费（platform_interrupted）；续跑重做这一步，每步只扣费一次', async () => {
+    const ctx = await newMember(10n * JOB_MIN_START_BALANCE);
+    provider.setHandler(async (_request, response) => {
+      // 第一次调用输出一段后一直不结束，其余正常。
+      if (provider.requests.length === 1) await streamCompletion(response, { pieces: ['一部分输出'], usage: USAGE, beforeDone: new Promise(() => {}) });
+      else await streamCompletion(response, { usage: USAGE });
+    });
+    const { registry, runs } = chatJobTypes();
+    const runner = await startRunner(registry, { gateway: newGateway() });
+    const job = await enqueueJob(service(registry), ctx, { type: 'test-chat', params: { steps: 2 } });
+    await waitFor(async () => ((await usageOf(ctx.orgId))[0]?.status === 'pending' ? true : null));
+
+    runners.splice(runners.indexOf(runner), 1);
+    await runner.close();
+    expect((await jobRow(job.id)).status).toBe('queued');
+    expect((await usageOf(ctx.orgId))[0]).toMatchObject({ status: 'unbilled', failure_reason: 'platform_interrupted', amount: '0', ledger_entry_id: null });
+    expect((await getAvailableBalance(appDb, ctx)).held).toBe(0n);
+    expect(await stepRows(job.id)).toEqual([]);
+
+    const next = await startRunner(registry, { gateway: newGateway() });
+    await next.reconcile();
+    const done = await waitForStatus(job.id, 'succeeded');
+    expect(runs.get(job.id)).toEqual([
+      { startStep: 0, calls: 0, reused: 0 },
+      { startStep: 0, calls: 2, reused: 0 },
+    ]);
+    expect(provider.requests).toHaveLength(3);
+    expect(done.billed_amount).toBe(String(2n * CHARGE));
+    expect(await ledgerChargesForJob(ctx.orgId, job.id)).toBe(2n * CHARGE);
+  });
+
+  it('租约丢失时中止进行中的调用：同样不收费；收回后续跑，每步只扣费一次', async () => {
+    const ctx = await newMember(10n * JOB_MIN_START_BALANCE);
+    provider.setHandler(async (_request, response) => {
+      if (provider.requests.length === 1) await streamCompletion(response, { pieces: ['一部分输出'], usage: USAGE, beforeDone: new Promise(() => {}) });
+      else await streamCompletion(response, { usage: USAGE });
+    });
+    const { registry } = chatJobTypes();
+    const runner = await startRunner(registry, { gateway: newGateway() });
+    const job = await enqueueJob(service(registry), ctx, { type: 'test-chat', params: { steps: 2 } });
+    await waitFor(async () => ((await usageOf(ctx.orgId))[0]?.status === 'pending' ? true : null));
+
+    // 租约被收回（例如执行者与数据库之间长时间断开）：任务已归另一个执行者，原执行者续租失败后中止。
+    await superuser.updateTable('jobs').set({ run_id: randomUUID(), lease_expires_at: new Date(Date.now() + 60_000) }).where('id', '=', job.id).execute();
+    await waitFor(async () => ((await usageOf(ctx.orgId))[0]?.status === 'unbilled' ? true : null), 5_000, 'interrupted call released');
+    expect((await usageOf(ctx.orgId))[0]).toMatchObject({ failure_reason: 'platform_interrupted', amount: '0' });
+
+    // 新的执行者也失联：租约过期后收回、续跑。
+    await superuser.updateTable('jobs').set({ lease_expires_at: new Date(Date.now() - 1_000) }).where('id', '=', job.id).execute();
+    await runner.reconcile();
+    const done = await waitForStatus(job.id, 'succeeded');
+    expect(provider.requests).toHaveLength(3);
+    expect(done.billed_amount).toBe(String(2n * CHARGE));
+    expect(await ledgerChargesForJob(ctx.orgId, job.id)).toBe(2n * CHARGE);
+  });
+
+  it('job_step_results：强制 RLS，只读本组织；应用角色不能改、不能删；随任务记录的保留期删除，用量记录保留', async () => {
+    const ctx = await newMember(10n * JOB_MIN_START_BALANCE);
+    const other = await newMember();
+    const jobId = await runningJob(ctx);
+    await newGateway().chat(ctx, jobRequest(jobId, 'step:0'));
+    expect(await withTenant(appDb, ctx, (trx) => trx.selectFrom('job_step_results').selectAll().execute())).toHaveLength(1);
+    expect(await withTenant(appDb, other, (trx) => trx.selectFrom('job_step_results').selectAll().execute())).toEqual([]);
+    expect(await appDb.selectFrom('job_step_results').selectAll().execute()).toEqual([]);
+    await expect(withTenant(appDb, ctx, (trx) => sql`UPDATE job_step_results SET content = 'x'`.execute(trx))).rejects.toMatchObject({ code: '42501' });
+    await expect(withTenant(appDb, ctx, (trx) => sql`DELETE FROM job_step_results`.execute(trx))).rejects.toMatchObject({ code: '42501' });
+    // 其他组织不能为本组织的任务写结果。
+    const foreign = await hold(ctx, jobId);
+    await expect(withTenant(appDb, other, (trx) => trx.insertInto('job_step_results').values({
+      org_id: ctx.orgId, job_id: jobId, step_key: 'x', request_hash: randomBytes(32), usage_id: foreign.usageId, content: '', reasoning_content: '',
+      finish_reason: null, input_tokens: 0, cached_input_tokens: 0, output_tokens: 0, usage_source: 'provider',
+    }).execute())).rejects.toMatchObject({ code: '42501' });
+
+    await superuser.updateTable('jobs')
+      .set({ status: 'succeeded', run_id: null, lease_expires_at: null, finished_at: new Date(Date.now() - 100 * 86_400_000) })
+      .where('id', '=', jobId).execute();
+    await sql`SELECT cleanup_delete_jobs(1000)`.execute(appDb);
+    expect(await superuser.selectFrom('jobs').select('id').where('id', '=', jobId).execute()).toEqual([]);
+    expect(await stepRows(jobId)).toEqual([]);
+    expect((await usageOf(ctx.orgId)).filter((row) => row.job_id === jobId)).toHaveLength(2);
+  });
+
+  it('项目被物理删除时，其下任务的 job_step_results 随任务记录一并删除（任务结束不满 90 天也删），用量记录与账本保留', async () => {
+    const ctx = await newMember(10n * JOB_MIN_START_BALANCE);
+    const project = await superuser.insertInto('projects')
+      .values({ org_id: ctx.orgId, kind: 'technical-plan', name: '项目', created_by: ctx.userId })
+      .returning('id').executeTakeFirstOrThrow();
+    const jobId = randomUUID();
+    await superuser.insertInto('jobs').values({
+      id: jobId, org_id: ctx.orgId, project_id: project.id, user_id: ctx.userId, type: 'test-chat', status: 'running', run_id: randomUUID(),
+      lease_expires_at: new Date(Date.now() + 60_000), started_at: new Date(),
+    }).execute();
+    await newGateway().chat(ctx, jobRequest(jobId, 'step:0'));
+    expect(await stepRows(jobId)).toHaveLength(1);
+
+    // 任务刚结束（远不满 90 天）；项目已删除超过 7 天恢复期。
+    await superuser.updateTable('jobs').set({ status: 'succeeded', run_id: null, lease_expires_at: null, finished_at: new Date() })
+      .where('id', '=', jobId).execute();
+    await superuser.updateTable('projects')
+      .set({ deleted_at: new Date(Date.now() - 8 * 86_400_000), deleted_by: ctx.userId }).where('id', '=', project.id).execute();
+    // 任务记录未过期，单独的任务清理不删它。
+    await sql`SELECT cleanup_delete_jobs(1000)`.execute(appDb);
+    expect(await stepRows(jobId)).toHaveLength(1);
+
+    expect((await sql<{ n: number }>`SELECT cleanup_delete_projects(1000) AS n`.execute(appDb)).rows[0]!.n).toBeGreaterThanOrEqual(1);
+    expect(await superuser.selectFrom('projects').select('id').where('id', '=', project.id).execute()).toEqual([]);
+    expect(await superuser.selectFrom('jobs').select('id').where('id', '=', jobId).execute()).toEqual([]);
+    expect(await stepRows(jobId)).toEqual([]);
+    const usage = (await usageOf(ctx.orgId)).filter((row) => row.job_id === jobId);
+    expect(usage.map((row) => row.status)).toEqual(['billed']);
+    expect(await ledgerChargesForJob(ctx.orgId, jobId)).toBe(CHARGE);
   });
 });

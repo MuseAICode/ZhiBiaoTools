@@ -11,14 +11,22 @@
 //    用户中途断开：按已产生的用量结算（第 10.1 节），用量缺失时本地估算；
 //    服务商出错、超时、连接失败、响应不合法：不收费，冻结全额释放；
 //    进程在调用中途崩溃：冻结到期后自动不再占用余额，到期后的结算一律不收费。
-import { createDecipheriv, randomUUID } from 'node:crypto';
+//
+// 任务调用的步骤幂等（路线图 6.4a，迁移 0025_job_step_results）：任务调用必须带步骤键（stepKey）。调用前先按
+// “任务 + 步骤键 + 请求内容的 SHA-256”查已保存的结果，有则直接返回（reused），不冻结、不调用服务商、不扣费；
+// 调用完成时结果与结算在同一事务中写入，续跑时同一步骤不会再调用服务商、再扣费。因平台原因中止的调用
+// （ChatOptions.platformAborted，worker 关闭、租约丢失）不收费（platform_interrupted），也不保存结果。
+import { createDecipheriv, createHash, randomUUID } from 'node:crypto';
 import type { FastifyBaseLogger } from 'fastify';
 import type { Kysely } from 'kysely';
 import { MODEL_NAME_PATTERN } from '../billing/ledger.ts';
 import {
   beginUsage,
   failUsage,
+  findJobStepResult,
+  settleJobStep,
   settleUsage,
+  type JobStepKey,
   type GatewayFailureReason,
   type SettleUsageInput,
   type SettlementResult,
@@ -27,6 +35,7 @@ import { BILLING_PROVIDERS, type BillingProvider, type Database, type UsageSourc
 import { withTenant, type TenantContext } from '../db/tenant.ts';
 import { AppError } from '../errors.ts';
 import { DEFAULT_CONCURRENCY_LIMIT } from '../db/migrations/0009_settings.ts';
+import { JOB_STEP_KEY_PATTERN } from '../db/migrations/0025_job_step_results.ts';
 import type { AiConcurrencyLimiter } from './concurrency.ts';
 import { credentialAad } from './credentials.ts';
 import { estimateInputTokens, estimateTokens, inputTokenUpperBound } from './estimate.ts';
@@ -59,6 +68,11 @@ export interface ChatRequest {
   /** 所属任务（source = 'job' 时必填，任务必须正在执行），写入 usage_records；任务类型以任务记录为准。 */
   jobId?: string | null;
   jobType?: string | null;
+  /**
+   * 任务内的步骤键（source = 'job' 时必填）：标识“同一次逻辑调用”，续跑时同一步骤键、同一请求内容的调用直接取回已保存的
+   * 结果。同一任务内不同的调用要用不同的键；有意重试（例如输出不合格再调一次）也要换键（如 section:3:try-2）。
+   */
+  stepKey?: string | null;
 }
 
 export interface ChatDelta {
@@ -73,6 +87,11 @@ export interface ChatOptions {
   log?: FastifyBaseLogger;
   /** 等待并发名额的最长时间，默认取 settings.concurrencyWaitMs；任务中的调用传 Infinity（一直等到被取消）。 */
   concurrencyWaitMs?: number;
+  /**
+   * signal 中止时调用：返回 true 表示是平台原因（worker 关闭、租约丢失）中止的，本次调用不收费（platform_interrupted），
+   * 否则（用户断开、取消、暂停）按已产生的用量结算。
+   */
+  platformAborted?: () => boolean;
 }
 
 export interface ChatResult {
@@ -82,6 +101,8 @@ export interface ChatResult {
   finishReason: string | null;
   /** true 表示调用方中途取消，content 只是已产生的部分。 */
   aborted: boolean;
+  /** true 表示取回的是本任务同一步骤已保存的结果（续跑时，或并发的执行者先完成），本次没有扣费。 */
+  reused: boolean;
   usage: SettleUsageInput;
   billing: { status: SettlementResult['status']; amount: bigint };
 }
@@ -95,6 +116,7 @@ export const MAX_UPSTREAM_RESPONSE_BYTES = 32 * 1024 * 1024;
 const MAX_TOKENS = 1_000_000_000;
 const ROLES = new Set(['system', 'user', 'assistant']);
 const JOB_TYPE_PATTERN = /^[a-z][a-z0-9-]{0,63}$/;
+const STEP_KEY_PATTERN = new RegExp(JOB_STEP_KEY_PATTERN);
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 export const DEFAULT_AI_CONCURRENCY_MAX = 10;
 export const DEFAULT_AI_CONCURRENCY_WAIT_MS = 30_000;
@@ -146,10 +168,23 @@ function assertRequest(request: ChatRequest, settings: GatewaySettings): number 
   if (request.source === 'job') {
     if (typeof request.jobId !== 'string' || !UUID_PATTERN.test(request.jobId)) throw invalid('任务调用必须带任务编号');
     if (request.jobType != null && !JOB_TYPE_PATTERN.test(request.jobType)) throw invalid('任务类型不合法');
-  } else if (request.source !== 'interactive' || request.jobId != null || request.jobType != null) {
+    if (typeof request.stepKey !== 'string' || !STEP_KEY_PATTERN.test(request.stepKey)) throw invalid('任务调用必须带合法的步骤键');
+  } else if (request.source !== 'interactive' || request.jobId != null || request.jobType != null || request.stepKey != null) {
     throw invalid('调用来源不合法');
   }
   return maxOutputTokens;
+}
+
+/** 请求内容的 SHA-256：同一步骤键下请求不同（例如暂停期间用户改了输入）就是新的调用。 */
+function requestHash(request: ChatRequest, maxOutputTokens: number): Buffer {
+  const canonical = JSON.stringify([
+    request.provider,
+    request.model,
+    maxOutputTokens,
+    request.temperature ?? null,
+    request.messages.map((message) => [message.role, message.content]),
+  ]);
+  return createHash('sha256').update(canonical, 'utf8').digest();
 }
 
 const clampTokens = (value: number) => Math.min(Math.max(0, Math.floor(value)), MAX_TOKENS);
@@ -208,6 +243,7 @@ export function createAiGateway(options: CreateAiGatewayOptions): AiGateway {
     chatOptions: ChatOptions,
     log: FastifyBaseLogger,
     maxOutputTokens: number,
+    step: JobStepKey | null,
   ): Promise<ChatResult> {
     const adapter = PROVIDER_ADAPTERS[request.provider];
     const credential = await loadApiKey(context, request.provider, log);
@@ -295,6 +331,17 @@ export function createAiGateway(options: CreateAiGatewayOptions): AiGateway {
       durationMs: Date.now() - startedAt,
     };
 
+    // 平台原因中止（worker 关闭、租约丢失）：续跑时会重做这一步，本次不收费。
+    if (aborted && chatOptions.platformAborted?.()) {
+      try {
+        await failUsage(db, context, hold.usageId, 'platform_interrupted', providerUsage);
+      } catch (error) {
+        log.error({ err: error, ai: summary }, 'ai usage release failed');
+      }
+      log.warn({ ai: { ...summary, status: 'unbilled', failureReason: 'platform_interrupted' } }, 'ai call interrupted');
+      throw new AppError(503, 'AI_CALL_INTERRUPTED', '调用因服务中断而停止，本次调用不收费');
+    }
+
     if (failure !== null) {
       try {
         await failUsage(db, context, hold.usageId, failure, providerUsage);
@@ -314,6 +361,33 @@ export function createAiGateway(options: CreateAiGatewayOptions): AiGateway {
           outputTokens: clampTokens(estimateTokens(content) + estimateTokens(reasoningContent)),
           usageSource: 'estimated',
         };
+    // 任务步骤：完整的结果与结算在同一事务中写入。被用户取消、暂停中止的部分结果不保存（续跑时重新调用）。
+    if (step && !aborted) {
+      const stepped = await settleJobStep(db, context, hold.usageId, step, { requestId, content, reasoningContent, finishReason }, usage);
+      log.info(
+        {
+          ai: {
+            ...summary,
+            stepKey: step.stepKey,
+            status: stepped.stored ? stepped.settlement.status : 'unbilled',
+            failureReason: stepped.stored ? undefined : 'duplicate_step',
+            amount: stepped.settlement.amount.toString(),
+            inputTokens: usage.inputTokens,
+            cachedInputTokens: usage.cachedInputTokens,
+            outputTokens: usage.outputTokens,
+            usageSource: usage.usageSource,
+          },
+        },
+        'ai call settled',
+      );
+      return {
+        ...stepped.result,
+        aborted: false,
+        reused: !stepped.stored,
+        billing: { status: stepped.settlement.status, amount: stepped.settlement.amount },
+      };
+    }
+
     const settlement = await settleUsage(db, context, hold.usageId, usage);
     log.info(
       {
@@ -336,6 +410,7 @@ export function createAiGateway(options: CreateAiGatewayOptions): AiGateway {
       reasoningContent,
       finishReason,
       aborted,
+      reused: false,
       usage,
       billing: { status: settlement.status, amount: settlement.amount },
     };
@@ -345,6 +420,14 @@ export function createAiGateway(options: CreateAiGatewayOptions): AiGateway {
     async chat(context, request, chatOptions = {}) {
       const log = chatOptions.log ?? options.log;
       const maxOutputTokens = assertRequest(request, settings);
+      const step = request.source === 'job' ? { jobId: request.jobId!, stepKey: request.stepKey!, requestHash: requestHash(request, maxOutputTokens) } : null;
+      if (step) {
+        const stored = await findJobStepResult(db, context, step);
+        if (stored) {
+          log.info({ ai: { ...stored.usage, requestId: stored.requestId, jobId: step.jobId, stepKey: step.stepKey, status: 'reused' } }, 'ai call reused');
+          return { ...stored, aborted: false, reused: true, billing: { status: 'unbilled', amount: 0n } };
+        }
+      }
       await assertModelCallable(db, context, request.provider, request.model);
       const release = limiter
         ? await limiter.acquire({
@@ -356,7 +439,7 @@ export function createAiGateway(options: CreateAiGatewayOptions): AiGateway {
           })
         : null;
       try {
-        return await callWithSlot(context, request, chatOptions, log, maxOutputTokens);
+        return await callWithSlot(context, request, chatOptions, log, maxOutputTokens, step);
       } finally {
         await release?.();
       }

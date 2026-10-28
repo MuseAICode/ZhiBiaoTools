@@ -16,6 +16,7 @@
 //
 // 模型调用（6.4）：任务经 context.ai 调用 AI 网关（在 worker 进程中运行），用量记到本任务；余额不足以冻结时
 // 任务退出、暂停为 paused / insufficient_balance，经 notifier 推送（job 事件的 pauseReason），充值后由用户继续。
+// 每次调用带步骤键（6.4a）：结果与结算同一事务保存，续跑时同一步骤直接取回，不重复调用、不重复扣费。
 import { randomUUID } from 'node:crypto';
 import { DelayedError, Worker, type Job, type RedisOptions as BullmqRedisOptions } from 'bullmq';
 import { Redis } from 'ioredis';
@@ -189,6 +190,8 @@ export function createJobRunner(options: JobRunnerOptions): JobRunner {
               log,
               // 任务中的调用一直排队等并发名额，直到任务被取消或暂停。
               concurrencyWaitMs: Number.POSITIVE_INFINITY,
+              // worker 关闭、租约丢失中止的调用不收费（续跑时重做）；用户取消、暂停中止的按已产生的用量收费。
+              platformAborted: () => controller.signal.reason === 'shutdown' || controller.signal.reason === 'lease-lost',
               ...(chatOptions.onDelta ? { onDelta: chatOptions.onDelta } : {}),
             },
           );
