@@ -63,6 +63,11 @@ export interface ProjectTableSpec {
    * 必须显式列出；模板另外检查这些角色不能登录、没有 BYPASSRLS，且对本表只有 SELECT 策略。
    */
   definerRoles?: readonly string[];
+  /**
+   * 除 SELECT 外还有 DELETE 策略的定义者角色（清理任务的 bidtools_cleanup，迁移 0024：只放行超过保留期的行）。
+   * 必须显式列出；模板同样检查不能登录、没有 BYPASSRLS，且对本表只有 SELECT 和 DELETE 策略。
+   */
+  cleanupRoles?: readonly string[];
   /** org_id 为空、所有组织只读的系统行。只用于组织级表。 */
   systemRows?: SystemRowsSpec;
   /** 模板建的项目的 kind（策略只允许某一种项目时声明），默认 technical-plan。只用于项目级表。 */
@@ -129,7 +134,7 @@ export function describeProjectTable(spec: ProjectTableSpec, env: ProjectTableEn
   if (spec.projectKind && orgScoped) throw new TypeError(`${table}：projectKind 只用于项目级表`);
   const projectKind = spec.projectKind ?? 'technical-plan';
   const systemRows = spec.systemRows;
-  const policyRoles = [APP_ROLE, ...(spec.definerRoles ?? []), ...(systemRows ? [systemRows.writerRole] : [])].sort();
+  const policyRoles = [APP_ROLE, ...(spec.definerRoles ?? []), ...(spec.cleanupRoles ?? []), ...(systemRows ? [systemRows.writerRole] : [])].sort();
 
   describe(`${orgScoped ? '组织级表' : '项目级表'} ${table}`, () => {
     let a: Tenant;
@@ -193,6 +198,15 @@ export function describeProjectTable(spec: ProjectTableSpec, env: ProjectTableEn
         const commands = await sql<{ polcmd: string }>`
           SELECT DISTINCT p.polcmd FROM pg_policy p WHERE p.polrelid = ${table}::regclass AND ${role}::regrole = ANY (p.polroles)`.execute(env.admin());
         expect(commands.rows, role).toEqual([{ polcmd: 'r' }]);
+      }
+      for (const role of spec.cleanupRoles ?? []) {
+        const attributes = await sql<{ rolcanlogin: boolean; rolbypassrls: boolean; rolsuper: boolean }>`
+          SELECT rolcanlogin, rolbypassrls, rolsuper FROM pg_roles WHERE rolname = ${role}`.execute(env.admin());
+        expect(attributes.rows, role).toEqual([{ rolcanlogin: false, rolbypassrls: false, rolsuper: false }]);
+        const commands = await sql<{ polcmd: string }>`
+          SELECT DISTINCT p.polcmd FROM pg_policy p WHERE p.polrelid = ${table}::regclass AND ${role}::regrole = ANY (p.polroles)
+          ORDER BY 1`.execute(env.admin());
+        expect(commands.rows, role).toEqual([{ polcmd: 'd' }, { polcmd: 'r' }]);
       }
     });
 

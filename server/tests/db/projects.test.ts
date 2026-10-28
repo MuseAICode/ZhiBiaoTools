@@ -9,7 +9,7 @@ import { tenantOf } from '../../src/auth/hooks.ts';
 import { DEFAULT_AUTH_RATE_LIMITS, type AuthRateLimitSettings } from '../../src/auth/rateLimit.ts';
 import { createDatabase, type DatabaseHandle } from '../../src/db/database.ts';
 import { migrateToLatest } from '../../src/db/migrator.ts';
-import { STORAGE_ROLE } from '../../src/db/roles.ts';
+import { CLEANUP_ROLE, STORAGE_ROLE } from '../../src/db/roles.ts';
 import type { Database } from '../../src/db/schema.ts';
 import { withTenant, type TenantContext } from '../../src/db/tenant.ts';
 import { PROJECT_ID_PARAMS, requireProject } from '../../src/projects/access.ts';
@@ -222,6 +222,7 @@ describe('files.project_id', () => {
       onProjectDelete: 'restrict',
       projectIdNullable: true,
       definerRoles: [STORAGE_ROLE],
+      cleanupRoles: [CLEANUP_ROLE],
     },
     { admin: () => superuser, app: () => appDb },
   );

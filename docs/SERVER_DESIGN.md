@@ -431,7 +431,7 @@ Markdown 中远程图片的下载（`docs/EXTERNAL_SERVICES.md` §2.9）URL 来�
 - **配额**：每组织 20 GiB，常量写在迁移中，改配额需要新迁移。计入的是已上传、未删除或仍在 7 天恢复期内的文件（回收站中的文件仍占配额，防止“上传—删除”循环无限占用存储）；`uploading` 行（含进程崩溃遗留的）不计入。触发器用事务级 advisory lock 串行同一组织的检查，并发上传合计不会越过配额。
 - **下载**：`GET /api/files/:fileId/content` 由 api 从对象存储**流式转发，不签发预签名链接**（无法撤销）；**一律** `Content-Disposition: attachment`（第 6.4 节原计划图片预览用 `inline`，改为一律附件，图片预览等需要时再单独设计），另加 `X-Content-Type-Options: nosniff`、`Content-Security-Policy: default-src 'none'; sandbox`、`Cache-Control: private, no-store`。其他组织的 `fileId` 与不存在的一样返回 404。
 - **删除**：`DELETE /api/files/:fileId` 软删除（`deleted_at`），7 天内可经 `POST /api/files/:fileId/restore` 恢复（第 9 节第 17 项），过期后不可访问、不可恢复、不计入配额；恢复期由触发器保证（过期恢复抛 `FS002`）。组织内成员都可以上传、删除（组织内共享，第 9 节第 2 项）。另有 `GET /api/files`（`?deleted=true` 为回收站）、`GET /api/files/:fileId`、`GET /api/files/usage`。
-- **留给后续**：过期文件和遗留 `uploading` 行的物理清理（跨组织的后台任务，第 6 步 worker 建成后实现）；`project_id`（已由 #7 加上）；ZIP 炸弹、PDF 页数等解析阶段的防护（第 6.2 节，在沙箱中解析时实现）；生成产物（`artifacts`，已由 #8 实现，见路线图第 5 步）；前端接入。
+- **留给后续**：过期文件和遗留 `uploading` 行的物理清理（跨组织的后台任务，已由路线图 6.8 实现：worker 每小时一批，定义者角色 `bidtools_cleanup`，见路线图第 6 步“清理任务”）；`project_id`（已由 #7 加上）；ZIP 炸弹、PDF 页数等解析阶段的防护（第 6.2 节，在沙箱中解析时实现）；生成产物（`artifacts`，已由 #8 实现，见路线图第 5 步）；前端接入。
 
 ## 7. Agent 执行命令的沙箱隔离
 

@@ -60,6 +60,8 @@ function mapFileError(error: unknown): unknown {
   const code = (error as { code?: unknown } | null)?.code;
   if (code === 'FS001') return quotaExceeded(error);
   if (code === 'FS002') return new AppError(404, 'FILE_NOT_FOUND', '文件不存在或已超过恢复期', { cause: error });
+  // 登记超过 24 小时的上传不能再完成（迁移 0024_cleanup），它可能已被清理任务删除。
+  if (code === 'FS006') return new AppError(408, 'UPLOAD_TIMEOUT', '上传超时，请重新上传', { cause: error });
   return error;
 }
 
