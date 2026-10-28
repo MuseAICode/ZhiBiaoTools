@@ -14,7 +14,7 @@
 | 3 | 配置与 AI 网关 | 进行中 | 旧仓库 PR #31（计费账本：组织余额、只追加的账本、带版本的价格表、幂等扣费、管理员手动充值与冲正，不调用 AI）、旧仓库 PR #32（AI 网关：调用前预扣冻结、按实际用量结算、冻结超时自动释放、`usage_records`、平台 Key 信封加密、DeepSeek / 通义千问流式适配、`POST /api/ai/chat`）、旧仓库 PR #33（平台模型白名单 `platform_models`：只有登记且启用、并有生效价格的模型能调用，免费须显式标记；管理员登记 / 启用 / 停用接口；用户断开时中止上游请求的端到端测试） |
 | 4 | 文件上传 / 下载 / 资源协议 | 进行中 | 旧仓库 PR #34（文件存储：S3 兼容对象存储、本地 SeaweedFS、`files` 表与强制 RLS、按内容校验类型、大小上限与组织配额、附件方式下载、7 天恢复期）、#6（上传白名单补齐桌面版能导入的内容：OLE 内容的 `.docx`，`.doc/.wps` 的 RTF / HTML / MHT / Word 2003 XML，`.xls` 的 HTML 表格 / SpreadsheetML，`%PDF-` 前有多余字节的 PDF） |
 | 5 | 数据层迁移（按业务逐个） | 已完成 | 旧仓库 PR #35（拆分计划，见“第 5 步说明”；记录上传白名单与桌面版的差距）、#7（5.1 项目：`projects` 表、`files.project_id`、项目接口、路由层归属校验、项目级表的迁移与测试模板）、#8（5.2 生成产物存储：`artifacts` 表、Store、只读接口；项目软删除与其下文件、产物联动，由 RLS 强制）、#9（5.3 配置：`org_settings`、`user_settings`、`GET/PATCH /api/settings`；写权限与删除可见性由 RLS 强制）、#10（5.4 导出模板：`export_templates`、`/api/export-templates` 增删改查与复制；系统模板只读、修改删除权限由 RLS 强制，迁移命令同步系统模板）、#11（5.5 资信库：6 张表、`/api/credential-library`；权限与删除可见性由 RLS 强制，图片随所引用文件的生命周期）、#12（5.6 知识库（一）：`knowledge_folders`、`_documents`、`_document_steps`、`/api/knowledge-base` 文件夹与文档管理；权限与删除可见性由 RLS 强制，文档随原件的生命周期）、#14（5.7 知识库（二）：切块、条目、匹配结果等 7 张表，检索与读取条目 / 分析 / Markdown 接口；删除可见性与写权限由 RLS 强制，随文档可见）、#16（5.8 标书查重：13 张项目级表、`/api/projects/:projectId/duplicate-check` 状态 / 文件选择 / 页面状态 / 清空 / Excel 导出；删除可见性与写权限由 RLS 强制，随项目和所选原件可见）、#17（5.8 后续：`files.project_id` 设置后不能再改，由触发器强制；xlsx 写出器防公式注入，回车按原样写出）、#18（5.9 废标检查：7 张项目级表、`/api/projects/:projectId/rejection-check` 状态 / 导入与移除文档 / 页面状态 / 切换与删除问题 / 清空 / Excel 导出；删除可见性与写权限由 RLS 强制，文档随原件可见，签名由服务端现算）、#19（5.10 可研报告：4 张项目级表、`/api/projects/:projectId/feasibility-report` 状态 / 步骤 / 项目信息 / 资料分析 / 目录配置 / 目录（`reason` 协议）/ 关键参数 / 正文 / 资料导入与移除 / 资料 Markdown / 清空；删除可见性与写权限由 RLS 强制，资料随原件、引用随知识库文档可见）、#20（5.11 技术方案（一）：6 张项目级表、`/api/projects/:projectId/technical-plan` 状态 / 步骤 / 生成配置 / 招标解析配置 / 正文生成选项 / 招标文件导入与移除 / 招标文件与合并正文的 Markdown / 原方案 / 投标范围选择 / 清空；删除可见性与写权限由 RLS 强制，文档随原件、引用随知识库文档可见，导出模板只能是本组织的或系统模板）、#21（5.12 技术方案（二）：目录与全局事实 2 张项目级表、`PUT .../outline`（`reason` 协议，节点 UUID 稳定、编号现算）与 `PUT .../global-facts`，下游清空扩展到目录与全局事实；删除可见性与写权限由 RLS 强制））、#22（5.13 技术方案（三）：正文生成状态与编排 2 张项目级表、`PUT .../chapters/:nodeId`、`DELETE .../content-generation`，目录保存与全局事实、下游清空扩展到正文生成状态、编排与运行进度；废标检查 `POST .../tender-from-technical-plan` 复制原件与 Markdown；删除可见性与写权限由 RLS 强制） |
-| 6 | 任务队列与 worker | 进行中 | #23（拆分计划，见“第 6 步说明”）、#24（6.1 Redis 接入：Valkey 8 开启 ACL、`REDIS_URL` / `REDIS_PASSWORD[_FILE]`、`/readyz` 检查 Redis、CI 起 Valkey）、#25（6.2 `jobs` / `job_events` 表与 worker 骨架：BullMQ 只派发、`jobs` 为唯一权威，认领加 `run_id` 隔离令牌与数据库租约，Redis 重启或清空后从 `jobs` 对账恢复入队；新增定义者角色 `bidtools_jobs`）、#26（6.3 SSE 推送 `GET /api/events`：每组织一条 Stream + 频道，`Last-Event-ID` 补发与 `resync`、心跳、会话定期重新校验、单用户连接数上限；任务状态、进度、日志经 worker 推送，取消 / 暂停经控制频道立即送达 worker）、#27（6.4 worker 接入 AI 网关与余额：任务调用记 `job_id` / `job_type`，`jobs.billed_amount` 在结算的同一事务中累加，入队和继续前检查最低启动余额 1 元，运行中余额不足暂停为 `paused` / `insufficient_balance` 并推送，按“组织 + 服务商”的 Redis 分布式信号量）、#28（6.5 解析沙箱基础设施：`sandbox-runner` 服务、`SandboxDriver` 接口、断网的 `parse` 模板与镜像，取回归档逐项校验，gVisor 下的隔离测试）、#29（测试修复：`jobQueue.test.ts` 中模拟清空 Redis 的 `wipeQueueKeys` 改为原子的 Lua 脚本，清空后的断言改为“被清空的任务不再被任何键引用”，消除与运行中 worker 的竞态）、#30（6.6 解析任务（一）：`document-parse` 任务在断网沙箱中按记录的 MIME 解析二进制与纯文本格式，ZIP 炸弹与 PDF 页数检查，产物经 `writeArtifact` 写入、重新解析时旧产物标为已被替换（迁移 0023），三个模块导入后自动入队；parse 镜像加入解析入口与 LibreOffice 安全设置；沙箱总数上限的测试）、#31（6.6 补充：LibreOffice 转换超时改为对整个进程组 SIGKILL，补“解析卡住时任务按时结束并销毁沙箱”的测试）、#32（6.7 解析任务（二）文本类格式：Office 2003 XML 含 DTD 即拒绝，RTF 去掉域指令与 OLE 链接，HTML 按白名单重新生成、不留任何远程资源，MHT 先解开 MIME；恶意样本与对照组测试，远程资源测试在沙箱内监听所有连接） |
+| 6 | 任务队列与 worker | 进行中 | #23（拆分计划，见“第 6 步说明”）、#24（6.1 Redis 接入：Valkey 8 开启 ACL、`REDIS_URL` / `REDIS_PASSWORD[_FILE]`、`/readyz` 检查 Redis、CI 起 Valkey）、#25（6.2 `jobs` / `job_events` 表与 worker 骨架：BullMQ 只派发、`jobs` 为唯一权威，认领加 `run_id` 隔离令牌与数据库租约，Redis 重启或清空后从 `jobs` 对账恢复入队；新增定义者角色 `bidtools_jobs`）、#26（6.3 SSE 推送 `GET /api/events`：每组织一条 Stream + 频道，`Last-Event-ID` 补发与 `resync`、心跳、会话定期重新校验、单用户连接数上限；任务状态、进度、日志经 worker 推送，取消 / 暂停经控制频道立即送达 worker）、#27（6.4 worker 接入 AI 网关与余额：任务调用记 `job_id` / `job_type`，`jobs.billed_amount` 在结算的同一事务中累加，入队和继续前检查最低启动余额 1 元，运行中余额不足暂停为 `paused` / `insufficient_balance` 并推送，按“组织 + 服务商”的 Redis 分布式信号量）、#28（6.5 解析沙箱基础设施：`sandbox-runner` 服务、`SandboxDriver` 接口、断网的 `parse` 模板与镜像，取回归档逐项校验，gVisor 下的隔离测试）、#29（测试修复：`jobQueue.test.ts` 中模拟清空 Redis 的 `wipeQueueKeys` 改为原子的 Lua 脚本，清空后的断言改为“被清空的任务不再被任何键引用”，消除与运行中 worker 的竞态）、#30（6.6 解析任务（一）：`document-parse` 任务在断网沙箱中按记录的 MIME 解析二进制与纯文本格式，ZIP 炸弹与 PDF 页数检查，产物经 `writeArtifact` 写入、重新解析时旧产物标为已被替换（迁移 0023），三个模块导入后自动入队；parse 镜像加入解析入口与 LibreOffice 安全设置；沙箱总数上限的测试）、#31（6.6 补充：LibreOffice 转换超时改为对整个进程组 SIGKILL，补“解析卡住时任务按时结束并销毁沙箱”的测试）、#32（6.7 解析任务（二）文本类格式：Office 2003 XML 含 DTD 即拒绝，RTF 去掉域指令与 OLE 链接，HTML 按白名单重新生成、不留任何远程资源，MHT 先解开 MIME；恶意样本与对照组测试，远程资源测试在沙箱内监听所有连接）、#33（6.8 清理任务：新增定义者角色 `bidtools_cleanup`（迁移 0024），worker 每小时跨组织删除超过保留期的文件、产物、项目、遗留上传与任务记录，先删对象后删行，孤儿对象，冻结到期收尾移到 worker；清理角色对计费表没有任何权限） |
 | 7 | OpenXmlHelper 容器化与离屏渲染（前置：CI 新增 .NET 编译与 OpenXmlHelper 测试，见“第 9 步说明”的品牌改名第三部分） | 未开始 | — |
 | 8 | Agent 沙箱 | 未开始 | — |
 | 9 | 收尾与上线 | 进行中 | #1（品牌改名第一部分：用户可见文字和文档）、#2（品牌改名第二部分：代码标识符、数据与协议、打包，新增 CI 禁用词检查）、#5（品牌改名第三部分：原产品名缩写前缀改为中性前缀 `app`，禁用词检查加入该缩写） |
@@ -880,7 +880,7 @@ AI 网关加固，做法见 `docs/SERVER_DESIGN.md` 第 10.9 节。`client/` 未
 | 6.5 | 解析沙箱基础设施：`sandbox-runner` 服务、`SandboxDriver` 接口、`parse` 模板、解析镜像（见下方“文件解析的隔离”）；隔离测试 | 6.2 | **是**（沙箱） | 已完成 | #28 |
 | 6.6 | 解析任务（一）二进制与纯文本格式：`parse` 队列；按记录的 MIME 分派（见下方分派表）；ZIP 炸弹、PDF 页数、超时检查；产出经 `writeArtifact` 写入；重新解析时替换旧产物（第 5 步 #8 留下）；接入技术方案、废标检查、可研报告三个模块的文档解析（`saveDocumentParse` / `saveSourceParse`），导入后自动入队；parse 镜像加入解析入口与其 npm 依赖，并同时加入 LibreOffice 的全局设置：链接更新设为从不、禁用宏（从 6.7 提前，#28 确认时决定，与解析入口同时上线）；**sandbox-runner 对同时存在的沙箱总数设硬上限**（#28 确认时登记）：计入全部带沙箱标签的容器，含已停止、已到期但尚未清理的残留沙箱，超出时拒绝创建并返回明确错误（429 `SANDBOX_BUSY`，文案“沙箱数已达上限，请稍后重试”），解析任务按可重试处理；6.5 已按此计数（`SANDBOX_MAX_ACTIVE`，默认 8），6.6 补测试：残留（已停止、已到期未清理）的沙箱计入上限、超出时的错误码与文案、清理后可再创建 | 6.5 | 否（实际：涉及沙箱镜像与 jszip 双许可证，按需确认处理，#30 已确认） | 已完成 | #30、#31 |
 | 6.7 | 解析任务（二）文本类格式（#6 放行的 RTF、HTML、MHT、Word 2003 XML、SpreadsheetML）：逐项满足“第 6 步解析要求”，用恶意样本测试（XXE、实体膨胀、外链图片 / 样式 / `<iframe>`、RTF `INCLUDEPICTURE` / `INCLUDETEXT`、MHT 外部 `Content-Location`） | 6.6 | 否（实际：涉及解析沙箱，按本次要求确认后合并） | 已完成 | #32 |
-| 6.8 | 清理任务：过期文件、产物、项目的对象与行的物理删除，遗留 `uploading` 行，按对象键前缀找出的孤儿对象，冻结到期收尾（`expireStaleHolds` 从 api 的定时器移到 worker 的定时任务），超过保留期的 `jobs` / `job_events`；跨组织，用新的 `NOLOGIN` 定义者角色 `bidtools_cleanup` 写 `SECURITY DEFINER` 函数，要求见“决定事项”第 9、10 项 | 6.2 | **是**（新增数据库角色） | 未开始 | — |
+| 6.8 | 清理任务：过期文件、产物、项目的对象与行的物理删除，遗留 `uploading` 行，按对象键前缀找出的孤儿对象，冻结到期收尾（`expireStaleHolds` 从 api 的定时器移到 worker 的定时任务），超过保留期的 `jobs` / `job_events`；跨组织，用新的 `NOLOGIN` 定义者角色 `bidtools_cleanup` 写 `SECURITY DEFINER` 函数，要求见“决定事项”第 9、10 项 | 6.2 | **是**（新增数据库角色） | 已完成 | #33 |
 | 6.9 | 废标检查任务：`rejection-items-extraction`、`rejection-check-run`；任务按招标文件顺序合并正文，经 `computeSignatures` 写签名；`loadState` 返回任务状态 | 6.4、6.4a、6.6 | 否 | 未开始 | — |
 | 6.10 | 标书查重任务：`duplicate-analysis`。`duplicateCheckService.cjs` 自己用 `adm-zip`、`cfb`、`cheerio`、`pdf-parse` 读原件（正文、元数据、目录、图片），这部分提取放进 `parse` 沙箱，产出正文与图片产物；比对计算在 worker 中进行，经 `saveAnalysisSection` 写入 | 6.5、6.6 | 否 | 未开始 | — |
 | 6.11 | 技术方案任务（一）：招标解析 `bid-analysis`、多标段识别 `bid-section-extraction`；`checkBidSections`（疑似多标段检测）在 worker 中计算并写入状态，改写正则消除平方级回溯（#20 留下）；导入招标文件前取消本项目的技术方案任务（#20 留下） | 6.4、6.4a、6.6 | 否 | 未开始 | — |
@@ -949,9 +949,9 @@ AI 网关加固，做法见 `docs/SERVER_DESIGN.md` 第 10.9 节。`client/` 未
 
 | # | 事项 | 来源 | 本计划的处理 |
 |---|---|---|---|
-| 1 | 过期文件与产物的物理清理（7 天恢复期满的文件、产物、项目，遗留 `uploading` 行；对象先删、行后删） | 第 4 步（旧仓库 PR #34）、5.2（#8）、第 9 步上线检查“文件存储” | 6.8 |
-| 2 | 对象存储中的孤儿对象（如从技术方案复制到废标检查时清理失败的残留，按对象键前缀处理） | 5.13（#22，`fromTechnicalPlan.ts`） | 6.8 |
-| 3 | 重新解析时替换旧产物（产物没有单独的删除接口） | 5.2（#8） | 6.6，已完成（#30，迁移 0023 的 `superseded_at`）；被替换的产物由 6.8 清理 |
+| 1 | 过期文件与产物的物理清理（7 天恢复期满的文件、产物、项目，遗留 `uploading` 行；对象先删、行后删） | 第 4 步（旧仓库 PR #34）、5.2（#8）、第 9 步上线检查“文件存储” | 6.8，已完成（#33） |
+| 2 | 对象存储中的孤儿对象（如从技术方案复制到废标检查时清理失败的残留，按对象键前缀处理） | 5.13（#22，`fromTechnicalPlan.ts`） | 6.8，已完成（#33） |
+| 3 | 重新解析时替换旧产物（产物没有单独的删除接口） | 5.2（#8） | 6.6，已完成（#30，迁移 0023 的 `superseded_at`）；被替换的产物由 6.8 清理（#33） |
 | 4 | 按记录的 MIME 分派，只在沙箱中解析 | 第 4 步（#6）“第 6 步解析要求” | 6.5、6.6、6.7，见上方分派表；已完成（#30、#32） |
 | 5 | 解析沙箱完全断网 | 同上 | 6.5（`--network none` + 测试），已完成（#28） |
 | 6 | HTML / MHT / RTF 禁止加载远程资源（含 RTF 域、OLE 链接、MHT 外部 `Content-Location`） | 同上 | 6.7，已完成（#32） |
@@ -972,7 +972,7 @@ AI 网关加固，做法见 `docs/SERVER_DESIGN.md` 第 10.9 节。`client/` 未
 | 21 | 技术方案“正文生成运行或暂停中不能调整目录 / 手工改正文”、重置正文时取消正文生成任务、`saveGlobalFacts` 写“手工保存”任务记录 | 5.12（#21）、5.13（#22） | 正文生成任务随第 8 步，锁和取消随它一起做；“手工保存”任务记录建议不迁移（`job_events` 只记任务的事件） |
 | 22 | 知识库文档处理中被删除时任务停止；`recoverInterruptedDocuments` 由任务队列负责 | 5.6（#12） | 6.13 |
 | 23 | 废标检查由任务合并招标正文、经 `computeSignatures` 写签名 | 5.9（#18） | 6.9 |
-| 24 | 冻结到期收尾从 api 定时器移到 worker | 第 3 步（旧仓库 PR #32，现由 `src/server.ts` 定时执行） | 6.8 |
+| 24 | 冻结到期收尾从 api 定时器移到 worker | 第 3 步（旧仓库 PR #32，原由 `src/server.ts` 定时执行） | 6.8，已完成（#33，改由 worker 的清理任务每批执行） |
 | 25 | 平台故障导致的重复调用不收费：结算后、checkpoint 前崩溃的步骤续跑时不再扣费（步骤结果与 checkpoint 同一事务提交，或步骤幂等键） | 6.4（#27 确认时登记） | 6.4a，必须在第一个调用 AI 的业务任务 PR 之前完成 |
 
 #### Redis 接入（#24，6.1）
@@ -1052,7 +1052,7 @@ AI 网关加固，做法见 `docs/SERVER_DESIGN.md` 第 10.9 节。`client/` 未
 3. **已结束的任务允许累加 `billed_amount`**：调整了 6.2 的 `jobs_guard`（其他列仍不可改），否则执行者失联后才结束的调用会因 `JB001` 结算失败，变成“上游已收费、用户未扣费”；
 4. **余额不足的暂停不经 `pause_requested`**：执行者在本次执行结束时直接写入 `paused` / `insufficient_balance`，不需要等一次续租；
 5. **新配置 `AI_CONCURRENCY_MAX`、`AI_CONCURRENCY_WAIT_MS`**（拆分计划只写了“平台上限”）；
-6. **冻结到期收尾（`expireStaleHolds`）仍在 api 的定时器中**，按拆分计划随 6.8 移到 worker。
+6. **冻结到期收尾（`expireStaleHolds`）仍在 api 的定时器中**，按拆分计划随 6.8 移到 worker（已完成，#33）。
 
 **已知缺口（#27 确认时登记为 6.4a，必做）**：任务中的一次调用已结算、任务还没保存 checkpoint 时 worker 崩溃，续跑会重做这一步并再次扣费（两次调用在服务商侧都真实发生）。原则是平台自身故障导致的重复调用不向用户收费，所以在第一个调用 AI 的业务任务 PR 之前，用“步骤结果与 checkpoint 同一事务提交”或“步骤幂等键”消除这个窗口，并加入第 9 步上线检查。其余情况已有测试：冻结后、结算前崩溃的调用不收费，已保存 checkpoint 的步骤不重做。
 
@@ -1162,6 +1162,41 @@ AI 网关加固，做法见 `docs/SERVER_DESIGN.md` 第 10.9 节。`client/` 未
 1. **XML 除 `<!DOCTYPE` 外还拒绝其他声明、XInclude、xml-stylesheet 和非 UTF-8 编码**（分派表写的是“含 `<!DOCTYPE` 一律拒绝”）：声明的编码与检查时的解码不一致会让检查失效，其余都是同类的外部引用。Office 导出的这两种 XML 都是 UTF-8，误拒的代价是“另存为 docx / xlsx”。
 2. **Word 2003 XML 不做远程资源的预处理**（要求中“禁止加载远程资源”列的是 HTML / MHT / RTF）：实测 LibreOffice 转换时 VML 图片、域、超链接都不请求，测试在正式镜像中核对了没有连接；以后若发现会请求，再按 RTF 的做法处理。
 3. **HTML 中的超链接保留**（只限 http / https / mailto 绝对地址）：链接不会被加载，测试核对了没有连接；`javascript:`、`file:`、相对地址的链接去掉。
+
+#### 清理任务（#33，6.8）
+
+逐项实现“决定事项（#23）”第 9、10 项。`client/` 未改动，没有新增依赖。要点：
+
+- **迁移 0024_cleanup**：新增定义者角色 `bidtools_cleanup`（`NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS NOINHERIT`，迁移角色以 `INHERIT FALSE, SET TRUE` 加入；已加入 `10-provision.sh`、测试 harness、`src/db/roles.ts` 和第 9 步上线检查“数据库角色”一条；已有的开发数据卷需要 `docker compose down -v` 重建，或按脚本手工建角色）。它是 8 个 `SECURITY DEFINER` 函数的属主，只对 `files`、`artifacts`、`projects`、`jobs`、`job_events` 有列级 `SELECT`（只有判断条件要用的列）和 `DELETE`，没有 `UPDATE` / `INSERT`，对其他表（含计费账本、余额、价格表、用量记录、平台凭据、平台模型）没有任何授权、没有为它建的策略。项目、文件被删除时级联到项目级表、文档表的外键动作由表属主执行，不需要给它授权；
+- **删除条件只在数据库中**，同一份 SQL 表达式同时写进函数和只对它生效的 `DELETE` 策略（函数写错也删不掉恢复期内的行）：
+  - 文件：已上传、删除超过 7 天，或所属项目删除超过 7 天；`uploading` 登记超过 24 小时；
+  - 产物：被替换超过 7 天、所属项目或来源文件已过期，`writing` 登记超过 24 小时；
+  - 项目：删除超过 7 天，且其下文件、产物已删完（外键不级联，先删产物、再删文件、最后删项目）；
+  - 任务：已结束超过 90 天（事件随之级联删除）；事件：创建超过 30 天。
+  函数只接受行 id（`cleanup_delete_file` / `cleanup_delete_artifact`，重新检查条件，未过期的 id 只影响 0 行）、批量上限（夹在 1~1000）或对象键（`cleanup_unreferenced_keys`，只读），不接受时间、保留期或组织；过期只按数据库的 `now()` 计算；
+- **过期是单调的**：恢复期满后不能恢复（FS002、PJ002），被替换、已结束不能撤销（AR003、JB001）；本迁移另外让 `files_guard` / `artifacts_guard` 拒绝登记 24 小时后才完成的上传 / 写入（`FS006` → 408 `UPLOAD_TIMEOUT`、`AR005`）。所以 worker 删掉对象之后这一行一定仍然可删，不会留下“行在、对象已删”；
+- **worker**（`src/cleanup/cleanup.ts`，`src/worker.ts` 启动后 1 分钟第一批，之后每小时一批，上一批结束后才计时；关闭时在下一项之前停止）：冻结收尾 → 产物 → 文件（先删对象，成功或对象已不存在后再调删行函数；对象删除失败的行保留、计入 `failed`，下一批重试）→ 项目 → 孤儿对象 → 任务 → 事件。孤儿对象按前缀 `org/` 分页列出（`ObjectLister`，S3 `ListObjectsV2` + `StartAfter`），每批最多 10,000 个、从上次停下的位置继续、到末尾后从头开始；只删除修改时间超过 7 天、形如 `org/{org}/files|artifacts/{id}`、数据库中没有对应行的对象，其他形式的键一律不动。未配置 `S3_BUCKET` 时有对象的行一律不删，只清理项目、任务记录和冻结；
+- **冻结到期收尾**：`expireStaleHolds`（`bidtools_billing` 所属的 `ai_usage_expire_holds`）从 api 的 60 秒定时器移到 worker 的每批，以应用角色调用，不经清理角色；
+- **日志**：每批按 8 个类别（`holds`、`artifacts`、`files`、`uploading`、`projects`、`orphans`、`jobs`、`job_events`）各记一行 info `cleanup batch`，字段 `category`、`deleted`、`objects`、`failed`、`durationMs`，不含对象键、文件名和 id；一类出错不影响其他类，出错的类同样记一行（`failed: 1`），另记一条只含错误名称和代码的警告（S3 / 数据库的错误消息可能带对象键）；
+- **测试**：`tests/db/cleanup.test.ts`（26 项，真实 PostgreSQL；最后一组用真实 S3 兼容服务）：
+  - 角色：属性与成员关系，应用角色不能 `SET ROLE`；对 6 张计费表 7 种表级权限、4 种列级权限全部为假，没有为它建的策略；全库只对 5 张表有权限且只有 `DELETE` 与列级 `SELECT`；以清理角色直接读、删、`TRUNCATE` 计费表一律 42501；8 个函数的属主、`SECURITY DEFINER`、固定 `search_path`、参数只有 `p_limit integer` / `p_id uuid` / `p_keys text[]`；`ai_usage_expire_holds` 仍属于 `bidtools_billing`；
+  - 保留期边界（各类别保留期前后各差 1 小时）：文件、项目（连同其下文件、产物、对象、项目级表、任务记录）、被替换的产物（引用它的文档改为空）、来源文件过期的产物、遗留上传与写入（含对象已不存在）、任务与事件（未结束的任务不论多久都不删）；每类每批 1000 行上限；
+  - 不能绕过：按 id 删除恢复期内 / 未删除 / 上传未超时 / 项目在恢复期内的文件和产物一律 0 行，候选列表中也没有它们；过期文件还挂着产物时删不掉；极端上限值；带时间参数的调用没有对应函数（42883）；以清理角色直接 `DELETE` 五张表，策略只放行过期的行；改会话时区、设置租户上下文不影响判断；
+  - 对象：删除对象时行仍在；对象删除失败的行与对象都保留、下一批重试成功；未配置对象存储；孤儿对象（年龄、形式、其他组织前缀下同 id、有对应行的不删）；分批扫描与失败计数；
+  - 日志：8 行、字段固定，不含文件名、对象键、文件 id、任务 id、组织 id；一类出错的处理；
+  - 计费：两个已结算的任务（写入账本扣费和用量记录）结束 100 天、其中一个所属项目删除 8 天，另有一条到期未结算的冻结。清理后任务和项目被删除，6 张计费表的行数不变，账本、余额、价格表、平台凭据、平台模型的全部内容（按行序列化后的 SHA-256）不变；用量记录的 id、`job_id`、金额不变，只有到期的冻结被计费函数标为 `unbilled` / `abandoned`；再跑一批什么都不变；
+  - 定时执行与关闭；`tests/db/migrations.test.ts` 同步函数清单与逐个回滚。
+  另做了反向验证（改代码后跑本文件，再改回）：`DELETE` 策略改为放行全部，1 项失败（直接 `DELETE`）；只去掉函数中的条件，全部通过（策略兜底）；两者都去掉，3 项失败；给清理角色授 `usage_records` 的 `SELECT`，3 项失败；先删行再删对象，1 项失败；去掉 `FS006`，1 项失败；不看孤儿对象的修改时间，2 项失败。
+
+偏离计划（均在 #33 中待确认）：
+
+1. **`files_guard`、`artifacts_guard` 新增 24 小时期限**（`FS006`、`AR005`，拆分计划未列出）：否则极慢的上传可能在对象被删后才完成，留下“已上传、对象不存在”的行。上传接口把 `FS006` 映射为 408 `UPLOAD_TIMEOUT`；解析任务写产物最长约 15 分钟，不受影响。
+2. **“上传超时”取 24 小时**：上传接口只有 60 秒的空闲超时、没有总时长上限，24 小时远大于 100 MiB 文件的正常上传时间。
+3. **被替换的产物保留 7 天**（决定事项只写了“产物超过 7 天恢复期”，被替换的产物没有恢复操作）：与文件、项目的恢复期相同，从被替换时算起。
+4. **项目被物理删除时，其下的任务记录随项目级联删除**（即使任务结束还不满 90 天）：这是 6.2 迁移 0021 建表时的外键设计（`jobs_project_fkey ON DELETE CASCADE`）；若要保留，就得把项目行（及全部项目级表的内容）留到 90 天后，与“项目删除后 7 天删除”冲突。用量记录不受影响（没有外键，`job_id` 的值保留）。已写进第 9 步隐私声明一条。
+5. **冻结收尾从每 60 秒改为每小时一次**（随清理批次）：到期的冻结本来就不占用余额（`billing_active_holds` 按到期时间判断），收尾只是把记录标为 `unbilled` / `abandoned`，在此之前这类记录的状态仍是 `pending`，最长 1 小时。
+6. **多个 worker 不加锁**：删除函数重新检查条件、删除已不存在的对象不报错，同时执行只会多做一次；清理角色没有 `UPDATE`，所以批量删除不用 `FOR UPDATE`，后到的删除影响 0 行。
+7. **已知限制**：与 `bidtools_jobs` 相同，api 与 worker 共用应用角色，api 进程也能调用清理函数（只能删除已过期的行、只能得到过期行的 id 和对象键、只能判断给定的对象键有没有对应行）；以后 worker 改用独立的登录角色时，只把执行权授给它。未完成的分片上传不是对象，按前缀列不出来，由第 9 步上线检查“文件存储”中的生命周期规则清理。
 
 #### 决定事项（#23）
 
@@ -1354,14 +1389,14 @@ AI 网关加固，做法见 `docs/SERVER_DESIGN.md` 第 10.9 节。`client/` 未
    - ~~原产品名缩写前缀改为中性前缀 `app`，完成后把该缩写加入 CI 禁用词检查~~ 已完成：品牌改名第三部分，见 #5 和“第 9 步说明”；
    - 升级 GitHub 计划，使分支保护在私有仓库上强制生效：`main` 要求 PR 合并，CI 的 `Banned words`、`Client build / syntax / audit`、`Server typecheck / test / audit` 设为必须通过；当前免费版私有仓库的分支保护不生效，`#3`（临时草稿 PR，已关闭）验证时 `Banned words` 失败但 PR 仍显示为可合并（`mergeable_state: unstable`）；升级后用同样方法复测，确认显示为无法合并（`blocked`）；
    - 把 `SECURITY.md`、`CODE_OF_CONDUCT.md`、`.github/ISSUE_TEMPLATE/问题反馈.md` 中的 `{{CONTACT_EMAIL}}` 占位符（0.20）替换为本项目的联系方式；
-   - 重写 Web 版隐私声明：现有设置页隐私声明按桌面版“数据保存在本机”编写，Web 版需说明服务端存储的数据、API Key 的保管方式、日志与保留期限、删除方式；按 旧仓库 PR #26 决定还要写明服务器位于境外（香港）、调用的第三方模型服务商、用量记录的保留期，以及项目删除后 7 天恢复期、注销后 30 天内删除；
+   - 重写 Web 版隐私声明：现有设置页隐私声明按桌面版“数据保存在本机”编写，Web 版需说明服务端存储的数据、API Key 的保管方式、日志与保留期限、删除方式；按 旧仓库 PR #26 决定还要写明服务器位于境外（香港）、调用的第三方模型服务商、用量记录的保留期，以及项目删除后 7 天恢复期、注销后 30 天内删除；任务记录的保留期（已结束的任务 90 天、任务日志 30 天，决定事项（#23）第 10 项；项目被物理删除时其下的任务记录随之删除，见“清理任务（#33，6.8）”偏离第 4 项）；
    - 完成 `docs/SERVER_DESIGN.md` 第 11 节“合规待确认事项”（旧仓库 PR #26），每项都有律师确认的结论并已落实到设计和界面，未完成不得对外提供服务：
      - 个人信息出境：合规路径、告知与单独同意、个人信息保护影响评估、向模型服务商再转移、备份地域；
      - 生成式 AI 监管：是否适用及所需备案或登记、生成内容标识、内容审核与投诉渠道、用户身份要求；
      - 模型服务商对中国大陆用户的条款限制：逐家确认，确定 `platform_models` 上架清单；
      - 第一版线下收款的主体、方式与币种；
    - 发信服务选定并完成 QQ / 163 等邮箱的送达率实测（`docs/EXTERNAL_SERVICES.md` §7）；**首个真实用户注册前必须完成**（旧仓库 PR #31），不必等到上线；
-   - 数据库角色（#9 汇总）：生产数据库按 `server/db/init/10-provision.sh` 同样的属性创建**全部**角色，写进部署文档：迁移角色 `bidtools_owner`、应用角色 `bidtools_app`，以及全部 `SECURITY DEFINER` 函数属主（定义者角色）`bidtools_auth`（旧仓库 PR #29）、`bidtools_billing`（旧仓库 PR #31）、`bidtools_storage`（#8）、`bidtools_jobs`（#25）。定义者角色一律 `NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS NOINHERIT`，迁移角色以 `INHERIT FALSE, SET TRUE` 加入；缺任何一个，迁移在 `SET ROLE` 时失败。执行迁移前对照 `server/src/db/roles.ts` 逐个核对 `pg_roles` 中的属性和 `pg_auth_members` 中的成员关系；以后新增定义者角色时同步加到本条、`10-provision.sh` 和测试 harness；
+   - 数据库角色（#9 汇总）：生产数据库按 `server/db/init/10-provision.sh` 同样的属性创建**全部**角色，写进部署文档：迁移角色 `bidtools_owner`、应用角色 `bidtools_app`，以及全部 `SECURITY DEFINER` 函数属主（定义者角色）`bidtools_auth`（旧仓库 PR #29）、`bidtools_billing`（旧仓库 PR #31）、`bidtools_storage`（#8）、`bidtools_jobs`（#25）、`bidtools_cleanup`（#33）。定义者角色一律 `NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS NOINHERIT`，迁移角色以 `INHERIT FALSE, SET TRUE` 加入；缺任何一个，迁移在 `SET ROLE` 时失败。执行迁移前对照 `server/src/db/roles.ts` 逐个核对 `pg_roles` 中的属性和 `pg_auth_members` 中的成员关系；以后新增定义者角色时同步加到本条、`10-provision.sh` 和测试 harness；
    - 鉴权上线前提（旧仓库 PR #29）：数据库角色见上一条；发信接口换成正式发信服务的实现；登录、注册、找回密码的限流从进程内存换成 Redis（多实例部署前必须完成）；按反向代理拓扑设置 `TRUSTED_PROXIES`（旧仓库 PR #30，只填 Caddy 的固定地址），用两个不同出口的客户端确认限流和会话中的 IP 是真实客户端地址；用 `npm run admin:create` 创建首个平台管理员后，确认平台管理员已开启 TOTP（设计文档第 3.4 节，TOTP 尚未实现）；
    - 计费核对：价格表已录入并公示，计价函数测试通过，余额不足拒绝新任务和运行中耗尽暂停已实测，管理员充值的 TOTP 和双人复核已启用；旧仓库 PR #31 暂用重新输入密码做二次验证并禁用 1,000 元以上的单笔充值，TOTP 和双人复核实现后再用新迁移放开大额充值；`bidtools_billing` 角色见“数据库角色”一条；
    - AI 网关（旧仓库 PR #32）：主密钥从 `AI_KEK_FILE` 换成云 KMS 的 `KeyWrapper` 实现（第 9 节第 8 项），开启删除保护和调用审计；6.4（#27）起 worker 同样解密平台 Key，KMS 的解密权限同时授给 api 和 worker 的身份；按真实服务商的限流设置 `AI_CONCURRENCY_MAX`；生产环境 `AI_UPSTREAM_PRIVATE_HOSTS` 为空；确定通义千问使用国内站还是国际站并在管理后台填写对应 Base URL；用真实 Key 在预发环境核对两家服务商流式响应中的用量字段与控制台账单一致；
@@ -1370,4 +1405,4 @@ AI 网关加固，做法见 `docs/SERVER_DESIGN.md` 第 10.9 节。`client/` 未
    - Redis（#24）：生产用与开发相同的 `server/redis/start-valkey.sh`（禁用 `default` 用户、ACL 用户 `bidtools`、禁止 `@admin` 与清空命令、不持久化、`noeviction`），`maxmemory` 按实例内存设置（`REDIS_MAXMEMORY`）；redis 只在 `internal: true` 的 `backend` 网络上、不映射端口；密码走 Docker secret；api 和 worker 都设置 `REDIS_URL`，确认 `/readyz` 在停掉 Redis 后返回 503；
    - 解析沙箱（#28）：生产主机安装 gVisor 并在 Docker 中登记 `runsc`，`SANDBOX_RUNTIME=runsc`（配置强制）；**限制 sandbox-runner 的 Docker 权限，不得直接挂载有完整权限的 Docker socket**，二选一：(a) 只放行必要接口的 Docker API 代理（只放行“sandbox-runner 的访问控制”中列出的接口，其余一律拒绝；`POST /containers/create` 还要校验请求体：只允许配置的 parse 镜像、`runsc` 运行时、`NetworkMode: none`、`ReadonlyRootfs: true`、`Privileged: false`、`CapDrop: [ALL]`、不带 `Binds` / `Mounts` / `Devices` / `CapAdd`，例如用 Docker 授权插件或自建的校验代理，只按路径放行的代理挡不住被攻破的 sandbox-runner 创建特权容器），或 (b) 在专用的非 root 用户下运行 rootless Docker（或 Podman），使 sandbox-runner 被攻破也拿不到宿主 root；上线前用一个伪造的特权容器创建请求、一个未放行的接口（如 `GET /images/json`、`POST /containers/{id}/attach`）确认被拒绝；parse 镜像在 CI 中构建并做漏洞扫描，`SANDBOX_PARSE_IMAGE` 按摘要引用、部署前预先拉取；`sandbox-control` 为 `internal: true` 且只有 worker 与 sandbox-runner；令牌走 Docker secret；在生产主机上（实际的 gVisor 版本和内核）跑一遍 `npm run test:sandbox`；
    - 从大陆主要省份和运营商实测访问香港服务器的延迟和可用性（`docs/SERVER_DESIGN.md` 第 8.0 节）。
-   - 文件存储（旧仓库 PR #34）：选定云厂商对象存储（与 KMS 同一家、香港地域），bucket 私有、禁止公开读和列目录，开启服务端加密（默认加密或 KMS 密钥），配置生命周期规则清理未完成的分片上传；api 使用只能访问该 bucket 的最小权限访问密钥；用真实服务跑一遍 `tests/db/files.test.ts` 确认 S3 兼容性；过期文件和遗留 `uploading` 记录的物理清理任务已上线（否则对象只增不减）；Caddy 层设置请求体上限（略大于 100 MB）；`S3_ENDPOINT` 为 https。
+   - 文件存储（旧仓库 PR #34）：选定云厂商对象存储（与 KMS 同一家、香港地域），bucket 私有、禁止公开读和列目录，开启服务端加密（默认加密或 KMS 密钥），配置生命周期规则清理未完成的分片上传；api 使用只能访问该 bucket 的最小权限访问密钥；用真实服务跑一遍 `tests/db/files.test.ts` 确认 S3 兼容性；过期文件和遗留 `uploading` 记录的物理清理任务已上线（否则对象只增不减；#33 实现，在 worker 中每小时一批，未配置 `S3_BUCKET` 时不删有对象的行，上线时确认 worker 配置了对象存储并在日志中看到每小时一组 `cleanup batch`）；Caddy 层设置请求体上限（略大于 100 MB）；`S3_ENDPOINT` 为 https。

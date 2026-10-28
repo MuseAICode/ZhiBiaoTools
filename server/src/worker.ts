@@ -4,10 +4,12 @@
 // 任务中的模型调用经同一个 AI 网关模块（src/ai/gateway.ts），在 worker 进程中解密平台 Key、冻结和结算（6.4）。
 // 文档解析（6.6）经 sandbox-runner 在断网沙箱中执行（SANDBOX_RUNNER_URL + 令牌），worker 只取原件、校验结果、写产物，
 // 不运行任何文档解析器，也不挂载 Docker socket。
+// 清理任务（6.8）每小时一批：跨组织删除超过保留期的文件、产物、项目和任务记录，并把到期的冻结收尾（src/cleanup/）。
 import Fastify from 'fastify';
 import { createAiConcurrencyLimiter } from './ai/concurrency.ts';
 import { createAiGateway } from './ai/gateway.ts';
 import { KeyringError, loadFileKeyWrapper, type KeyWrapper } from './ai/keyring.ts';
+import { createCleaner, startCleanupSchedule, type CleanupSchedule } from './cleanup/cleanup.ts';
 import { ConfigError, loadConfig, type AppConfig } from './config.ts';
 import { createDatabase } from './db/database.ts';
 import { registerErrorHandlers } from './errors.ts';
@@ -71,7 +73,7 @@ const gateway = keyWrapper ? createAiGateway({ db: database.db, keyWrapper, sett
 if (!gateway) app.log.warn('AI_KEK_FILE is not set, model calls in jobs will fail');
 // 未配置对象存储或 sandbox-runner 时解析任务失败（PARSE_UNAVAILABLE），其他任务照常执行。
 const objectStore = config.storage ? createS3ObjectStore(config.storage) : null;
-if (!objectStore) app.log.warn('S3_BUCKET is not set, document parse jobs will fail');
+if (!objectStore) app.log.warn('S3_BUCKET is not set, document parse jobs will fail and expired files will not be cleaned up');
 const sandbox = config.sandbox ? createSandboxRunnerClient({ url: config.sandbox.url, token: config.sandbox.token }) : null;
 if (!sandbox) app.log.warn('SANDBOX_RUNNER_URL is not set, document parse jobs will fail');
 const runner = createJobRunner({
@@ -86,7 +88,10 @@ const runner = createJobRunner({
   sandbox,
 });
 
+let cleanup: CleanupSchedule | null = null;
+
 app.addHook('onClose', async () => {
+  await cleanup?.close();
   await runner.close();
   await dispatcher.close();
   await publisher.close();
@@ -123,4 +128,5 @@ try {
 }
 // Redis 暂时不可用时这里等到连上为止（期间 /readyz 返回 503），连上后先对账再开始消费。
 await runner.start();
+cleanup = startCleanupSchedule(createCleaner({ db: database.db, objectStore, log: app.log }), { log: app.log });
 app.log.info({ jobTypes: jobTypeRegistry.types.map((definition) => definition.type) }, 'job worker started');

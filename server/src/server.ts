@@ -2,7 +2,6 @@
 import { createAiConcurrencyLimiter } from './ai/concurrency.ts';
 import { KeyringError, loadFileKeyWrapper, type KeyWrapper } from './ai/keyring.ts';
 import { buildApp } from './app.ts';
-import { expireStaleHolds } from './billing/usage.ts';
 import { ConfigError, loadConfig, type AppConfig } from './config.ts';
 import { createDatabase } from './db/database.ts';
 import { createEventHub } from './events/hub.ts';
@@ -13,8 +12,6 @@ import { createJobDispatcher } from './jobs/queue.ts';
 import { bullmqConnection, createRedis } from './redis.ts';
 
 const SHUTDOWN_TIMEOUT_MS = 10_000;
-/** 清理到期冻结的间隔。到期的冻结本来就不占用余额，这里只把记录标为 abandoned。 */
-const HOLD_SWEEP_INTERVAL_MS = 60_000;
 
 function failStartup(message: string, extra: Record<string, unknown> = {}): never {
   // 此时日志器尚未创建，直接输出一行结构化 JSON 到 stderr。
@@ -65,18 +62,8 @@ if (!keyWrapper) app.log.warn('AI_KEK_FILE is not set, AI gateway disabled');
 if (!objectStore) app.log.warn('S3_BUCKET is not set, file storage disabled');
 if (!redis) app.log.warn('REDIS_URL is not set, redis readiness check and event stream disabled');
 
-const sweeper = setInterval(() => {
-  expireStaleHolds(database.db).then(
-    (expired) => {
-      if (expired > 0) app.log.warn({ expired }, 'expired abandoned ai usage holds');
-    },
-    (error: unknown) => app.log.warn({ err: error }, 'ai usage hold sweep failed'),
-  );
-}, HOLD_SWEEP_INTERVAL_MS);
-sweeper.unref();
-
+// 到期冻结的收尾（ai_usage_expire_holds）由 worker 的清理任务执行（6.8，src/cleanup/）。
 app.addHook('onClose', async () => {
-  clearInterval(sweeper);
   await Promise.all([database.destroy(), redis?.destroy(), hub?.close(), publisher?.close(), aiLimiter?.close(), dispatcher?.close()]);
 });
 

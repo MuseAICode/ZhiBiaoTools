@@ -24,6 +24,7 @@ import * as technicalPlanContent from './0020_technical_plan_content.ts';
 import * as jobs from './0021_jobs.ts';
 import * as jobBilling from './0022_job_billing.ts';
 import * as artifactSupersede from './0023_artifact_supersede.ts';
+import * as cleanup from './0024_cleanup.ts';
 
 export const migrations: Readonly<Record<string, Migration>> = Object.freeze({
   '0001_identity': identity,
@@ -49,4 +50,5 @@ export const migrations: Readonly<Record<string, Migration>> = Object.freeze({
   '0021_jobs': jobs,
   '0022_job_billing': jobBilling,
   '0023_artifact_supersede': artifactSupersede,
+  '0024_cleanup': cleanup,
 });

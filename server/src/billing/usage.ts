@@ -130,7 +130,7 @@ export async function failUsage(
 }
 
 /**
- * 把已到期、未结算的冻结标为 unbilled（abandoned）。跨组织，不需要租户上下文；由 src/server.ts 定时执行。
+ * 把已到期、未结算的冻结标为 unbilled（abandoned）。跨组织，不需要租户上下文；由 worker 的清理任务每批执行（src/cleanup/）。
  * 到期的冻结在此之前就已经不占用余额，这里只是收尾。
  */
 export async function expireStaleHolds(db: Kysely<Database>): Promise<number> {
