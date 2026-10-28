@@ -1167,6 +1167,26 @@ export interface JobEventsTable {
   created_at: ColumnType<Date, never, never>;
 }
 
+/**
+ * 任务步骤的调用结果（迁移 0025_job_step_results）：与结算在同一事务中写入，续跑时同一步骤、同一请求直接取回，
+ * 不再调用服务商、不再扣费。只追加（应用角色没有 UPDATE、DELETE），随任务记录删除。
+ */
+export interface JobStepResultsTable {
+  org_id: Fixed<string>;
+  job_id: Fixed<string>;
+  step_key: Fixed<string>;
+  request_hash: Fixed<Buffer>;
+  usage_id: Fixed<string>;
+  content: Fixed<string>;
+  reasoning_content: Fixed<string>;
+  finish_reason: Fixed<string | null>;
+  input_tokens: ColumnType<string, number, never>;
+  cached_input_tokens: ColumnType<string, number, never>;
+  output_tokens: ColumnType<string, number, never>;
+  usage_source: Fixed<'provider' | 'estimated'>;
+  created_at: ColumnType<Date, never, never>;
+}
+
 export interface Database {
   organizations: OrganizationsTable;
   users: UsersTable;
@@ -1238,4 +1258,5 @@ export interface Database {
   technical_plan_content_plans: TechnicalPlanContentPlansTable;
   jobs: JobsTable;
   job_events: JobEventsTable;
+  job_step_results: JobStepResultsTable;
 }
