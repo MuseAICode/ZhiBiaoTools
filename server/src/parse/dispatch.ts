@@ -69,6 +69,19 @@ export function parseCommandArgs(dispatch: { format: ParseFormat; charset: Parse
   ];
 }
 
+/** 提取文档格式元数据的格式（标书查重，6.10b；与 server/sandbox/parse/duplicateMetadata.mjs 的 METADATA_FORMATS 相同）。 */
+const METADATA_FORMATS: ReadonlySet<ParseFormat> = new Set<ParseFormat>(['docx', 'word-ole', 'pdf', 'rtf', 'html-word', 'mht', 'word-xml']);
+
+/** 是否提取文档格式的元数据。桌面版只对 docx / doc / wps / pdf 提取，其他格式只有文件基本信息。 */
+export function supportsDocumentMetadata(format: ParseFormat): boolean {
+  return METADATA_FORMATS.has(format);
+}
+
+/** 只提取元数据时解析入口的参数（metadata=duplicate-check，输出 metadata.json，不转换正文）。 */
+export function metadataCommandArgs(format: ParseFormat): string[] {
+  return [`format=${format}`, 'metadata=duplicate-check'];
+}
+
 /** 表格类格式：桌面版以文件名作一级标题，沙箱中不知道文件名，由 worker 加上。 */
 export function isSpreadsheetFormat(format: ParseFormat): boolean {
   return format === 'xlsx' || format === 'xls-ole' || format === 'html-sheet' || format === 'spreadsheet-xml';

@@ -1,5 +1,5 @@
 // 在 parse 沙箱中解析一个文件并写入产物（路线图第 6 步；docs/SERVER_DESIGN.md 第 7.6 节）。document-parse 任务（6.6，src/parse/job.ts）
-// 与标书查重任务（6.10，src/duplicateCheck/job.ts）共用：
+// 与标书查重任务（6.10，src/duplicateCheck/job.ts；6.10b 起另有只提取元数据的 extractMetadataInSandbox）共用：
 // 按记录的 MIME 分派 → 从对象存储取出原件 → 新建 parse 沙箱（断网）→ copyIn → 执行解析入口 → copyOut（归档按模板校验）→
 // 校验输出内容（src/parse/output.ts）→ 销毁沙箱（finally，exec 的任何非 0 结果之后都不复用）→ 经 writeArtifact 写入图片和 Markdown。
 // 任务进程内不解析上传的内容：原件只经 copyIn 交给沙箱，取回的结果按不可信输入校验；给用户看的原因由错误代码决定，不采用沙箱输出的文字。
@@ -10,8 +10,8 @@ import type { FileRecord } from '../files/store.ts';
 import { JobError, JobInterruptedError, type JobContext } from '../jobs/definitions.ts';
 import { SandboxError, type SandboxDriver, type SandboxRef } from '../sandbox/driver.ts';
 import type { SandboxFile } from '../sandbox/archive.ts';
-import { dispatchParse, isSpreadsheetFormat, parseCommandArgs, type ParseAnalysis, type ParseFormat } from './dispatch.ts';
-import { entryErrorCode, ParseOutputError, rewriteImageReferences, validateParseOutput, type ParseEntryErrorCode, type ParsedOutput } from './output.ts';
+import { dispatchParse, isSpreadsheetFormat, metadataCommandArgs, parseCommandArgs, supportsDocumentMetadata, type ParseAnalysis, type ParseFormat } from './dispatch.ts';
+import { entryErrorCode, ParseOutputError, rewriteImageReferences, validateMetadataOutput, validateParseOutput, type ParseEntryErrorCode, type ParsedOutput } from './output.ts';
 
 /** 与桌面版的“本地解析”相同（MinerU 第一版不提供）。 */
 export const LOCAL_PARSER_LABEL = '本地解析';
@@ -136,24 +136,61 @@ export interface SandboxParseResult {
 export async function parseFileInSandbox(context: JobContext<unknown>, file: FileRecord, options: ParseInSandboxOptions): Promise<SandboxParseResult> {
   const dispatch = dispatchParse(file.mime, file.extension);
   if (dispatch.kind === 'unsupported') throw new JobError('PARSE_UNSUPPORTED_FORMAT', '不支持的文件格式');
+  // 表格类格式以文件名作一级标题：Markdown 产物的标题由写入时加上（writeParseArtifacts），逐文档提取在沙箱中进行，标题经文件交给它。
+  const extraInputs: SandboxFile[] = options.analysis && isSpreadsheetFormat(dispatch.format)
+    ? [{ path: 'title', data: Buffer.from(cleanHeading(file.displayName), 'utf8') }]
+    : [];
+  const output = await runInParseSandbox(context, file, {
+    extraInputs,
+    args: parseCommandArgs(dispatch, options.images, options.analysis),
+    collect: (files) => validateParseOutput(files, { analysis: Boolean(options.analysis) }),
+    createRetryDelaysMs: options.createRetryDelaysMs,
+  });
+  return { format: dispatch.format, output };
+}
+
+/**
+ * 在新建的 parse 沙箱中只提取文档格式的元数据（标书查重，6.10b），返回 metadata.json 的原始字节（内容由
+ * src/duplicateCheck/analysis.ts 的 parseDocumentMetadata 校验）。不提取元数据的格式（表格、纯文本等）返回 null，不创建沙箱。
+ * 错误与 parseFileInSandbox 相同。
+ */
+export async function extractMetadataInSandbox(
+  context: JobContext<unknown>,
+  file: FileRecord,
+  options: { createRetryDelaysMs?: readonly number[] } = {},
+): Promise<Buffer | null> {
+  const dispatch = dispatchParse(file.mime, file.extension);
+  if (dispatch.kind === 'unsupported' || !supportsDocumentMetadata(dispatch.format)) return null;
+  return runInParseSandbox(context, file, {
+    extraInputs: [],
+    args: metadataCommandArgs(dispatch.format),
+    collect: validateMetadataOutput,
+    createRetryDelaysMs: options.createRetryDelaysMs,
+  });
+}
+
+/** 取出原件 → 新建沙箱 → copyIn → 执行解析入口 → copyOut 并按 collect 校验；沙箱在 finally 中销毁。 */
+async function runInParseSandbox<T>(
+  context: JobContext<unknown>,
+  file: FileRecord,
+  run: { extraInputs: readonly SandboxFile[]; args: string[]; collect: (files: SandboxFile[]) => T; createRetryDelaysMs: readonly number[] | undefined },
+): Promise<T> {
   if (!context.objectStore || !context.sandbox) throw new JobError('PARSE_UNAVAILABLE', '解析服务暂不可用，请稍后重新导入');
   const objectStore = context.objectStore;
   const sandboxDriver = context.sandbox;
 
   const object = await objectStore.get(file.storageKey);
   if (!object) throw new JobError('PARSE_SOURCE_MISSING', '原件不存在，请重新上传');
-  const inputs: SandboxFile[] = [{ path: 'source', data: await readObject(object.body) }];
-  // 表格类格式以文件名作一级标题：Markdown 产物的标题由写入时加上（writeParseArtifacts），逐文档提取在沙箱中进行，标题经文件交给它。
-  if (options.analysis && isSpreadsheetFormat(dispatch.format)) inputs.push({ path: 'title', data: Buffer.from(cleanHeading(file.displayName), 'utf8') });
+  const inputs: SandboxFile[] = [{ path: 'source', data: await readObject(object.body) }, ...run.extraInputs];
 
-  const sandbox = await createSandboxWithRetry(sandboxDriver, context, options.createRetryDelaysMs ?? DEFAULT_CREATE_RETRY_DELAYS_MS);
+  const sandbox = await createSandboxWithRetry(sandboxDriver, context, run.createRetryDelaysMs ?? DEFAULT_CREATE_RETRY_DELAYS_MS);
   try {
     try {
       await sandboxDriver.copyIn(sandbox, inputs, { signal: context.signal });
-      const result = await sandboxDriver.exec(sandbox, 'parse', parseCommandArgs(dispatch, options.images, options.analysis), { signal: context.signal });
+      const result = await sandboxDriver.exec(sandbox, 'parse', run.args, { signal: context.signal });
       if (result.timedOut) throw new JobError('PARSE_TIMEOUT', '文件解析超时（超过 10 分钟）');
       if (result.exitCode !== 0) throw entryFailure(entryErrorCode(result.stdout));
-      return { format: dispatch.format, output: validateParseOutput(await sandboxDriver.copyOut(sandbox, { signal: context.signal }), { analysis: Boolean(options.analysis) }) };
+      return run.collect(await sandboxDriver.copyOut(sandbox, { signal: context.signal }));
     } catch (error) {
       if (error instanceof SandboxError) throw sandboxFailure(error);
       throw error;

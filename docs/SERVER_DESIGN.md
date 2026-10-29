@@ -535,11 +535,12 @@ RTF、HTML、MHT、Word 2003 XML、SpreadsheetML 在沙箱中先检查或清理�
 - **转换**：Word 类由 LibreOffice 按指定的导入过滤器转成 docx（与 OLE Word 同一函数：独立进程组、8 分钟后对整个进程组 SIGKILL），表格类由 SheetJS 读取；
 - **纵深**：沙箱完全断网（第 7.5 节）是兜底；远程资源测试在正式镜像中断言解析过程没有任何连接，对照组证明同一镜像中的 LibreOffice 对未经清理的 HTML 确实会发出请求。
 
-### 7.8 实现（路线图 6.10）：标书查重任务
+### 7.8 实现（路线图 6.10a、6.10b）：标书查重任务
 
 `duplicate-analysis`（`server/src/duplicateCheck/job.ts`），`ai` 队列（第 5.2 节），不调用模型，互斥键 `project:{projectId}:duplicate-check`：
 
 - **提取在沙箱中**：每份招标、投标文件一个 parse 沙箱，解析入口加参数 `analysis=duplicate-check`（保留图片），除正文与图片外另写 `analysis.json`：逐文档的目录、句子（HTML 表格经 cheerio 读取）与图片位置（`server/sandbox/parse/duplicateText.mjs`、`duplicateTables.mjs`）。表格类格式的文件名由 worker 放入 `/input/title`，提取时作一级标题；
+- **文档格式的元数据也在沙箱中**（6.10b）：每份投标文件先在一个只提取元数据的 parse 沙箱中读取（解析入口参数 `metadata=duplicate-check`，不转换正文，只写 `metadata.json`，`server/sandbox/parse/duplicateMetadata.mjs`）：docx 的 core / app / custom 属性与 rsid，老式 Word 的 OLE 属性集、存储结构、疑似账号痕迹与经 LibreOffice 转成 docx 后的属性，PDF 的 Info / XMP / 原始记录 / 结构 / 签名与附件。OLE 用镜像中 SheetJS 自带的 CFB、PDF 用已有的 pdf-parse，没有新增依赖。文档本身读取失败记为固定文字的 `metadata_error` 字段；worker 按不可信输入校验 `metadata.json`（键的规则、不能冒充文件基本信息或 Base64 解码项、字段数与长度上限、`metadata_error` 只能是固定文字），再并入文件基本信息之后。表格、纯文本类文件不开这个沙箱；
 - **比对在 worker 中**（`src/duplicateCheck/analysis.ts`）：先按不可信输入校验 `analysis.json`（结构、数量、目录编号与父子关系、图片只能引用本次输出），再做招标原文白名单、目录重复 / 相似组与两两相似度、重复句、重复图片（按写入的图片产物内容的 SHA-256）。worker 不运行 HTML 解析器；
 - **写入**：正文与图片经第 7.6 节的同一流程写为产物（`src/parse/run.ts`，两类任务共用），分析结果经 `saveAnalysisSection` 带任务开始时的文件选择签名写入，选择变化后写入被拒绝；重新选择文件、清空时取消进行中的任务。
 

@@ -86,9 +86,17 @@ interface Document {
   images?: Array<{ path: string; data: Buffer }>;
   /** 改写 analysis.json（构造不合规的提取结果）。 */
   analysis?: (analysis: Record<string, any>) => unknown;
+  /** 只提取元数据时（metadata=duplicate-check）的 metadata.json 内容；默认见 defaultMetadata。'timeout' 为执行超时。 */
+  metadata?: unknown;
 }
 
-type Behavior = { kind: 'document'; document: Document } | { kind: 'exit'; code: string } | { kind: 'hang' };
+/** 默认的文档格式元数据：每份文件的标题不同，公司相同（两份投标文件的“公司”一行成为重复项）。 */
+function defaultMetadata(source: string): unknown {
+  return { version: 1, fields: [['title', `标题 ${source}`], ['company', '某某科技有限公司'], ['custom:KSOProductBuildVer', '2052-11.1.0.12313']] };
+}
+
+/** hang：执行到中止为止（afterMetadata 时只提取元数据的执行照常给出默认元数据，正文解析时才挂起）。 */
+type Behavior = { kind: 'document'; document: Document } | { kind: 'exit'; code: string } | { kind: 'hang'; afterMetadata?: boolean };
 
 interface FakeSandbox extends SandboxDriver {
   calls: string[];
@@ -100,6 +108,7 @@ interface FakeSandbox extends SandboxDriver {
 /** 原件内容 → 解析输出。原件内容就是一个键（测试中的 source 字符串）。 */
 function fakeSandbox(behaviors: Record<string, Behavior>): FakeSandbox {
   const sources = new Map<string, string>();
+  const metadataMode = new Set<string>();
   const fake: FakeSandbox = {
     calls: [],
     inputs: [],
@@ -115,10 +124,13 @@ function fakeSandbox(behaviors: Record<string, Behavior>): FakeSandbox {
     async exec(sandbox, command, args, options = {}): Promise<SandboxExecResult> {
       fake.calls.push(`exec:${command} ${args.join(' ')}`);
       const source = sources.get(sandbox.id)!;
+      if (args.includes('metadata=duplicate-check')) metadataMode.add(sandbox.id);
       await fake.onExec?.(source);
       const base = { stdout: '', stderr: '', stdoutTruncated: false, stderrTruncated: false, timedOut: false };
       const behavior = behaviors[source];
       if (!behavior) throw new Error(`no behavior for ${source}`);
+      if (metadataMode.has(sandbox.id) && behavior.kind === 'document' && behavior.document.metadata === 'timeout') return { ...base, exitCode: null, timedOut: true };
+      if (metadataMode.has(sandbox.id) && behavior.kind === 'hang' && behavior.afterMetadata) return { ...base, exitCode: 0 };
       if (behavior.kind === 'exit') return { ...base, exitCode: 65, stdout: `${JSON.stringify({ error: behavior.code })}\n` };
       if (behavior.kind === 'hang') {
         await new Promise<void>((resolve) => {
@@ -133,8 +145,12 @@ function fakeSandbox(behaviors: Record<string, Behavior>): FakeSandbox {
     async copyOut(sandbox) {
       fake.calls.push('copyOut');
       const behavior = behaviors[sources.get(sandbox.id)!];
+      if (metadataMode.has(sandbox.id) && behavior?.kind === 'hang') return [{ path: 'metadata.json', data: Buffer.from(JSON.stringify(defaultMetadata(sources.get(sandbox.id)!)), 'utf8') }];
       if (behavior?.kind !== 'document') throw new Error('copyOut without output');
       const { document } = behavior;
+      if (metadataMode.has(sandbox.id)) {
+        return [{ path: 'metadata.json', data: Buffer.from(JSON.stringify(document.metadata ?? defaultMetadata(sources.get(sandbox.id)!)), 'utf8') }];
+      }
       const images = document.images ?? [];
       const title = fake.inputs.at(-1)!.find((file) => file.path === 'title')?.data.toString('utf8');
       const source = (title ? `# ${title}\n\n${document.markdown}` : document.markdown).trim();
@@ -360,11 +376,14 @@ describe('分析任务', () => {
     const { error, logs } = await runAnalysis(member, projectId, { sandbox });
     expect(error).toBeNull();
     expect(logs).toEqual(expect.arrayContaining(['开始执行标书查重分析。', '标书查重分析完成。']));
-    // 一个文件一个沙箱，用完即毁；参数只有格式与选项。
-    expect(sandbox.calls.filter((entry) => entry.startsWith('exec:'))).toEqual(Array(3).fill('exec:parse format=docx images=1 analysis=duplicate-check'));
-    expect(sandbox.calls.filter((entry) => entry === 'create')).toHaveLength(3);
-    expect(sandbox.calls.filter((entry) => entry.startsWith('destroy:'))).toHaveLength(3);
-    expect(sandbox.inputs.map((files) => files.map((file) => file.path))).toEqual([['source'], ['source'], ['source']]);
+    // 一个文件一个沙箱，用完即毁；参数只有格式与选项。先为两份投标文件各开一个只提取元数据的沙箱（6.10b），再逐个解析正文。
+    expect(sandbox.calls.filter((entry) => entry.startsWith('exec:'))).toEqual([
+      ...Array(2).fill('exec:parse format=docx metadata=duplicate-check'),
+      ...Array(3).fill('exec:parse format=docx images=1 analysis=duplicate-check'),
+    ]);
+    expect(sandbox.calls.filter((entry) => entry === 'create')).toHaveLength(5);
+    expect(sandbox.calls.filter((entry) => entry.startsWith('destroy:'))).toHaveLength(5);
+    expect(sandbox.inputs.map((files) => files.map((file) => file.path))).toEqual(Array(5).fill(['source']));
 
     const state = await load(member, projectId);
     const metadata = state.metadataAnalysis!;
@@ -385,11 +404,14 @@ describe('分析任务', () => {
     expect(contentFile(bidA).contentLength).toBe(bidAContent.trimEnd().length);
     const contentHash = await superuser.selectFrom('duplicate_check_files').select('content_hash').where('file_id', '=', bidA).executeTakeFirstOrThrow();
     expect(contentHash.content_hash).toBe(sha256(bidAContent.trimEnd()));
-    // 元数据：文件基本信息（扩展名与桌面版相同带点），两份投标文件的 SHA-256 不同。
-    expect(metadata.files.map((file) => file.metadata.map((item) => item.key))).toEqual([
-      ['file_name', 'extension', 'size', 'file_sha256'],
-      ['file_name', 'extension', 'size', 'file_sha256'],
-    ]);
+    // 元数据：文件基本信息（扩展名与桌面版相同带点）在前，之后是沙箱提取的文档格式元数据；两份投标文件的 SHA-256 不同、公司相同。
+    expect(metadata.files.map((file) => file.metadata.map((item) => item.key))).toEqual(
+      Array(2).fill(['file_name', 'extension', 'size', 'file_sha256', 'title', 'company', 'custom:KSOProductBuildVer']),
+    );
+    expect(metadata.files.find((file) => file.fileId === bidA)!.metadata.find((item) => item.key === 'title')).toMatchObject({ label: '标题', value: '标题 bidA', comparable: true });
+    expect(metadata.rows.find((row) => row.key === 'company')!.duplicateFileIds).toEqual([bidA, bidB]);
+    expect(metadata.rows.find((row) => row.key === 'custom:KSOProductBuildVer')).toMatchObject({ label: '自定义：KSOProductBuildVer', duplicateFileIds: [bidA, bidB] });
+    expect(metadata.rows.find((row) => row.key === 'title')!.duplicateFileIds).toEqual([]);
     expect(metadata.files[0]!.metadata).toEqual(
       expect.arrayContaining([
         { key: 'file_name', label: '文件名', value: 'bidA.docx', normalized: 'bida.docx', dateDay: null, comparable: false, dateComparable: false },
@@ -559,6 +581,63 @@ describe('分析任务', () => {
     }
   });
 
+  it('文档格式的元数据（6.10b）：沙箱记下的读取失败照常写入；超时、输出不合规时该文件记为失败并保留基本信息，正文照常提取', async () => {
+    const member = await newMember();
+    const { projectId, bids } = await fixture(member, { bids: ['bidA', 'unreadable', 'slow', 'forged', 'bidB'] });
+    const [bidA, unreadable, slow, forged, bidB] = bids as [string, string, string, string, string];
+    const document = (variant: string, metadata: unknown): Behavior => ({
+      kind: 'document',
+      document: { markdown: bidMarkdown(variant), images: [{ path: 'images/image-0001.png', data: png(variant) }], metadata },
+    });
+    const sandbox = fakeSandbox({
+      ...DOCUMENTS,
+      unreadable: document('甲', { version: 1, fields: [['metadata_error', '元数据读取失败']] }),
+      slow: document('乙', 'timeout'),
+      // 冒充文件基本信息的键：整份输出被拒绝。
+      forged: document('丙', { version: 1, fields: [['title', '标题'], ['file_sha256', sha256('bidA')]] }),
+    });
+    const { error, logs } = await runAnalysis(member, projectId, { sandbox });
+    expect(error).toMatchObject({ code: 'DUPLICATE_CHECK_PARTIAL_FAILED' });
+    expect(logs).toEqual(expect.arrayContaining(['元数据提取失败：文件解析超时（超过 10 分钟）', '元数据提取失败：解析结果不符合要求，已拒绝']));
+    const state = await load(member, projectId);
+    const metadata = state.metadataAnalysis!;
+    expect(metadata).toMatchObject({
+      status: 'error',
+      message: '部分文件提取失败',
+      metadataExtraction: { status: 'error', completed: 5, total: 5 },
+      contentExtraction: { status: 'success', completed: 6, total: 6 },
+    });
+    const file = (fileId: string) => metadata.files.find((item) => item.fileId === fileId)!;
+    // 文档本身读取失败（沙箱记为 metadata_error）不算该文件失败，与桌面版相同。
+    expect(file(unreadable)).toMatchObject({ status: 'success', error: null });
+    expect(file(unreadable).metadata.find((item) => item.key === 'metadata_error')).toMatchObject({ label: 'metadata error', value: '元数据读取失败' });
+    expect(file(slow)).toMatchObject({ status: 'error', error: '文件解析超时（超过 10 分钟）' });
+    expect(file(slow).metadata.map((item) => item.key)).toEqual(['file_name', 'extension', 'size', 'file_sha256']);
+    expect(file(forged)).toMatchObject({ status: 'error', error: '解析结果不符合要求，已拒绝' });
+    expect(file(forged).metadata.find((item) => item.key === 'file_sha256')!.value).toBe(sha256('forged'));
+    expect(file(forged).metadata.some((item) => item.key === 'title')).toBe(false);
+    expect([...metadata.rows.find((row) => row.key === 'company')!.duplicateFileIds].sort()).toEqual([bidA, bidB].sort());
+    // 正文、目录照常。
+    expect(metadata.contentFiles.every((item) => item.status === 'success')).toBe(true);
+    expect(state.outlineAnalysis).toMatchObject({ status: 'success' });
+  });
+
+  it('元数据阶段暂停：不改写结果，正文不开始解析', async () => {
+    const member = await newMember();
+    const { projectId } = await fixture(member);
+    const controller = new AbortController();
+    const sandbox = fakeSandbox({ ...DOCUMENTS, bidA: { kind: 'hang' } });
+    sandbox.onExec = (source) => {
+      if (source === 'bidA') setTimeout(() => controller.abort('pause'), 20);
+    };
+    const { error } = await runAnalysis(member, projectId, { sandbox, controller });
+    expect(error).toBeInstanceOf(JobInterruptedError);
+    expect(sandbox.calls.filter((entry) => entry.startsWith('exec:'))).toEqual(['exec:parse format=docx metadata=duplicate-check']);
+    expect(sandbox.calls.filter((entry) => entry.startsWith('destroy:'))).toHaveLength(1);
+    const stored = await superuser.selectFrom('duplicate_check_analysis_sections').select(['section', 'status']).where('project_id', '=', projectId).orderBy('section').execute();
+    expect(Object.fromEntries(stored.map((row: { section: string; status: string }) => [row.section, row.status]))).toEqual({ metadata: 'running', outline: 'pending', content: 'pending', image: 'pending' });
+  });
+
   it('招标文件解析失败时不用白名单，继续比对（与桌面版相同）', async () => {
     const member = await newMember();
     const { projectId, bidA, bidB } = await fixture(member, { tender: ['broken'] });
@@ -584,6 +663,7 @@ describe('分析任务', () => {
     const sheet = (rows: string) => ({ kind: 'document' as const, document: { markdown: `## 工作表：报价\n\n| 名称 | 说明 |\n|---|---|\n| 服务器 | ${rows} |\n` } });
     const sandbox = fakeSandbox({ sheetA: sheet('采用国产化服务器保证系统长期稳定运行。'), sheetB: sheet('采用国产化服务器保证系统长期稳定运行。') });
     expect((await runAnalysis(member, projectId, { sandbox })).error).toBeNull();
+    // 表格类文件没有文档格式的元数据，不开只提取元数据的沙箱（与桌面版相同只有文件基本信息）。
     expect(sandbox.calls.filter((entry) => entry.startsWith('exec:'))).toEqual(Array(2).fill('exec:parse format=xlsx images=1 analysis=duplicate-check'));
     expect(sandbox.inputs[0]!.map((file) => [file.path, file.data.toString('utf8')])).toEqual([
       ['source', 'sheetA'],
@@ -621,9 +701,11 @@ describe('分析任务', () => {
     const member = await newMember();
     const { projectId } = await fixture(member);
     const controller = new AbortController();
-    const sandbox = fakeSandbox({ ...DOCUMENTS, bidB: { kind: 'hang' } });
+    const sandbox = fakeSandbox({ ...DOCUMENTS, bidB: { kind: 'hang', afterMetadata: true } });
+    let bidBExecs = 0;
     sandbox.onExec = (source) => {
-      if (source === 'bidB') setTimeout(() => controller.abort('pause'), 20);
+      // 第二次执行是正文解析（第一次是只提取元数据）。
+      if (source === 'bidB' && ++bidBExecs === 2) setTimeout(() => controller.abort('pause'), 20);
     };
     const { error } = await runAnalysis(member, projectId, { sandbox, controller });
     expect(error).toBeInstanceOf(JobInterruptedError);

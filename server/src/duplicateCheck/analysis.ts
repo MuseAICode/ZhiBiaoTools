@@ -3,7 +3,8 @@
 // - analysis.json 的校验（来自沙箱，按不可信输入处理：结构、类型、数量、目录项的编号与父子关系、图片路径）；
 // - 招标原文白名单：目录项匹配招标句子（matchTenderSentence）、正文句子匹配招标原文（buildTenderSourceMatcher）；
 // - 目录的重复组、相似组与两两相似度（buildOutlineComparison），重复句（buildDuplicateSentences），重复图片（buildDuplicateImages）；
-// - 文件基本信息的元数据项（文件名、扩展名、大小、SHA-256；文档格式自身的元数据随 6.10b 在沙箱中提取）。
+// - 元数据项：文件基本信息（文件名、扩展名、大小、SHA-256）与文档格式自身的元数据（6.10b，在沙箱中提取，输出 metadata.json，
+//   duplicateMetadata.mjs；这里按不可信输入校验后并入）。
 // 算法搬自桌面版 duplicateCheckService.cjs，常量与结果不变；为不长时间占用事件循环（任务租约靠定时器续期），长循环中定期让出，
 // 目录相似度预先算好每个标题的二元组、最长公共子序列改为两行滚动数组，结果与桌面版相同。字段改为 camelCase。
 import type { DuplicateCheckOutlineSource, DuplicateCheckRisk } from '../db/schema.ts';
@@ -945,6 +946,99 @@ export function metadataItems(fields: ReadonlyMap<string, string>): MetadataItem
     comparable: isComparableKey(key),
     dateComparable: isDateComparableKey(key),
   }));
+}
+
+// ---- 元数据：文档格式的元数据（6.10b） ----
+
+/** metadata.json 的上限（与 server/sandbox/parse/duplicateMetadata.mjs 的 METADATA_LIMITS 相同）。 */
+export const DOCUMENT_METADATA_LIMITS = Object.freeze({
+  maxFields: 1_000,
+  maxKeyLength: 512,
+  maxValueLength: 8_000,
+  /** 全部键与值的长度之和（UTF-16 单元）。 */
+  maxTotalLength: 1_000_000,
+  /** metadata.json 的字节数。 */
+  maxBytes: 8 * 1024 * 1024,
+});
+
+/**
+ * 沙箱可以输出的固定名称的键：标签表中除文件基本信息外的键、属性集映射中没有标签的三个键、metadata_error
+ * （与 duplicateMetadata.mjs 的 FORMAT_METADATA_KEYS 相同，单元测试检查两者一致）。
+ */
+export const FORMAT_METADATA_KEYS: ReadonlySet<string> = new Set([
+  ...Object.keys(metadataLabels).filter((key) => !['file_name', 'extension', 'size', 'file_sha256', 'created_at', 'modified_at', 'accessed_at'].includes(key)),
+  'scale_crop', 'heading_pairs', 'titles_of_parts',
+  'metadata_error',
+]);
+
+/** metadata_error 只能是这几种固定文字（读取失败的原因由这里决定，不采用沙箱给出的其他文字）。 */
+const METADATA_ERROR_VALUES: ReadonlySet<string> = new Set([
+  '元数据读取失败',
+  'OLE 元数据读取失败',
+  '转换 DOCX 元数据读取失败',
+  'OLE 元数据读取失败;转换 DOCX 元数据读取失败',
+]);
+
+const SAFE_METADATA_KEY = /^[a-z0-9_\u4e00-\u9fa5]{1,80}$/;
+const SAFE_METADATA_KEY_PREFIXES = ['ole_signal:', 'wps:', 'pdf_info:', 'pdf_xmp:', 'pdf_raw:'] as const;
+const CONTROL_CHARACTERS = /[\u0000-\u001f\u007f-\u009f]/;
+
+/**
+ * 沙箱输出的键是否合规（与 duplicateMetadata.mjs 的同名函数相同）：固定名称的键、ole_prop_<编号>、custom:<属性名>，
+ * 或 ole_signal: / wps: / pdf_info: / pdf_xmp: / pdf_raw: 加规范化的键名，均可带 converted_docx: 前缀；
+ * 不能是文件基本信息的键，不能以 :base64_decoded 结尾（这两类由 worker 填写）。
+ */
+export function isDocumentMetadataKey(key: string): boolean {
+  if (!key || key.length > DOCUMENT_METADATA_LIMITS.maxKeyLength || CONTROL_CHARACTERS.test(key)) return false;
+  if (key.endsWith(':base64_decoded')) return false;
+  const base = key.startsWith('converted_docx:') ? key.slice('converted_docx:'.length) : key;
+  if (base === 'metadata_error' && base !== key) return false;
+  if (FORMAT_METADATA_KEYS.has(base)) return true;
+  if (/^ole_prop_\d{1,10}$/.test(base)) return true;
+  if (base.startsWith('custom:')) return base.length > 'custom:'.length;
+  const prefix = SAFE_METADATA_KEY_PREFIXES.find((item) => base.startsWith(item));
+  return prefix ? SAFE_METADATA_KEY.test(base.slice(prefix.length)) : false;
+}
+
+/**
+ * 校验沙箱输出的 metadata.json（{ version: 1, fields: [[键, 值], …]}），返回按顺序的字段。不合规时抛 DuplicateAnalysisError：
+ * 结构、字段数与长度上限、键的规则、重复的键、值须为不含控制字符的非空文本（桌面版写入的值都经过规范化）、
+ * metadata_error 只能是固定文字、非法 UTF-8。
+ */
+export function parseDocumentMetadata(data: Buffer): Map<string, string> {
+  if (data.length > DOCUMENT_METADATA_LIMITS.maxBytes) throw new DuplicateAnalysisError('metadata is too large');
+  let raw: unknown;
+  try {
+    raw = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(data));
+  } catch {
+    throw new DuplicateAnalysisError('metadata is not valid json');
+  }
+  const top = record(raw, ['version', 'fields'], 'metadata');
+  if (top.version !== 1) throw new DuplicateAnalysisError('metadata version is unexpected');
+  const entries = list(top.fields, DOCUMENT_METADATA_LIMITS.maxFields, 'metadata fields');
+  const fields = new Map<string, string>();
+  let total = 0;
+  for (const entry of entries) {
+    if (!Array.isArray(entry) || entry.length !== 2) throw new DuplicateAnalysisError('metadata field is not a pair');
+    const [key, value] = entry as unknown[];
+    if (typeof key !== 'string' || !isDocumentMetadataKey(key)) throw new DuplicateAnalysisError('metadata key is not allowed');
+    if (fields.has(key)) throw new DuplicateAnalysisError('metadata key is duplicated');
+    if (typeof value !== 'string' || !value.trim() || value.length > DOCUMENT_METADATA_LIMITS.maxValueLength || CONTROL_CHARACTERS.test(value)) {
+      throw new DuplicateAnalysisError('metadata value is not allowed');
+    }
+    if (key === 'metadata_error' && !METADATA_ERROR_VALUES.has(value)) throw new DuplicateAnalysisError('metadata error is not allowed');
+    total += key.length + value.length;
+    if (total > DOCUMENT_METADATA_LIMITS.maxTotalLength) throw new DuplicateAnalysisError('metadata is too large');
+    fields.set(key, value);
+  }
+  return fields;
+}
+
+/** 文件基本信息之后并入文档格式的元数据（桌面版 extractMetadata 中 mergeMetadataFields 的顺序）。 */
+export function mergeDocumentMetadata(basic: ReadonlyMap<string, string>, document: ReadonlyMap<string, string>): Map<string, string> {
+  const fields = new Map(basic);
+  for (const [key, value] of document) addField(fields, key, value);
+  return fields;
 }
 
 /**

@@ -1,6 +1,6 @@
 // 解析输出的内容校验与图片引用改写（src/parse/output.ts）：沙箱的输出按不可信输入处理。
 import { describe, expect, it } from 'vitest';
-import { entryErrorCode, imageMatchesMime, ParseOutputError, rewriteImageReferences, validateParseOutput } from '../../src/parse/output.ts';
+import { entryErrorCode, imageMatchesMime, ParseOutputError, rewriteImageReferences, validateMetadataOutput, validateParseOutput } from '../../src/parse/output.ts';
 import type { SandboxFile } from '../../src/sandbox/archive.ts';
 
 const PNG = Buffer.from('89504e470d0a1a0a0000000d49484452', 'hex');
@@ -124,5 +124,20 @@ describe('entryErrorCode', () => {
     expect(entryErrorCode('{"error":"rm -rf"}')).toBe('conversion_failed');
     expect(entryErrorCode('{"error":"zip_ratio"}\nnoise')).toBe('conversion_failed');
     expect(entryErrorCode('')).toBe('conversion_failed');
+  });
+});
+
+describe('validateMetadataOutput', () => {
+  it('accepts exactly one metadata.json and returns its bytes (content is checked by the duplicate-check module)', () => {
+    expect(validateMetadataOutput([file('metadata.json', '{"version":1,"fields":[]}')]).toString('utf8')).toBe('{"version":1,"fields":[]}');
+  });
+
+  it.each([
+    ['nothing', []],
+    ['another file', [file('content.md', '# x')]],
+    ['an extra file', [file('metadata.json', '{}'), file('manifest.json', '{}')]],
+    ['a nested path', [file('images/metadata.json', '{}')]],
+  ])('rejects %s', (_, files) => {
+    expect(() => validateMetadataOutput(files as SandboxFile[])).toThrow(ParseOutputError);
   });
 });

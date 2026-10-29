@@ -3,7 +3,9 @@
 // （lock_key 为 project:{projectId}:duplicate-check，与桌面版同组互斥相同）。
 //
 // 流程与桌面版相同，分为提取和比对两部分：
-// - 元数据：投标文件的基本信息（文件名、扩展名、大小、SHA-256；文档格式自身的元数据随 6.10b 在沙箱中提取）；
+// - 元数据：投标文件的基本信息（文件名、扩展名、大小、SHA-256）与文档格式自身的元数据（6.10b：docx 的属性与 rsid，老式 Word 的
+//   OLE 属性集、存储结构与疑似账号痕迹及转成 docx 后的属性，PDF 的 Info / XMP / 原始记录 / 结构 / 签名与附件），后者每份文件
+//   在一个只提取元数据的 parse 沙箱中读取（server/sandbox/parse/duplicateMetadata.mjs，输出 metadata.json），校验后并入；
 // - 正文提取：招标文件、投标文件逐个在断网的 parse 沙箱中解析（保留图片），写入 Markdown 与图片产物；沙箱同时做逐文档的
 //   文本提取（目录、句子、图片位置，server/sandbox/parse/duplicateText.mjs，输出 analysis.json），任务进程内不解析上传的内容；
 // - 比对（src/duplicateCheck/analysis.ts）：招标原文白名单、目录的重复 / 相似组与两两相似度、重复句、重复图片（按图片内容的 SHA-256）。
@@ -20,7 +22,7 @@ import { findFile } from '../files/store.ts';
 import { JobError, JobInterruptedError, type JobContext, type JobTypeDefinition } from '../jobs/definitions.ts';
 import { cancelJob, enqueueJob, type JobServiceDependencies } from '../jobs/service.ts';
 import { listJobs, type JobRecord } from '../jobs/store.ts';
-import { LOCAL_PARSER_LABEL, parseFailureOf, parseFileInSandbox, writeParseArtifacts, type WrittenImage } from '../parse/run.ts';
+import { extractMetadataInSandbox, LOCAL_PARSER_LABEL, parseFailureOf, parseFileInSandbox, writeParseArtifacts, type WrittenImage } from '../parse/run.ts';
 import {
   basicMetadataFields,
   buildDuplicateImages,
@@ -29,8 +31,10 @@ import {
   buildTenderSourceMatcher,
   DuplicateAnalysisError,
   matchTenderSentence,
+  mergeDocumentMetadata,
   mergeTenderSentences,
   metadataItems,
+  parseDocumentMetadata,
   parseDuplicateAnalysis,
   type ContentSentence,
   type DocumentAnalysis,
@@ -198,18 +202,39 @@ export function createDuplicateAnalysisJob(options: DuplicateAnalysisJobOptions 
     for (const file of allFiles) await supersedeArtifacts(db, tenant, file.id, []);
     await context.setProgress(2);
 
-    // ---- 元数据（投标文件的基本信息） ----
+    // ---- 元数据：投标文件的基本信息 + 文档格式的元数据（docx / 老式 Word / PDF 等，每份文件一个 parse 沙箱，6.10b） ----
+    let unexpected: unknown = null;
     await save('metadata', { metadataExtraction: { status: 'running', completed: 0, total: bidTotal }, message: '正在提取投标文件元数据' });
     const records = new Map<string, Awaited<ReturnType<typeof findFile>>>();
     const metadataFiles: MetadataFileInput[] = [];
     for (const file of allFiles) records.set(file.id, await findFile(db, tenant, file.id));
     for (const file of bidFiles) {
       const record = records.get(file.id);
-      metadataFiles.push(
-        record
-          ? { fileId: file.id, status: 'success', metadata: metadataItems(basicMetadataFields({ fileName: file.fileName, extension: file.extension, size: file.size, sha256: record.sha256 })) }
-          : { fileId: file.id, status: 'error', error: '原件不存在，请重新上传', metadata: [] },
-      );
+      if (!record) {
+        metadataFiles.push({ fileId: file.id, status: 'error', error: '原件不存在，请重新上传', metadata: [] });
+      } else {
+        const basic = basicMetadataFields({ fileName: file.fileName, extension: file.extension, size: file.size, sha256: record.sha256 });
+        try {
+          const output = await extractMetadataInSandbox(context, record, options.createRetryDelaysMs ? { createRetryDelaysMs: options.createRetryDelaysMs } : {});
+          const fields = output ? mergeDocumentMetadata(basic, parseDocumentMetadata(output)) : basic;
+          metadataFiles.push({ fileId: file.id, status: 'success', metadata: metadataItems(fields) });
+        } catch (error) {
+          if (isStop(context, error)) throw error;
+          // 沙箱层面的失败（超时、沙箱繁忙、输出不合规等）：保留文件基本信息，该文件记为失败。文档本身读取失败不在这里，
+          // 由沙箱记为 metadata_error 字段（与桌面版相同）。
+          const known = error instanceof DuplicateAnalysisError ? new JobError('PARSE_OUTPUT_REJECTED', '解析结果不符合要求，已拒绝') : parseFailureOf(error);
+          if (!known) unexpected ??= error;
+          const message = known?.message ?? '元数据提取失败';
+          metadataFiles.push({ fileId: file.id, status: 'error', error: message, metadata: metadataItems(basic) });
+          await context.log(`元数据提取失败：${message}`, { file: metadataFiles.length });
+        }
+      }
+      await save('metadata', {
+        metadataExtraction: { status: 'running', completed: metadataFiles.length, total: bidTotal },
+        files: metadataFiles,
+        message: `元数据提取 ${metadataFiles.length}/${bidTotal}`,
+      });
+      await context.setProgress(Math.min(5, Math.round(2 + (metadataFiles.length / bidTotal) * 3)));
     }
     const metadataFailed = metadataFiles.some((file) => file.status === 'error');
     await save('metadata', {
@@ -220,7 +245,6 @@ export function createDuplicateAnalysisJob(options: DuplicateAnalysisJobOptions 
     await context.setProgress(5);
 
     // ---- 正文提取 ----
-    let unexpected: unknown = null;
     const contentFiles: ContentFileInput[] = [];
     const total = allFiles.length;
     await save('metadata', { contentExtraction: { status: 'running', completed: 0, total }, message: '正在提取正文内容' });

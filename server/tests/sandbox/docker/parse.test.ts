@@ -3,16 +3,19 @@
 // ZIP 炸弹与 PDF 页数检查、解析入口的错误代码，以及镜像中 LibreOffice 的安全设置。需要 LibreOffice 的用例只在
 // TEST_SANDBOX_OFFICE=1（CI 构建的完整镜像）时运行；宏安全的对照组另需 TEST_SANDBOX_CONTROL_IMAGE（去掉 xcd 的同一镜像）。
 // 6.10：标书查重的逐文档提取（analysis=duplicate-check，输出 analysis.json，HTML 表格经镜像中的 cheerio 读取）。
+// 6.10b：标书查重的文档格式元数据（metadata=duplicate-check，只输出 metadata.json；OLE 经镜像中 SheetJS 自带的 CFB 读取，
+// PDF 经 pdf-parse），期望值取自桌面版同名函数对同一文件的结果（tests/duplicateCheck/metadataExpected.json）。
 import { randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { afterEach, describe, expect, it } from 'vitest';
-import { DuplicateAnalysisError, parseDuplicateAnalysis } from '../../../src/duplicateCheck/analysis.ts';
-import { parseCommandArgs, type ParseCharset, type ParseFormat } from '../../../src/parse/dispatch.ts';
-import { entryErrorCode, validateParseOutput, type ParsedOutput } from '../../../src/parse/output.ts';
+import { DuplicateAnalysisError, parseDocumentMetadata, parseDuplicateAnalysis } from '../../../src/duplicateCheck/analysis.ts';
+import { metadataCommandArgs, parseCommandArgs, type ParseCharset, type ParseFormat } from '../../../src/parse/dispatch.ts';
+import { entryErrorCode, validateMetadataOutput, validateParseOutput, type ParsedOutput } from '../../../src/parse/output.ts';
 import { createDockerSandboxDriver } from '../../../src/sandbox/docker.ts';
 import type { SandboxRef } from '../../../src/sandbox/driver.ts';
+import { buildMetadataDocx } from '../../duplicateCheck/metadataFixtures.ts';
 import { buildPdf } from '../pdfFixtures.ts';
-import { markupSample } from '../markupFixtures.ts';
+import { markupSample, rtfText } from '../markupFixtures.ts';
 import { buildZip } from '../zipFixtures.ts';
 import { docker, sandboxEnv, silentLog } from './env.ts';
 import { STUCK_OFFICE_STATS, stuckOfficeScript } from './stuckOffice.ts';
@@ -195,6 +198,66 @@ describe('duplicate-check analysis in the sandbox', () => {
     const plain = success(await parseIn(sample('sample.docx'), 'docx'));
     expect(plain.analysis).toBeNull();
     expect(() => parseDuplicateAnalysis(Buffer.from('{}'), new Set())).toThrow(DuplicateAnalysisError);
+  });
+});
+
+describe('duplicate-check document metadata in the sandbox', () => {
+  const expected = JSON.parse(readFileSync(new URL('../../duplicateCheck/metadataExpected.json', import.meta.url), 'utf8')) as Record<string, [string, string][]>;
+
+  async function metadataIn(source: Buffer, format: ParseFormat): Promise<[string, string][]> {
+    const ref = await driver.create('parse', { jobId: randomUUID() });
+    created.push({ owner: driver, ref });
+    await driver.copyIn(ref, [{ path: 'source', data: source }]);
+    const result = await driver.exec(ref, 'parse', metadataCommandArgs(format));
+    if (result.exitCode !== 0) throw new Error(`metadata failed: ${entryErrorCode(result.stdout)}`);
+    // 只有 metadata.json，并通过 worker 的校验。
+    return Array.from(parseDocumentMetadata(validateMetadataOutput(await driver.copyOut(ref))).entries());
+  }
+
+  it('reads docx core / app / custom properties and rsids like the desktop version', async () => {
+    expect(await metadataIn(sample('sample.docx'), 'docx')).toEqual(expected.sampleDocx);
+    expect(await metadataIn(buildMetadataDocx(), 'docx')).toEqual(expected.docx);
+  });
+
+  it('reads PDF Info, raw records and structure like the desktop version (same pdf-parse)', async () => {
+    expect(await metadataIn(sample('sample.pdf'), 'pdf')).toEqual(expected.samplePdf);
+  });
+
+  it('reads OLE property sets and structure with the CFB bundled in SheetJS; adds the converted docx properties when LibreOffice is present', async () => {
+    const fields = await metadataIn(sample('sample.doc'), 'word-ole');
+    expect(fields.slice(0, expected.sampleDocOle!.length)).toEqual(expected.sampleDocOle);
+    const byKey = new Map(fields);
+    if (sandboxEnv.office) {
+      expect(byKey.has('metadata_error')).toBe(false);
+      expect(byKey.get('converted_docx:application')).toMatch(/LibreOffice/);
+    } else {
+      expect(byKey.get('metadata_error')).toBe('转换 DOCX 元数据读取失败');
+    }
+  });
+
+  it.runIf(sandboxEnv.office)('reads text Word formats (RTF) only through the converted docx', async () => {
+    const rtf = Buffer.from(`{\\rtf1\\ansi{\\info{\\author Zhang San}{\\company ACME}}\\pard ${rtfText('正文')}\\par}`, 'latin1');
+    const byKey = new Map(await metadataIn(rtf, 'rtf'));
+    expect(byKey.get('converted_docx:author')).toBe('Zhang San');
+    expect(byKey.has('ole_stream_count')).toBe(false);
+    expect(byKey.has('metadata_error')).toBe(false);
+  });
+
+  it('records unreadable documents as metadata_error instead of failing, and rejects bad arguments', async () => {
+    expect(await metadataIn(Buffer.from('not a zip'), 'docx')).toEqual([['metadata_error', '元数据读取失败']]);
+    expect(await metadataIn(Buffer.from('%PDF-1.7 broken'), 'pdf')).toEqual(expect.arrayContaining([['metadata_error', '元数据读取失败']]));
+    const ref = await driver.create('parse', { jobId: randomUUID() });
+    created.push({ owner: driver, ref });
+    await driver.copyIn(ref, [{ path: 'source', data: sample('sample.docx') }]);
+    for (const args of [
+      ['format=docx', 'metadata=other'],
+      ['format=xlsx', 'metadata=duplicate-check'],
+      ['format=docx', 'images=0', 'metadata=duplicate-check'],
+      ['format=docx', 'analysis=duplicate-check', 'metadata=duplicate-check'],
+    ]) {
+      const bad = await driver.exec(ref, 'parse', args);
+      expect([bad.exitCode, entryErrorCode(bad.stdout)], args.join(' ')).toEqual([64, 'bad_arguments']);
+    }
   });
 });
 
