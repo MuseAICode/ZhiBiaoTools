@@ -8,7 +8,7 @@
 // 用事务级 advisory lock 串行，并发的拖动不会交错写出重复或跳号的顺序。
 //
 // 给第 6 步解析任务用的写函数（updateDocumentState、setDocumentMarkdown、saveDocumentStep、clearDocumentProcessingFromStep）
-// 在本步一并实现；切块、条目、匹配结果等其余七张表的读写在 content.ts（5.7）。
+// 在本步一并实现；切块、条目、匹配结果等其余七张表的读写在 content.ts（5.7）。文档准备任务（6.13a）在 jobs.ts。
 import { sql, type Kysely, type Selectable, type Transaction } from 'kysely';
 import {
   KNOWLEDGE_DOCUMENTS_PER_ORG_MAX,
@@ -302,6 +302,14 @@ export async function getDocument(db: Kysely<Database>, context: TenantContext, 
   return withTenant(db, context, (trx) => readDocument(trx, documentId));
 }
 
+/** 按给出的顺序读取多个文档，不可见的跳过。 */
+export async function getDocuments(db: Kysely<Database>, context: TenantContext, documentIds: readonly string[]): Promise<KnowledgeDocument[]> {
+  if (documentIds.length === 0) return [];
+  const rows = await withTenant(db, context, (trx) => documents(trx).where('d.id', 'in', [...documentIds]).execute());
+  const byId = new Map(rows.map((row) => [row.id, documentBody(row)]));
+  return documentIds.flatMap((id) => byId.get(id) ?? []);
+}
+
 /** 新建文件夹，排在最后。 */
 export async function createFolder(db: Kysely<Database>, context: TenantContext, name: string): Promise<KnowledgeFolder> {
   const normalized = normalizeFolderName(name);
@@ -364,17 +372,18 @@ export async function reorderFolder(
 
 /**
  * 删除文件夹：先软删除其中文档的原件（进回收站，按文件自己的恢复期处理），再物理删除文件夹，文档行由外键级联删除。
- * 返回删除的文件夹和其中（可见的）文档数。
+ * 返回删除的文件夹、其中（可见的）文档数与文档 id（接口据此取消这些文档的处理任务）。
  */
 export async function deleteFolder(
   db: Kysely<Database>,
   context: TenantContext,
   folderId: string,
-): Promise<{ folder: KnowledgeFolder; deletedDocumentCount: number }> {
+): Promise<{ folder: KnowledgeFolder; deletedDocumentCount: number; documentIds: string[] }> {
   return withTenant(db, context, async (trx) => {
     await lockOrdering(trx, context);
     const folder = await trx.selectFrom('knowledge_folders').selectAll().where('id', '=', folderId).executeTakeFirst();
     if (!folder) throw folderNotFound();
+    const documentIds = (await trx.selectFrom('knowledge_documents').select('id').where('folder_id', '=', folderId).execute()).map((row) => row.id);
     const deleted = await trx
       .updateTable('files')
       .set({ deleted_at: sql<Date>`now()`, deleted_by: context.userId })
@@ -382,7 +391,7 @@ export async function deleteFolder(
       .where('id', 'in', trx.selectFrom('knowledge_documents').select('file_id').where('folder_id', '=', folderId))
       .executeTakeFirst();
     await trx.deleteFrom('knowledge_folders').where('id', '=', folderId).execute();
-    return { folder: folderBody(folder), deletedDocumentCount: Number(deleted.numUpdatedRows) };
+    return { folder: folderBody(folder), deletedDocumentCount: Number(deleted.numUpdatedRows), documentIds };
   });
 }
 

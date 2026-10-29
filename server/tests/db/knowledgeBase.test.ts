@@ -633,14 +633,15 @@ describe('/api/knowledge-base', () => {
     await expectError(await kb(member, 'POST', `/folders/${ids[0]}/reorder`, { targetFolderId: foreign, position: 'after' }), 404, 'KNOWLEDGE_FOLDER_NOT_FOUND');
   });
 
-  it('挂文档：按给出的顺序排在末尾，状态 pending；文件不可用 400，文件夹不存在 404', async () => {
+  it('挂文档：按给出的顺序排在末尾；余额为 0 时处理任务入队失败、文档标为 error；文件不可用 400，文件夹不存在 404', async () => {
     const member = await newMember();
     const folder = (await ok(member, 'POST', '/folders', { name: '文档' }, 201)).id;
     const files = [await newFile(member, { name: '一.docx' }), await newFile(member, { name: '二.pdf' })];
     const created = await ok(member, 'POST', `/folders/${folder}/documents`, { fileIds: files }, 201);
+    // 文档准备任务（6.13a）会调用模型，入队检查最低启动余额；入队成功的情形见 tests/db/knowledgeBaseJobs.test.ts。
     expect(created.documents).toMatchObject([
-      { folderId: folder, fileId: files[0], fileName: '一.docx', status: 'pending', progress: 0, message: '等待处理', sortOrder: 0, markdownArtifactId: null },
-      { fileId: files[1], fileName: '二.pdf', sortOrder: 1 },
+      { folderId: folder, fileId: files[0], fileName: '一.docx', status: 'error', message: '余额不足，请充值后再试', sortOrder: 0, markdownArtifactId: null, job: null },
+      { fileId: files[1], fileName: '二.pdf', sortOrder: 1, status: 'error' },
     ]);
     const third = await newFile(member, { name: '三.md' });
     expect((await ok(member, 'POST', `/folders/${folder}/documents`, { fileIds: [third.toUpperCase()] }, 201)).documents[0]).toMatchObject({

@@ -160,7 +160,7 @@ export async function buildApp(config: AppConfig, options: BuildAppOptions): Pro
   await app.register(registerSettingsRoutes, { prefix: '/api/settings', db });
   await app.register(registerTemplateRoutes, { prefix: '/api/export-templates', db });
   await app.register(registerCredentialLibraryRoutes, { prefix: '/api/credential-library', db });
-  await app.register(registerKnowledgeBaseRoutes, { prefix: '/api/knowledge-base', db, objectStore: options.objectStore ?? null });
+  await app.register(registerKnowledgeBaseRoutes, { prefix: '/api/knowledge-base', db, objectStore: options.objectStore ?? null, jobs });
   await app.register(registerDuplicateCheckRoutes, { prefix: '/api/projects', db, jobs });
   await app.register(registerRejectionCheckRoutes, { prefix: '/api/projects', db, objectStore: options.objectStore ?? null, jobs });
   await app.register(registerFeasibilityReportRoutes, { prefix: '/api/projects', db, objectStore: options.objectStore ?? null, jobs });

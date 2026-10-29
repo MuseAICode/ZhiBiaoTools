@@ -26,6 +26,8 @@ export interface SplitOptions {
   contextLengthLimit?: number;
   /** 每段最多占上下文长度的比例，默认 0.8。 */
   limitRatio?: number;
+  /** 找自然切点时单段最长可超出单段上限的比例，默认 1.1（知识库切开超长块时用 1，与桌面版相同）。 */
+  maxSegmentLimitRatio?: number;
 }
 
 function positiveInteger(value: unknown, fallback: number): number {
@@ -147,7 +149,7 @@ export function splitTextByContextLimit(text: string, options: SplitOptions = {}
   const targetSize = Math.max(1, Math.ceil(source.length / segmentCount));
   const strictRadius = Math.max(1, Math.floor(targetSize * STRICT_WINDOW_RATIO));
   const relaxedRadius = Math.max(strictRadius, Math.floor(targetSize * RELAXED_WINDOW_RATIO));
-  const maximumSegmentLength = Math.max(targetSize, Math.ceil(segmentLimit * MAX_SEGMENT_LIMIT_RATIO));
+  const maximumSegmentLength = Math.max(targetSize, Math.ceil(segmentLimit * positiveRatio(options.maxSegmentLimitRatio, MAX_SEGMENT_LIMIT_RATIO)));
   const minimumSegmentLength = Math.max(1, Math.floor(targetSize * MIN_SEGMENT_RATIO));
   const fences = collectMarkdownFenceRanges(source);
   const cuts: number[] = [];
