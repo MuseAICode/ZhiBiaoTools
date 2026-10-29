@@ -198,8 +198,13 @@ async function newFile(member: Member, options: { name?: string; mime?: string; 
   return row.id;
 }
 
-function call(member: Member, method: 'POST' | 'PUT', url: string, payload: unknown) {
-  return app.inject({ method, url, headers: { ...sameSiteHeaders, cookie: `__Host-session=${member.cookie}` }, payload: payload as Record<string, unknown> });
+function call(member: Member, method: 'POST' | 'PUT' | 'DELETE', url: string, payload?: unknown) {
+  return app.inject({
+    method,
+    url,
+    headers: { ...sameSiteHeaders, cookie: `__Host-session=${member.cookie}` },
+    ...(payload === undefined ? {} : { payload: payload as Record<string, unknown> }),
+  });
 }
 
 /** 导入一份招标文件到技术方案项目（经接口，同时入队解析任务），返回 { projectId, fileId }。 */
@@ -376,6 +381,39 @@ describe('解析与写回', () => {
     expect(artifacts.map((artifact) => [artifact.kind, artifact.name, artifact.mime, artifact.projectId])).toEqual([
       ['markdown', 'content.md', 'text/markdown; charset=utf-8', projectId],
     ]);
+  });
+
+  it('技术方案招标文件同时写入疑似多标段检测摘要（6.11），状态中合并各文件的结果；原方案与其他模块不写', async () => {
+    const member = await newMember();
+    const projectId = await newProject(member, 'technical-plan');
+    const first = await newFile(member, { name: '第一册.docx' });
+    const second = await newFile(member, { name: '第二册.docx' });
+    expect((await call(member, 'POST', `/api/projects/${projectId}/technical-plan/tender-files`, { fileIds: [first, second] })).statusCode).toBe(200);
+    // 两份文件各有一个标段定义：单独看都不是多标段，合并后是。
+    expect((await runParse(member, projectId, first, { sandbox: fakeSandbox(output('# 第一册\n一标段：设备采购\n')) })).error).toBeNull();
+    let state = await loadTechnicalPlan(appDb, member.context, projectId);
+    // 第二份还没有解析成功：只合并解析成功的文件。
+    expect(state.bidSectionDetection).toEqual({ hasMultiple: false, totalDeclared: null });
+    expect((await runParse(member, projectId, second, { sandbox: fakeSandbox(output('# 第二册\n二标段：安装调试\n')) })).error).toBeNull();
+    state = await loadTechnicalPlan(appDb, member.context, projectId);
+    // 与桌面版相同，“二标段”同时按总数声明计（共 2 个）。
+    expect(state.bidSectionDetection).toEqual({ hasMultiple: true, totalDeclared: 2 });
+    const rows = await superuser.selectFrom('technical_plan_documents').select(['file_id', 'bid_section_detection']).where('project_id', '=', projectId).execute();
+    expect(Object.fromEntries(rows.map((row: { file_id: string; bid_section_detection: unknown }) => [row.file_id, row.bid_section_detection]))).toEqual({
+      [first]: { version: 1, declaredSections: null, declaredAny: null, definitions: ['标段:1'], bracketGroups: [], bracketChildren: [] },
+      [second]: { version: 1, declaredSections: 2, declaredAny: 2, definitions: ['标段:2'], bracketGroups: [], bracketChildren: [] },
+    });
+    // 移除一份后按剩下的文件重新合并。
+    expect((await call(member, 'DELETE', `/api/projects/${projectId}/technical-plan/tender-files/${second}`)).statusCode).toBe(200);
+    expect((await loadTechnicalPlan(appDb, member.context, projectId)).bidSectionDetection).toEqual({ hasMultiple: false, totalDeclared: null });
+    // 摘要缺失（不应出现，例如手工改过的行）时不提示。
+    await superuser.updateTable('technical_plan_documents').set({ bid_section_detection: null }).where('file_id', '=', first).execute();
+    expect((await loadTechnicalPlan(appDb, member.context, projectId)).bidSectionDetection).toBeNull();
+
+    const plan = await newFile(member, { name: '原方案.docx' });
+    expect((await call(member, 'PUT', `/api/projects/${projectId}/technical-plan/original-plan`, { fileId: plan })).statusCode).toBe(200);
+    expect((await runParse(member, projectId, plan, { target: 'technical-plan-original-plan', sandbox: fakeSandbox(output('一标段：x\n二标段：y\n')) })).error).toBeNull();
+    expect(await superuser.selectFrom('technical_plan_documents').select('bid_section_detection').where('file_id', '=', plan).executeTakeFirstOrThrow()).toEqual({ bid_section_detection: null });
   });
 
   it('原方案保留图片：图片写成产物，Markdown 中的引用改为产物地址', async () => {

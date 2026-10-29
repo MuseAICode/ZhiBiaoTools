@@ -26,6 +26,7 @@ import * as jobBilling from './0022_job_billing.ts';
 import * as artifactSupersede from './0023_artifact_supersede.ts';
 import * as cleanup from './0024_cleanup.ts';
 import * as jobStepResults from './0025_job_step_results.ts';
+import * as technicalPlanBidSectionDetection from './0026_technical_plan_bid_section_detection.ts';
 
 export const migrations: Readonly<Record<string, Migration>> = Object.freeze({
   '0001_identity': identity,
@@ -53,4 +54,5 @@ export const migrations: Readonly<Record<string, Migration>> = Object.freeze({
   '0023_artifact_supersede': artifactSupersede,
   '0024_cleanup': cleanup,
   '0025_job_step_results': jobStepResults,
+  '0026_technical_plan_bid_section_detection': technicalPlanBidSectionDetection,
 });

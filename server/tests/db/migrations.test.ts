@@ -227,6 +227,7 @@ describe('迁移升级与回滚', () => {
       (await sql<{ prosrc: string }>`SELECT prosrc FROM pg_proc WHERE proname = 'ai_usage_begin'`.execute(testDb.admin)).rows.map((row) => row.prosrc);
     expectSuccess(await migrateToLatest(owner));
     expect((await source())[0]).toContain('ai_model_price');
+    expect(expectSuccess(await migrateDown(owner))).toEqual(['Down:0026_technical_plan_bid_section_detection']);
     expect(expectSuccess(await migrateDown(owner))).toEqual(['Down:0025_job_step_results']);
     expect(expectSuccess(await migrateDown(owner))).toEqual(['Down:0024_cleanup']);
     expect(expectSuccess(await migrateDown(owner))).toEqual(['Down:0023_artifact_supersede']);
