@@ -1,7 +1,7 @@
 // 解析入口输出的校验（路线图第 6 步：“解析结果按不可信输入校验”）。归档本身（文件类型、路径、数量、大小、扩展名）已由
 // src/sandbox/archive.ts 按 parse 模板校验；这里再校验内容：
 // - 只能有 content.md、manifest.json 和清单中登记的 images/image-NNNN.<扩展名>，不多不少（要求逐文档提取时另有 analysis.json，
-//   其内容由使用它的模块校验，如 src/duplicateCheck/analysis.ts）；
+//   其内容由使用它的模块校验，如 src/duplicateCheck/analysis.ts）；只提取元数据时只能有 metadata.json（validateMetadataOutput）；
 // - 清单的结构、图片数量（至多 2,000 张）、MIME 与扩展名一致，图片的文件头与 MIME 一致；
 // - content.md 是合法 UTF-8；
 // - Markdown 中的图片引用只保留指向本次输出图片的（改写为产物地址），其他（远程地址、data: 等）一律去掉；
@@ -158,6 +158,16 @@ export function validateParseOutput(files: readonly SandboxFile[], options: { an
     throw new ParseOutputError('content.md is not valid utf-8');
   }
   return { markdown: markdown.replace(/^﻿/, '').replace(/\u0000/g, ''), images, analysis };
+}
+
+/**
+ * 只提取元数据时的输出（metadata=duplicate-check）：只能有 metadata.json 一个文件，返回其原始字节，内容由使用它的模块校验
+ * （src/duplicateCheck/analysis.ts 的 parseDocumentMetadata）。不符时抛 ParseOutputError。
+ */
+export function validateMetadataOutput(files: readonly SandboxFile[]): Buffer {
+  const [file, ...rest] = files;
+  if (!file || rest.length > 0 || file.path !== 'metadata.json') throw new ParseOutputError('metadata output must contain only metadata.json');
+  return file.data;
 }
 
 const MARKDOWN_IMAGE = /!\[([^\]]*)\]\((<[^>]+>|[^)\s]+)(\s+"[^"]*")?\)/g;

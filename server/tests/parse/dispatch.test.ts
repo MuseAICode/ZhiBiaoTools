@@ -1,6 +1,6 @@
 // 按记录的 MIME 分派（src/parse/dispatch.ts，路线图第 6 步分派表；6.6 二进制与纯文本格式，6.7 文本类格式）。
 import { describe, expect, it } from 'vitest';
-import { dispatchParse, isSpreadsheetFormat, parseCommandArgs } from '../../src/parse/dispatch.ts';
+import { dispatchParse, isSpreadsheetFormat, metadataCommandArgs, PARSE_FORMATS, parseCommandArgs, supportsDocumentMetadata } from '../../src/parse/dispatch.ts';
 import { resolveCommand, SANDBOX_TEMPLATES } from '../../src/sandbox/templates.ts';
 
 describe('dispatchParse', () => {
@@ -54,6 +54,13 @@ describe('dispatchParse', () => {
     const analysis = parseCommandArgs({ format: 'xlsx', charset: null }, true, 'duplicate-check');
     expect(analysis).toEqual(['format=xlsx', 'images=1', 'analysis=duplicate-check']);
     expect(resolveCommand(SANDBOX_TEMPLATES.parse, 'parse', analysis)).not.toBeNull();
+  });
+
+  it('builds metadata-only arguments (6.10b) for the formats that carry document metadata', () => {
+    const args = metadataCommandArgs('word-ole');
+    expect(args).toEqual(['format=word-ole', 'metadata=duplicate-check']);
+    expect(resolveCommand(SANDBOX_TEMPLATES.parse, 'parse', args)).not.toBeNull();
+    expect(PARSE_FORMATS.filter((format) => supportsDocumentMetadata(format))).toEqual(['pdf', 'docx', 'word-ole', 'rtf', 'html-word', 'mht', 'word-xml']);
   });
 
   it('marks spreadsheet formats (the title comes from the file name)', () => {

@@ -1,11 +1,15 @@
 // parse 沙箱的解析入口（路线图第 6 步 6.6；docs/SERVER_DESIGN.md 第 7.5 节）。由 sandbox-runner 按 parse 模板执行：
 //   node /opt/parse/entry.mjs format=<格式> [images=0|1] [charset=utf-8|gb18030] [analysis=duplicate-check]
+//   node /opt/parse/entry.mjs format=<格式> metadata=duplicate-check
 // 原件固定在 /input/source（worker 经 copyIn 放入），结果固定写到 /output：
 //   content.md      Markdown（UTF-8）
 //   images/…        提取的图片（只在 images=1 时；只收 png / jpeg / gif / webp / bmp，至多 2,000 张）
 //   manifest.json   { version: 1, images: [{ path, mime }] }
 //   analysis.json   只在 analysis=duplicate-check 时：标书查重的逐文档提取结果（目录、句子、图片位置，duplicateText.mjs，6.10）。
 //                   表格类格式另由 worker 放入 /input/title（文件名，UTF-8 一行），提取时与桌面版相同以它作一级标题。
+// metadata=duplicate-check 时不转换正文，只写 metadata.json：标书查重的文档格式元数据（duplicateMetadata.mjs，6.10b），
+//   { version: 1, fields: [[键, 值], …] }。只接受 docx、word-ole、pdf 与文本类 Word 格式，不能与 images、analysis 同时给出；
+//   读取失败记在 metadata_error 字段中（固定文字），不算失败。
 // 格式由 worker 按上传时记录的 MIME 分派，这里不再猜测。失败时不写结果，在标准输出写一行 {"error":"代码"}：
 // 参数不合法退出码 64，转换失败 65。错误只给代码，给用户看的文案由 worker 按代码决定，不采用沙箱输出的文字。
 // 本进程没有网络、没有凭据；它的输出在 worker 中按不可信输入逐项校验（src/sandbox/archive.ts、src/parse/output.ts）。
@@ -17,6 +21,9 @@ const FORMATS = new Set([
 ]);
 const CHARSETS = new Set(['utf-8', 'gb18030']);
 const ANALYSES = new Set(['duplicate-check']);
+const METADATA = new Set(['duplicate-check']);
+/** 提取元数据的格式（与 duplicateMetadata.mjs 的 METADATA_FORMATS 相同，参数检查时还不加载它）。 */
+const METADATA_FORMATS = new Set(['docx', 'word-ole', 'pdf', 'rtf', 'html-word', 'mht', 'word-xml']);
 const INPUT = '/input/source';
 const TITLE_INPUT = '/input/title';
 /** 标题文件的上限（字节）。worker 只放入整理过的文件名。 */
@@ -62,10 +69,10 @@ function fail(code, exitCode) {
 }
 
 function parseArgs(argv) {
-  const options = { format: null, images: false, charset: null, analysis: null };
+  const options = { format: null, images: false, charset: null, analysis: null, metadata: null };
   const seen = new Set();
   for (const arg of argv) {
-    const match = /^(format|images|charset|analysis)=(.+)$/.exec(arg);
+    const match = /^(format|images|charset|analysis|metadata)=(.+)$/.exec(arg);
     if (!match || seen.has(match[1])) return null;
     seen.add(match[1]);
     const [, key, value] = match;
@@ -78,6 +85,9 @@ function parseArgs(argv) {
     } else if (key === 'analysis') {
       if (!ANALYSES.has(value)) return null;
       options.analysis = value;
+    } else if (key === 'metadata') {
+      if (!METADATA.has(value)) return null;
+      options.metadata = value;
     } else {
       if (!CHARSETS.has(value)) return null;
       options.charset = value;
@@ -86,6 +96,7 @@ function parseArgs(argv) {
   if (!options.format) return null;
   const textual = options.format === 'text' || options.format === 'markdown';
   if (textual !== (options.charset !== null)) return null;
+  if (options.metadata && (seen.has('images') || options.analysis || !METADATA_FORMATS.has(options.format))) return null;
   return options;
 }
 
@@ -96,7 +107,7 @@ if (!options) fail('bad_arguments', 64);
 for (const method of ['log', 'info', 'warn', 'error', 'debug']) console[method] = () => {};
 
 // 依赖较重（pdfjs、mammoth 等），参数检查通过后才加载。
-const { convertToMarkdown } = await import('./convert.mjs');
+const { convertToMarkdown, convertToDocx, cfbReader, readPdfInfo } = await import('./convert.mjs');
 
 const images = [];
 let imageDirectoryReady = false;
@@ -138,8 +149,15 @@ async function readTitle() {
   return text.replace(/[\r\n]+/g, ' ').replace(/\s+/g, ' ').trim();
 }
 
-try {
-  const buffer = await readFile(INPUT);
+/** 只提取文档格式的元数据（metadata=duplicate-check）。 */
+async function writeMetadata(buffer) {
+  const { extractDocumentMetadata } = await import('./duplicateMetadata.mjs');
+  const metadata = await extractDocumentMetadata({ format: options.format, buffer, cfb: cfbReader, readPdfInfo, toDocx: convertToDocx });
+  await writeFile(`${OUTPUT}/metadata.json`, JSON.stringify(metadata), { encoding: 'utf8', flag: 'wx' });
+}
+
+/** 转换正文：content.md、manifest.json，以及 analysis=duplicate-check 时的 analysis.json。 */
+async function writeContent(buffer) {
   const markdown = await convertToMarkdown({
     format: options.format,
     buffer,
@@ -156,6 +174,12 @@ try {
     const analysis = analyzeDuplicateCheckDocument(source, extractHtmlTableTextBlocks);
     await writeFile(`${OUTPUT}/analysis.json`, JSON.stringify(analysis), { encoding: 'utf8', flag: 'wx' });
   }
+}
+
+try {
+  const buffer = await readFile(INPUT);
+  if (options.metadata) await writeMetadata(buffer);
+  else await writeContent(buffer);
 } catch (error) {
   const code = KNOWN_CODES.has(error?.code) ? error.code : 'conversion_failed';
   // 标准错误只写错误类型和代码，不写消息（可能含文档内容），供排查。

@@ -89,17 +89,11 @@ export async function convertToMarkdown({ format, buffer, charset, imageSink = n
       await assertSafeZip(buffer);
       return convertDocx(buffer, imageSink);
     case 'word-ole':
-      return convertDocx(await convertWithOffice(buffer, OFFICE_INPUTS['word-ole']), imageSink);
     case 'rtf':
-      return convertDocx(await convertWithOffice(sanitizeRtf(buffer), OFFICE_INPUTS.rtf), imageSink);
     case 'html-word':
-      return convertDocx(await convertWithOffice(htmlForOffice(sanitizeHtml(decodeHtmlBytes(buffer))), OFFICE_INPUTS.html), imageSink);
-    case 'mht': {
-      const { html, resolveResource } = extractMht(buffer);
-      return convertDocx(await convertWithOffice(htmlForOffice(sanitizeHtml(html, { resolveImage: resolveResource })), OFFICE_INPUTS.html), imageSink);
-    }
+    case 'mht':
     case 'word-xml':
-      return convertDocx(await convertWithOffice(assertSafeXml(buffer).bytes, OFFICE_INPUTS['word-xml']), imageSink);
+      return convertDocx(await convertToDocx(format, buffer), imageSink);
     case 'html-sheet':
       return convertSpreadsheet(sanitizeHtml(decodeHtmlBytes(buffer)), 'string');
     case 'spreadsheet-xml':
@@ -114,6 +108,30 @@ export async function convertToMarkdown({ format, buffer, charset, imageSink = n
     case 'markdown':
       // 桌面版不保留图片时去掉 Markdown 中的图片；沙箱中没有原件旁的文件，远程图片也不跟随，一律去掉。
       return ensureTrailingNewline(stripMarkdownImages(decodeText(buffer, charset)).trimEnd());
+    default:
+      throw new ConversionError('unsupported_format', '不支持的文件格式');
+  }
+}
+
+/**
+ * 老式 Word（OLE）与文本类 Word 格式经 LibreOffice 转成 docx（已做 ZIP 检查）。文本类格式先检查或清理（6.7）。
+ * 正文转换与标书查重的元数据提取（duplicateMetadata.mjs，读取转换后的 docx 属性）共用。
+ * @param {'word-ole' | 'rtf' | 'html-word' | 'mht' | 'word-xml'} format
+ */
+export async function convertToDocx(format, buffer) {
+  switch (format) {
+    case 'word-ole':
+      return convertWithOffice(buffer, OFFICE_INPUTS['word-ole']);
+    case 'rtf':
+      return convertWithOffice(sanitizeRtf(buffer), OFFICE_INPUTS.rtf);
+    case 'html-word':
+      return convertWithOffice(htmlForOffice(sanitizeHtml(decodeHtmlBytes(buffer))), OFFICE_INPUTS.html);
+    case 'mht': {
+      const { html, resolveResource } = extractMht(buffer);
+      return convertWithOffice(htmlForOffice(sanitizeHtml(html, { resolveImage: resolveResource })), OFFICE_INPUTS.html);
+    }
+    case 'word-xml':
+      return convertWithOffice(assertSafeXml(buffer).bytes, OFFICE_INPUTS['word-xml']);
     default:
       throw new ConversionError('unsupported_format', '不支持的文件格式');
   }
@@ -511,6 +529,22 @@ async function convertPdf(buffer, imageSink) {
     await parser.destroy();
   }
 }
+
+/** pdf-parse 的 getInfo（Info、XMP、页数、指纹、权限），供标书查重的元数据提取（duplicateMetadata.mjs）。 */
+export async function readPdfInfo(buffer) {
+  const parser = new PDFParse({ data: buffer });
+  try {
+    return await parser.getInfo();
+  } finally {
+    await parser.destroy();
+  }
+}
+
+/** OLE（CFB）的读取，供标书查重的元数据提取：SheetJS 自带的 CFB（1.2.2，与桌面版的 cfb 相同），不另加依赖。 */
+export const cfbReader = Object.freeze({
+  read: (buffer, options) => XLSX.CFB.read(buffer, options),
+  find: (cfb, path) => XLSX.CFB.find(cfb, path),
+});
 
 /** 解析前先只读出页数，超过上限即拒绝，不逐页解析。 */
 async function assertPdfPageCount(buffer) {
