@@ -10,12 +10,15 @@
 // - 失败时文档标为 error，写给用户看的原因（文案由代码决定，不采用沙箱输出的文字），任务以同一代码失败；
 // - 沙箱数已达上限（SANDBOX_BUSY）或 sandbox-runner 暂不可用时按可重试处理：按退避间隔重试创建，仍不行才失败；
 // - 可续跑：worker 崩溃或关闭后从头重新解析，上一次写了一半的产物在成功后一并标为已被替换；
-// - 文档在解析中被移除（原件进回收站）时，写回影响 0 行，任务直接结束。
+// - 文档在解析中被移除（原件进回收站）时，写回影响 0 行，任务直接结束；
+// - 技术方案的招标文件解析成功时，同时在 worker 中算出疑似多标段检测摘要（6.11，src/technicalPlan/bidSectionDetector.ts，
+//   耗时与正文长度成正比），与解析结果一起写回文档。
 import { supersedeArtifacts } from '../artifacts/store.ts';
 import { findFile } from '../files/store.ts';
 import { JobError, JobInterruptedError, type JobContext, type JobTypeDefinition } from '../jobs/definitions.ts';
 import { saveSourceParse } from '../feasibilityReport/store.ts';
 import { saveDocumentParse as saveRejectionCheckDocumentParse } from '../rejectionCheck/store.ts';
+import { summarizeBidSectionDetection, type BidSectionDetectionSummary } from '../technicalPlan/bidSectionDetector.ts';
 import { saveDocumentParse as saveTechnicalPlanDocumentParse } from '../technicalPlan/store.ts';
 import { LOCAL_PARSER_LABEL, parseFailureOf, parseFileInSandbox, writeParseArtifacts } from './run.ts';
 
@@ -40,6 +43,8 @@ interface ParseResultInput {
   contentHash?: string | null;
   parserLabel?: string | null;
   error?: string | null;
+  /** 只有技术方案的招标文件写入（其他模块的 Store 函数不读取这一项）。 */
+  bidSectionDetection?: BidSectionDetectionSummary | null;
 }
 
 type SaveParse = (db: JobContext<unknown>['db'], context: JobContext<unknown>['tenant'], projectId: string, fileId: string, input: ParseResultInput) => Promise<boolean>;
@@ -96,6 +101,7 @@ export function createDocumentParseJob(options: DocumentParseJobOptions = {}): J
       contentHash: written.contentHash,
       parserLabel: LOCAL_PARSER_LABEL,
       error: null,
+      ...(params.target === 'technical-plan-tender' ? { bidSectionDetection: summarizeBidSectionDetection(written.markdown) } : {}),
     });
     // 文档已移除：本次写入的产物与之前的一起标为已被替换。
     await supersedeArtifacts(db, tenant, file.id, saved ? written.artifactIds : []);

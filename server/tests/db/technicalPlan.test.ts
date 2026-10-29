@@ -899,6 +899,7 @@ describe('Store', () => {
       bidSections: [],
       bidSectionExtractionStatus: 'idle',
       bidSectionExtractionError: null,
+      bidSectionDetection: { hasMultiple: false, totalDeclared: null },
       bidSectionExtractionTask: null,
       bidAnalysisTask: null,
       outlineData: null,
@@ -930,7 +931,8 @@ describe('Store', () => {
       outlineMode: 'response-file',
       referenceKnowledgeDocumentIds: [filled.reference.documentId],
       bidSectionExtractionStatus: 'success',
-      bidAnalysisProgress: 14,
+      // 仍是 running 的解析项没有对应的任务（6.11），按未完成显示，计入已结束的项。
+      bidAnalysisProgress: 29,
     });
     expect(state.tenderFiles.map((file) => [file.id, file.fileName, file.status])).toEqual([
       [filled.tenders[0], '招标A.docx', 'success'],
@@ -940,7 +942,7 @@ describe('Store', () => {
     expect(state.bidSections.map((section) => section.id)).toEqual(['s1', 's2']);
     expect(state.bidAnalysisTasks).toEqual({
       projectOverview: { id: 'projectOverview', label: '项目概述', status: 'success', content: '概述', error: null },
-      agentInfo: { id: 'agentInfo', label: '代理机构信息', status: 'running', content: '', error: null },
+      agentInfo: { id: 'agentInfo', label: '代理机构信息', status: 'error', content: '', error: '上次招标文件解析未完成，请重新解析' },
     });
     expect(await loadTechnicalPlan(appDb, peer.context, filled.projectId)).toEqual(state);
     expect(await visibleCounts(b)).toEqual(zeroCounts());
@@ -1481,7 +1483,17 @@ describe('Store', () => {
     const filled = await fillProject(a);
     await prepareBidSectionExtraction(appDb, a.context, filled.projectId);
     let state = await loadTechnicalPlan(appDb, a.context, filled.projectId);
-    expect(state).toMatchObject({ step: 'bid-analysis', bidSectionMode: 'multiple', bidSectionExtractionStatus: 'running', bidSections: [], selectedSection: null, bidAnalysisTasks: {} });
+    // 没有对应的识别任务（6.11），running 按未完成显示。
+    expect(state).toMatchObject({
+      step: 'bid-analysis',
+      bidSectionMode: 'multiple',
+      bidSectionExtractionStatus: 'error',
+      bidSectionExtractionError: '上次多标段识别未完成，请重新识别',
+      bidSections: [],
+      selectedSection: null,
+      bidAnalysisTasks: {},
+    });
+    expect((await superuser.selectFrom('technical_plan_meta').select('bid_section_extraction_status').where('project_id', '=', filled.projectId).executeTakeFirstOrThrow()).bid_section_extraction_status).toBe('running');
     await saveBidSectionExtraction(appDb, a.context, filled.projectId, { sections: [{ title: ' 甲 ', include_ranges: [{ start_line: 1, end_line: 2 }] }, { id: 'x' }] });
     await saveBidSectionExtraction(appDb, a.context, filled.projectId, { status: 'error', error: '识别失败' });
     state = await loadTechnicalPlan(appDb, a.context, filled.projectId);

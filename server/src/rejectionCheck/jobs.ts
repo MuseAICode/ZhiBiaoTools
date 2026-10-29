@@ -16,13 +16,8 @@ import type { RejectionCheckResultType } from '../db/schema.ts';
 import type { TenantContext } from '../db/tenant.ts';
 import { AppError } from '../errors.ts';
 import { createJobChat, resolveJobModel, type JobChat } from '../jobs/chat.ts';
-import {
-  JobBalanceExhaustedError,
-  JobError,
-  JobInterruptedError,
-  type JobContext,
-  type JobTypeDefinition,
-} from '../jobs/definitions.ts';
+import { abortableDelay, isJobStop } from '../jobs/control.ts';
+import { JobError, JobInterruptedError, type JobContext, type JobTypeDefinition } from '../jobs/definitions.ts';
 import { cancelJob, enqueueJob, type JobServiceDependencies } from '../jobs/service.ts';
 import { listJobs, type JobRecord } from '../jobs/store.ts';
 import { runLogicCheck, runRejectionItemCheck, runTypoCheck, usesSegmentedBidDocuments, usesSegmentedRejectionFlow, type CheckRuntime } from './checks.ts';
@@ -131,29 +126,6 @@ function combineTenderMarkdown(contents: readonly string[]): string {
 
 // ---- 公共 ----
 
-/** 暂停、余额不足、中断（租约丢失、worker 关闭）与取消：不改写结果，由执行者按任务状态收尾。 */
-function isStop(context: JobContext<unknown>, error: unknown): boolean {
-  return context.signal.aborted || error instanceof JobInterruptedError || error instanceof JobBalanceExhaustedError;
-}
-
-function abortableDelay(ms: number, signal: AbortSignal): Promise<void> {
-  return new Promise((resolve, reject) => {
-    if (signal.aborted) {
-      reject(new JobInterruptedError());
-      return;
-    }
-    const timer = setTimeout(() => {
-      signal.removeEventListener('abort', onAbort);
-      resolve();
-    }, ms);
-    const onAbort = () => {
-      clearTimeout(timer);
-      reject(new JobInterruptedError());
-    };
-    signal.addEventListener('abort', onAbort, { once: true });
-  });
-}
-
 function noParams(raw: unknown): Record<string, never> {
   if (typeof raw !== 'object' || raw === null || Array.isArray(raw) || Object.keys(raw).length > 0) throw new TypeError('废标项解析任务参数不合法');
   return {};
@@ -210,7 +182,7 @@ function createExtractionJob(options: RejectionCheckJobOptions): JobTypeDefiniti
         const chat = createJobChat(context.ai, await resolveJobModel(db, tenant));
         content = await extractInvalidBidAndRejectionItems(chat, tenderContent, split);
       } catch (error) {
-        if (isStop(context, error)) throw error;
+        if (isJobStop(context, error)) throw error;
         const message = error instanceof JobError ? error.message : '无效与废标项解析失败';
         await save('error', '', message);
         await context.log(`无效与废标项解析失败：${message}`);
@@ -257,7 +229,7 @@ function createCheckJob(options: RejectionCheckJobOptions): JobTypeDefinition<Ru
       await chat.text('warmup', [buildBidDocumentsMessage(input.bidDocuments)], '废标检查-公共前缀预热', { maxOutputTokens: 1, allowEmpty: true });
       await abortableDelay(warmupSettleMs, context.signal);
     } catch (error) {
-      if (isStop(context, error)) throw error;
+      if (isJobStop(context, error)) throw error;
       await context.log('投标文件原文缓存预热失败，直接继续');
     }
   }
@@ -304,7 +276,7 @@ function createCheckJob(options: RejectionCheckJobOptions): JobTypeDefinition<Ru
         chat = createJobChat(context.ai, await resolveJobModel(db, tenant));
         await warmUp(context, chat, input);
       } catch (error) {
-        if (isStop(context, error)) throw error;
+        if (isJobStop(context, error)) throw error;
         const message = error instanceof JobError ? error.message : '废标检查失败';
         for (const check of enabled) {
           const signature = signatureOf(check.type);
@@ -362,7 +334,7 @@ function createCheckJob(options: RejectionCheckJobOptions): JobTypeDefinition<Ru
           return null;
         } catch (error) {
           await progressChain;
-          if (isStop(context, error)) throw error;
+          if (isJobStop(context, error)) throw error;
           completed += 1;
           const message = error instanceof JobError ? error.message : `${check.label}失败`;
           await saveCheckResult(

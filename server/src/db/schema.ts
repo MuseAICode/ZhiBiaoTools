@@ -1002,6 +1002,8 @@ export interface TechnicalPlanDocumentsTable {
   content_hash: ColumnType<string | null, never, string | null>;
   parser_label: ColumnType<string | null, never, string | null>;
   error: ColumnType<string | null, never, string | null>;
+  /** 疑似多标段检测摘要（迁移 0026，src/technicalPlan/bidSectionDetector.ts），由解析任务写入。 */
+  bid_section_detection: ColumnType<Record<string, unknown> | null, never, string | null>;
   created_at: ColumnType<Date, never, never>;
   updated_at: ColumnType<Date, never, never>;
 }
