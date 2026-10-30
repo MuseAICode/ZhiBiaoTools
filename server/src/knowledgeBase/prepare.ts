@@ -1,6 +1,6 @@
 // 知识库文档准备的切块、分段与提示词（路线图第 6 步 6.13a）：从桌面版 knowledgeBaseService.cjs 原样搬运文档准备用到的部分
 // （切块与筛选、统一分段、首轮提取与补充提取的提示词、候选条目整理），tests/knowledgeBase/prepare.test.ts 加载桌面版逐项对照。
-// 段落匹配、遗漏补漏与保存结果用到的部分随 6.13b 迁移。
+// 段落匹配、遗漏补漏与保存结果用到的部分在 src/knowledgeBase/match.ts（6.13b）。
 //
 // 块在这里用 headingPath（与 src/knowledgeBase/content.ts 的 Store 相同），渲染进提示词时与桌面版的 heading_path 逐字相同。
 import type { ChatMessage } from '../ai/providers.ts';
