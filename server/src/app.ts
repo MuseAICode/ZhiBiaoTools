@@ -7,6 +7,7 @@ import type { KeyWrapper } from './ai/keyring.ts';
 import { registerAuthHooks } from './auth/hooks.ts';
 import { createPasswordHasher, type PasswordHasher } from './auth/password.ts';
 import { createAuthRateLimiters, DEFAULT_AUTH_RATE_LIMITS, type AuthRateLimitSettings } from './auth/rateLimit.ts';
+import type { RateLimitStore } from './auth/rateLimitStore.ts';
 import type { AppConfig } from './config.ts';
 import type { DatabaseHandle } from './db/database.ts';
 import { registerErrorHandlers } from './errors.ts';
@@ -50,6 +51,11 @@ export interface BuildAppOptions {
   passwordHasher?: PasswordHasher;
   rateLimits?: AuthRateLimitSettings;
   now?: () => number;
+  /**
+   * 登录、注册、找回密码等限流的共享计数（src/server.ts 按 REDIS_URL 创建，由调用方关闭）。
+   * 未提供时只按进程内存计数，多实例部署时限额按实例数放大。
+   */
+  rateLimitStore?: RateLimitStore | null;
   /**
    * 主密钥（src/server.ts 按 AI_KEK_FILE 加载）。未提供时 AI 网关和平台凭据接口关闭，返回 503。
    * 主密钥只交给 AI 网关和凭据加密，不放进配置对象。
@@ -127,7 +133,11 @@ export async function buildApp(config: AppConfig, options: BuildAppOptions): Pro
   const db = options.database.db;
   const mailer = options.mailer ?? createLogMailer(app.log, config.nodeEnv);
   const hasher = options.passwordHasher ?? (await createPasswordHasher());
-  const limiters = createAuthRateLimiters(options.rateLimits ?? DEFAULT_AUTH_RATE_LIMITS, options.now);
+  const limiters = createAuthRateLimiters(options.rateLimits ?? DEFAULT_AUTH_RATE_LIMITS, {
+    ...(options.now ? { now: options.now } : {}),
+    store: options.rateLimitStore ?? null,
+    log: app.log,
+  });
   await app.register(registerAuthRoutes, { prefix: '/api/auth', db, hasher, mailer, limiters, publicOrigin: config.publicOrigin });
   const keyWrapper = options.keyWrapper ?? null;
   await app.register(registerAdminRoutes, {
