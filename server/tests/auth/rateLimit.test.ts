@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   createAuthRateLimiters,
   DEFAULT_AUTH_RATE_LIMITS,
@@ -115,11 +115,10 @@ function fakeStore() {
 }
 
 function captureLog() {
-  const entries: { level: 'warn' | 'info'; msg: string | undefined }[] = [];
+  const entries: { obj: Record<string, unknown>; msg: string | undefined }[] = [];
   return {
     entries,
-    warn: (_obj: unknown, msg?: string) => void entries.push({ level: 'warn', msg }),
-    info: (_obj: unknown, msg?: string) => void entries.push({ level: 'info', msg }),
+    warn: (obj: unknown, msg?: string) => void entries.push({ obj: obj as Record<string, unknown>, msg }),
   };
 }
 
@@ -146,10 +145,9 @@ describe('createAuthRateLimiters', () => {
     ]);
   });
 
-  it('共享计数出错时退回进程内存计数，不放行超限请求；只在进入、退出时各写一条日志', async () => {
+  it('共享计数出错时退回进程内存计数，不放行超限请求', async () => {
     const { store, state } = fakeStore();
-    const log = captureLog();
-    const limiters = createAuthRateLimiters(STRICT, { store, log });
+    const limiters = createAuthRateLimiters(STRICT, { store });
     state.broken = true;
     expect((await limiters.loginPerIp.consume('1.1.1.1')).allowed).toBe(true);
     expect((await limiters.loginPerIp.consume('1.1.1.1')).allowed).toBe(true);
@@ -158,11 +156,48 @@ describe('createAuthRateLimiters', () => {
     await limiters.loginFailures.recordFailure('a@example.com');
     await limiters.loginFailures.recordFailure('a@example.com');
     expect((await limiters.loginFailures.check('a@example.com')).allowed).toBe(false);
-    expect(log.entries).toEqual([{ level: 'warn', msg: 'auth rate limit redis unavailable, falling back to in-process limits' }]);
 
     state.broken = false;
     expect(await limiters.loginPerIp.consume('1.1.1.1')).toEqual({ allowed: false, retryAfterMs: 42_000 });
-    expect(log.entries.at(-1)).toEqual({ level: 'info', msg: 'auth rate limit redis recovered' });
+  });
+
+  it('退回与恢复各写一条 warn，退回期间按间隔写持续时长，不逐次写', async () => {
+    vi.useFakeTimers({ now: 1_000_000 });
+    try {
+      const { store, state } = fakeStore();
+      const log = captureLog();
+      const limiters = createAuthRateLimiters(STRICT, { store, log, degradedReportMs: 60_000 });
+      state.broken = true;
+      await limiters.registerPerIp.consume('1.1.1.1');
+      vi.advanceTimersByTime(30_000);
+      await limiters.registerPerIp.consume('1.1.1.1');
+      await limiters.loginFailures.check('a@example.com');
+      expect(log.entries).toHaveLength(1);
+      expect(log.entries[0]!.msg).toBe('auth rate limit redis unavailable, falling back to in-process limits');
+      expect(log.entries[0]!.obj).toMatchObject({ degradedMs: 0 });
+      expect(log.entries[0]!.obj.err).toBeInstanceOf(Error);
+
+      vi.advanceTimersByTime(30_000);
+      await limiters.registerPerIp.consume('1.1.1.1');
+      await limiters.registerPerIp.consume('1.1.1.1');
+      expect(log.entries).toHaveLength(2);
+      expect(log.entries[1]).toMatchObject({ msg: 'auth rate limit still falling back to in-process limits', obj: { degradedMs: 60_000 } });
+
+      vi.advanceTimersByTime(15_000);
+      state.broken = false;
+      await limiters.registerPerIp.consume('1.1.1.1');
+      await limiters.registerPerIp.consume('1.1.1.1');
+      expect(log.entries).toHaveLength(3);
+      expect(log.entries[2]).toEqual({ msg: 'auth rate limit redis recovered, shared limits restored', obj: { degradedMs: 75_000 } });
+
+      // 再次出错时重新计时。
+      state.broken = true;
+      vi.advanceTimersByTime(5_000);
+      await limiters.registerPerIp.consume('1.1.1.1');
+      expect(log.entries[3]).toMatchObject({ msg: 'auth rate limit redis unavailable, falling back to in-process limits', obj: { degradedMs: 0 } });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('登录成功清零时进程内存和共享计数都清掉', async () => {

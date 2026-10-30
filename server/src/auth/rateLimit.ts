@@ -171,28 +171,42 @@ export interface CreateAuthRateLimitersOptions {
   now?: Clock;
   /** 共享计数（src/server.ts 按 REDIS_URL 创建，由调用方关闭）。未提供时只用进程内存。 */
   store?: RateLimitStore | null;
-  log?: { warn(obj: unknown, msg?: string): void; info(obj: unknown, msg?: string): void };
+  log?: { warn(obj: unknown, msg?: string): void };
+  /** 退回进程内存计数期间，重复写告警日志的最短间隔。默认 1 分钟。 */
+  degradedReportMs?: number;
 }
+
+const DEFAULT_DEGRADED_REPORT_MS = 60_000;
 
 export function createAuthRateLimiters(settings: AuthRateLimitSettings, options: CreateAuthRateLimitersOptions = {}) {
   const { now, store = null, log } = options;
   const clock = now ? { now } : {};
 
-  // Redis 出错时退回进程内存计数；只在进入、退出这种状态时各写一条日志，避免 Redis 长时间不可用时刷屏。
-  let degraded = false;
+  // Redis 出错时退回进程内存计数。不逐次写日志，避免 Redis 长时间不可用时刷屏，只写三种 warn：
+  // 进入时一条；仍在退回中时最多每 degradedReportMs 一条，写明已持续多久（degradedMs）；恢复时一条，写明一共退回了多久。
+  // 退回期间各实例分别计数，限额按实例数放大，告警据此判断影响范围。
+  const reportEveryMs = options.degradedReportMs ?? DEFAULT_DEGRADED_REPORT_MS;
+  let degradedSince: number | null = null;
+  let lastReportAt = 0;
   async function shared<T>(remote: () => Promise<T>, local: () => T): Promise<T> {
     if (!store) return local();
     try {
       const result = await remote();
-      if (degraded) {
-        degraded = false;
-        log?.info({}, 'auth rate limit redis recovered');
+      if (degradedSince !== null) {
+        const degradedMs = Math.max(0, Date.now() - degradedSince);
+        degradedSince = null;
+        log?.warn({ degradedMs }, 'auth rate limit redis recovered, shared limits restored');
       }
       return result;
     } catch (error) {
-      if (!degraded) {
-        degraded = true;
-        log?.warn({ err: error }, 'auth rate limit redis unavailable, falling back to in-process limits');
+      const at = Date.now();
+      if (degradedSince === null) {
+        degradedSince = at;
+        lastReportAt = at;
+        log?.warn({ err: error, degradedMs: 0 }, 'auth rate limit redis unavailable, falling back to in-process limits');
+      } else if (at - lastReportAt >= reportEveryMs) {
+        lastReportAt = at;
+        log?.warn({ err: error, degradedMs: at - degradedSince }, 'auth rate limit still falling back to in-process limits');
       }
       return local();
     }

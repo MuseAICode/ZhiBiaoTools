@@ -31,8 +31,8 @@ const stores: RateLimitStore[] = [];
 const apps: FastifyInstance[] = [];
 const databases: DatabaseHandle[] = [];
 
-async function newStore(): Promise<RateLimitStore> {
-  const store = createRedisRateLimitStore(redisConfig(), { prefix });
+async function newStore(storePrefix = prefix): Promise<RateLimitStore> {
+  const store = createRedisRateLimitStore(redisConfig(), { prefix: storePrefix });
   stores.push(store);
   await store.ready();
   return store;
@@ -158,11 +158,11 @@ describe('连续失败退避', () => {
 describe('登录接口', () => {
   const STRICT: AuthRateLimitSettings = { ...DEFAULT_AUTH_RATE_LIMITS, loginPerIp: { limit: 2, windowMs: 60_000 } };
 
-  async function newApp(store: RateLimitStore | null): Promise<FastifyInstance> {
+  async function newApp(store: RateLimitStore | null, trustedProxies: readonly string[] = []): Promise<FastifyInstance> {
     const database = createDatabase(testDb.appConfig);
     databases.push(database);
     const app = await buildApp(
-      { ...testConfig, database: testDb.appConfig },
+      { ...testConfig, database: testDb.appConfig, trustedProxies },
       {
         database,
         logStream: createLogCapture().stream,
@@ -176,11 +176,11 @@ describe('登录接口', () => {
     return app;
   }
 
-  function login(app: FastifyInstance, ip: string) {
+  function login(app: FastifyInstance, ip: string, forwardedFor?: string) {
     return app.inject({
       method: 'POST',
       url: '/api/auth/login',
-      headers: sameSiteHeaders,
+      headers: { ...sameSiteHeaders, ...(forwardedFor === undefined ? {} : { 'x-forwarded-for': forwardedFor }) },
       payload: { email: 'nobody@example.com', password: 'wrong-password-123' },
       remoteAddress: ip,
     });
@@ -205,5 +205,50 @@ describe('登录接口', () => {
     expect((await login(app, '10.255.0.1')).statusCode).toBe(401);
     expect((await login(app, '10.255.0.1')).statusCode).toBe(401);
     expect((await login(app, '10.255.0.1')).statusCode).toBe(429);
+  });
+
+  // 计数存在 Redis 时，按 IP 的键仍取 request.ip（Fastify 按 TRUSTED_PROXIES 解析，见 src/app.ts 的 trustProxy），
+  // 与 tests/clientIp.test.ts（进程内存计数）的规则相同。每个用例用独立前缀，直接核对 Redis 中按哪个 IP 计数。
+  describe('客户端 IP（TRUSTED_PROXIES）', () => {
+    const CADDY = '172.30.0.2';
+
+    async function setup(trustedProxies: readonly string[]) {
+      const ownPrefix = `${prefix}:ip:${randomUUID()}`;
+      const app = await newApp(await newStore(ownPrefix), trustedProxies);
+      const countFor = async (ip: string) => Number((await inspector.get(rateLimitKey(ownPrefix, 'loginPerIp', ip))) ?? 0);
+      return { app, countFor };
+    }
+
+    it('默认不信任代理：伪造 X-Forwarded-For 不能绕过，按连接对端地址计数', async () => {
+      const { app, countFor } = await setup([]);
+      expect((await login(app, '203.0.113.10', '198.51.100.1')).statusCode).toBe(401);
+      expect((await login(app, '203.0.113.10', '198.51.100.2')).statusCode).toBe(401);
+      expect((await login(app, '203.0.113.10', '198.51.100.3, 198.51.100.4')).statusCode).toBe(429);
+      expect(await countFor('203.0.113.10')).toBe(2);
+      for (const forged of ['198.51.100.1', '198.51.100.2', '198.51.100.3', '198.51.100.4']) expect(await countFor(forged)).toBe(0);
+    });
+
+    it('经可信代理时按真实客户端计数，客户端在左侧伪造的值不被采信', async () => {
+      const { app, countFor } = await setup([CADDY]);
+      // 代理把真实地址 198.51.100.1 附加在客户端自带的值之后。
+      expect((await login(app, CADDY, '1.1.1.1, 198.51.100.1')).statusCode).toBe(401);
+      expect((await login(app, CADDY, '2.2.2.2, 198.51.100.1')).statusCode).toBe(401);
+      expect((await login(app, CADDY, `${CADDY}, 198.51.100.1`)).statusCode).toBe(429);
+      expect((await login(app, CADDY, '198.51.100.2')).statusCode).toBe(401);
+      expect(await countFor('198.51.100.1')).toBe(2);
+      expect(await countFor('198.51.100.2')).toBe(1);
+      for (const ip of ['1.1.1.1', '2.2.2.2', CADDY]) expect(await countFor(ip)).toBe(0);
+    });
+
+    it('绕过可信代理直连时不采信 X-Forwarded-For', async () => {
+      const { app, countFor } = await setup([CADDY]);
+      expect((await login(app, '203.0.113.20', '198.51.100.1')).statusCode).toBe(401);
+      expect((await login(app, '203.0.113.20', '198.51.100.2')).statusCode).toBe(401);
+      expect((await login(app, '203.0.113.20', '198.51.100.3')).statusCode).toBe(429);
+      expect(await countFor('203.0.113.20')).toBe(2);
+      expect(await countFor('198.51.100.1')).toBe(0);
+      // 伪造的地址没有占用真实客户端的额度。
+      expect((await login(app, CADDY, '198.51.100.1')).statusCode).toBe(401);
+    });
   });
 });

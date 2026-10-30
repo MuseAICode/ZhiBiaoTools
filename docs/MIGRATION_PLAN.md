@@ -1389,11 +1389,12 @@ AI 网关加固，做法见 `docs/SERVER_DESIGN.md` 第 10.9 节。`client/` 未
 只改 `server/`，不改 `client/`；没有新增依赖、迁移、数据库角色，没有修改已有的 RLS 策略。接口、参数与错误响应（429 `TOO_MANY_REQUESTS`、`Retry-After`）不变。
 
 - **共享计数**（`src/auth/rateLimitStore.ts`）：固定窗口与连续失败退避各一个 Lua 脚本（原子执行），算法与进程内存实现相同（被拒绝的请求不计数、窗口不延长；第 freeFailures + n 次失败锁定 baseDelayMs × 2^(n-1)，不超过 maxDelayMs，成功后清零，最近一次失败超过 maxDelayMs 后作废）。时间取 Redis 服务器时钟，不受各实例时钟偏差影响。键为 `ratelimit:auth:{限流器名}:{SHA-256 前 32 位}`，邮箱和 IP 不以明文写入 Redis，键长有界；每个键都带过期时间，不需要清理任务。连接用 `failFastRedisOptions`：未连接时命令立即失败，登录请求不等待重连。
-- **退回进程内存**（`createAuthRateLimiters`）：Redis 出错（未连接、超时、内存满拒绝写入）时该次判断改用本进程的内存计数，仍然限流；只在进入、退出这种状态时各写一条日志。未配置 `REDIS_URL` 时只用进程内存（开发、测试），启动日志提示 `auth rate limits are per process`。
+- **退回进程内存**（`createAuthRateLimiters`）：Redis 出错（未连接、超时、内存满拒绝写入）时该次判断改用本进程的内存计数，仍然限流。日志都是 warn 级，不逐次写：进入时一条（`auth rate limit redis unavailable, falling back to in-process limits`）；仍在退回中时最多每分钟一条，写明已持续多久（`degradedMs`）；恢复时一条（`auth rate limit redis recovered, shared limits restored`，`degradedMs` 为退回的总时长）。未配置 `REDIS_URL` 时只用进程内存（开发、测试），启动日志提示 `auth rate limits are per process`。
 - **接线**：`src/server.ts` 按 `REDIS_URL` 创建并在关闭时释放，`buildApp` 新增 `rateLimitStore`；限流器方法改为异步，`routes/auth.ts`、`routes/admin.ts` 改为 `await`，同一请求的多个维度并发判断。
-- **测试**：单元测试 `tests/auth/rateLimit.test.ts` 新增共享计数优先、出错退回内存且不放行超限请求、日志只写进入与恢复、清零时两边都清；数据库测试 `tests/db/rateLimitStore.test.ts`（真实 Redis）覆盖窗口计数与剩余时长、窗口到期恢复、两个实例共用限额、键中无明文邮箱且有过期时间、退避的指数增长与上限、解锁与记录作废、大量失败不溢出，以及两个 api 实例按同一份限额返回 429、Redis 不可用时登录接口照常限流。
+- **客户端 IP**：按 IP 的键仍取 `request.ip`，由 Fastify 按 `TRUSTED_PROXIES` 解析（旧仓库 PR #30），存储换成 Redis 不影响这一步：默认不信任代理时伪造的 `X-Forwarded-For` 一律忽略，配置可信代理后只采信代理附加的最右一项，绕过代理直连时同样忽略。进程内存计数的测试见 `tests/clientIp.test.ts`，Redis 计数的测试见 `tests/db/rateLimitStore.test.ts` 的“客户端 IP（TRUSTED_PROXIES）”（直接核对 Redis 中按哪个 IP 计数，伪造的 IP 计数为 0）。
+- **测试**：单元测试 `tests/auth/rateLimit.test.ts` 新增共享计数优先、出错退回内存且不放行超限请求、退回 / 持续 / 恢复三种 warn 日志及其 `degradedMs`、清零时两边都清；数据库测试 `tests/db/rateLimitStore.test.ts`（真实 Redis）覆盖窗口计数与剩余时长、窗口到期恢复、两个实例共用限额、键中无明文邮箱且有过期时间、退避的指数增长与上限、解锁与记录作废、大量失败不溢出，以及两个 api 实例按同一份限额返回 429、Redis 不可用时登录接口照常限流、客户端 IP 的三种情形。
 
-偏离与说明（需确认）：
+偏离与说明（以下 3 项已在 #42 确认）：
 
 1. **未用 `@fastify/rate-limit`**：`SERVER_DESIGN.md` 第 3.5 节写的是 `@fastify/rate-limit` + Redis。它不支持“连续失败后指数退避”和“按邮箱”这类在路由内部算键的判断，沿用旧仓库 PR #29 的算法写成 Lua 脚本，不新增依赖。
 2. **Redis 不可用时退回进程内存计数**（不是全部放行，也不是全部拒绝）：全部拒绝会让 Redis 故障变成无法登录；全部放行会让故障期间失去暴力破解防护。退回内存后这段时间的限额按实例数放大，与 6.14 之前相同。
