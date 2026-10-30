@@ -1,8 +1,10 @@
 // 登录、注册、找回密码的限流（docs/SERVER_DESIGN.md 第 3.5 节）：按 IP 和按邮箱两个维度，连续失败后指数退避。
 //
-// 目前是进程内存实现：开发和起步部署只有一个 api 进程。接入 Redis（第 6 步）后换成共享存储，
-// 接口不变；多实例部署前必须完成替换，否则限额按实例数放大。
-// 每个限流器的键数有上限，超出时淘汰最早写入的键，防止用随机邮箱把内存撑爆。
+// 配置了 Redis 时计数存在 Redis（src/auth/rateLimitStore.ts），api 的所有实例共用一份限额（路线图第 6 步 6.14）；
+// Redis 暂时不可用时退回本进程内存计数，不放行也不拒绝全部请求（多实例时这段时间的限额按实例数放大）。
+// 未配置 Redis 时（开发、测试）只用进程内存。
+// 进程内存的每个限流器键数有上限，超出时淘汰最早写入的键，防止用随机邮箱把内存撑爆。
+import type { RateLimitStore } from './rateLimitStore.ts';
 
 const DEFAULT_MAX_KEYS = 50_000;
 
@@ -152,18 +154,95 @@ export const DEFAULT_AUTH_RATE_LIMITS: Readonly<AuthRateLimitSettings> = Object.
   adminStepUpPerUser: { limit: 10, windowMs: 15 * MINUTE },
 });
 
-export function createAuthRateLimiters(settings: AuthRateLimitSettings, now?: Clock) {
-  const window = (options: FixedWindowOptions) => new FixedWindowLimiter({ ...options, ...(now ? { now } : {}) });
+/** 固定窗口限流器：每次请求计一次。 */
+export interface WindowRateLimiter {
+  consume(key: string): Promise<RateLimitDecision>;
+}
+
+/** 连续失败退避：请求前检查，失败时记录，成功后清零。 */
+export interface BackoffRateLimiter {
+  check(key: string): Promise<RateLimitDecision>;
+  recordFailure(key: string): Promise<void>;
+  reset(key: string): Promise<void>;
+}
+
+export interface CreateAuthRateLimitersOptions {
+  /** 测试用：进程内存计数的时钟。Redis 计数一律用 Redis 服务器的时钟。 */
+  now?: Clock;
+  /** 共享计数（src/server.ts 按 REDIS_URL 创建，由调用方关闭）。未提供时只用进程内存。 */
+  store?: RateLimitStore | null;
+  log?: { warn(obj: unknown, msg?: string): void; info(obj: unknown, msg?: string): void };
+}
+
+export function createAuthRateLimiters(settings: AuthRateLimitSettings, options: CreateAuthRateLimitersOptions = {}) {
+  const { now, store = null, log } = options;
+  const clock = now ? { now } : {};
+
+  // Redis 出错时退回进程内存计数；只在进入、退出这种状态时各写一条日志，避免 Redis 长时间不可用时刷屏。
+  let degraded = false;
+  async function shared<T>(remote: () => Promise<T>, local: () => T): Promise<T> {
+    if (!store) return local();
+    try {
+      const result = await remote();
+      if (degraded) {
+        degraded = false;
+        log?.info({}, 'auth rate limit redis recovered');
+      }
+      return result;
+    } catch (error) {
+      if (!degraded) {
+        degraded = true;
+        log?.warn({ err: error }, 'auth rate limit redis unavailable, falling back to in-process limits');
+      }
+      return local();
+    }
+  }
+
+  const window = (name: keyof AuthRateLimitSettings, options: FixedWindowOptions): WindowRateLimiter => {
+    const memory = new FixedWindowLimiter({ ...options, ...clock });
+    return {
+      consume: (key) =>
+        shared(
+          () => store!.consumeWindow(name, key, options),
+          () => memory.consume(key),
+        ),
+    };
+  };
+
+  const backoff = (name: keyof AuthRateLimitSettings, options: FailureBackoffOptions): BackoffRateLimiter => {
+    const memory = new FailureBackoff({ ...options, ...clock });
+    return {
+      check: (key) =>
+        shared(
+          () => store!.checkBackoff(name, key),
+          () => memory.check(key),
+        ),
+      recordFailure: (key) =>
+        shared(
+          () => store!.recordBackoffFailure(name, key, options),
+          () => memory.recordFailure(key),
+        ),
+      reset: async (key) => {
+        // 两边都清：Redis 恢复前在进程内存中累积的失败不应在登录成功后继续生效。
+        memory.reset(key);
+        await shared(
+          () => store!.resetBackoff(name, key),
+          () => undefined,
+        );
+      },
+    };
+  };
+
   return {
-    loginPerIp: window(settings.loginPerIp),
-    loginPerEmail: window(settings.loginPerEmail),
-    loginFailures: new FailureBackoff({ ...settings.loginFailures, ...(now ? { now } : {}) }),
-    registerPerIp: window(settings.registerPerIp),
-    resetRequestPerIp: window(settings.resetRequestPerIp),
-    resetRequestPerEmail: window(settings.resetRequestPerEmail),
-    resetConfirmPerIp: window(settings.resetConfirmPerIp),
-    changePasswordPerUser: window(settings.changePasswordPerUser),
-    adminStepUpPerUser: window(settings.adminStepUpPerUser),
+    loginPerIp: window('loginPerIp', settings.loginPerIp),
+    loginPerEmail: window('loginPerEmail', settings.loginPerEmail),
+    loginFailures: backoff('loginFailures', settings.loginFailures),
+    registerPerIp: window('registerPerIp', settings.registerPerIp),
+    resetRequestPerIp: window('resetRequestPerIp', settings.resetRequestPerIp),
+    resetRequestPerEmail: window('resetRequestPerEmail', settings.resetRequestPerEmail),
+    resetConfirmPerIp: window('resetConfirmPerIp', settings.resetConfirmPerIp),
+    changePasswordPerUser: window('changePasswordPerUser', settings.changePasswordPerUser),
+    adminStepUpPerUser: window('adminStepUpPerUser', settings.adminStepUpPerUser),
   };
 }
 

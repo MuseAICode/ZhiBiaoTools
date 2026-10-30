@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { FailureBackoff, FixedWindowLimiter } from '../../src/auth/rateLimit.ts';
+import {
+  createAuthRateLimiters,
+  DEFAULT_AUTH_RATE_LIMITS,
+  FailureBackoff,
+  FixedWindowLimiter,
+  type AuthRateLimitSettings,
+} from '../../src/auth/rateLimit.ts';
+import type { RateLimitStore } from '../../src/auth/rateLimitStore.ts';
 
 function clock(start = 1_000_000) {
   let now = start;
@@ -66,5 +73,110 @@ describe('FailureBackoff', () => {
     backoff.recordFailure('k');
     // 上一次失败已过期，本次重新从第 1 次算起，不锁定。
     expect(backoff.check('k').allowed).toBe(true);
+  });
+});
+
+const STRICT: AuthRateLimitSettings = {
+  ...DEFAULT_AUTH_RATE_LIMITS,
+  loginPerIp: { limit: 2, windowMs: 60_000 },
+  loginFailures: { freeFailures: 1, baseDelayMs: 1_000, maxDelayMs: 10_000 },
+};
+
+/** 记录调用的共享计数桩；broken 为 true 时每个操作都抛错（模拟 Redis 不可用）。 */
+function fakeStore() {
+  const calls: string[] = [];
+  const state = { broken: false };
+  const fail = () => {
+    if (state.broken) throw new Error('redis down');
+  };
+  const store: RateLimitStore = {
+    async consumeWindow(name, key) {
+      calls.push(`window:${name}:${key}`);
+      fail();
+      return { allowed: false, retryAfterMs: 42_000 };
+    },
+    async checkBackoff(name, key) {
+      calls.push(`check:${name}:${key}`);
+      fail();
+      return { allowed: true, retryAfterMs: 0 };
+    },
+    async recordBackoffFailure(name, key) {
+      calls.push(`failure:${name}:${key}`);
+      fail();
+    },
+    async resetBackoff(name, key) {
+      calls.push(`reset:${name}:${key}`);
+      fail();
+    },
+    ready: async () => undefined,
+    close: async () => undefined,
+  };
+  return { store, calls, state };
+}
+
+function captureLog() {
+  const entries: { level: 'warn' | 'info'; msg: string | undefined }[] = [];
+  return {
+    entries,
+    warn: (_obj: unknown, msg?: string) => void entries.push({ level: 'warn', msg }),
+    info: (_obj: unknown, msg?: string) => void entries.push({ level: 'info', msg }),
+  };
+}
+
+describe('createAuthRateLimiters', () => {
+  it('没有共享计数时按进程内存计数', async () => {
+    const limiters = createAuthRateLimiters(STRICT);
+    expect((await limiters.loginPerIp.consume('1.1.1.1')).allowed).toBe(true);
+    expect((await limiters.loginPerIp.consume('1.1.1.1')).allowed).toBe(true);
+    expect((await limiters.loginPerIp.consume('1.1.1.1')).allowed).toBe(false);
+  });
+
+  it('有共享计数时以共享计数的结果为准，按限流器名区分', async () => {
+    const { store, calls } = fakeStore();
+    const limiters = createAuthRateLimiters(STRICT, { store });
+    expect(await limiters.loginPerIp.consume('1.1.1.1')).toEqual({ allowed: false, retryAfterMs: 42_000 });
+    await limiters.loginFailures.recordFailure('a@example.com');
+    await limiters.loginFailures.check('a@example.com');
+    await limiters.loginFailures.reset('a@example.com');
+    expect(calls).toEqual([
+      'window:loginPerIp:1.1.1.1',
+      'failure:loginFailures:a@example.com',
+      'check:loginFailures:a@example.com',
+      'reset:loginFailures:a@example.com',
+    ]);
+  });
+
+  it('共享计数出错时退回进程内存计数，不放行超限请求；只在进入、退出时各写一条日志', async () => {
+    const { store, state } = fakeStore();
+    const log = captureLog();
+    const limiters = createAuthRateLimiters(STRICT, { store, log });
+    state.broken = true;
+    expect((await limiters.loginPerIp.consume('1.1.1.1')).allowed).toBe(true);
+    expect((await limiters.loginPerIp.consume('1.1.1.1')).allowed).toBe(true);
+    expect((await limiters.loginPerIp.consume('1.1.1.1')).allowed).toBe(false);
+
+    await limiters.loginFailures.recordFailure('a@example.com');
+    await limiters.loginFailures.recordFailure('a@example.com');
+    expect((await limiters.loginFailures.check('a@example.com')).allowed).toBe(false);
+    expect(log.entries).toEqual([{ level: 'warn', msg: 'auth rate limit redis unavailable, falling back to in-process limits' }]);
+
+    state.broken = false;
+    expect(await limiters.loginPerIp.consume('1.1.1.1')).toEqual({ allowed: false, retryAfterMs: 42_000 });
+    expect(log.entries.at(-1)).toEqual({ level: 'info', msg: 'auth rate limit redis recovered' });
+  });
+
+  it('登录成功清零时进程内存和共享计数都清掉', async () => {
+    const { store, state, calls } = fakeStore();
+    const limiters = createAuthRateLimiters(STRICT, { store });
+    state.broken = true;
+    await limiters.loginFailures.recordFailure('a@example.com');
+    await limiters.loginFailures.recordFailure('a@example.com');
+    expect((await limiters.loginFailures.check('a@example.com')).allowed).toBe(false);
+    // Redis 仍不可用时清零不报错，进程内存的记录已清掉。
+    await limiters.loginFailures.reset('a@example.com');
+    expect((await limiters.loginFailures.check('a@example.com')).allowed).toBe(true);
+    state.broken = false;
+    await limiters.loginFailures.reset('a@example.com');
+    expect(calls.filter((call) => call.startsWith('reset:'))).toHaveLength(2);
   });
 });

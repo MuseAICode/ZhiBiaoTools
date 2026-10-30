@@ -2,6 +2,7 @@
 import { createAiConcurrencyLimiter } from './ai/concurrency.ts';
 import { KeyringError, loadFileKeyWrapper, type KeyWrapper } from './ai/keyring.ts';
 import { buildApp } from './app.ts';
+import { createRedisRateLimitStore } from './auth/rateLimitStore.ts';
 import { ConfigError, loadConfig, type AppConfig } from './config.ts';
 import { createDatabase } from './db/database.ts';
 import { createEventHub } from './events/hub.ts';
@@ -55,16 +56,18 @@ const events = publisher && hub ? { hub, notifier: createJobNotifier({ db: datab
 const aiLimiter = config.redis
   ? createAiConcurrencyLimiter(config.redis, { leaseMs: config.ai.holdTtlSeconds * 1000, log: eventLog })
   : null;
+// 登录、注册、找回密码的限流计数（6.14）：所有实例共用；Redis 不可用时退回进程内存计数。未配置 Redis 时只用进程内存。
+const rateLimitStore = config.redis ? createRedisRateLimitStore(config.redis, { log: eventLog }) : null;
 // 任务派发（6.6 起导入文档后入队解析）。未配置 Redis 时只写 jobs，由 worker 的对账派发。
 const dispatcher = config.redis ? createJobDispatcher({ connection: bullmqConnection(config.redis, 'producer', 'bidtools-api-dispatch') }) : null;
-const app = await buildApp(config, { database, keyWrapper, objectStore, redis, events, aiLimiter, dispatcher });
+const app = await buildApp(config, { database, keyWrapper, objectStore, redis, events, aiLimiter, dispatcher, rateLimitStore });
 if (!keyWrapper) app.log.warn('AI_KEK_FILE is not set, AI gateway disabled');
 if (!objectStore) app.log.warn('S3_BUCKET is not set, file storage disabled');
-if (!redis) app.log.warn('REDIS_URL is not set, redis readiness check and event stream disabled');
+if (!redis) app.log.warn('REDIS_URL is not set, redis readiness check and event stream disabled, auth rate limits are per process');
 
 // 到期冻结的收尾（ai_usage_expire_holds）由 worker 的清理任务执行（6.8，src/cleanup/）。
 app.addHook('onClose', async () => {
-  await Promise.all([database.destroy(), redis?.destroy(), hub?.close(), publisher?.close(), aiLimiter?.close(), dispatcher?.close()]);
+  await Promise.all([database.destroy(), redis?.destroy(), hub?.close(), publisher?.close(), aiLimiter?.close(), dispatcher?.close(), rateLimitStore?.close()]);
 });
 
 let shuttingDown = false;
