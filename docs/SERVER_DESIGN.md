@@ -318,8 +318,8 @@ Markdown 中远程图片的下载（`docs/EXTERNAL_SERVICES.md` §2.9）URL 来�
 
 | 队列 | 任务 | worker 并发（单实例起步值） |
 |---|---|---|
-| `parse` | 文档导入解析、知识库文档准备、招标文件 Markdown 转换 | 4 |
-| `ai` | 不带 Agent 的 AI 任务：查重、废标检查、标书分析、知识库匹配 | 8 |
+| `parse` | 文档导入解析、招标文件 Markdown 转换 | 4 |
+| `ai` | 不带 Agent 的 AI 任务：查重、废标检查、标书分析、知识库文档准备（解析在沙箱中，6.13a）与匹配 | 8 |
 | `agent` | Pi Agent 任务：目录、全局事实、正文生成、原方案还原、格式自检 | 2（受沙箱资源限制） |
 | `export` | Word / Excel 导出、模板样张、模板提取（调 OpenXmlHelper） | 2 |
 

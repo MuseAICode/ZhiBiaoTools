@@ -193,6 +193,8 @@ export async function findJob(db: Kysely<Database>, context: TenantContext, jobI
 
 export interface ListJobsOptions {
   projectId?: string;
+  /** 只列这个互斥键的任务（组织级任务按对象查找，例如 knowledge-document:{documentId}）。 */
+  lockKey?: string;
   /** true 只列未结束的任务，false 只列已结束的，不传列全部。 */
   active?: boolean;
   limit: number;
@@ -202,6 +204,7 @@ export async function listJobs(db: Kysely<Database>, context: TenantContext, opt
   const rows = await withTenant(db, context, (trx) => {
     let query = trx.selectFrom('jobs').selectAll();
     if (options.projectId !== undefined) query = query.where('project_id', '=', options.projectId);
+    if (options.lockKey !== undefined) query = query.where('lock_key', '=', options.lockKey);
     if (options.active === true) query = query.where('status', 'in', JOB_ACTIVE_STATUSES);
     if (options.active === false) query = query.where('status', 'in', JOB_FINAL_STATUSES);
     return query.orderBy('created_at', 'desc').orderBy('id', 'desc').limit(options.limit).execute();
@@ -226,6 +229,28 @@ export async function latestProjectJobs(trx: Trx, projectId: string, types: read
     .orderBy('id', 'desc')
     .execute();
   return new Map(rows.map((row) => [row.type, toRecord(row)]));
+}
+
+/**
+ * 在已设置上下文的事务中读取每个互斥键最近的一个任务（组织级任务按对象返回任务状态用，例如知识库文档）。lockKeyPrefix 以 ':' 结尾，
+ * 结果的键是互斥键中前缀之后的部分（对象 id）；给出 ids 时只读这些对象。没有任务的对象不出现在结果中。
+ */
+export async function latestLockKeyJobs(
+  trx: Trx,
+  lockKeyPrefix: string,
+  types: readonly string[],
+  ids?: readonly string[],
+): Promise<Map<string, JobRecord>> {
+  if (types.length === 0 || (ids && ids.length === 0)) return new Map();
+  if (!lockKeyPrefix.endsWith(':') || /[%_\\]/.test(lockKeyPrefix)) throw new TypeError('lockKeyPrefix 不合法');
+  let query = trx.selectFrom('jobs').selectAll().distinctOn('lock_key').where('type', 'in', [...types]);
+  query = ids ? query.where('lock_key', 'in', ids.map((id) => `${lockKeyPrefix}${id}`)) : query.where('lock_key', 'like', `${lockKeyPrefix}%`);
+  const rows = await query
+    .orderBy('lock_key')
+    .orderBy('created_at', 'desc')
+    .orderBy('id', 'desc')
+    .execute();
+  return new Map(rows.map((row) => [row.lock_key!.slice(lockKeyPrefix.length), toRecord(row)]));
 }
 
 export async function listJobEvents(

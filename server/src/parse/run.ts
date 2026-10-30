@@ -220,16 +220,18 @@ export interface WrittenParse {
 }
 
 /**
- * 把解析输出写为产物：图片（kind image）与 Markdown（kind markdown），来源文件都是 file、属于 projectId。表格类格式以文件名作一级标题；
- * 引用的图片都在输出中（否则 ParseOutputError），其他图片引用去掉；正文为空抛 JobError（PARSE_EMPTY）。
+ * 把解析输出写为产物：图片（kind image）与 Markdown（kind markdown），来源文件都是 file、属于 projectId（知识库等组织级文件为 null，
+ * 产物只挂在来源文件下）。表格类格式以文件名作一级标题；引用的图片都在输出中（否则 ParseOutputError），其他图片引用去掉；
+ * normalizeMarkdown 在写入前整理正文（知识库与桌面版相同去掉代码块围栏）；正文为空抛 JobError（PARSE_EMPTY）。
  * 写了一半时出错，已写入的产物由调用方标为已被替换（supersedeArtifacts）。
  */
 export async function writeParseArtifacts(
   context: JobContext<unknown>,
-  projectId: string,
+  projectId: string | null,
   file: FileRecord,
   parsed: SandboxParseResult,
   onWritten?: (artifactId: string) => void,
+  options: { normalizeMarkdown?: (markdown: string) => string } = {},
 ): Promise<WrittenParse> {
   const { db, tenant } = context;
   const objectStore = context.objectStore;
@@ -256,6 +258,7 @@ export async function writeParseArtifacts(
   }
   // 引用的图片都在输出中（原方案“校验原图资源”），其他图片引用去掉。
   markdown = rewriteImageReferences(markdown, urls).trim();
+  if (options.normalizeMarkdown) markdown = options.normalizeMarkdown(markdown).trim();
   if (!markdown) throw new JobError('PARSE_EMPTY', '未提取到有效 Markdown 内容，请检查文件内容');
   const artifact = await writeArtifact(db, tenant, objectStore, {
     kind: 'markdown',
