@@ -15,7 +15,7 @@
 | 4 | 文件上传 / 下载 / 资源协议 | 进行中 | 旧仓库 PR #34（文件存储：S3 兼容对象存储、本地 SeaweedFS、`files` 表与强制 RLS、按内容校验类型、大小上限与组织配额、附件方式下载、7 天恢复期）、#6（上传白名单补齐桌面版能导入的内容：OLE 内容的 `.docx`，`.doc/.wps` 的 RTF / HTML / MHT / Word 2003 XML，`.xls` 的 HTML 表格 / SpreadsheetML，`%PDF-` 前有多余字节的 PDF） |
 | 5 | 数据层迁移（按业务逐个） | 已完成 | 旧仓库 PR #35（拆分计划，见“第 5 步说明”；记录上传白名单与桌面版的差距）、#7（5.1 项目：`projects` 表、`files.project_id`、项目接口、路由层归属校验、项目级表的迁移与测试模板）、#8（5.2 生成产物存储：`artifacts` 表、Store、只读接口；项目软删除与其下文件、产物联动，由 RLS 强制）、#9（5.3 配置：`org_settings`、`user_settings`、`GET/PATCH /api/settings`；写权限与删除可见性由 RLS 强制）、#10（5.4 导出模板：`export_templates`、`/api/export-templates` 增删改查与复制；系统模板只读、修改删除权限由 RLS 强制，迁移命令同步系统模板）、#11（5.5 资信库：6 张表、`/api/credential-library`；权限与删除可见性由 RLS 强制，图片随所引用文件的生命周期）、#12（5.6 知识库（一）：`knowledge_folders`、`_documents`、`_document_steps`、`/api/knowledge-base` 文件夹与文档管理；权限与删除可见性由 RLS 强制，文档随原件的生命周期）、#14（5.7 知识库（二）：切块、条目、匹配结果等 7 张表，检索与读取条目 / 分析 / Markdown 接口；删除可见性与写权限由 RLS 强制，随文档可见）、#16（5.8 标书查重：13 张项目级表、`/api/projects/:projectId/duplicate-check` 状态 / 文件选择 / 页面状态 / 清空 / Excel 导出；删除可见性与写权限由 RLS 强制，随项目和所选原件可见）、#17（5.8 后续：`files.project_id` 设置后不能再改，由触发器强制；xlsx 写出器防公式注入，回车按原样写出）、#18（5.9 废标检查：7 张项目级表、`/api/projects/:projectId/rejection-check` 状态 / 导入与移除文档 / 页面状态 / 切换与删除问题 / 清空 / Excel 导出；删除可见性与写权限由 RLS 强制，文档随原件可见，签名由服务端现算）、#19（5.10 可研报告：4 张项目级表、`/api/projects/:projectId/feasibility-report` 状态 / 步骤 / 项目信息 / 资料分析 / 目录配置 / 目录（`reason` 协议）/ 关键参数 / 正文 / 资料导入与移除 / 资料 Markdown / 清空；删除可见性与写权限由 RLS 强制，资料随原件、引用随知识库文档可见）、#20（5.11 技术方案（一）：6 张项目级表、`/api/projects/:projectId/technical-plan` 状态 / 步骤 / 生成配置 / 招标解析配置 / 正文生成选项 / 招标文件导入与移除 / 招标文件与合并正文的 Markdown / 原方案 / 投标范围选择 / 清空；删除可见性与写权限由 RLS 强制，文档随原件、引用随知识库文档可见，导出模板只能是本组织的或系统模板）、#21（5.12 技术方案（二）：目录与全局事实 2 张项目级表、`PUT .../outline`（`reason` 协议，节点 UUID 稳定、编号现算）与 `PUT .../global-facts`，下游清空扩展到目录与全局事实；删除可见性与写权限由 RLS 强制））、#22（5.13 技术方案（三）：正文生成状态与编排 2 张项目级表、`PUT .../chapters/:nodeId`、`DELETE .../content-generation`，目录保存与全局事实、下游清空扩展到正文生成状态、编排与运行进度；废标检查 `POST .../tender-from-technical-plan` 复制原件与 Markdown；删除可见性与写权限由 RLS 强制） |
 | 6 | 任务队列与 worker | 已完成 | #23（拆分计划，见“第 6 步说明”）、#24（6.1 Redis 接入：Valkey 8 开启 ACL、`REDIS_URL` / `REDIS_PASSWORD[_FILE]`、`/readyz` 检查 Redis、CI 起 Valkey）、#25（6.2 `jobs` / `job_events` 表与 worker 骨架：BullMQ 只派发、`jobs` 为唯一权威，认领加 `run_id` 隔离令牌与数据库租约，Redis 重启或清空后从 `jobs` 对账恢复入队；新增定义者角色 `bidtools_jobs`）、#26（6.3 SSE 推送 `GET /api/events`：每组织一条 Stream + 频道，`Last-Event-ID` 补发与 `resync`、心跳、会话定期重新校验、单用户连接数上限；任务状态、进度、日志经 worker 推送，取消 / 暂停经控制频道立即送达 worker）、#27（6.4 worker 接入 AI 网关与余额：任务调用记 `job_id` / `job_type`，`jobs.billed_amount` 在结算的同一事务中累加，入队和继续前检查最低启动余额 1 元，运行中余额不足暂停为 `paused` / `insufficient_balance` 并推送，按“组织 + 服务商”的 Redis 分布式信号量）、#28（6.5 解析沙箱基础设施：`sandbox-runner` 服务、`SandboxDriver` 接口、断网的 `parse` 模板与镜像，取回归档逐项校验，gVisor 下的隔离测试）、#29（测试修复：`jobQueue.test.ts` 中模拟清空 Redis 的 `wipeQueueKeys` 改为原子的 Lua 脚本，清空后的断言改为“被清空的任务不再被任何键引用”，消除与运行中 worker 的竞态）、#30（6.6 解析任务（一）：`document-parse` 任务在断网沙箱中按记录的 MIME 解析二进制与纯文本格式，ZIP 炸弹与 PDF 页数检查，产物经 `writeArtifact` 写入、重新解析时旧产物标为已被替换（迁移 0023），三个模块导入后自动入队；parse 镜像加入解析入口与 LibreOffice 安全设置；沙箱总数上限的测试）、#31（6.6 补充：LibreOffice 转换超时改为对整个进程组 SIGKILL，补“解析卡住时任务按时结束并销毁沙箱”的测试）、#32（6.7 解析任务（二）文本类格式：Office 2003 XML 含 DTD 即拒绝，RTF 去掉域指令与 OLE 链接，HTML 按白名单重新生成、不留任何远程资源，MHT 先解开 MIME；恶意样本与对照组测试，远程资源测试在沙箱内监听所有连接）、#33（6.8 清理任务：新增定义者角色 `bidtools_cleanup`（迁移 0024），worker 每小时跨组织删除超过保留期的文件、产物、项目、遗留上传与任务记录，先删对象后删行，孤儿对象，冻结到期收尾移到 worker；清理角色对计费表没有任何权限）、#34（6.4a 步骤幂等：迁移 0025 新建 `job_step_results`，任务调用必须带步骤键，结果与结算同一事务提交，续跑时同一步骤取回结果、不再调用服务商、不再扣费；worker 关闭、租约丢失中止的调用不收费）、#35（6.9 废标检查任务：`rejection-items-extraction`、`rejection-check-run`，招标文件按导入顺序合并正文，结果带开始时的签名写入、文档变化后旧任务的写入被拒绝，状态中返回最近的任务；第一个调用 AI 的业务任务，按步骤键续跑不重复扣费）、#36（6.10a 标书查重任务 `duplicate-analysis`：正文在 parse 沙箱中解析并做逐文档提取（目录、句子、图片位置，`analysis.json`）、#37（6.10b 标书查重的文档格式元数据：每份投标文件在只提取元数据的 parse 沙箱中读取 docx / OLE / PDF 的属性与结构，worker 校验 `metadata.json` 后并入），目录 / 正文 / 图片比对在 worker 中进行；元数据先只有文件基本信息，文档格式的元数据随 6.10b）、#38（6.11 技术方案任务（一）：多标段识别 `bid-section-extraction`、招标解析 `bid-analysis`，结果带开始时的输入签名写入；疑似多标段检测改为线性扫描，由解析任务在 worker 中按文件算出摘要（迁移 0026），读取时合并）、#39（6.12 可研报告任务：资料分析、关键参数、正文生成与自然化审校四类任务，结果带开始时的输入签名写入；正文任务未结束时不能改目录与正文，保存上游内容时取消任务）、#40（6.13a 知识库文档准备任务 `knowledge-document-prepare`：在 parse 沙箱中解析、切块、首轮与补充提取候选条目，按步骤续用，文档带上最近的任务、中断按状态显示，重试，删除文档 / 文件夹后取消任务）、#41（6.13b 知识库段落匹配：文档准备完成后接着匹配、遗漏补漏、保存最终条目与报告，已完成的段与步骤续用；新增 `knowledge-document-match` 与 `POST .../documents/:documentId/match` 重新匹配）、#42（6.14 登录、注册、找回密码等限流的计数改存 Redis，api 各实例共用；Redis 不可用时退回进程内存计数） |
-| 7 | OpenXmlHelper 容器化与离屏渲染（前置：CI 新增 .NET 编译与 OpenXmlHelper 测试，见“第 9 步说明”的品牌改名第三部分） | 进行中 | #43（前置：CI 新增 .NET 编译与 OpenXmlHelper 测试，见“第 7 步说明”） |
+| 7 | OpenXmlHelper 容器化与离屏渲染（前置：CI 新增 .NET 编译与 OpenXmlHelper 测试，见“第 9 步说明”的品牌改名第三部分） | 进行中 | #43（前置：CI 新增 .NET 编译与 OpenXmlHelper 测试，见“第 7 步说明”）、#44（拆分计划与待决定事项，见“第 7 步说明”） |
 | 8 | Agent 沙箱 | 未开始 | — |
 | 9 | 收尾与上线 | 进行中 | #1（品牌改名第一部分：用户可见文字和文档）、#2（品牌改名第二部分：代码标识符、数据与协议、打包，新增 CI 禁用词检查）、#5（品牌改名第三部分：原产品名缩写前缀改为中性前缀 `app`，禁用词检查加入该缩写） |
 
@@ -446,7 +446,7 @@ AI 网关加固，做法见 `docs/SERVER_DESIGN.md` 第 10.9 节。`client/` 未
 
 - **第 6 步（任务队列）**：所有 `*_tasks` / `task_logs`；所有解析任务（招标文件、原方案、可研资料、废标文档、查重文件、知识库文档）；招标解析、多标段识别、查重分析、废标项解析与检查、可研资料分析与关键参数、知识库准备与匹配；所有进度推送（`onTaskEvent`、`knowledgeBase.onEvent`）；过期文件与产物的物理清理；
 - **第 6 步核实、可能推迟到第 8 步**：技术方案的目录生成 / 调整、全局事实生成 / 调整，可研报告的目录生成 / 调整。它们经 `agentService.runTask` 调用 Pi，路线图第 6 步原计划在队列中迁移，需先确认这些任务的 Pi 是否用到 `read/write/bash` 等命令工具；用到则随第 8 步迁移；
-- **第 7 步（OpenXmlHelper 与离屏渲染）**：模板样张 `renderPreview`、Word 导出、`previewContentWord`、模板提取；
+- **第 7 步（OpenXmlHelper 与离屏渲染）**：模板样张 `renderPreview`、Word 导出、`previewContentWord`、模板提取（#44 拆分计划建议 `previewContentWord` 和模板提取移到第 8 步，见“第 7 步说明”）；
 - **第 8 步（Agent 沙箱）**：正文生成、章节重写、原方案还原、格式自检、Agent 问答，Pi 持久任务状态，开发者 Agent 监视器。
 
 #### 项目（#7，5.1）
@@ -1443,6 +1443,82 @@ AI 网关加固，做法见 `docs/SERVER_DESIGN.md` 第 10.9 节。`client/` 未
 1. **整本导出缺少 `page` 一节时报错**：`whole_document: true` 而 `export_format` 没有 `page` 时抛出“Operation is not valid due to the current state of the object.”。桌面版 Main 经 `normalizeExportFormat` 总会补齐，服务端调用助手前同样要先规范化 `export_format`，不要把未规范化的用户配置直接交给助手。
 2. **`openxmlhelper/开发说明.md` 提到的 `client/scripts/check-technical-plan-export.cjs` 不存在**：其中配图、表格预设、标题编号和页面范围已由本 PR 的测试覆盖，八种图片格式逐一识别与格式错配尚未覆盖，第 7 步 Word 导出迁移时补上；`--ipc` 的 Electron 链路检查随第 7 步改为服务端接口测试后，删除该说明。
 
+#### 拆分计划（#44）
+
+只做计划，不改代码。待决定事项见本节末尾，决定前不开始 7.1。
+
+**范围核实**（按桌面版代码逐项核对路线图第 7 步写的“Word 导出、模板样张、模板提取，离屏渲染”）：
+
+| 桌面版功能 | Main 实现 | 用到的助手动作 / 离屏渲染 | 输入从哪里来 | 归属 |
+|---|---|---|---|---|
+| 模板样张 `templates.renderPreview` | `templateIpc` → `openXmlHelperService.renderRestrictedHtmlDocx`（预览队列：同一请求合并、新请求取代旧请求、按内容哈希缓存） | `render-restricted-html-docx`（非整本）；页眉页脚装饰 SVG 经隐藏窗口转 PNG（`chromeAssetService` → `localImageRenderService`） | Renderer 按模板配置组装的样张 HTML（`src/shared/bodyHtml/documentTemplate.ts`）、随包的样张配图 `assets/content-template-preview` | **第 7 步** |
+| 模板样张导出 Word（`export.word` 的 `template_html`） | `exportService` → `createRestrictedHtmlDocx` | 同上 | 同上 | **第 7 步** |
+| 技术方案整本导出 Word（`export.word`） | `technicalPlanExport.build` → `createRestrictedHtmlDocx(..., { wholeDocument: true })`，最长 30 分钟 | `render-restricted-html-docx`（`whole_document`）；页眉页脚 PNG 同上 | 目录与人工正文（第 5 步已入库）；`ai-generate` 小节的 HTML 与配图在**正文 Agent 工作区**（第 8 步） | **第 7 步**；AI 小节的读取随第 8 步接上 |
+| 小节 Word 预览 `technicalPlan.previewContentWord` | `contentGenerationOutput.previewContentSection` | `render-restricted-html-docx` | 只读正文 Agent 工作区中的 `正文/<id>.html` 和 `所选模板配置.json` | **第 8 步**（偏离，见下） |
+| 模板提取 | `templateExtractionTask` 驱动 Pi Agent，Agent 用 `write` / `edit` 写分类文件，再经 Pi 工具 `openxml` 调用 | `list-blocks`、`extract-chapters`、`scan-template-fields`、`apply-template-fields` | 用户上传的招标 Word 原件 | **第 8 步**（偏离，见下） |
+| 正文插入 Word | Pi 工具 `openxml` | `insert-body-html` | Agent 生成的受限 HTML | **第 8 步** |
+| HTML / Mermaid 配图转 PNG | `localImageRenderService` | 离屏 Chromium，执行页面脚本 | AI 生成的 HTML / Mermaid | **第 8 步**（消费方是正文生成） |
+| docx-editor 分页测量（布局预算、格式自检） | `contentGenerationLayout` + `wordLayoutPreload` | 离屏 Chromium，执行 docx-editor | 正文生成过程中的 Word | **第 8 步** |
+| 系统字体列表 `systemFonts.list` | `systemFontService`（枚举本机字体） | — | — | **第 7 步**（第 5 步表 A 登记“随第 7 步镜像字体”） |
+
+结论：第 7 步只有三个用户功能（模板样张、样张导出 Word、整本导出 Word）和字体列表；它们用到的离屏渲染只有**页眉页脚装饰 SVG 转 PNG**（不执行页面脚本）。其余助手动作和离屏渲染的消费方都在 Agent 任务里，随第 8 步迁移，届时复用本步建好的沙箱模板。
+
+**OpenXmlHelper 在服务端的运行方式**
+
+要求：助手处理的都是不可信输入——AI 生成的受限 HTML、用户填写的模板配置（页眉文字、编号模板等）、Renderer 传来的样张 HTML，第 8 步起还有用户上传的招标 Word（模板提取）。它在进程内用 AngleSharp、HtmlToOpenXml、Open XML SDK 解析这些输入，与第 6 步的文档解析属于同一类风险（`SERVER_DESIGN.md` 第 7.1 节“LibreOffice 转换、文档解析、Chromium 渲染 AI 生成的 HTML……复用同一套沙箱”）。
+
+| | A. 常驻 `openxml` 容器，与 worker 共享临时卷（设计第 1.1、8.1 节原方案） | B. 每个任务一个沙箱，经 `sandbox-runner` 新增 `export` 模板 **（建议）** | C. 每个组织一个常驻助手进程 |
+|---|---|---|---|
+| 做法 | 保留“任务目录 + 一行 JSON 信号”协议，worker 把输入写到共享卷，向常驻进程发 `run` | 与 `parse` 模板同一套机制：`--network none`、gVisor、只读根文件系统、非 root、`cap-drop ALL`、资源与时长上限；worker 经 `copyIn` 放入请求和配图，沙箱内一次性运行助手，`copyOut` 取回 docx 与 `result.json` 并校验；用完即毁 | 按组织懒启动、空闲回收的助手容器，组织之间不共享 |
+| 隔离强度 | 弱：所有组织共用一个进程和一个卷，被利用的一次转换能读到之后经过它的其他组织的文件；助手的静态缓存（解析过的 HTML、按路径缓存的配图，最多 32 MiB）跨任务存活；`ResolveWorkspacePath` 只做大小写不敏感的前缀比较、不解析符号链接，在共享卷上不能作为隔离边界 | 强：单个任务一个全新容器，断网，不共享任何状态，缓存随沙箱销毁；路径问题被限制在本任务自己的文件内 | 中：组织之间隔离，同一组织的任务之间共享 |
+| 与设计 | 一致（但与第 6 步决定事项第 1 项“处理不可信输入一律进沙箱”不一致） | 偏离设计第 1.1、8.1 节的部署形态，符合第 6.2、7.1 节和第 6 步的做法；实现时同步改设计 | 偏离；要新写容器生命周期管理 |
+| 工作量 | 起步最小；要新写共享卷、进程守护、崩溃重启 | 中：沙箱基础设施第 6 步已有，只加模板、镜像和助手的一次性运行模式 | 最大 |
+| 性能 | 无额外启动开销 | 每个任务多一次容器启动（gVisor 约 150–500 ms）加 .NET 启动（自包含发布约 100–300 ms）；样张约 1 秒级，7.1 实测；整本导出本来就是分钟级 | 首次冷启动，之后同 A |
+
+**建议 B**。具体约定（7.1 实现，同步写进 `SERVER_DESIGN.md` 第 1.1、7、8.1 节）：
+
+- **助手的一次性运行模式**：新增命令行参数（如 `openxmlhelper --workspace /work --run <job>`），执行一个任务目录、写 `result.json` 后退出，退出码表示成败；常驻 stdin / stdout 模式保留给桌面版，两种模式共用 `JobRunner`，桌面版行为不变；
+- **镜像**：Node 24（运行装饰生成器与入口脚本）+ Playwright 的 Chromium + 助手 `linux-x64` 自包含发布（不裁剪，同桌面版打包约定）+ 中文字体（见待决定事项第 3 项），按 digest 固定，不含编译器和网络工具；与 `parse` 镜像、第 8 步的 Agent 镜像分开；
+- **沙箱内的流程**（入口 `node /opt/export/entry.mjs <mode>`，参数只有模式名）：读 `/work` 中的请求 → 用 `client/electron/shared/chrome/index.mjs`（镜像构建时复制，与桌面版同一份代码，测试核对一致）生成页眉页脚 SVG → Chromium 转 PNG（不执行脚本，断网）→ 运行助手一次 → 只把 docx 和 `result.json` 留在输出目录；
+- **输入**：worker 组装好的请求（HTML、规范化后的 `export_format`）与配图；配图只由 worker 按 `data-app-asset-ref` 解析成本项目可见的产物后放入（RLS 决定可见性，见 7.4），沙箱不能按引用自己去取；样张的固定配图打进镜像；
+- **输出校验**：只收 `.docx` 与 `result.json` 两个普通文件，大小上限；`result.json` 只取 `ok`、`blockCount`、`imageWarnings` 等已知字段，给用户的失败原因按错误代码决定，不直接采用助手的错误文字（同 6.6）；docx 写入前再做一次 ZIP 结构检查（条目数、解压大小）；
+- **规范化 `export_format`**：服务端在入队时按桌面版 `normalizeExportFormat` 规范化（#43 发现的问题第 1 项），助手不再收到缺字段的配置；
+- **测试**：与 `parse` 模板相同的隔离测试（断网、只读、超时与超内存终止、取回时拒绝符号链接和多余文件），另加：受限 HTML 中的远程图片、`<link>`、CSS `url()` 不被请求；装饰 SVG 中的外部引用不被加载；.NET 与 Chromium 在 gVisor 下能运行（设计第 7.2 节预留的兼容性问题以实测为准）。
+
+**拆分与顺序**（样张先于整本导出：样张的输入最简单、没有项目数据，先用它把沙箱、镜像和下载链路跑通；整本导出再加快照、配图解析、长任务进度和产物保存）：
+
+| 序号 | 内容 | 依赖 | 状态 | PR |
+|---|---|---|---|---|
+| 7.0 | 前置：CI 新增 .NET 编译与 OpenXmlHelper 测试 | — | 已完成 | #43 |
+| 7.p | 拆分计划（本节） | 7.0 | 已完成 | #44 |
+| 7.1 | `export` 沙箱：助手一次性运行模式（C#，含测试）、镜像（Node + Chromium + 助手 + 字体）、`export` 模板与资源上限、入口脚本、gVisor 下的隔离与兼容测试，CI 构建镜像并运行；补上 #43 未覆盖的八种图片格式识别与格式错配用例 | 7.0、决定事项第 1~3、5 项 | 未开始 | — |
+| 7.2 | 字体与装饰：镜像中的字体清单经 `GET /api/fonts` 提供（取代 `systemFonts.list`，含义见决定事项第 3 项）；装饰生成器在沙箱中的输出与桌面版逐项核对（同一配置生成的 SVG 一致） | 7.1 | 未开始 | — |
+| 7.3 | 模板样张：`POST /api/export-templates/preview`（请求为样张 HTML 与配置，见决定事项第 8 项）入队 `template-preview` 任务（`export` 队列，`lock_key` 按用户，新请求取消排队中的旧请求，对应桌面版“新请求取代旧请求”）；同一组织内按内容哈希复用最近的结果；结果经 SSE 通知，docx 以附件方式下载给前端的 docx-editor 预览；样张导出 Word 复用同一任务（固定使用本次设置、不参与合并）；WebBridge 的 `templates.renderPreview` 接上 | 7.1、7.2 | 未开始 | — |
+| 7.4 | 技术方案整本导出 Word：`technical-plan-export` 任务（`export` 队列，`lock_key` 按项目），入队时取快照（目录、人工正文、所选模板），worker 中按桌面版 `technicalPlanExport` 组装整本 HTML（目录编号、范围标记 `data-app-export-template` / `data-app-export-page-template`）；`data-app-asset-ref` 统一为产物引用（如 `artifact:<uuid>`），worker 只解析本项目可见的图片产物；`ai-generate` 小节在第 8 步之前按桌面版“正文未生成”的提示处理；进度经 SSE；产物新增迁移登记 docx 种类，按决定事项第 6 项保存与清理；`export.word`、`export.openFile` 改为下载 | 7.3 | 未开始 | — |
+
+7.2 与 7.3 可以合并为一个 PR，视 7.1 之后的工作量决定。
+
+**登记给第 8 步**（本步不做，第 8 步复用 `export` 模板或在其上新增模板）：模板提取、`insert-body-html`、小节 Word 预览 `previewContentWord`、整本导出中 `ai-generate` 小节的读取、HTML / Mermaid 配图转 PNG（需要执行页面脚本）、docx-editor 分页测量与格式自检的定位书签。Agent 在沙箱中调用 `openxml` 时，按设计第 7.3 节走业务工具 RPC：worker 校验参数和归属后在 `export` 沙箱中执行，不把助手放进 Agent 沙箱。
+
+**与路线图、设计的偏离**（随决定事项确认）：
+
+1. **助手按任务进沙箱，不做常驻共享卷容器**（待决定事项第 1 项）：偏离 `SERVER_DESIGN.md` 第 1.1、8.1 节和本文第 4、5 节的原方案，理由见上表；
+2. **模板提取移到第 8 步**：路线图第 6 节写在第 7 步，但它由 Pi Agent 驱动，Agent 要用 `write` / `edit` 写分类文件（`templateExtractionTask.cjs`），与第 6 步把目录生成等改随第 8 步的理由相同；
+3. **小节 Word 预览移到第 8 步**：它只读正文 Agent 工作区（第 5 步说明把它列在第 7 步），工作区的服务端形态由第 8 步决定；
+4. **离屏渲染在本步只做装饰 SVG 转 PNG**：路线图写“离屏渲染改成 Playwright”，其中 HTML / Mermaid 转图和 docx-editor 分页测量的消费方都在第 8 步，本步把 Chromium 放进 `export` 镜像并验证能在 gVisor 下运行，第 8 步再加执行脚本的渲染。
+
+**需要决定的事项**：
+
+1. **助手的运行方式**：建议 **B**（每个任务一个 `export` 沙箱）。备选 A（常驻容器 + 共享卷，设计原方案）、C（每组织常驻）。
+2. **镜像与模板的划分**：建议**一个 `export` 模板**（Node + Chromium + 助手），一次导出只启动一个沙箱，装饰 PNG 与 docx 在同一沙箱内完成；备选是 `openxml` 与 `render` 两个模板（各自更小，但一次导出要启动两个沙箱、多一次进出拷贝）。第 8 步执行脚本的渲染（Mermaid、docx-editor）届时再定是否另建模板。
+3. **镜像字体与字体列表**：桌面版导出用的是用户本机字体（宋体、黑体等 Windows 字体），这些字体不能随服务端镜像分发。建议镜像只装开源字体（Noto CJK / 思源，SIL OFL 1.1），用 fontconfig 把宋体、仿宋映射到衬线体、黑体映射到无衬线体，只影响装饰 PNG 中的文字和第 8 步的分页测量；Word 文件中仍写模板选择的字体名，由用户的 Word 显示。字体列表（`GET /api/fonts`）返回“模板可选的常用中文与西文字体名”的固定清单（不是服务器上装了哪些字体），可选值与桌面版常见值一致。备选：购买商用字体的服务器授权，测量与桌面版一致但有费用。
+4. **确认三处范围调整**：模板提取、小节 Word 预览、HTML / Mermaid 转图与分页测量随第 8 步（上方偏离第 2~4 项）。
+5. **资源上限起步值**：样张——内存 1 GiB、CPU 1 核、墙钟 60 秒；整本导出——内存 2 GiB、CPU 1 核、墙钟 20 分钟（桌面版 30 分钟，服务端 CPU 更稳定，实测后调整）；输入不超过 1 GiB、配图不超过 2,000 张；输出 docx 不超过 100 MiB（与产物上限相同）。`export` 队列全局并发沿用 2（设计第 5.2 节），组织级任务并发沿用 3。
+6. **导出产物的保存**：建议整本导出的 docx 存为项目下的产物（新增 docx 种类，计入组织配额），每个项目只保留最近一次（重新导出后旧的标为已被替换），7 天后由清理任务删除，用户需要时重新导出；样张结果 1 天后删除。备选：不落对象存储，任务完成后限时一次性下载（实现更复杂，断线后要重跑）。
+7. **是否计费**：导出和样张不调用 AI，建议**不计费、不检查余额**，只靠队列并发、按用户 / 项目互斥和请求频率限制控制用量。如需按导出次数收费，另行定价。
+8. **样张 HTML 的来源**：桌面版由 Renderer 按配置组装（`documentTemplate.ts`）后交给 Main。建议**接受前端传来的样张 HTML**，服务端只做大小上限（如 256 KiB）和受限 HTML 结构检查，配图只能引用镜像中的固定样张配图；它只在本用户的沙箱中处理、结果只回给本用户。备选：把组装逻辑搬到服务端，接口只收配置（更干净，但要维护两份组装代码或抽成共享包）。
+9. **Chromium 自身的沙箱**：Chromium 在 gVisor 容器内通常要以 `--no-sandbox` 运行（它的沙箱依赖的用户命名空间在受限容器中不可用）。建议接受：外层是断网、只读、非 root 的 gVisor 沙箱，装饰转图不执行脚本；第 8 步执行 AI 生成的脚本时再评估是否需要更严格的做法。
+
 ### 第 9 步说明
 
 #### 品牌改名第一部分：用户可见文字和文档（#1）
@@ -1605,7 +1681,7 @@ AI 网关加固，做法见 `docs/SERVER_DESIGN.md` 第 10.9 节。`client/` 未
 4. **文件上传 / 下载 / 资源协议**：上传接口 + 对象存储 + 带鉴权的资源路由，替换 `getPathForFile`/`filePaths`、`app-asset://`、`openFile`、保存对话框。
 5. **数据层迁移（按业务逐个）**：模板库 → 资信库 → 知识库 → 标书查重 → 废标检查 → 可研报告 → 技术方案，每个 Store 改成异步 Postgres 实现并按 `org_id`（项目级再加 `project_id`）隔离；不做 `app.sqlite` 导入（旧仓库 PR #26 第 18 项）。拆分为 13 个 PR，先做 `projects` 和生成产物存储，见“第 5 步说明”。
 6. **任务队列与 worker**：`taskService` 迁到 BullMQ worker，进度推送、暂停/继续、重启恢复、每用户互斥和两级并发上限。先迁无 Agent 的短任务（查重、废标、招标解析）；目录、全局事实经核实用到 Agent 命令工具，改随第 8 步（见“第 6 步说明”）。解析在断网沙箱中执行，建议提前建 `sandbox-runner` 和只含 `parse` 模板的沙箱基础设施，拆分计划与待决定事项见“第 6 步说明”。文档解析须满足第 4 步说明中“上传白名单补充（#6）”的“第 6 步解析要求”（沙箱完全断网、HTML / MHT / RTF 禁止加载远程资源、XML 类格式禁用 DTD 和外部实体等）。
-7. **OpenXmlHelper 容器化**：Word 导出、模板样张、模板提取改成调用 helper 服务；离屏渲染改成 Playwright。前置：CI 新增 .NET 编译与 OpenXmlHelper 测试（#5 登记）。
+7. **OpenXmlHelper 容器化**：Word 导出、模板样张~~、模板提取~~改成调用 helper 服务；离屏渲染改成 Playwright。前置：CI 新增 .NET 编译与 OpenXmlHelper 测试（#5 登记，#43 完成）。#44 拆分计划建议助手按任务在 `export` 沙箱中运行、模板提取与小节 Word 预览移到第 8 步、本步的离屏渲染只做页眉页脚装饰转图，待决定，见“第 7 步说明”。
 8. **Agent 沙箱**：Pi Runtime 迁到隔离沙箱，最后迁正文生成、原方案还原、格式自检这类最复杂的长任务。
 9. **收尾**：插件下线或重做、开发者工具改管理员页面；不自建 analytics Worker（0.18 决定；客户端埋点、内容服务代码和 `analytics/` 目录已在 0.19 删除）；压测、安全评审，再上线。
    上线检查（对外提供服务前逐项完成）：
