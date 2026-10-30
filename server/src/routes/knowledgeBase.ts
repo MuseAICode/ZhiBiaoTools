@@ -9,7 +9,8 @@
 // DELETE /api/knowledge-base/folders/:folderId                删除文件夹，其中文档的原件进回收站
 // POST   /api/knowledge-base/folders/:folderId/documents      挂已上传的 knowledge 文件，逐个入队文档准备任务（6.13a）
 // GET    /api/knowledge-base/documents/:documentId            单个文档（含最近的处理任务）
-// POST   /api/knowledge-base/documents/:documentId/retry      重试失败的文档（202，已成功的步骤续用）
+// POST   /api/knowledge-base/documents/:documentId/retry      重试失败的文档（202，已成功的步骤续用，准备完成后接着匹配）
+// POST   /api/knowledge-base/documents/:documentId/match      开始匹配（202，已处理完成的文档重新匹配，6.13b）
 // POST   /api/knowledge-base/documents/:documentId/move       移到某个文件夹中某个文档之前或之后
 // DELETE /api/knowledge-base/documents/:documentId            删除文档（软删除原件，7 天内可经 /api/files/:fileId/restore 恢复）
 // GET    /api/knowledge-base/search?keyword=&page=             在已处理完成的文档的条目中检索（每页 100 条）
@@ -17,7 +18,8 @@
 // GET    /api/knowledge-base/documents/:documentId/analysis    文档的分析快照
 // GET    /api/knowledge-base/documents/:documentId/markdown    解析出的 Markdown 原文（附件下载，还没有解析时为空）
 //
-// 检索与读取对应桌面版 search / readItems / readAnalysis / readMarkdown（5.7）；重试对应 retryDocument（6.13a），匹配随 6.13b。
+// 检索与读取对应桌面版 search / readItems / readAnalysis / readMarkdown（5.7）；重试对应 retryDocument（6.13a），开始匹配对应
+// startMatching（6.13b）。
 // 文档带上最近的处理任务（job），处理中而任务已结束或不存在的文档按中断显示（src/knowledgeBase/jobs.ts 的 documentView）；
 // 处理进度经 SSE 的 job / job.progress / job.log 事件推送（取代桌面版的 knowledge-base:event），前端按 job.id 对应到文档。
 // 删除文档、文件夹之后取消其中文档的处理任务。其他组织的 id 与不存在的一样返回 404。
@@ -45,6 +47,7 @@ import {
   getDocumentView,
   latestDocumentJobs,
   retryDocument,
+  startMatching,
   startNewDocuments,
   type KnowledgeDocumentView,
 } from '../knowledgeBase/jobs.ts';
@@ -67,7 +70,7 @@ export interface KnowledgeBaseRouteDependencies {
   db: Kysely<Database>;
   /** 读取解析出的 Markdown 用；未配置时读取 Markdown 和分析返回 503（文档还没有 Markdown 时除外）。 */
   objectStore: ObjectStore | null;
-  /** 文档准备任务的入队、取消（6.13a）。 */
+  /** 文档处理任务的入队、取消（6.13a、6.13b）。 */
   jobs: JobServiceDependencies;
 }
 
@@ -235,6 +238,10 @@ export async function registerKnowledgeBaseRoutes(app: FastifyInstance, deps: Kn
 
   app.post<DocumentParams>('/documents/:documentId/retry', { schema: { params: DOCUMENT_ID_PARAMS } }, async (request, reply) =>
     reply.code(202).send({ document: documentBody(await retryDocument(jobs, tenantOf(request), request.params.documentId.toLowerCase())) }),
+  );
+
+  app.post<DocumentParams>('/documents/:documentId/match', { schema: { params: DOCUMENT_ID_PARAMS } }, async (request, reply) =>
+    reply.code(202).send({ document: documentBody(await startMatching(jobs, tenantOf(request), request.params.documentId.toLowerCase())) }),
   );
 
   app.delete<DocumentParams>('/documents/:documentId', { schema: { params: DOCUMENT_ID_PARAMS } }, async (request) => {

@@ -5,7 +5,8 @@
 // - bid-section-extraction、bid-analysis（6.11）：技术方案的多标段识别、招标解析，ai 队列（src/technicalPlan/jobs.ts）。
 // - feasibility-analysis、feasibility-parameters、feasibility-content、feasibility-human-writing（6.12）：可研报告的资料分析、关键参数、
 //   正文生成与自然化审校，ai 队列（src/feasibilityReport/jobs.ts）。
-// - knowledge-document-prepare（6.13a）：知识库文档准备（解析、切块、候选条目提取），ai 队列，组织级（src/knowledgeBase/jobs.ts）。
+// - knowledge-document-prepare（6.13a）、knowledge-document-match（6.13b）：知识库文档准备（解析、切块、候选条目提取，完成后接着匹配）、
+//   段落匹配（重新匹配），ai 队列，组织级（src/knowledgeBase/jobs.ts）。
 import { duplicateAnalysisJob } from '../duplicateCheck/job.ts';
 import { feasibilityReportJobs } from '../feasibilityReport/jobs.ts';
 import { knowledgeBaseJobs } from '../knowledgeBase/jobs.ts';
