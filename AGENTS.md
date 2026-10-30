@@ -55,6 +55,7 @@
 - 改 SQLite Store、migration 或 native 模块：增加 `npm run smoke:electron-native`；有对应 `*.test.cjs` 时用 `node --test <test-file>` 定向执行。
 - 改有单元测试覆盖的代码，或新增纯逻辑：`cd client; npm run test`。测试放 `client/tests/`（`tests/src/` 对应 Renderer，`tests/electron/` 对应 Main），不放进 `src/` 或 `electron/`，避免进入构建产物和安装包；`.cjs` 在测试中用 `createRequire` 加载，需要 DOM 的测试在文件头声明 `// @vitest-environment jsdom`。
 - 改依赖：`cd client; npm audit`。
+- 改 `openxmlhelper/`（C#）：`cd openxmlhelper; dotnet test tests/OpenXmlHelper.Tests/OpenXmlHelper.Tests.csproj`（需要 .NET 10 SDK）。测试放 `openxmlhelper/tests/OpenXmlHelper.Tests/`，按 Main 的约定写 `request.json`、经 `JobRunner` 执行；改了助手或测试项目的 NuGet 依赖要更新测试项目的 `packages.lock.json`（CI 以 locked mode 还原）。
 - `npm run build` 可能只有既有 chunk 体积警告；不要把它当失败，除非命令退出非 0。
 
 ## 发布

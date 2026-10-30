@@ -78,6 +78,37 @@ jobs:
       - name: npm audit (fail on critical)
         run: npm audit --audit-level=critical
 
+  openxmlhelper-checks:
+    name: OpenXmlHelper build / test
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    defaults:
+      run:
+        working-directory: openxmlhelper
+        shell: bash
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # SDK 版本按 openxmlhelper/global.json（10.0.1xx，rollForward latestFeature）。
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: openxmlhelper/global.json
+
+      # 按测试项目的 packages.lock.json 还原（含助手本身的传递依赖）；
+      # NuGetAudit 在还原时检查已知漏洞，high / critical（NU1903 / NU1904）视为错误。
+      - name: Restore (locked mode, NuGet audit)
+        run: dotnet restore tests/OpenXmlHelper.Tests/OpenXmlHelper.Tests.csproj --locked-mode
+
+      - name: Build (Release)
+        run: dotnet build tests/OpenXmlHelper.Tests/OpenXmlHelper.Tests.csproj --configuration Release --no-restore
+
+      - name: Unit tests (xUnit)
+        run: dotnet test tests/OpenXmlHelper.Tests/OpenXmlHelper.Tests.csproj --configuration Release --no-build --logger "console;verbosity=normal"
+
   server-checks:
     name: Server typecheck / test / audit
     runs-on: ubuntu-latest
