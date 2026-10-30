@@ -50,7 +50,7 @@ e) **许可证合规**：本项目为闭源商业授权。新增第三方依赖�
 ## 自动合并
 
 - 满足以下全部条件时，可以自行 squash 合并 PR，不必等待确认：
-  - PR 最新提交上 CI 的三项检查（`Banned words`、`Client build / syntax / audit`、`Server typecheck / test / audit`）全部通过；以前的提交通过不算，推送新提交后要重新等待；
+  - PR 最新提交上 CI 的四项检查（`Banned words`、`Client build / syntax / audit`、`Server typecheck / test / audit`、`OpenXmlHelper build / test`）全部通过；以前的提交通过不算，推送新提交后要重新等待；
   - 审计报告五节齐全且全部通过；
   - 不属于下面任何一种需要确认的情况。
 - 以下情况不得自行合并，须告知用户并等待确认：
