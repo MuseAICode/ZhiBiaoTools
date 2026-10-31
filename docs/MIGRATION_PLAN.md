@@ -1494,7 +1494,7 @@ AI 网关加固，做法见 `docs/SERVER_DESIGN.md` 第 10.9 节。`client/` 未
 | 7.1 | `export` 沙箱：助手一次性运行模式（C#，含测试）、镜像（Node + Chromium + 助手 + 开源字体与 fontconfig 映射）、`export` 模板与资源上限、入口脚本（Chromium 禁用 JavaScript，有测试证明页面脚本不执行）、gVisor 下的隔离与兼容测试，CI 构建镜像并运行；补上 #43 未覆盖的八种图片格式识别与格式错配用例 | 7.0 | 已完成 | #45 |
 | 7.2 | 字体与装饰：`GET /api/fonts` 返回模板可选字体名的固定清单（取代 `systemFonts.list`，含义见决定事项第 3 项）；装饰生成器在沙箱中的输出与桌面版逐项核对（同一配置生成的 SVG 一致） | 7.1 | 未开始 | — |
 | 7.3 | 模板样张：`POST /api/export-templates/preview`（请求为样张 HTML 与配置）先用与前端 `restrictedHtml` 同一套白名单重新校验样张 HTML（标签、属性、`data-app-*` 取值、`data-app-asset-ref` 只能引用固定样张配图），不通过返回 400、不入队；白名单只维护一份，服务端与前端共用或由测试逐项核对一致（同系统模板的做法），不能只查大小和结构；通过后入队 `template-preview` 任务（`export` 队列，`lock_key` 按用户，新请求取消排队中的旧请求，对应桌面版“新请求取代旧请求”）；同一组织内按内容哈希复用最近的结果；结果经 SSE 通知，docx 存为产物（1 天后删除，计入组织存储配额）、以附件方式下载给前端的 docx-editor 预览；样张导出 Word 复用同一任务（固定使用本次设置、不参与合并）；WebBridge 的 `templates.renderPreview` 接上 | 7.1、7.2 | 未开始 | — |
-| 7.4 | 技术方案整本导出 Word：`technical-plan-export` 任务（`export` 队列，`lock_key` 按项目），入队时取快照（目录、人工正文、所选模板），worker 中按桌面版 `technicalPlanExport` 组装整本 HTML（目录编号、范围标记 `data-app-export-template` / `data-app-export-page-template`）；`data-app-asset-ref` 统一为产物引用（如 `artifact:<uuid>`），worker 只解析本项目可见的图片产物；`ai-generate` 小节在第 8 步之前按桌面版“正文未生成”的提示处理；进度经 SSE；产物新增迁移登记 docx 种类，按决定事项第 6 项保存与清理（计入组织存储配额，超出配额时导出失败并提示）；`export.word`、`export.openFile` 改为下载 | 7.3 | 未开始 | — |
+| 7.4 | 技术方案整本导出 Word：`technical-plan-export` 任务（`export` 队列，`lock_key` 按项目），入队时取快照（目录、人工正文、所选模板），worker 中按桌面版 `technicalPlanExport` 组装整本 HTML（目录编号、范围标记 `data-app-export-template` / `data-app-export-page-template`）；`data-app-asset-ref` 统一为产物引用（如 `artifact:<uuid>`），worker 只解析本项目可见的图片产物；`ai-generate` 小节在第 8 步之前按桌面版“正文未生成”的提示处理；进度经 SSE；产物新增迁移登记 docx 种类，按决定事项第 6 项保存与清理（计入组织存储配额，超出配额时导出失败并提示）；`export.word`、`export.openFile` 改为下载；**必做（#45 确认时登记）**：① sandbox-runner 对大请求体（放入的归档）改为流式转发与校验，不在内存中整体缓存，并测试多个大请求并发时 runner 的内存保持稳定；② 解决 tmpfs 计入沙箱内存导致输入接近 1 GiB 时 OpenXmlHelper 内存不足的问题，方案由 7.4 提出、用户决定 | 7.3 | 未开始 | — |
 
 7.2 与 7.3 可以合并为一个 PR，视 7.1 之后的工作量决定。
 
@@ -1544,7 +1544,7 @@ AI 网关加固，做法见 `docs/SERVER_DESIGN.md` 第 10.9 节。`client/` 未
 
 **实测耗时**（.NET 与 Chromium 在 gVisor 下都能运行，不需要设计第 7.2 节预留的 runc 方案）：本机 runc 下样张约 2.4 秒、整本（两段正文）约 2.2 秒；本机 gVisor 下样张约 6.4–8.0 秒、整本约 6.3–6.9 秒（多次运行），其中 playwright-core 加载约 1.0 秒、Chromium 启动约 1.4 秒、两次截图约 1.3 秒、关闭浏览器约 1.4 秒、助手冷启动（ping）约 0.65 秒；沙箱创建约 0.3–0.6 秒。**比拆分计划估计的“样张约 1 秒级”慢**（本机是嵌套虚拟化，CI 的数字写在日志中）；60 秒上限仍有充分余量，7.3 的按内容哈希复用结果可以避免重复生成，届时再评估是否需要优化（例如浏览器关闭不等待、装饰 PNG 按配置缓存）。
 
-偏离计划（均需确认）：
+偏离计划（#45 确认时均已同意）：
 
 1. **两个模板名**：决定事项第 2 项是“一个 `export` 模板”，决定事项第 5 项又给了样张与整本两档资源上限，而模板的资源上限在创建容器时就固定。实现为同一个 export 镜像、同一套隔离参数、两个模板名 `export-preview` / `export-document`，只有资源上限、可写目录大小和入口模式不同。
 2. **`SANDBOX_EXPORT_IMAGE` 暂时可选**：导出任务（7.3）上线之前不强制部署 export 镜像，未配置时创建 export 沙箱返回 `SANDBOX_UNAVAILABLE`；7.3 起改为必需。
@@ -1555,8 +1555,10 @@ AI 网关加固，做法见 `docs/SERVER_DESIGN.md` 第 10.9 节。`client/` 未
 发现的问题（登记给 7.3 / 7.4）：
 
 1. **整本模式下配图要在范围标记内**：`whole_document: true` 时不在 `section[data-app-export-template]` 内的 figure 报“img 必须位于 figure 内”，7.4 由 worker 组装带范围标记的整本 HTML（同桌面版 `technicalPlanExport`），测试中的整本导出暂不带配图；
-2. **sandbox-runner 的请求体上限随 export-document 提高到约 1.1 GiB**：放入的归档在 sandbox-runner 中整体缓冲后校验，export 队列并发 2 时最坏占用约 2.2 GiB 内存，7.4 评估改为流式校验或降低单次放入的上限；
-3. **tmpfs 计入沙箱内存**：export-document 的 `/work`（1.25 GiB）与 `/tmp` 都在 2 GiB 内存上限之内，输入接近 1 GiB 时留给助手的内存不足 1 GiB，7.4 用真实的大文档实测后再调整（必要时改为按输入大小拒绝，或调整决定事项第 5 项的上限）。
+2. **sandbox-runner 的请求体上限随 export-document 提高到约 1.1 GiB**：放入的归档在 sandbox-runner 中整体缓冲后校验，export 队列并发 2 时最坏占用约 2.2 GiB 内存。#45 确认时定为 **7.4 必做**：改为流式转发，不在内存中整体缓存，并测试多个大请求并发时 runner 内存稳定；
+3. **tmpfs 计入沙箱内存**：export-document 的 `/work`（1.25 GiB）与 `/tmp` 都在 2 GiB 内存上限之内，输入接近 1 GiB 时留给助手的内存不足 1 GiB。#45 确认时定为 **7.4 必做**：方案由 7.4 提出（例如按输入大小拒绝、调整上限或改变输入的存放方式），用户决定。
+
+#45 确认时的其他决定：libdbus-1-3（AFL-2.1 或 GPL-2.0+ 双许可证）按 AFL-2.1 使用；样张耗时（本机 gVisor 6–8 秒）在 7.3 再评估；`client/` 新出现的 `follow-redirects`、`joi` 两个 high（经开发依赖 `wait-on`，main 上已有）修复版本发布满两周则另开 PR 修复，否则并入 11-03 的统一升级——修复版本 `follow-redirects` 1.16.2（10-25 发布）、`joi` 18.3.1（10-28 发布）在 10-31 都不满两周，并入 11-03 那批（两周分别在 11-08、11-11 满）。
 
 已知限制：本机网络不能访问 Debian 软件源与 Playwright 的下载地址，本机测试用的是 scratchpad 中的等价镜像（Ubuntu 24.04 的同名运行库、本机预装的同一 revision 1243 的 chromium-headless-shell、同一份 Node 24、助手发布、字体映射、入口与装饰生成器，不提交）；正式 Dockerfile 只在 CI 中构建。
 
