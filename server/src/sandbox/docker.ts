@@ -32,6 +32,7 @@ import {
   SANDBOX_LABEL_TEMPLATE,
   SANDBOX_TEMPLATES,
   isSandboxTemplateName,
+  type SandboxImageName,
   type SandboxTemplate,
   type SandboxTemplateName,
 } from './templates.ts';
@@ -42,8 +43,8 @@ export interface DockerSandboxDriverOptions {
   docker: DockerApi;
   /** 容器运行时（runsc / runc），由 sandbox-runner 的配置决定。 */
   runtime: string;
-  /** 各模板的镜像引用（按摘要固定），由 sandbox-runner 的配置决定。 */
-  images: Readonly<Record<SandboxTemplateName, string>>;
+  /** 各镜像的引用（按摘要固定），由 sandbox-runner 的配置决定；未配置的镜像（如尚未部署的 export）不能创建对应模板的沙箱。 */
+  images: Readonly<Partial<Record<SandboxImageName, string | null>>>;
   /** 同时存在的沙箱数上限（含已结束、尚未删除的）。 */
   maxActive: number;
   log: Pick<FastifyBaseLogger, 'info' | 'warn' | 'error'>;
@@ -289,13 +290,15 @@ export function createDockerSandboxDriver(options: DockerSandboxDriverOptions): 
         throw new SandboxError('SANDBOX_BAD_REQUEST', '沙箱模板或任务不合法');
       }
       const template = SANDBOX_TEMPLATES[templateName];
+      const image = options.images[template.image];
+      if (!image) throw new SandboxError('SANDBOX_UNAVAILABLE', '沙箱镜像未配置');
       const run = async (): Promise<SandboxRef> => {
         // 计入全部带沙箱标签的容器（listContainers 含已停止的），含已停止、已到期但尚未清理的残留沙箱。
         const existing = await docker.listContainers(`${SANDBOX_LABEL}=1`);
         if (existing.length >= options.maxActive) throw new SandboxError('SANDBOX_BUSY', SANDBOX_BUSY_MESSAGE);
         const id = randomUUID();
         const expiresAt = new Date(now().getTime() + template.lifetimeMs);
-        const spec = buildSpec(template, { image: options.images[templateName], runtime: options.runtime, jobId: createOptions.jobId, expiresAt });
+        const spec = buildSpec(template, { image, runtime: options.runtime, jobId: createOptions.jobId, expiresAt });
         const containerId = await docker.createContainer(containerName(id), spec);
         try {
           await docker.startContainer(containerId);

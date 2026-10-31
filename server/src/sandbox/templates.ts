@@ -1,13 +1,18 @@
 // 沙箱模板（docs/SERVER_DESIGN.md 第 7.4、7.5 节；路线图第 6 步 6.5）。
 // 模板写死在代码中：镜像（由 sandbox-runner 的配置给出摘要固定的引用）、网络、只读根文件系统、用户、资源上限、
 // 可写目录、可执行的命令和取回规则。调用方（worker）只能选模板名，不能传镜像、挂载、网络或任意 Docker 参数。
-// 第 6 步只有 parse 模板（断网解析）；第 8 步在同一套机制上加 agent 模板（内部网络、任务令牌、业务工具 RPC）。
+// 第 6 步建了 parse 模板（断网解析）；第 7 步加 export 模板（断网导出 Word，路线图 7.1），分样张与整本导出两档资源上限；
+// 第 8 步在同一套机制上加 agent 模板（内部网络、任务令牌、业务工具 RPC）。
 
 const MIB = 1024 * 1024;
 const GIB = 1024 * MIB;
 
-export const SANDBOX_TEMPLATE_NAMES = ['parse'] as const;
+export const SANDBOX_TEMPLATE_NAMES = ['parse', 'export-preview', 'export-document'] as const;
 export type SandboxTemplateName = (typeof SANDBOX_TEMPLATE_NAMES)[number];
+
+/** 镜像：两个 export 模板用同一个 export 镜像（第 7 步决定事项第 2 项），只是资源上限不同。 */
+export const SANDBOX_IMAGE_NAMES = ['parse', 'export'] as const;
+export type SandboxImageName = (typeof SANDBOX_IMAGE_NAMES)[number];
 
 /** 沙箱内进程的用户与组（镜像中的 sandbox 用户），非 root。 */
 export const SANDBOX_UID = 10001;
@@ -43,6 +48,8 @@ export interface SandboxCommand {
 
 export interface SandboxTemplate {
   readonly name: SandboxTemplateName;
+  /** 用哪个镜像（引用由 sandbox-runner 的配置给出）。 */
+  readonly image: SandboxImageName;
   /** 沙箱从创建起最长存活多久，到期由 sandbox-runner 销毁（不论是否还在使用）。 */
   readonly lifetimeMs: number;
   readonly memoryBytes: number;
@@ -65,6 +72,7 @@ export interface SandboxTemplate {
  */
 const PARSE_TEMPLATE: SandboxTemplate = Object.freeze({
   name: 'parse',
+  image: 'parse' as const,
   lifetimeMs: 15 * 60_000,
   memoryBytes: 2 * GIB,
   nanoCpus: 1_000_000_000,
@@ -107,8 +115,100 @@ const PARSE_TEMPLATE: SandboxTemplate = Object.freeze({
   transferTimeoutMs: 2 * 60_000,
 });
 
+/** export 的取回规则：只有 document.docx 和 result.json 两个普通文件（路线图 7.1“输出校验”）。 */
+const EXPORT_OUTPUT: SandboxTransferLimits = Object.freeze({
+  directory: '/output',
+  maxDepth: 1,
+  maxFiles: 2,
+  // 输出 docx 不超过 100 MiB（第 7 步决定事项第 5 项），与产物的大小上限相同。
+  maxFileBytes: 100 * MIB,
+  maxTotalBytes: 101 * MIB,
+  extensions: new Set(['docx', 'json']),
+});
+
+/** export 入口：模式名由模板写死，调用方不能追加参数。输入固定在 /work，输出固定在 /output。 */
+function exportCommand(mode: 'preview' | 'document', timeoutMs: number): SandboxCommand {
+  return Object.freeze({
+    argv: Object.freeze(['node', '/opt/export/entry.mjs', mode]),
+    maxArgs: 0,
+    argPattern: /^$/,
+    timeoutMs,
+  });
+}
+
+/**
+ * export-preview：模板样张（7.3 起）。隔离参数与 parse 相同（断网、gVisor、只读根文件系统、非 root、无能力），
+ * 资源上限为第 7 步决定事项第 5 项的样张起步值：内存 1 GiB（无 swap）、CPU 1 核、墙钟 60 秒。
+ * 输入只有样张 HTML 与配置（固定样张配图 7.3 起打进镜像），可写目录相应较小。
+ */
+const EXPORT_PREVIEW_TEMPLATE: SandboxTemplate = Object.freeze({
+  name: 'export-preview',
+  image: 'export' as const,
+  // 命令墙钟 60 秒 + 放入与取回各 1 分钟，再留出余量。
+  lifetimeMs: 5 * 60_000,
+  memoryBytes: 1 * GIB,
+  nanoCpus: 1_000_000_000,
+  pidsLimit: 256,
+  openFilesLimit: 1024,
+  tmpfs: Object.freeze({
+    // Chromium 的用户目录与共享内存（--disable-dev-shm-usage）、.NET 的临时文件。
+    '/tmp': { bytes: 256 * MIB, owner: 'root' as const },
+    // 输入与助手的工作区（任务目录、装饰 PNG、助手写出的 docx）。
+    '/work': { bytes: 192 * MIB, owner: 'sandbox' as const },
+    '/output': { bytes: 128 * MIB, owner: 'sandbox' as const },
+  }),
+  input: Object.freeze({
+    directory: '/work',
+    // request.json 与 assets/<文件名>。
+    maxDepth: 2,
+    maxFiles: 32,
+    maxFileBytes: 32 * MIB,
+    maxTotalBytes: 64 * MIB,
+    extensions: null,
+  }),
+  output: EXPORT_OUTPUT,
+  commands: Object.freeze({ export: exportCommand('preview', 60_000) }),
+  transferTimeoutMs: 60_000,
+});
+
+/**
+ * export-document：技术方案整本导出 Word（7.4 起）。资源上限为第 7 步决定事项第 5 项的整本导出起步值：
+ * 内存 2 GiB（无 swap）、CPU 1 核、墙钟 20 分钟；输入不超过 1 GiB、配图不超过 2,000 张，输出 docx 不超过 100 MiB。
+ */
+const EXPORT_DOCUMENT_TEMPLATE: SandboxTemplate = Object.freeze({
+  name: 'export-document',
+  image: 'export' as const,
+  // 命令墙钟 20 分钟 + 放入与取回各 5 分钟，再留出余量。
+  lifetimeMs: 35 * 60_000,
+  memoryBytes: 2 * GIB,
+  nanoCpus: 1_000_000_000,
+  pidsLimit: 256,
+  openFilesLimit: 1024,
+  tmpfs: Object.freeze({
+    '/tmp': { bytes: 512 * MIB, owner: 'root' as const },
+    // 输入 1 GiB，另留出装饰 PNG 与助手写出的 docx（不超过 100 MiB）的空间。
+    '/work': { bytes: 1 * GIB + 256 * MIB, owner: 'sandbox' as const },
+    '/output': { bytes: 128 * MIB, owner: 'sandbox' as const },
+  }),
+  input: Object.freeze({
+    directory: '/work',
+    maxDepth: 2,
+    // 配图 2,000 张 + request.json。
+    maxFiles: 2_001,
+    // 单张配图不超过产物的大小上限（迁移 0008 的 MAX_ARTIFACT_BYTES）。
+    maxFileBytes: 100 * MIB,
+    maxTotalBytes: 1 * GIB,
+    extensions: null,
+  }),
+  output: EXPORT_OUTPUT,
+  commands: Object.freeze({ export: exportCommand('document', 20 * 60_000) }),
+  transferTimeoutMs: 5 * 60_000,
+});
+
 export const SANDBOX_TEMPLATES: Readonly<Record<SandboxTemplateName, SandboxTemplate>> = Object.freeze({
   parse: PARSE_TEMPLATE,
+  'export-preview': EXPORT_PREVIEW_TEMPLATE,
+  'export-document': EXPORT_DOCUMENT_TEMPLATE,
 });
 
 export function isSandboxTemplateName(value: unknown): value is SandboxTemplateName {

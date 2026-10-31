@@ -1,0 +1,14 @@
+{
+  "name": "zhibiao-export-sandbox",
+  "version": "0.1.0",
+  "private": true,
+  "description": "export 沙箱镜像中的导出入口（docs/SERVER_DESIGN.md 第 7.9 节），只在断网沙箱中运行",
+  "license": "UNLICENSED",
+  "type": "module",
+  "engines": {
+    "node": ">=24.21.0 <25"
+  },
+  "dependencies": {
+    "playwright-core": "1.63.0"
+  }
+}

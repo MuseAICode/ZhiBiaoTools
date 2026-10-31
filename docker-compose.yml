@@ -15,6 +15,10 @@
 #   - 先构建 parse 沙箱镜像：docker build -t zhibiao-parse:dev server/sandbox/parse
 #   - sandbox-runner 要访问宿主的 Docker socket：Linux 上设置 DOCKER_SOCKET_GID=$(stat -c %g /var/run/docker.sock)，
 #     Docker Desktop 上不用设置（默认 0）；安装了 gVisor 的机器可设置 SANDBOX_RUNTIME=runsc（生产只允许 runsc）。
+# 7.1 起 sandbox-runner 可以创建 export 沙箱（OpenXmlHelper + Chromium，docs/SERVER_DESIGN.md 第 7.9 节），导出任务上线（7.3）之前可选：
+#   - 构建镜像（在仓库根目录）：docker build -t zhibiao-export:dev --build-context openxmlhelper=openxmlhelper
+#       --build-context chrome=client/electron/shared/chrome server/sandbox/export
+#   - 启动时设置 SANDBOX_EXPORT_IMAGE=zhibiao-export:dev；未设置时创建 export 沙箱返回 SANDBOX_UNAVAILABLE。
 # 重建数据库：docker compose down -v（会删除数据卷）。
 # 生产部署的 compose 与网络划分见 docs/SERVER_DESIGN.md 第 8.1 节，不使用本文件。
 name: bidtools-dev
@@ -241,9 +245,9 @@ services:
     restart: unless-stopped
 
   # 解析沙箱的管理服务（docs/SERVER_DESIGN.md 第 7.4、7.5 节）：与 api 同一镜像，入口为 dist/sandbox-runner.js。
-  # 唯一挂载 Docker socket 的服务（能创建容器即等同宿主 root），只按代码中写死的 parse 模板创建断网的沙箱容器；
+  # 唯一挂载 Docker socket 的服务（能创建容器即等同宿主 root），只按代码中写死的 parse、export 模板创建断网的沙箱容器；
   # 只在 internal 网络 sandbox-control 上监听，不映射端口、不能访问外网和其他服务。只有 worker（6.6 起）加入该网络并拿令牌调用它。
-  # 沙箱容器由它经宿主的 Docker 创建，不在本 compose 项目中；到期（15 分钟）的沙箱由它定期删除。
+  # 沙箱容器由它经宿主的 Docker 创建，不在本 compose 项目中；到期的沙箱（parse 15 分钟、export 5 / 35 分钟）由它定期删除。
   sandbox-runner:
     image: bidtools-api:dev
     build:
@@ -256,6 +260,7 @@ services:
       PORT: "3100"
       SANDBOX_RUNTIME: ${SANDBOX_RUNTIME:-runc}
       SANDBOX_PARSE_IMAGE: zhibiao-parse:dev
+      SANDBOX_EXPORT_IMAGE: ${SANDBOX_EXPORT_IMAGE:-}
       SANDBOX_RUNNER_TOKEN_FILE: /run/secrets/sandbox_runner_token
     secrets:
       - sandbox_runner_token
