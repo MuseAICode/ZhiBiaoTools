@@ -36,8 +36,8 @@
 | 实时推送 | **SSE**（Server-Sent Events），命令仍走 HTTP POST | 现有 19 个 `onXxx` 全是服务端→浏览器的单向推送，SSE 足够；走普通 HTTP，Cookie 鉴权、反向代理、断线重连（`Last-Event-ID`）都是标准行为。比较见第 5.4 节 | 路线图写 WebSocket，**偏离** |
 | 对象存储 | **云厂商对象存储**（S3 兼容接口），与 KMS 同一云厂商、同一地域（优先香港） | 已决定（第 9 节第 13、14 项）。服务端只依赖 S3 API，存储后端可替换；开发环境和 CI 用本地 S3 兼容实现（MinIO 社区版 2025 年起进入维护状态，需核实现状，备选 Garage、SeaweedFS） | 一致 |
 | 文档解析 | 现有 `doc2markdown/`（mammoth、pdfjs、SheetJS、turndown）+ LibreOffice headless | 原样搬运，放进 worker 镜像，在沙箱内执行（第 7 节） | 一致 |
-| Word 助手 | 现有 `openxmlhelper/`（.NET 10）独立容器 | 保留“任务目录 + 一行 JSON 信号”协议，与 worker 共享临时卷 | 一致 |
-| 离屏渲染 | Playwright + Chromium headless | 替代隐藏 `BrowserWindow`（Mermaid/HTML 转图、docx-editor 分页测量） | 一致 |
+| Word 助手 | 现有 `openxmlhelper/`（.NET 10），每个导出任务一个 `export` 沙箱，沙箱内一次性运行（`--run`） | 任务目录与 `request.json` / `result.json` 的约定不变；不做常驻容器、不与 worker 共享卷（第 1.1、7.9 节） | 原写独立容器 + 共享临时卷，**偏离**（路线图第 7 步决定事项第 1 项） |
+| 离屏渲染 | Playwright（`playwright-core`）+ chromium-headless-shell，在 `export` 沙箱中禁用 JavaScript 运行 | 替代隐藏 `BrowserWindow`。第 7 步只做页眉页脚装饰转图（第 7.9 节）；Mermaid/HTML 转图、docx-editor 分页测量需要执行脚本，随第 8 步由用户逐项决定 | 一致 |
 | Agent 沙箱 | **gVisor（runsc）容器**，起步方案 | 见第 7 节三个选项的对比 | 路线图写 gVisor 或 Firecracker，**gVisor 起步**（已决定，第 9 节第 12 项） |
 | 密码哈希 | argon2id（`@node-rs/argon2`） | OWASP 推荐首选；预编译二进制，无需本地编译 | 新增 |
 | 加密 | Node 内置 `crypto`（AES-256-GCM）+ **云 KMS** 包装数据密钥 | 不引入额外原生依赖，见第 4 节；KMS 与对象存储同一云厂商（第 9 节第 8 项）；开发环境用本地密钥文件 | 路线图写 KMS 或 libsodium，**内置 crypto + 云 KMS** |
@@ -54,8 +54,7 @@
                                  │   └────> 对象存储
                                  └─ SSE 推送
 worker（BullMQ 消费者，复用 taskService / aiService 等）
-   ├─> openxml（.NET helper 容器，共享临时卷）
-   ├─> sandbox-runner ──> 沙箱容器（Agent / LibreOffice / Chromium）
+   ├─> sandbox-runner ──> 沙箱容器（parse：LibreOffice 与解析库；export：OpenXmlHelper + Chromium；第 8 步：Agent）
    └─> AI 网关（worker 内模块，计量计费）──> 平台签约的模型服务
 ```
 
@@ -63,6 +62,7 @@ worker（BullMQ 消费者，复用 taskService / aiService 等）
 - **worker**：执行全部长任务。可以起多个副本；Agent 类和解析类任务用不同队列，分别设置并发。
 - **AI 网关**：worker 内的模块（不是独立服务），由现有 `aiService.cjs` 改造而来，是**唯一解密和使用 API Key 的地方**（第 4 节），也是**唯一的计量点**：每次模型调用都在这里记账、扣费（第 10 节）。沙箱内的 Agent 通过它访问模型（第 7 节）。
 - **sandbox-runner**：唯一持有容器运行时权限的进程，只接受“用固定镜像、固定参数启动一个沙箱”这类受限请求，worker 不直接接触 Docker socket（第 7.4 节）。
+- **OpenXmlHelper（.NET）不是常驻服务**：它解析的受限 HTML、模板配置和（第 8 步起）上传的 Word 都是不可信输入，所以与文档解析一样按任务进沙箱——每次导出一个 `export` 沙箱，沙箱内一次性运行助手（`--run`）后销毁，不与 worker 共享卷、不跨任务保留缓存（路线图第 7 步决定事项第 1 项，第 7.9 节）。原方案“常驻 `openxml` 容器 + 与 worker 共享临时卷”已放弃。
 
 ## 2. 多用户数据模型
 
@@ -544,6 +544,25 @@ RTF、HTML、MHT、Word 2003 XML、SpreadsheetML 在沙箱中先检查或清理�
 - **比对在 worker 中**（`src/duplicateCheck/analysis.ts`）：先按不可信输入校验 `analysis.json`（结构、数量、目录编号与父子关系、图片只能引用本次输出），再做招标原文白名单、目录重复 / 相似组与两两相似度、重复句、重复图片（按写入的图片产物内容的 SHA-256）。worker 不运行 HTML 解析器；
 - **写入**：正文与图片经第 7.6 节的同一流程写为产物（`src/parse/run.ts`，两类任务共用），分析结果经 `saveAnalysisSection` 带任务开始时的文件选择签名写入，选择变化后写入被拒绝；重新选择文件、清空时取消进行中的任务。
 
+### 7.9 实现（路线图 7.1）：导出沙箱
+
+Word 导出与模板样张由 OpenXmlHelper 生成 docx，页眉页脚装饰 SVG 由 Chromium 栅格化成 PNG；两者处理的都是不可信输入，所以与文档解析复用同一套沙箱机制（第 7.5 节），每次导出一个 `export` 沙箱（路线图第 7 步决定事项第 1、2 项）。7.1 只建沙箱、镜像和入口；样张任务（7.3）与整本导出任务（7.4）在其上接入。
+
+- **模板**（`templates.ts`）：一个 export 镜像、按决定事项第 5 项的两档资源上限分成两个模板名。隔离参数与 `parse` 完全相同（`--network none`、gVisor、只读根文件系统、用户 10001、`cap-drop ALL`、`no-new-privileges`、`pids` 256、不挂载任何宿主目录、不注入宿主环境变量、不保留容器日志），有单元测试逐项核对：
+
+  | 模板 | 内存（无 swap） | CPU | 命令墙钟 | 沙箱最长存活 | 输入（`/work`） | 可写目录（tmpfs） |
+  |---|---|---|---|---|---|---|
+  | `export-preview`（样张） | 1 GiB | 1 核 | 60 秒 | 5 分钟 | 至多 32 个文件、合计 64 MiB | `/tmp` 256 MiB、`/work` 192 MiB、`/output` 128 MiB |
+  | `export-document`（整本导出） | 2 GiB | 1 核 | 20 分钟 | 35 分钟 | 配图至多 2,000 张 + 请求，单个 100 MiB、合计 1 GiB | `/tmp` 512 MiB、`/work` 1.25 GiB、`/output` 128 MiB |
+
+  可执行的命令只有 `export`（`node /opt/export/entry.mjs preview|document`，模式由模板写死，不能追加参数）；取回只收 `document.docx` 和 `result.json` 两个普通文件，docx 不超过 100 MiB。
+- **镜像**（`server/sandbox/export/Dockerfile`）：Node 24 + `playwright-core` 与其对应版本的 chromium-headless-shell + OpenXmlHelper 的 linux-x64 自包含发布（不裁剪；不打成单文件，单文件要把原生库解压到可写目录再加载，而 `/tmp` 是 noexec）+ Noto CJK 字体与 fontconfig 映射（模板可选的中文字体名按衬线 / 无衬线映射到 Noto Serif / Sans CJK SC，决定事项第 3 项）。装饰生成器与助手源码经具名构建上下文取自 `client/electron/shared/chrome` 与 `openxmlhelper/`，与桌面版同一份代码（测试逐个文件核对）。.NET SDK 只在构建阶段；删除包管理器和 setuid 位，与 parse 镜像、第 8 步的 Agent 镜像分开。
+- **入口**（`entry.mjs`）：读 `/work/request.json`（受限 HTML、已规范化的 `export_format`、可选的 `asset_types`）与 `/work/assets/` 中的配图（只有一层，文件名就是 `data-app-asset-ref`）→ 用装饰生成器生成页眉页脚 SVG → Chromium 栅格化（`render.mjs`）→ 运行助手一次（`openxmlhelper --workspace /work --run export`，独立进程组，超时对整个进程组 SIGKILL）→ 只把 docx 与只含已知字段的 `result.json` 写到 `/output`。失败时输出目录为空，只在标准输出给错误代码（参数不合法 64，导出失败 65），助手与浏览器的错误文字不外传。
+- **Chromium**：**禁用 JavaScript**（浏览器上下文 `javaScriptEnabled: false`），关闭 Chromium 自身的沙箱（`--no-sandbox`，外层是本节的沙箱），每次截图一个新的浏览器上下文；页面固定尺寸、加载后直接截图，与桌面版 `renderExactHtmlToPng` 相同。第 8 步中必须执行脚本的渲染届时逐项由用户决定（决定事项第 9 项）。
+- **助手的一次性运行模式**：`--run <任务编号>` 执行一个任务目录、写 `result.json` 后退出（0 成功、1 任务失败、2 参数不合法），与桌面版的常驻 stdin / stdout 模式共用 `JobRunner`，桌面版行为不变。
+- **配置**：sandbox-runner 的 `SANDBOX_EXPORT_IMAGE`（生产必须按摘要固定）；在导出任务上线（7.3）之前可以不配置，未配置时创建 export 沙箱返回 `SANDBOX_UNAVAILABLE`。
+- **测试**：`tests/sandbox/docker/isolationSuite.ts` 是按模板参数化的同一套隔离用例（断网、只读、无能力、内存 / 进程数 / fork 炸弹 / 可写目录写满 / CPU / 超时 / 中止、取回校验、沙箱之间不共享，每项有去掉加固的对照组），parse 与两个 export 模板都跑；`export.test.ts` 另验证：恶意装饰中 7 种执行脚本的方式经完整导出流程都没有执行（对照组只把浏览器上下文改为允许 JavaScript，7 种都执行了）、装饰与受限 HTML 中的外部引用在沙箱中不被请求（对照组去掉 `--network none` 后装饰的外部引用确实被请求）、一次导出之后新的沙箱中看不到上一次的任何文件、导出结果中没有上一次的内容，以及错误代码与输出为空。CI 在 gVisor 下运行，样张与整本导出的耗时写在日志中。
+
 ## 8. 部署架构
 
 ### 8.0 部署位置（已决定，第 9 节第 13、14 项）
@@ -560,12 +579,11 @@ RTF、HTML、MHT、Word 2003 XML、SpreadsheetML 在沙箱中先检查或清理�
 | `caddy` | 反向代理、TLS、静态文件 | `edge` |
 | `api` | Fastify | `edge`、`backend` |
 | `worker` | BullMQ 消费者 + AI 网关（可多副本） | `backend`、`sandbox-control`、`sandbox-gw`、`egress` |
-| `openxml` | `openxmlhelper/` .NET 10 | `backend`（与 worker 共享临时卷） |
-| `sandbox-runner` | 唯一能访问容器运行时（6.5 实现，见第 7.5 节） | `sandbox-control`（`internal: true`，只有 worker 能访问） |
+| `sandbox-runner` | 唯一能访问容器运行时（6.5 实现，见第 7.5 节）；按模板创建 parse、export（7.1，见第 7.9 节）沙箱 | `sandbox-control`（`internal: true`，只有 worker 能访问） |
 | `postgres` | PostgreSQL 17，数据卷 | `backend` |
 | `redis` | Valkey 8（第 6 步决定替代 Redis 7，协议兼容），开启密码和 ACL，不持久化；启动脚本 `server/redis/start-valkey.sh`（6.1） | `backend` |
 | （云对象存储） | 生产环境用云厂商对象存储，不在本机；开发环境才在 Compose 中起本地 S3 兼容存储 | 经 `egress`，用实例角色访问 |
-| 沙箱容器 | 由 sandbox-runner 动态创建 | `none` 或 `sandbox-gw`（`internal: true`） |
+| 沙箱容器 | 由 sandbox-runner 动态创建：parse（文档解析）、export（OpenXmlHelper 与 Chromium，一次导出一个，用完即毁）、第 8 步的 Agent | `none` 或 `sandbox-gw`（`internal: true`） |
 
 - `backend` 为 `internal: true`，数据库、Redis、对象存储不暴露端口到宿主；
 - 只有 `worker` 在 `egress` 网络上能访问外网（调用模型服务商、MinerU、KMS、对象存储），并经第 4.4 节的出站校验；api 发邮件和签发预签名 URL 所需的出站访问只放行到发信服务和云厂商接口；

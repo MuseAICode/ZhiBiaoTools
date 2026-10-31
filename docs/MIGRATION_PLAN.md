@@ -15,7 +15,7 @@
 | 4 | 文件上传 / 下载 / 资源协议 | 进行中 | 旧仓库 PR #34（文件存储：S3 兼容对象存储、本地 SeaweedFS、`files` 表与强制 RLS、按内容校验类型、大小上限与组织配额、附件方式下载、7 天恢复期）、#6（上传白名单补齐桌面版能导入的内容：OLE 内容的 `.docx`，`.doc/.wps` 的 RTF / HTML / MHT / Word 2003 XML，`.xls` 的 HTML 表格 / SpreadsheetML，`%PDF-` 前有多余字节的 PDF） |
 | 5 | 数据层迁移（按业务逐个） | 已完成 | 旧仓库 PR #35（拆分计划，见“第 5 步说明”；记录上传白名单与桌面版的差距）、#7（5.1 项目：`projects` 表、`files.project_id`、项目接口、路由层归属校验、项目级表的迁移与测试模板）、#8（5.2 生成产物存储：`artifacts` 表、Store、只读接口；项目软删除与其下文件、产物联动，由 RLS 强制）、#9（5.3 配置：`org_settings`、`user_settings`、`GET/PATCH /api/settings`；写权限与删除可见性由 RLS 强制）、#10（5.4 导出模板：`export_templates`、`/api/export-templates` 增删改查与复制；系统模板只读、修改删除权限由 RLS 强制，迁移命令同步系统模板）、#11（5.5 资信库：6 张表、`/api/credential-library`；权限与删除可见性由 RLS 强制，图片随所引用文件的生命周期）、#12（5.6 知识库（一）：`knowledge_folders`、`_documents`、`_document_steps`、`/api/knowledge-base` 文件夹与文档管理；权限与删除可见性由 RLS 强制，文档随原件的生命周期）、#14（5.7 知识库（二）：切块、条目、匹配结果等 7 张表，检索与读取条目 / 分析 / Markdown 接口；删除可见性与写权限由 RLS 强制，随文档可见）、#16（5.8 标书查重：13 张项目级表、`/api/projects/:projectId/duplicate-check` 状态 / 文件选择 / 页面状态 / 清空 / Excel 导出；删除可见性与写权限由 RLS 强制，随项目和所选原件可见）、#17（5.8 后续：`files.project_id` 设置后不能再改，由触发器强制；xlsx 写出器防公式注入，回车按原样写出）、#18（5.9 废标检查：7 张项目级表、`/api/projects/:projectId/rejection-check` 状态 / 导入与移除文档 / 页面状态 / 切换与删除问题 / 清空 / Excel 导出；删除可见性与写权限由 RLS 强制，文档随原件可见，签名由服务端现算）、#19（5.10 可研报告：4 张项目级表、`/api/projects/:projectId/feasibility-report` 状态 / 步骤 / 项目信息 / 资料分析 / 目录配置 / 目录（`reason` 协议）/ 关键参数 / 正文 / 资料导入与移除 / 资料 Markdown / 清空；删除可见性与写权限由 RLS 强制，资料随原件、引用随知识库文档可见）、#20（5.11 技术方案（一）：6 张项目级表、`/api/projects/:projectId/technical-plan` 状态 / 步骤 / 生成配置 / 招标解析配置 / 正文生成选项 / 招标文件导入与移除 / 招标文件与合并正文的 Markdown / 原方案 / 投标范围选择 / 清空；删除可见性与写权限由 RLS 强制，文档随原件、引用随知识库文档可见，导出模板只能是本组织的或系统模板）、#21（5.12 技术方案（二）：目录与全局事实 2 张项目级表、`PUT .../outline`（`reason` 协议，节点 UUID 稳定、编号现算）与 `PUT .../global-facts`，下游清空扩展到目录与全局事实；删除可见性与写权限由 RLS 强制））、#22（5.13 技术方案（三）：正文生成状态与编排 2 张项目级表、`PUT .../chapters/:nodeId`、`DELETE .../content-generation`，目录保存与全局事实、下游清空扩展到正文生成状态、编排与运行进度；废标检查 `POST .../tender-from-technical-plan` 复制原件与 Markdown；删除可见性与写权限由 RLS 强制） |
 | 6 | 任务队列与 worker | 已完成 | #23（拆分计划，见“第 6 步说明”）、#24（6.1 Redis 接入：Valkey 8 开启 ACL、`REDIS_URL` / `REDIS_PASSWORD[_FILE]`、`/readyz` 检查 Redis、CI 起 Valkey）、#25（6.2 `jobs` / `job_events` 表与 worker 骨架：BullMQ 只派发、`jobs` 为唯一权威，认领加 `run_id` 隔离令牌与数据库租约，Redis 重启或清空后从 `jobs` 对账恢复入队；新增定义者角色 `bidtools_jobs`）、#26（6.3 SSE 推送 `GET /api/events`：每组织一条 Stream + 频道，`Last-Event-ID` 补发与 `resync`、心跳、会话定期重新校验、单用户连接数上限；任务状态、进度、日志经 worker 推送，取消 / 暂停经控制频道立即送达 worker）、#27（6.4 worker 接入 AI 网关与余额：任务调用记 `job_id` / `job_type`，`jobs.billed_amount` 在结算的同一事务中累加，入队和继续前检查最低启动余额 1 元，运行中余额不足暂停为 `paused` / `insufficient_balance` 并推送，按“组织 + 服务商”的 Redis 分布式信号量）、#28（6.5 解析沙箱基础设施：`sandbox-runner` 服务、`SandboxDriver` 接口、断网的 `parse` 模板与镜像，取回归档逐项校验，gVisor 下的隔离测试）、#29（测试修复：`jobQueue.test.ts` 中模拟清空 Redis 的 `wipeQueueKeys` 改为原子的 Lua 脚本，清空后的断言改为“被清空的任务不再被任何键引用”，消除与运行中 worker 的竞态）、#30（6.6 解析任务（一）：`document-parse` 任务在断网沙箱中按记录的 MIME 解析二进制与纯文本格式，ZIP 炸弹与 PDF 页数检查，产物经 `writeArtifact` 写入、重新解析时旧产物标为已被替换（迁移 0023），三个模块导入后自动入队；parse 镜像加入解析入口与 LibreOffice 安全设置；沙箱总数上限的测试）、#31（6.6 补充：LibreOffice 转换超时改为对整个进程组 SIGKILL，补“解析卡住时任务按时结束并销毁沙箱”的测试）、#32（6.7 解析任务（二）文本类格式：Office 2003 XML 含 DTD 即拒绝，RTF 去掉域指令与 OLE 链接，HTML 按白名单重新生成、不留任何远程资源，MHT 先解开 MIME；恶意样本与对照组测试，远程资源测试在沙箱内监听所有连接）、#33（6.8 清理任务：新增定义者角色 `bidtools_cleanup`（迁移 0024），worker 每小时跨组织删除超过保留期的文件、产物、项目、遗留上传与任务记录，先删对象后删行，孤儿对象，冻结到期收尾移到 worker；清理角色对计费表没有任何权限）、#34（6.4a 步骤幂等：迁移 0025 新建 `job_step_results`，任务调用必须带步骤键，结果与结算同一事务提交，续跑时同一步骤取回结果、不再调用服务商、不再扣费；worker 关闭、租约丢失中止的调用不收费）、#35（6.9 废标检查任务：`rejection-items-extraction`、`rejection-check-run`，招标文件按导入顺序合并正文，结果带开始时的签名写入、文档变化后旧任务的写入被拒绝，状态中返回最近的任务；第一个调用 AI 的业务任务，按步骤键续跑不重复扣费）、#36（6.10a 标书查重任务 `duplicate-analysis`：正文在 parse 沙箱中解析并做逐文档提取（目录、句子、图片位置，`analysis.json`）、#37（6.10b 标书查重的文档格式元数据：每份投标文件在只提取元数据的 parse 沙箱中读取 docx / OLE / PDF 的属性与结构，worker 校验 `metadata.json` 后并入），目录 / 正文 / 图片比对在 worker 中进行；元数据先只有文件基本信息，文档格式的元数据随 6.10b）、#38（6.11 技术方案任务（一）：多标段识别 `bid-section-extraction`、招标解析 `bid-analysis`，结果带开始时的输入签名写入；疑似多标段检测改为线性扫描，由解析任务在 worker 中按文件算出摘要（迁移 0026），读取时合并）、#39（6.12 可研报告任务：资料分析、关键参数、正文生成与自然化审校四类任务，结果带开始时的输入签名写入；正文任务未结束时不能改目录与正文，保存上游内容时取消任务）、#40（6.13a 知识库文档准备任务 `knowledge-document-prepare`：在 parse 沙箱中解析、切块、首轮与补充提取候选条目，按步骤续用，文档带上最近的任务、中断按状态显示，重试，删除文档 / 文件夹后取消任务）、#41（6.13b 知识库段落匹配：文档准备完成后接着匹配、遗漏补漏、保存最终条目与报告，已完成的段与步骤续用；新增 `knowledge-document-match` 与 `POST .../documents/:documentId/match` 重新匹配）、#42（6.14 登录、注册、找回密码等限流的计数改存 Redis，api 各实例共用；Redis 不可用时退回进程内存计数） |
-| 7 | OpenXmlHelper 容器化与离屏渲染（前置：CI 新增 .NET 编译与 OpenXmlHelper 测试，见“第 9 步说明”的品牌改名第三部分） | 进行中 | #43（前置：CI 新增 .NET 编译与 OpenXmlHelper 测试，见“第 7 步说明”）、#44（拆分计划与 9 项决定事项，见“第 7 步说明”） |
+| 7 | OpenXmlHelper 容器化与离屏渲染（前置：CI 新增 .NET 编译与 OpenXmlHelper 测试，见“第 9 步说明”的品牌改名第三部分） | 进行中 | #43（前置：CI 新增 .NET 编译与 OpenXmlHelper 测试，见“第 7 步说明”）、#44（拆分计划与 9 项决定事项，见“第 7 步说明”）、#45（7.1 export 沙箱：助手一次性运行模式、镜像、模板与隔离测试，见“第 7 步说明”） |
 | 8 | Agent 沙箱 | 未开始 | — |
 | 9 | 收尾与上线 | 进行中 | #1（品牌改名第一部分：用户可见文字和文档）、#2（品牌改名第二部分：代码标识符、数据与协议、打包，新增 CI 禁用词检查）、#5（品牌改名第三部分：原产品名缩写前缀改为中性前缀 `app`，禁用词检查加入该缩写） |
 
@@ -1441,7 +1441,7 @@ AI 网关加固，做法见 `docs/SERVER_DESIGN.md` 第 10.9 节。`client/` 未
 发现的问题（本 PR 不改助手行为，登记给第 7 步）：
 
 1. **整本导出缺少 `page` 一节时报错**：`whole_document: true` 而 `export_format` 没有 `page` 时抛出“Operation is not valid due to the current state of the object.”。桌面版 Main 经 `normalizeExportFormat` 总会补齐，服务端调用助手前同样要先规范化 `export_format`，不要把未规范化的用户配置直接交给助手。
-2. **`openxmlhelper/开发说明.md` 提到的 `client/scripts/check-technical-plan-export.cjs` 不存在**：其中配图、表格预设、标题编号和页面范围已由本 PR 的测试覆盖，八种图片格式逐一识别与格式错配尚未覆盖，第 7 步 Word 导出迁移时补上；`--ipc` 的 Electron 链路检查随第 7 步改为服务端接口测试后，删除该说明。
+2. **`openxmlhelper/开发说明.md` 提到的 `client/scripts/check-technical-plan-export.cjs` 不存在**：其中配图、表格预设、标题编号和页面范围已由本 PR 的测试覆盖，八种图片格式逐一识别与格式错配尚未覆盖，第 7 步 Word 导出迁移时补上（#45 已补上，说明中的对应句子已改为指向测试）；`--ipc` 的 Electron 链路检查随第 7 步改为服务端接口测试后，删除该说明。
 
 #### 拆分计划（#44）
 
@@ -1491,7 +1491,7 @@ AI 网关加固，做法见 `docs/SERVER_DESIGN.md` 第 10.9 节。`client/` 未
 |---|---|---|---|---|
 | 7.0 | 前置：CI 新增 .NET 编译与 OpenXmlHelper 测试 | — | 已完成 | #43 |
 | 7.p | 拆分计划（本节） | 7.0 | 已完成 | #44 |
-| 7.1 | `export` 沙箱：助手一次性运行模式（C#，含测试）、镜像（Node + Chromium + 助手 + 开源字体与 fontconfig 映射）、`export` 模板与资源上限、入口脚本（Chromium 禁用 JavaScript，有测试证明页面脚本不执行）、gVisor 下的隔离与兼容测试，CI 构建镜像并运行；补上 #43 未覆盖的八种图片格式识别与格式错配用例 | 7.0 | 未开始 | — |
+| 7.1 | `export` 沙箱：助手一次性运行模式（C#，含测试）、镜像（Node + Chromium + 助手 + 开源字体与 fontconfig 映射）、`export` 模板与资源上限、入口脚本（Chromium 禁用 JavaScript，有测试证明页面脚本不执行）、gVisor 下的隔离与兼容测试，CI 构建镜像并运行；补上 #43 未覆盖的八种图片格式识别与格式错配用例 | 7.0 | 已完成 | #45 |
 | 7.2 | 字体与装饰：`GET /api/fonts` 返回模板可选字体名的固定清单（取代 `systemFonts.list`，含义见决定事项第 3 项）；装饰生成器在沙箱中的输出与桌面版逐项核对（同一配置生成的 SVG 一致） | 7.1 | 未开始 | — |
 | 7.3 | 模板样张：`POST /api/export-templates/preview`（请求为样张 HTML 与配置）先用与前端 `restrictedHtml` 同一套白名单重新校验样张 HTML（标签、属性、`data-app-*` 取值、`data-app-asset-ref` 只能引用固定样张配图），不通过返回 400、不入队；白名单只维护一份，服务端与前端共用或由测试逐项核对一致（同系统模板的做法），不能只查大小和结构；通过后入队 `template-preview` 任务（`export` 队列，`lock_key` 按用户，新请求取消排队中的旧请求，对应桌面版“新请求取代旧请求”）；同一组织内按内容哈希复用最近的结果；结果经 SSE 通知，docx 存为产物（1 天后删除，计入组织存储配额）、以附件方式下载给前端的 docx-editor 预览；样张导出 Word 复用同一任务（固定使用本次设置、不参与合并）；WebBridge 的 `templates.renderPreview` 接上 | 7.1、7.2 | 未开始 | — |
 | 7.4 | 技术方案整本导出 Word：`technical-plan-export` 任务（`export` 队列，`lock_key` 按项目），入队时取快照（目录、人工正文、所选模板），worker 中按桌面版 `technicalPlanExport` 组装整本 HTML（目录编号、范围标记 `data-app-export-template` / `data-app-export-page-template`）；`data-app-asset-ref` 统一为产物引用（如 `artifact:<uuid>`），worker 只解析本项目可见的图片产物；`ai-generate` 小节在第 8 步之前按桌面版“正文未生成”的提示处理；进度经 SSE；产物新增迁移登记 docx 种类，按决定事项第 6 项保存与清理（计入组织存储配额，超出配额时导出失败并提示）；`export.word`、`export.openFile` 改为下载 | 7.3 | 未开始 | — |
@@ -1518,6 +1518,47 @@ AI 网关加固，做法见 `docs/SERVER_DESIGN.md` 第 10.9 节。`client/` 未
 7. **计费**：导出和样张**不计费、不检查余额**，只靠队列并发、互斥和请求频率限制控制用量。
 8. **样张 HTML 的来源**：**接受前端传来的 HTML**，但服务端必须用与 `restrictedHtml` 同一套白名单重新校验，不通过即拒绝；不能只做大小和结构检查（7.3）。
 9. **Chromium 自身的沙箱**：**同意关闭**（`--no-sandbox`，外层是断网、只读、非 root 的 gVisor 沙箱），但**导出时禁用 Chromium 的 JavaScript**。第 7 步只有装饰转图用到 Chromium，不需要执行脚本。第 8 步中必须执行脚本的功能（Mermaid、HTML 配图测量、docx-editor 分页测量）届时逐项列出，由用户决定。
+
+#### export 沙箱（#45，7.1）
+
+按拆分计划的方案 B 和决定事项第 1、2、3、5、9 项实现，做法见 `docs/SERVER_DESIGN.md` 第 7.9 节（同步修改了第 1.1、8.1 节对 OpenXmlHelper 的描述和第 1 节技术栈表）。只建沙箱、镜像和入口，不接任何任务（7.3 起）；没有迁移，`client/` 未改动，`server/package.json` 没有变化。要点：
+
+- **助手的一次性运行模式**（C#）：`openxmlhelper --workspace <目录> --run <任务编号>` 执行一个任务目录、写 `result.json` 后退出，退出码 0 成功、1 任务失败（原因在 `result.json`）、2 参数不合法（不执行任务）；不读 stdin、不写信号。参数解析移到 `Host/CommandLine.cs`，一次性运行在 `Host/OneShot.cs`，与常驻模式共用 `JobRunner`，桌面版行为不变。新增测试 `OneShotTests`（10 项，含真实拉起进程、stdin 保持打开时也立即退出）；
+- **八种图片格式**（#43 登记）：`ImageFormatTests` 24 项——PNG、JPEG、GIF、BMP、WebP、TIFF、EMF、WMF 逐一按文件头识别（Word 图片部件类型、宽高比）；扩展名与声明类型都冒充另一种格式时按内容嵌入；声明为可核对格式而内容无法识别时原位提示并返回 `imageWarnings`。测试中按需生成各格式的文件头，不提交二进制文件。OpenXmlHelper 测试共 79 项；
+- **模板**（`src/sandbox/templates.ts`）：`export-preview`（内存 1 GiB、CPU 1 核、命令墙钟 60 秒、沙箱最长 5 分钟）与 `export-document`（内存 2 GiB、CPU 1 核、命令墙钟 20 分钟、沙箱最长 35 分钟，输入至多 2,000 张配图 + 请求、合计 1 GiB），同一个 `export` 镜像；网络、只读、用户、能力、挂载、环境变量、日志与 parse 完全相同（单元测试逐项核对）；输入在 `/work`（两层：`request.json`、`assets/<文件名>`），取回只收 `document.docx` 与 `result.json`（docx 不超过 100 MiB）；命令只有 `export`，模式由模板写死、不能追加参数。实测导出峰值约 76 个线程、150 MiB 内存，`pids` 沿用 256；
+- **镜像**（`server/sandbox/export/Dockerfile`）：多阶段构建——.NET SDK 阶段发布助手（linux-x64、自包含、不裁剪、不打成单文件）；Node 阶段按 lockfile 安装 `playwright-core` 并下载对应版本的 chromium-headless-shell；最终镜像为与 api 相同的 Node 24 基础镜像 + chromium-headless-shell 的运行库 + `libicu72` + `fontconfig`、`fonts-noto-cjk`、`fonts-dejavu-core`，删除 npm / corepack / yarn 与 setuid 位，用户 10001，没有 .NET SDK、编译器、网络工具。装饰生成器（`client/electron/shared/chrome/*.mjs`）与助手源码经具名构建上下文取得，与桌面版同一份代码；
+- **字体映射**（决定事项第 3 项，`fonts/65-zhibiao-cjk.conf`）：前端 `FONT_OPTIONS` 及其 CSS 回退名中，衬线类（宋体、仿宋、楷体、隶书、华文宋体等）映射到 Noto Serif CJK SC，无衬线类（黑体、微软雅黑、等线、幼圆、苹方等）映射到 Noto Sans CJK SC；构建时生成字体缓存。测试按前端 `FONT_TO_CSS` 中每个字体名的 CSS 通用族（serif / sans-serif）逐个核对 `fc-match` 的结果；
+- **入口**（`entry.mjs`、`render.mjs`）：读 `/work/request.json`（受限 HTML、已规范化的 `export_format`、可选 `asset_types`）与 `/work/assets/` → 装饰生成器生成页眉页脚 SVG → Chromium 栅格化（**禁用 JavaScript**，`--no-sandbox`，每次截图一个新的浏览器上下文，固定画布、加载后直接截图，倍率与桌面版相同为 3）→ 运行助手一次（独立进程组，样张 45 秒 / 整本 18 分钟后对整个进程组 SIGKILL）→ `/output` 只有 docx 与只含 `version`、`blockCount`、`imageWarnings`（截断）的 `result.json`。`/work` 中出现其他文件、请求不合法、`asset_types` 引用不存在的配图时拒绝。失败时输出目录为空，只在标准输出给错误代码（`request_invalid`、`too_many_images`、`chrome_render_failed`、`helper_failed`、`helper_timeout`、`output_too_large`，参数不合法 64、导出失败 65），助手和浏览器的错误文字不外传；
+- **sandbox-runner**：新增 `SANDBOX_EXPORT_IMAGE`（生产必须按摘要固定）；`SandboxTemplate` 新增 `image` 字段，driver 按镜像名取引用。compose 的 sandbox-runner 透传 `SANDBOX_EXPORT_IMAGE`，开头注释写了构建命令；
+- **CI**：`server-checks` 构建 export 镜像（具名构建上下文），沙箱测试步骤加 `TEST_SANDBOX_EXPORT_IMAGE`，另对 `sandbox/export/package-lock.json` 跑 `npm audit --audit-level=high`；job 超时从 30 分钟改为 50 分钟；
+- **新增依赖**（只在 export 镜像中）：`playwright-core` 1.63.0（Apache-2.0，2026-09-04 发布，没有传递依赖），它下载的 chromium-headless-shell（Chrome for Testing 153.0.8010.12，revision 1243，BSD-3-Clause 及其第三方组件许可证）；apt 包 `fontconfig`（MIT 类）、`fonts-noto-cjk`（SIL OFL 1.1）、`libicu72`（Unicode / ICU 许可证）及 Chromium 的运行库（LGPL / MIT / BSD 类的系统库，动态链接）。OpenXmlHelper 的 NuGet 依赖不变。
+
+**测试**（`npm run test:sandbox`，CI 在 gVisor 下运行）：
+
+- **与 parse 相同的隔离用例**：把 `tests/sandbox/docker/isolation.test.ts` 中的网络、文件系统与权限、资源上限、放入与取回、沙箱之间不共享的用例抽成按模板参数化的 `isolationSuite.ts`（parse 的用例内容不变，内存分配量、进程数、写满的目录、取回规则改为取自模板），parse、`export-preview`、`export-document` 各跑一遍（`exportIsolation.test.ts`，每个模板 26 项）。每项都有去掉该项加固的对照组：去掉 `--network none` 后连上宿主、去掉只读后根以 `rw` 挂载、去掉内存上限后分配模板上限两倍的内存成功、去掉 pids 上限后 400 个进程全部启动、去掉 CPU 上限后 4 线程并行（宿主至少 3 核时）、原始归档中确有被校验拒绝的符号链接；
+- **Chromium 禁用 JavaScript**（`export.test.ts`）：恶意装饰 SVG 含 7 种执行脚本的方式——SVG `<script>`、SVG `<image onerror>`、`foreignObject` 中的 `<img onerror>`、`<iframe srcdoc>` 中的脚本、SMIL `onbegin`、SVG 之后的 HTML `<script>`、根 `<svg onload>`，每种成功时把自己的格子涂红。它经 Node 的模块加载钩子替换装饰生成器的输出后走**完整的导出流程**（入口、渲染、助手都是镜像中的原样代码），从导出的 docx 中取出页眉图片解码：7 个格子都是白色，导出正常完成。**对照组**：同一钩子另把渲染模块拿到的浏览器上下文改为 `javaScriptEnabled: true`（其他不变），7 个格子全部变红；
+- **外部引用**：装饰中的远程 `<image>`、`foreignObject` 中的 `<img>` 与 `<link>`、`@import` 与 CSS `url()`，受限 HTML 中的 `<link>`、`@import`、CSS `url()`、内联样式的 `url()`、配图的 `src`，指向宿主上的监听端口：沙箱中导出成功、监听端口没有收到任何请求。**对照组**：去掉 `--network none`，同一导出中 Chromium 请求了装饰的 5 个外部地址（`/svg-image.png`、`/foreign-object-img.png`、`/foreign-object-link.css`、`/svg-import.css`、`/svg-css-url.svg`），助手没有请求受限 HTML 中的任何地址（它只按 `data-app-asset-ref` 读沙箱内的文件）；
+- **任务间隔离**（两个模板各一项）：带唯一标记的导出完成后，原沙箱中确有输入、装饰 PNG、助手任务目录和浏览器配置目录；新建的沙箱中 `/work`、`/output`、`/tmp` 为空、找不到标记，再导出一次的结果中没有标记；
+- **端到端与错误**：样张（装饰 + 配图）与整本导出经模板登记的命令完成；请求不合法的 4 种情况与助手失败时只给错误代码、输出为空；镜像中的装饰生成器与仓库逐个文件 SHA-256 一致；
+- **结果**：本机 runc（Ubuntu 运行库的等价镜像，见下）：parse 隔离 33 项通过、3 项 LibreOffice 用例跳过，export 隔离 52 项、export 专用 15 项全部通过。本机 gVisor（`runsc` 20260810.0，与 CI 同版本）：parse 隔离、export 隔离（两个模板）与 export 专用用例共 103 项，100 项通过、3 项 LibreOffice 用例跳过（本机镜像不含 LibreOffice）。CI（Debian 正式镜像、gVisor）的结果与耗时以 CI 日志为准。
+
+**实测耗时**（.NET 与 Chromium 在 gVisor 下都能运行，不需要设计第 7.2 节预留的 runc 方案）：本机 runc 下样张约 2.4 秒、整本（两段正文）约 2.2 秒；本机 gVisor 下样张约 6.4–8.0 秒、整本约 6.3–6.9 秒（多次运行），其中 playwright-core 加载约 1.0 秒、Chromium 启动约 1.4 秒、两次截图约 1.3 秒、关闭浏览器约 1.4 秒、助手冷启动（ping）约 0.65 秒；沙箱创建约 0.3–0.6 秒。**比拆分计划估计的“样张约 1 秒级”慢**（本机是嵌套虚拟化，CI 的数字写在日志中）；60 秒上限仍有充分余量，7.3 的按内容哈希复用结果可以避免重复生成，届时再评估是否需要优化（例如浏览器关闭不等待、装饰 PNG 按配置缓存）。
+
+偏离计划（均需确认）：
+
+1. **两个模板名**：决定事项第 2 项是“一个 `export` 模板”，决定事项第 5 项又给了样张与整本两档资源上限，而模板的资源上限在创建容器时就固定。实现为同一个 export 镜像、同一套隔离参数、两个模板名 `export-preview` / `export-document`，只有资源上限、可写目录大小和入口模式不同。
+2. **`SANDBOX_EXPORT_IMAGE` 暂时可选**：导出任务（7.3）上线之前不强制部署 export 镜像，未配置时创建 export 沙箱返回 `SANDBOX_UNAVAILABLE`；7.3 起改为必需。
+3. **助手不打成单文件**：拆分计划写“同桌面版打包约定”，桌面版是单文件发布；单文件运行时要把原生库解压到可写目录再加载，沙箱中可写的 `/tmp` 是 noexec，所以服务端发布为自包含目录（同样不裁剪）。
+4. **样张固定配图暂不打进镜像**：拆分计划写“样张的固定配图打进镜像”，它只在 7.3 使用，随 7.3 加入。
+5. **apt 包不按版本固定**：与 parse 镜像相同（6.5 偏离第 3 项），基础镜像按 digest 固定，部署时按构建出的镜像摘要引用；.NET SDK 构建镜像按 digest 固定，`playwright-core` 按 lockfile 固定、它下载的浏览器版本由 `playwright-core` 版本决定。
+
+发现的问题（登记给 7.3 / 7.4）：
+
+1. **整本模式下配图要在范围标记内**：`whole_document: true` 时不在 `section[data-app-export-template]` 内的 figure 报“img 必须位于 figure 内”，7.4 由 worker 组装带范围标记的整本 HTML（同桌面版 `technicalPlanExport`），测试中的整本导出暂不带配图；
+2. **sandbox-runner 的请求体上限随 export-document 提高到约 1.1 GiB**：放入的归档在 sandbox-runner 中整体缓冲后校验，export 队列并发 2 时最坏占用约 2.2 GiB 内存，7.4 评估改为流式校验或降低单次放入的上限；
+3. **tmpfs 计入沙箱内存**：export-document 的 `/work`（1.25 GiB）与 `/tmp` 都在 2 GiB 内存上限之内，输入接近 1 GiB 时留给助手的内存不足 1 GiB，7.4 用真实的大文档实测后再调整（必要时改为按输入大小拒绝，或调整决定事项第 5 项的上限）。
+
+已知限制：本机网络不能访问 Debian 软件源与 Playwright 的下载地址，本机测试用的是 scratchpad 中的等价镜像（Ubuntu 24.04 的同名运行库、本机预装的同一 revision 1243 的 chromium-headless-shell、同一份 Node 24、助手发布、字体映射、入口与装饰生成器，不提交）；正式 Dockerfile 只在 CI 中构建。
 
 ### 第 9 步说明
 

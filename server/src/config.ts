@@ -114,8 +114,11 @@ export interface SandboxRunnerConfig {
   dockerSocket: string;
   /** 容器运行时：生产只允许 runsc（gVisor）；开发、测试可用参数相同的 runc（第 6 步决定事项第 2 项）。 */
   runtime: SandboxRuntime;
-  /** 各模板的镜像引用；生产必须按摘要固定（name@sha256:...）。 */
-  images: { parse: string };
+  /**
+   * 各镜像的引用；生产必须按摘要固定（name@sha256:...）。export 镜像（路线图 7.1）在导出任务上线（7.3）之前可以不配置，
+   * 未配置时不能创建 export 模板的沙箱（SANDBOX_UNAVAILABLE）。
+   */
+  images: { parse: string; export: string | null };
   /** 同时存在的沙箱数上限。 */
   maxActive: number;
   /** worker 调用 sandbox-runner 的共享令牌（至少 32 个字符）。 */
@@ -503,6 +506,10 @@ export function loadSandboxRunnerConfig(env: Env, options: LoadConfigOptions = {
   });
   const token = readSecret('SANDBOX_RUNNER_TOKEN');
   if (token !== undefined && token !== '' && token.length < 32) fail('SANDBOX_RUNNER_TOKEN', '过短（至少 32 个字符）');
+  const imageSpec = {
+    parse: (raw: string) => ((production ? PINNED_IMAGE_REFERENCE : IMAGE_REFERENCE).test(raw) ? raw : undefined),
+    expected: production ? '按摘要固定的镜像引用（name@sha256:...）' : '镜像引用（生产环境必须按摘要固定）',
+  };
   return finish<SandboxRunnerConfig>({
     nodeEnv,
     host: read('HOST', { ...HOST_SPEC, default: '127.0.0.1' }),
@@ -515,10 +522,8 @@ export function loadSandboxRunnerConfig(env: Env, options: LoadConfigOptions = {
     }),
     runtime,
     images: Object.freeze({
-      parse: read('SANDBOX_PARSE_IMAGE', {
-        parse: (raw) => ((production ? PINNED_IMAGE_REFERENCE : IMAGE_REFERENCE).test(raw) ? raw : undefined),
-        expected: production ? '按摘要固定的镜像引用（name@sha256:...）' : '镜像引用（生产环境必须按摘要固定）',
-      }),
+      parse: read('SANDBOX_PARSE_IMAGE', imageSpec),
+      export: env.SANDBOX_EXPORT_IMAGE?.trim() ? read('SANDBOX_EXPORT_IMAGE', imageSpec) : null,
     }),
     maxActive: read('SANDBOX_MAX_ACTIVE', intSpec(8, 1, 256)),
     token,

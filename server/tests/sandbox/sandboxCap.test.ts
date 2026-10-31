@@ -98,6 +98,16 @@ describe('sandbox total cap', () => {
     expect([running.id, again.id].every((id) => [...containers.values()].some((item) => item.name.endsWith(id)))).toBe(true);
   });
 
+  it('refuses export templates while the export image is not configured, without creating a container', async () => {
+    const { api, containers } = fakeDocker();
+    const driver = driverFor(api, 8);
+    await expect(driver.create('export-preview', { jobId: randomUUID() })).rejects.toMatchObject({ code: 'SANDBOX_UNAVAILABLE' });
+    await expect(driver.create('export-document', { jobId: randomUUID() })).rejects.toMatchObject({ code: 'SANDBOX_UNAVAILABLE' });
+    expect(containers.size).toBe(0);
+    const configured = createDockerSandboxDriver({ docker: api, runtime: 'runc', images: { parse: 'zhibiao-parse:test', export: 'zhibiao-export:test' }, maxActive: 8, log: silentLog });
+    expect((await configured.create('export-preview', { jobId: randomUUID() })).template).toBe('export-preview');
+  });
+
   it('counts sandboxes created by an earlier sandbox-runner process (state lives in container labels)', async () => {
     const { api } = fakeDocker();
     await driverFor(api, 2).create('parse', { jobId: randomUUID() });

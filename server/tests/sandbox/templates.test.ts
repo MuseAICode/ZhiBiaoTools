@@ -59,6 +59,63 @@ describe('parse template', () => {
   });
 });
 
+describe('export templates', () => {
+  const MIB = 1024 ** 2;
+  const GIB = 1024 ** 3;
+  const image = 'zhibiao-export@sha256:' + 'c'.repeat(64);
+  const parseHost = buildContainerSpec(parse, { image, runtime: 'runsc', jobId: JOB_ID, expiresAt: new Date(1_000) }).HostConfig;
+
+  it.each(['export-preview', 'export-document'] as const)('%s reuses the isolation of the parse template', (name) => {
+    const template = SANDBOX_TEMPLATES[name];
+    expect(template.image).toBe('export');
+    const spec = buildContainerSpec(template, { image, runtime: 'runsc', jobId: JOB_ID, expiresAt: new Date(1_000) });
+    const host = spec.HostConfig;
+    // 网络、只读根文件系统、用户、能力、运行时、挂载、环境变量、日志与 parse 完全相同，不同的只有资源上限和可写目录。
+    for (const key of ['NetworkMode', 'ReadonlyRootfs', 'Privileged', 'CapDrop', 'SecurityOpt', 'Init', 'IpcMode', 'Runtime', 'Binds', 'Mounts', 'Devices', 'Dns', 'ExtraHosts', 'LogConfig', 'RestartPolicy']) {
+      expect(host[key], key).toEqual(parseHost[key]);
+    }
+    expect(spec.User).toBe('10001:10001');
+    expect(spec.Env).toEqual(['HOME=/tmp', 'LANG=C.UTF-8', 'TMPDIR=/tmp']);
+    expect(spec.Labels).toMatchObject({ 'zhibiao.sandbox.template': name });
+    expect(Object.keys(host.Tmpfs as object).sort()).toEqual(['/output', '/tmp', '/work']);
+    for (const options of Object.values(host.Tmpfs as Record<string, string>)) expect(options).toMatch(/^rw,noexec,nosuid,nodev,size=\d+,/);
+    expect(host.MemorySwap).toBe(host.Memory);
+    expect(host.NanoCpus).toBe(1e9);
+    // 取回：只有 document.docx 和 result.json，docx 不超过 100 MiB。
+    expect(template.output).toMatchObject({ directory: '/output', maxDepth: 1, maxFiles: 2, maxFileBytes: 100 * MIB });
+    expect([...template.output.extensions!].sort()).toEqual(['docx', 'json']);
+    expect(template.input.directory).toBe('/work');
+    expect(template.input.maxDepth).toBe(2);
+  });
+
+  it('applies the preview limits of step 7 decision 5 (1 GiB memory, 1 CPU, 60 seconds)', () => {
+    const preview = SANDBOX_TEMPLATES['export-preview'];
+    expect(preview.memoryBytes).toBe(1 * GIB);
+    expect(preview.commands.export!.timeoutMs).toBe(60_000);
+    expect(preview.lifetimeMs).toBeGreaterThan(preview.commands.export!.timeoutMs + 2 * preview.transferTimeoutMs);
+  });
+
+  it('applies the whole-document limits of step 7 decision 5 (2 GiB memory, 1 CPU, 20 minutes, 1 GiB input, 2,000 images)', () => {
+    const document = SANDBOX_TEMPLATES['export-document'];
+    expect(document.memoryBytes).toBe(2 * GIB);
+    expect(document.commands.export!.timeoutMs).toBe(20 * 60_000);
+    expect(document.input.maxTotalBytes).toBe(1 * GIB);
+    expect(document.input.maxFiles).toBe(2_001);
+    expect(document.lifetimeMs).toBeGreaterThan(document.commands.export!.timeoutMs + 2 * document.transferTimeoutMs);
+    // 输入、装饰与助手写出的 docx 都在 /work 中。
+    expect(document.tmpfs['/work']!.bytes).toBeGreaterThanOrEqual(document.input.maxTotalBytes + 100 * MIB);
+  });
+
+  it('only runs the export entry with the mode fixed by the template', () => {
+    expect(resolveCommand(SANDBOX_TEMPLATES['export-preview'], 'export', [])).toEqual({ argv: ['node', '/opt/export/entry.mjs', 'preview'], timeoutMs: 60_000 });
+    expect(resolveCommand(SANDBOX_TEMPLATES['export-document'], 'export', [])).toEqual({ argv: ['node', '/opt/export/entry.mjs', 'document'], timeoutMs: 1_200_000 });
+    expect(resolveCommand(SANDBOX_TEMPLATES['export-preview'], 'export', ['document'])).toBeNull();
+    expect(resolveCommand(SANDBOX_TEMPLATES['export-preview'], 'export', [''])).toBeNull();
+    expect(resolveCommand(SANDBOX_TEMPLATES['export-preview'], 'parse', [])).toBeNull();
+    expect(resolveCommand(parse, 'export', [])).toBeNull();
+  });
+});
+
 describe('loadSandboxRunnerConfig', () => {
   const token = 't'.repeat(40);
   const base = { NODE_ENV: 'development', SANDBOX_PARSE_IMAGE: 'zhibiao-parse:dev', SANDBOX_RUNNER_TOKEN: token };
@@ -78,6 +135,15 @@ describe('loadSandboxRunnerConfig', () => {
     expect(() => loadSandboxRunnerConfig(production)).toThrow(ConfigError);
     expect(() => loadSandboxRunnerConfig({ ...production, SANDBOX_RUNTIME: 'runc' })).toThrow(/SANDBOX_RUNTIME/);
     expect(() => loadSandboxRunnerConfig({ ...production, SANDBOX_RUNTIME: 'runsc', SANDBOX_PARSE_IMAGE: 'zhibiao-parse:latest' })).toThrow(/SANDBOX_PARSE_IMAGE/);
+  });
+
+  it('treats the export image as optional until export jobs ship, and pins it in production', () => {
+    expect(loadSandboxRunnerConfig(base).images).toEqual({ parse: 'zhibiao-parse:dev', export: null });
+    expect(loadSandboxRunnerConfig({ ...base, SANDBOX_EXPORT_IMAGE: 'zhibiao-export:dev' }).images.export).toBe('zhibiao-export:dev');
+    const production = { ...base, NODE_ENV: 'production', SANDBOX_RUNTIME: 'runsc', SANDBOX_PARSE_IMAGE: pinned };
+    expect(() => loadSandboxRunnerConfig({ ...production, SANDBOX_EXPORT_IMAGE: 'zhibiao-export:latest' })).toThrow(/SANDBOX_EXPORT_IMAGE/);
+    const exportPinned = `registry.example.com/zhibiao-export@sha256:${'d'.repeat(64)}`;
+    expect(loadSandboxRunnerConfig({ ...production, SANDBOX_EXPORT_IMAGE: exportPinned }).images.export).toBe(exportPinned);
   });
 
   it('requires a long token and does not echo it', () => {

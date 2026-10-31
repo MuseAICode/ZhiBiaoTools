@@ -112,8 +112,9 @@ jobs:
   server-checks:
     name: Server typecheck / test / audit
     runs-on: ubuntu-latest
-    # 6.5 起含 parse 沙箱镜像（LibreOffice）的构建和 gVisor 下的隔离测试。
-    timeout-minutes: 30
+    # 6.5 起含 parse 沙箱镜像（LibreOffice）的构建和 gVisor 下的隔离测试；7.1 起另含 export 沙箱镜像（.NET 助手 + Chromium）
+    # 的构建和两个 export 模板的同一套隔离测试。
+    timeout-minutes: 50
 
     # 数据库集成测试（npm run test:db）用的 PostgreSQL，与 docker-compose.yml 使用同一镜像 digest。
     # 只在 CI 的一次性容器中使用，超级用户密码不是密钥。
@@ -245,13 +246,23 @@ jobs:
           USER 10001:10001
           EOF
 
-      - name: Sandbox isolation and parse tests (gVisor)
+      # 7.1：export 沙箱镜像。助手源码与装饰生成器经具名构建上下文取自 openxmlhelper/ 与 client/electron/shared/chrome（与桌面版同一份代码）；
+      # .NET SDK 只在构建阶段，chromium-headless-shell 由镜像中的 playwright-core（按 sandbox/export/package-lock.json 安装）下载对应版本。
+      - name: Build export sandbox image
+        run: |
+          docker build -t zhibiao-export:ci \
+            --build-context openxmlhelper=../openxmlhelper \
+            --build-context chrome=../client/electron/shared/chrome \
+            sandbox/export
+
+      - name: Sandbox isolation, parse and export tests (gVisor)
         run: npm run test:sandbox
         env:
           TEST_SANDBOX_IMAGE: zhibiao-parse:ci
           TEST_SANDBOX_RUNTIME: runsc
           TEST_SANDBOX_OFFICE: '1'
           TEST_SANDBOX_CONTROL_IMAGE: zhibiao-parse:ci-control
+          TEST_SANDBOX_EXPORT_IMAGE: zhibiao-export:ci
           # 解析卡住时的解析任务测试（tests/sandbox/docker/parseJob.test.ts）在真实沙箱和数据库上执行任务。
           TEST_DATABASE_ADMIN_URL: postgres://postgres:postgres@127.0.0.1:5432/postgres
 
@@ -264,4 +275,9 @@ jobs:
       # parse 沙箱镜像中的解析依赖（mammoth、pdfjs、SheetJS 等）单独一份 lockfile。
       - name: npm audit parse sandbox dependencies (fail on high)
         working-directory: server/sandbox/parse
+        run: npm audit --audit-level=high
+
+      # export 沙箱镜像中的入口依赖（playwright-core）单独一份 lockfile。
+      - name: npm audit export sandbox dependencies (fail on high)
+        working-directory: server/sandbox/export
         run: npm audit --audit-level=high
