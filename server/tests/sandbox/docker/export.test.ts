@@ -1,6 +1,8 @@
 // export 沙箱的导出入口与专用隔离测试（路线图第 7 步 7.1；docs/SERVER_DESIGN.md 第 7.9 节）：按 export 模板创建真实的沙箱
 // （CI 中为 gVisor），放入请求、执行模板中登记的导出命令、取回结果并按模板校验。
 // - 镜像：装饰生成器与桌面版同一份代码（逐个文件核对），模板可选字体按决定事项第 3 项映射到 Noto CJK；
+// - 装饰与桌面版逐项核对（7.2）：同一页面配置在沙箱中生成的 SVG、几何与文字层与宿主上的桌面版生成器相同；入口交给 Chromium 的
+//   SVG 与交给助手的 chrome_assets 与桌面版相同；
 // - 端到端：样张（含装饰与配图）与整本导出都能在沙箱中完成，.NET 与 Chromium 在当前运行时下能运行（实测耗时写进 CI 日志）；
 // - 错误：请求不合法、助手失败时只给错误代码，输出目录为空，助手的错误文字不外传；
 // - Chromium 禁用 JavaScript：恶意装饰（7 种脚本执行方式）经完整的导出流程栅格化，脚本都没有执行；对照组（只把浏览器上下文
@@ -18,6 +20,15 @@ import type { DockerSandboxDriver } from '../../../src/sandbox/docker.ts';
 import type { SandboxRef } from '../../../src/sandbox/driver.ts';
 import type { SandboxTemplateName } from '../../../src/sandbox/templates.ts';
 import { sandboxEnv } from './env.ts';
+import {
+  DECORATION_STYLES,
+  DESKTOP_CHROME_MODULE,
+  SANDBOX_DIGEST_SCRIPT,
+  decorationCases,
+  desktopChromeAssets,
+  digestChrome,
+  type ChromeDigest,
+} from './exportDecorationCases.ts';
 import { decodePng, grayPng, readZipEntries } from './exportFixtures.ts';
 import { bridgeGateway, createIsolationHarness } from './isolationSuite.ts';
 
@@ -158,6 +169,88 @@ describe.runIf(sandboxEnv.exportImage)('export image', () => {
     expect(Object.fromEntries(fonts.map((font, index) => [font.name, matched[index]]))).toEqual(
       Object.fromEntries(fonts.map((font) => [font.name, font.generic === 'serif' ? 'Noto Serif CJK SC' : 'Noto Sans CJK SC'])),
     );
+  });
+});
+
+interface DesktopChrome {
+  style: string;
+  headerSvg: string | null;
+  footerSvg: string | null;
+  layout: Record<string, number>;
+  colors: unknown;
+  textLayout: unknown;
+}
+const loadDesktopChrome = async () => (await import(DESKTOP_CHROME_MODULE.href)) as { buildChrome(page: Record<string, unknown>): DesktopChrome };
+
+/** 测试钩子：包装入口导入的渲染模块，把每次交给 Chromium 的装饰 SVG 与尺寸记到 /tmp/hook/svg-<序号>.json，其余不变。 */
+const RECORD_SVG_HOOK: Record<string, string> = {
+  'register.mjs': "import { register } from 'node:module'; register('file:///tmp/hook/hooks.mjs');",
+  'hooks.mjs': `export async function resolve(specifier, context, next) {
+    if (context.parentURL === 'file:///opt/export/entry.mjs' && specifier === './render.mjs') return { url: 'file:///tmp/hook/render.mjs', shortCircuit: true };
+    return next(specifier, context);
+  }`,
+  'render.mjs': `import { writeFileSync } from 'node:fs';
+    import * as real from 'file:///opt/export/render.mjs';
+    export * from 'file:///opt/export/render.mjs';
+    let count = 0;
+    export function rasterizeSvg(renderer, svg, widthCm, heightCm) {
+      writeFileSync('/tmp/hook/svg-' + count++ + '.json', JSON.stringify({ svg, widthCm, heightCm }));
+      return real.rasterizeSvg(renderer, svg, widthCm, heightCm);
+    }`,
+};
+
+/** 导出结束后读出钩子记下的 SVG（摘要）与入口写给助手的 chrome_assets。 */
+const RECORDED_SCRIPT = `
+const crypto = require('crypto'); const fs = require('fs');
+const svgs = fs.readdirSync('/tmp/hook').filter((name) => /^svg-\\d+\\.json$/.test(name)).sort().map((name) => {
+  const { svg, widthCm, heightCm } = JSON.parse(fs.readFileSync('/tmp/hook/' + name, 'utf8'));
+  return { svg: crypto.createHash('sha256').update(svg).digest('hex'), widthCm, heightCm };
+});
+const request = JSON.parse(fs.readFileSync('/work/openxml-jobs/export/request.json', 'utf8'));
+console.log(JSON.stringify({ svgs, chromeAssets: request.chrome_assets, page: request.export_format.page }));`;
+
+describe.runIf(sandboxEnv.exportImage)('decorations match the desktop', () => {
+  const cases = decorationCases();
+
+  it('buildChrome in the sandbox gives the desktop SVG, geometry and text layout for every case', async () => {
+    const { buildChrome } = await loadDesktopChrome();
+    const expected = Object.fromEntries(cases.map((item) => [item.name, digestChrome(buildChrome(item.page))]));
+    // 每种样式都确实画出了装饰（plain 除外），核对不是在比两个空值。
+    for (const style of DECORATION_STYLES) {
+      const full = expected[`${style}/full`]!;
+      expect(full.style).toBe(style);
+      if (style !== 'plain') expect(full.headerSvg ?? full.footerSvg).not.toBeNull();
+    }
+    expect(new Set(Object.values(expected).map((digest) => digest.headerSvg).filter(Boolean)).size).toBeGreaterThan(DECORATION_STYLES.length);
+
+    const ref = await preview.createSandbox();
+    await preview.driver.copyIn(ref, [{ path: 'pages.json', data: Buffer.from(JSON.stringify(cases)) }]);
+    const actual = await preview.probe<Record<string, ChromeDigest>>(ref, SANDBOX_DIGEST_SCRIPT);
+    expect(actual).toEqual(expected);
+  });
+
+  it.each(DECORATION_STYLES)('the export entry rasterizes the desktop SVG and hands the helper the desktop chrome_assets (%s)', async (style) => {
+    const { buildChrome } = await loadDesktopChrome();
+    const page = cases.find((item) => item.name === `${style}/full`)!.page;
+    const chrome = buildChrome(page);
+    const run = await exportIn('export-preview', requestFiles({ html: '<p>装饰核对</p>', export_format: { page } }), { hook: RECORD_SVG_HOOK });
+    const { docx } = outputOf(run);
+    const recorded = await preview.probe<{ svgs: Array<{ svg: string; widthCm: number; heightCm: number }>; chromeAssets: Record<string, unknown>; page: unknown }>(run.ref, RECORDED_SCRIPT);
+
+    const sha256 = (text: string) => createHash('sha256').update(text).digest('hex');
+    const expectedSvgs = [
+      [chrome.headerSvg, chrome.layout.headerHeightCm],
+      [chrome.footerSvg, chrome.layout.footerHeightCm],
+    ].flatMap(([svg, heightCm]) => (svg && Number(heightCm) > 0 ? [{ svg: sha256(String(svg)), widthCm: chrome.layout.widthCm, heightCm }] : []));
+    expect(recorded.page).toEqual(page);
+    expect(recorded.svgs).toEqual(expectedSvgs);
+    const { root, header, footer, ...geometry } = recorded.chromeAssets;
+    expect(root).toBe('chrome');
+    expect({ header: header === 'header.png', footer: footer === 'footer.png', ...geometry }).toEqual(desktopChromeAssets(chrome));
+    expect(header === null || header === 'header.png').toBe(true);
+    expect(footer === null || footer === 'footer.png').toBe(true);
+    // 栅格化后的装饰确实进了 docx（plain 没有装饰图）。
+    expect(partImages(docx, 'header').length + partImages(docx, 'footer').length).toBe(expectedSvgs.length);
   });
 });
 

@@ -1,5 +1,6 @@
 // 导出模板（迁移 0010_export_templates）的数据库与接口测试：隔离模板（describeProjectTable，组织级 + 系统行），
-// 系统模板的同步，修改、删除权限由 RLS 强制（系统模板只读、其他组织的模板不可见），模板数上限，以及 /api/export-templates。
+// 系统模板的同步，修改、删除权限由 RLS 强制（系统模板只读、其他组织的模板不可见），模板数上限，以及 /api/export-templates；
+// 另有 GET /api/fonts 登录后的返回（7.2，未登录与清单内容见 tests/templates/fonts.test.ts）。
 import { randomUUID } from 'node:crypto';
 import type { FastifyInstance } from 'fastify';
 import type { Kysely } from 'kysely';
@@ -11,6 +12,7 @@ import { migrateToLatest } from '../../src/db/migrator.ts';
 import { OWNER_ROLE } from '../../src/db/roles.ts';
 import type { Database } from '../../src/db/schema.ts';
 import { withTenant, type TenantContext } from '../../src/db/tenant.ts';
+import { TEMPLATE_FONT_NAMES } from '../../src/templates/fonts.ts';
 import { EXPORT_TEMPLATE_CONFIG_MAX_BYTES, EXPORT_TEMPLATES_PER_ORG_MAX } from '../../src/templates/store.ts';
 import { syncSystemTemplates } from '../../src/templates/system.ts';
 import { SYSTEM_EXPORT_TEMPLATES } from '../../src/templates/systemTemplates.ts';
@@ -389,5 +391,21 @@ describe('接口', () => {
     for (let index = 0; index < 40; index += 1) deep = { child: deep };
     await expectError(await call(alice, 'POST', '', { config: config('深', { deep }) }), 400, 'TEMPLATE_INVALID');
     await expectError(await call(alice, 'POST', '', { config: config('零', { text: 'a\u0000b' }) }), 400, 'TEMPLATE_INVALID');
+  });
+});
+
+describe('GET /api/fonts', () => {
+  it('登录后返回模板可选字体名的固定清单，不随组织变化，不缓存', async () => {
+    const first = await newMember();
+    const second = await newMember();
+    const bodies = [];
+    for (const member of [first, second]) {
+      const response = await app.inject({ method: 'GET', url: '/api/fonts', headers: { ...sameSiteHeaders, cookie: `__Host-session=${member.cookie}` } });
+      expect(response.statusCode, response.body).toBe(200);
+      expect(response.headers['cache-control']).toBe('no-store');
+      bodies.push(response.json());
+    }
+    expect(bodies[0]).toEqual({ fonts: [...TEMPLATE_FONT_NAMES] });
+    expect(bodies[1]).toEqual(bodies[0]);
   });
 });
