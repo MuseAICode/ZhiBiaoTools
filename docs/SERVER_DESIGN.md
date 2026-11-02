@@ -561,6 +561,7 @@ Word 导出与模板样张由 OpenXmlHelper 生成 docx，页眉页脚装饰 SVG
 - **Chromium**：**禁用 JavaScript**（浏览器上下文 `javaScriptEnabled: false`），关闭 Chromium 自身的沙箱（`--no-sandbox`，外层是本节的沙箱），每次截图一个新的浏览器上下文；页面固定尺寸、加载后直接截图，与桌面版 `renderExactHtmlToPng` 相同。第 8 步中必须执行脚本的渲染届时逐项由用户决定（决定事项第 9 项）。
 - **助手的一次性运行模式**：`--run <任务编号>` 执行一个任务目录、写 `result.json` 后退出（0 成功、1 任务失败、2 参数不合法），与桌面版的常驻 stdin / stdout 模式共用 `JobRunner`，桌面版行为不变。
 - **配置**：sandbox-runner 的 `SANDBOX_EXPORT_IMAGE`（生产必须按摘要固定）；在导出任务上线（7.3）之前可以不配置，未配置时创建 export 沙箱返回 `SANDBOX_UNAVAILABLE`。
+- **字体与装饰（7.2）**：`GET /api/fonts`（需要登录）返回模板可选字体名的固定清单 `{ fonts: string[] }`（`src/templates/fonts.ts`，与前端 `FONT_OPTIONS` 逐项相同，单元测试核对），取代桌面版枚举本机字体的 `systemFonts.list`；它不是服务器上安装的字体，导出的 docx 保留模板选择的原字体名（决定事项第 3 项）。装饰与桌面版逐项核对：同一页面配置（8 种样式 × 10 种变体、系统模板、未规范化的配置）在沙箱中由 `buildChrome` 生成的 SVG、几何、配色与文字层与宿主上的桌面版生成器相同；入口交给 Chromium 的 SVG 与尺寸、交给助手的 `chrome_assets` 与桌面版相同（Docker 测试经完整导出流程记录；源码级的字段对应关系另有不需要 Docker 的单元测试）。
 - **测试**：`tests/sandbox/docker/isolationSuite.ts` 是按模板参数化的同一套隔离用例（断网、只读、无能力、内存 / 进程数 / fork 炸弹 / 可写目录写满 / CPU / 超时 / 中止、取回校验、沙箱之间不共享，每项有去掉加固的对照组），parse 与两个 export 模板都跑；`export.test.ts` 另验证：恶意装饰中 7 种执行脚本的方式经完整导出流程都没有执行（对照组只把浏览器上下文改为允许 JavaScript，7 种都执行了）、装饰与受限 HTML 中的外部引用在沙箱中不被请求（对照组去掉 `--network none` 后装饰的外部引用确实被请求）、一次导出之后新的沙箱中看不到上一次的任何文件、导出结果中没有上一次的内容，以及错误代码与输出为空。CI 在 gVisor 下运行，样张与整本导出的耗时写在日志中。
 
 ## 8. 部署架构

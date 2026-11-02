@@ -29,6 +29,7 @@ import { registerDuplicateCheckRoutes } from './routes/duplicateCheck.ts';
 import { registerEventRoutes, type EventRouteDependencies } from './routes/events.ts';
 import { registerFeasibilityReportRoutes } from './routes/feasibilityReport.ts';
 import { registerFileRoutes, type FileRouteDependencies } from './routes/files.ts';
+import { registerFontRoutes } from './routes/fonts.ts';
 import { registerHealthRoutes } from './routes/health.ts';
 import { registerJobRoutes } from './routes/jobs.ts';
 import { registerKnowledgeBaseRoutes } from './routes/knowledgeBase.ts';
@@ -169,6 +170,7 @@ export async function buildApp(config: AppConfig, options: BuildAppOptions): Pro
   await app.register(registerArtifactRoutes, { prefix: '/api/artifacts', db, objectStore: options.objectStore ?? null });
   await app.register(registerSettingsRoutes, { prefix: '/api/settings', db });
   await app.register(registerTemplateRoutes, { prefix: '/api/export-templates', db });
+  await app.register(registerFontRoutes, { prefix: '/api/fonts' });
   await app.register(registerCredentialLibraryRoutes, { prefix: '/api/credential-library', db });
   await app.register(registerKnowledgeBaseRoutes, { prefix: '/api/knowledge-base', db, objectStore: options.objectStore ?? null, jobs });
   await app.register(registerDuplicateCheckRoutes, { prefix: '/api/projects', db, jobs });
