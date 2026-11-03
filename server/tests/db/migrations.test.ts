@@ -77,6 +77,7 @@ const APPLICATION_TABLES = [
   'technical_plan_global_fact_groups',
   'technical_plan_meta',
   'technical_plan_outline_nodes',
+  'template_preview_requests',
   'usage_records',
   'user_settings',
   'users',
@@ -121,6 +122,7 @@ const APP_FUNCTIONS = [
   'cleanup_delete_job_events',
   'cleanup_delete_jobs',
   'cleanup_delete_projects',
+  'cleanup_delete_template_preview_requests',
   'cleanup_file_candidates',
   'cleanup_unreferenced_keys',
   'credential_library_guard',
@@ -133,6 +135,7 @@ const APP_FUNCTIONS = [
   'knowledge_base_guard',
   'org_settings_guard',
   'projects_guard',
+  'template_preview_requests_guard',
 ];
 
 let testDb: TestDatabase;
@@ -227,6 +230,7 @@ describe('迁移升级与回滚', () => {
       (await sql<{ prosrc: string }>`SELECT prosrc FROM pg_proc WHERE proname = 'ai_usage_begin'`.execute(testDb.admin)).rows.map((row) => row.prosrc);
     expectSuccess(await migrateToLatest(owner));
     expect((await source())[0]).toContain('ai_model_price');
+    expect(expectSuccess(await migrateDown(owner))).toEqual(['Down:0027_template_preview']);
     expect(expectSuccess(await migrateDown(owner))).toEqual(['Down:0026_technical_plan_bid_section_detection']);
     expect(expectSuccess(await migrateDown(owner))).toEqual(['Down:0025_job_step_results']);
     expect(expectSuccess(await migrateDown(owner))).toEqual(['Down:0024_cleanup']);

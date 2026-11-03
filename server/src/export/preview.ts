@@ -9,10 +9,11 @@
 // - 失败一律抛 JobError，代码与给用户看的原因由这里按入口的错误代码决定，不采用沙箱输出的文字；
 // - 沙箱数已达上限或 sandbox-runner 暂不可用时按退避间隔重试创建（样张是交互操作，默认约 30 秒内重试 5 次），仍不行才失败；
 // - 中止（任务取消、取代、worker 关闭）抛 JobInterruptedError。
+import { createHash } from 'node:crypto';
 import { JobError, JobInterruptedError, type JobContext } from '../jobs/definitions.ts';
 import { createSandboxWithRetry } from '../sandbox/createWithRetry.ts';
 import { SandboxError, type SandboxDriver } from '../sandbox/driver.ts';
-import { normalizeExportFormat } from '../templates/exportFormat.ts';
+import { normalizeExportFormat, type ExportFormat } from '../templates/exportFormat.ts';
 import { validatePreviewHtml } from '../templates/previewHtml.ts';
 import { exportEntryErrorCode, ExportOutputError, validateExportOutput, type ExportEntryErrorCode, type ExportOutput } from './output.ts';
 
@@ -62,11 +63,33 @@ function sandboxFailure(error: SandboxError): Error {
   return new JobError('EXPORT_FAILED', '样张生成失败', { cause: error });
 }
 
-/** 组装交给沙箱的请求：只有重新序列化的 HTML 与规范化后的配置。不合法时抛 JobError（PREVIEW_HTML_INVALID）。 */
-export function buildPreviewRequest(input: TemplatePreviewInput): Buffer {
+export interface PreparedPreviewRequest {
+  /** 重新序列化的样张 HTML。 */
+  html: string;
+  /** 规范化后的配置。 */
+  exportFormat: ExportFormat;
+  /** 交给沙箱的 request.json。 */
+  body: Buffer;
+  /** body 的 SHA-256：样张输入的哈希，同一组织内按它复用最近的结果（迁移 0027 的 artifacts.preview_sha256）。 */
+  sha256: Buffer;
+}
+
+/**
+ * 校验并组装交给沙箱的请求：只有重新序列化的 HTML 与规范化后的配置。不合法时抛 JobError（PREVIEW_HTML_INVALID）。
+ * 同一样张（HTML 与配置的含义相同）得到相同的 body 与哈希：HTML 由解析树重新序列化，配置由 normalizeExportFormat 按固定的
+ * 字段顺序重建；对已规范化的结果再做一次得到同样的结果（样张请求从数据库读回后由任务重新准备，见 src/export/previewStore.ts）。
+ */
+export function preparePreviewRequest(input: TemplatePreviewInput): PreparedPreviewRequest {
   const checked = validatePreviewHtml(input.html);
   if (!checked.ok) throw new JobError('PREVIEW_HTML_INVALID', '样张内容不符合受限 HTML 规则');
-  return Buffer.from(JSON.stringify({ html: checked.html, export_format: normalizeExportFormat(input.exportFormat) }), 'utf8');
+  const exportFormat = normalizeExportFormat(input.exportFormat);
+  const body = Buffer.from(JSON.stringify({ html: checked.html, export_format: exportFormat }), 'utf8');
+  return { html: checked.html, exportFormat, body, sha256: createHash('sha256').update(body).digest() };
+}
+
+/** 组装交给沙箱的请求（preparePreviewRequest 的 body）。 */
+export function buildPreviewRequest(input: TemplatePreviewInput): Buffer {
+  return preparePreviewRequest(input).body;
 }
 
 /** 在新建的 export-preview 沙箱中生成样张，返回校验过的 docx 与结果。沙箱在 finally 中销毁。 */

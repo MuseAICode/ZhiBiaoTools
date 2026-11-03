@@ -5,6 +5,7 @@
 // - 先删对象、确认成功（或对象已不存在）后再删行；对象删除失败的行保留，下一批重试，不会出现“行已删、对象还在”；
 // - 孤儿对象：按前缀 org/ 分页列出，只考虑修改时间超过 7 天的、形如 org/{org}/files|artifacts/{id} 且数据库中没有对应行的键，
 //   每批从上次停下的位置继续，到末尾后从头开始；
+// - 模板样张（迁移 0027）：样张产物与其他产物同一路径（过期条件加上“创建超过 24 小时”），样张请求没有对象，24 小时后删行；
 // - 冻结到期收尾（ai_usage_expire_holds，属主 bidtools_billing）以应用角色调用，不经清理角色（原来在 api 的定时器中）；
 // - 每批按类别各记一行结构化日志：删除条数、对象数、失败数和耗时，不含对象键、文件名和内容。
 // 多个 worker 同时执行是安全的：删行的函数会重新检查条件，删除已不存在的对象不报错，只会多做一次。
@@ -15,7 +16,9 @@ import { CLEANUP_BATCH_MAX, SUPERSEDED_ARTIFACT_DAYS } from '../db/migrations/00
 import type { Database } from '../db/schema.ts';
 import type { ObjectLister, ObjectStore } from '../files/objectStore.ts';
 
-export const CLEANUP_CATEGORIES = ['holds', 'artifacts', 'files', 'uploading', 'projects', 'orphans', 'jobs', 'job_events'] as const;
+export const CLEANUP_CATEGORIES = [
+  'holds', 'artifacts', 'files', 'uploading', 'projects', 'orphans', 'jobs', 'job_events', 'template_preview_requests',
+] as const;
 export type CleanupCategory = (typeof CLEANUP_CATEGORIES)[number];
 
 /** 每小时一批（决定事项第 9 项）。 */
@@ -212,6 +215,8 @@ export function createCleaner(options: CleanerOptions): Cleaner {
           (await sql<{ n: number }>`SELECT cleanup_delete_jobs(${batchSize}) AS n`.execute(db)).rows[0]!.n)],
         [['job_events'], () => count('job_events', async () =>
           (await sql<{ n: number }>`SELECT cleanup_delete_job_events(${batchSize}) AS n`.execute(db)).rows[0]!.n)],
+        [['template_preview_requests'], () => count('template_preview_requests', async () =>
+          (await sql<{ n: number }>`SELECT cleanup_delete_template_preview_requests(${batchSize}) AS n`.execute(db)).rows[0]!.n)],
       ];
       for (const [categories, task] of steps) {
         if (signal?.aborted) break;
