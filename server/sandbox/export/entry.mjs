@@ -18,8 +18,8 @@ import { rasterizeSvg, withRenderer } from './render.mjs';
 
 const MODES = Object.freeze({
   // 时限都比模板的命令墙钟（60 秒 / 20 分钟）短，超时由入口先结束助手并给出代码，而不是整个沙箱被终止。
-  preview: Object.freeze({ wholeDocument: false, helperTimeoutMs: 45_000 }),
-  document: Object.freeze({ wholeDocument: true, helperTimeoutMs: 18 * 60_000 }),
+  preview: Object.freeze({ wholeDocument: false, helperTimeoutMs: 45_000, builtInAssets: true }),
+  document: Object.freeze({ wholeDocument: true, helperTimeoutMs: 18 * 60_000, builtInAssets: false }),
 });
 const WORK = '/work';
 const OUTPUT = '/output';
@@ -31,6 +31,9 @@ const DOCX_NAME = 'document.docx';
 /** 装饰 PNG 的目录（相对工作区，交给助手的 chrome_assets.root）。 */
 const CHROME_ROOT = 'chrome';
 const ASSET_ROOT = 'assets';
+/** 镜像中的固定样张配图与它们在工作区中的位置（助手的 asset_root）。 */
+const PREVIEW_ASSET_SOURCE = '/opt/export/preview-assets';
+const PREVIEW_ROOT = 'preview';
 /** request.json 的上限：整本导出的 HTML 不含图片（图片在 assets/ 中）。 */
 const MAX_REQUEST_BYTES = 256 * 1024 * 1024;
 /** 输出 docx 的上限（决定事项第 5 项），与 export 模板的取回上限相同。 */
@@ -57,11 +60,14 @@ function isPlainObject(value) {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
-/** /work 中只能有 request.json 和 assets/ 下的普通文件（copyIn 只放普通文件，这里再核对一次，防止与助手的目录冲突）。 */
-async function readInput() {
+/**
+ * /work 中只能有 request.json 和 assets/ 下的普通文件（copyIn 只放普通文件，这里再核对一次，防止与助手的目录冲突）。
+ * 样张（builtInAssets）只能有 request.json，请求中也不能有 asset_types。
+ */
+async function readInput(mode) {
   const top = await readdir(WORK);
   for (const name of top) {
-    if (name !== 'request.json' && name !== ASSET_ROOT) throw new ExportError('request_invalid');
+    if (name !== 'request.json' && (mode.builtInAssets || name !== ASSET_ROOT)) throw new ExportError('request_invalid');
   }
   const requestStat = await lstat(`${WORK}/request.json`).catch(() => null);
   if (!requestStat?.isFile() || requestStat.size > MAX_REQUEST_BYTES) throw new ExportError('request_invalid');
@@ -91,13 +97,25 @@ async function readInput() {
   }
   const assetTypes = {};
   if (request.asset_types !== undefined) {
-    if (!isPlainObject(request.asset_types)) throw new ExportError('request_invalid');
+    if (mode.builtInAssets || !isPlainObject(request.asset_types)) throw new ExportError('request_invalid');
     for (const [name, type] of Object.entries(request.asset_types)) {
       if (!assets.has(name) || typeof type !== 'string' || !MIME.test(type)) throw new ExportError('request_invalid');
       assetTypes[name] = type;
     }
   }
   return { html: request.html, exportFormat: request.export_format, assetTypes };
+}
+
+/** 把镜像中的固定样张配图复制到 /work/preview/assets/，返回助手的 asset_root。只复制普通文件，名称按配图规则核对。 */
+async function prepareBuiltInAssets() {
+  const target = `${WORK}/${PREVIEW_ROOT}/${ASSET_ROOT}`;
+  await mkdir(target, { recursive: true });
+  for (const name of await readdir(PREVIEW_ASSET_SOURCE)) {
+    const entry = await lstat(`${PREVIEW_ASSET_SOURCE}/${name}`);
+    if (!ASSET_NAME.test(name) || !entry.isFile()) throw new ExportError('export_failed');
+    await copyFile(`${PREVIEW_ASSET_SOURCE}/${name}`, `${target}/${name}`);
+  }
+  return PREVIEW_ROOT;
 }
 
 /** 页眉页脚装饰：与桌面版 chromeAssetService.buildChromeAssets 相同的几何与文字层，PNG 写到 /work/chrome。 */
@@ -186,7 +204,8 @@ async function main() {
 
   try {
     if ((await readdir(OUTPUT)).length > 0) throw new ExportError('request_invalid');
-    const input = await readInput();
+    const input = await readInput(mode);
+    const assetRoot = mode.builtInAssets ? await prepareBuiltInAssets() : ASSET_ROOT;
     const chrome = await buildChromeAssets(input.exportFormat.page);
 
     await mkdir(JOB_DIR, { recursive: true });
@@ -198,7 +217,7 @@ async function main() {
         output: DOCX_NAME,
         whole_document: mode.wholeDocument,
         export_format: input.exportFormat,
-        asset_root: ASSET_ROOT,
+        asset_root: assetRoot,
         asset_types: input.assetTypes,
         chrome_assets: {
           root: chrome.root,

@@ -39,6 +39,7 @@ const harnessOf = (template: SandboxTemplateName) => (template === 'export-docum
 
 const chromeDirectory = new URL('../../../../client/electron/shared/chrome/', import.meta.url);
 const exportFormatSource = new URL('../../../../client/src/shared/types/exportFormat.ts', import.meta.url);
+const previewAssetDirectory = new URL('../../../../client/assets/content-template-preview/', import.meta.url);
 
 /** 带页眉页脚装饰（band 样式）与页码的页面配置。 */
 const DECORATED_PAGE = {
@@ -155,6 +156,23 @@ describe.runIf(sandboxEnv.exportImage)('export image', () => {
     expect(result).toEqual(expected);
   });
 
+  it('carries the desktop sample images unchanged (7.3b)', async () => {
+    const ref = await preview.createSandbox();
+    const result = await preview.probe<Record<string, string>>(
+      ref,
+      `const fs = require('fs'), crypto = require('crypto'); const out = {};
+       for (const name of fs.readdirSync('/opt/export/preview-assets')) out[name] = crypto.createHash('sha256').update(fs.readFileSync('/opt/export/preview-assets/' + name)).digest('hex');
+       console.log(JSON.stringify(out));`,
+    );
+    const expected = Object.fromEntries(
+      readdirSync(previewAssetDirectory)
+        .filter((name) => name.endsWith('.webp'))
+        .map((name) => [name, createHash('sha256').update(readFileSync(new URL(name, previewAssetDirectory))).digest('hex')]),
+    );
+    expect(Object.keys(expected).length).toBe(5);
+    expect(result).toEqual(expected);
+  });
+
   it('maps every font name a template can choose to Noto CJK (serif to serif, sans to sans)', async () => {
     // 期望值取自前端的 FONT_TO_CSS：每个字体名的 CSS 回退族是 serif 还是 sans-serif（决定事项第 3 项）。
     const source = readFileSync(exportFormatSource, 'utf8');
@@ -255,17 +273,13 @@ describe.runIf(sandboxEnv.exportImage)('decorations match the desktop', () => {
 });
 
 describe.runIf(sandboxEnv.exportImage)('export entry', () => {
-  it('exports a sample with decorations and an image through the registered command (preview)', async () => {
+  it('exports a sample with decorations and a built-in sample image through the registered command (preview)', async () => {
     const run = await exportIn(
       'export-preview',
-      requestFiles(
-        {
-          html: '<h1>第一章 总体方案</h1><p>样张正文。</p><figure id="fig_001" data-app-generation="htmlImage" data-app-size="wide"><img alt="示意图" data-app-asset-ref="figure.png"><figcaption>图 1 示意图</figcaption></figure>',
-          export_format: { page: DECORATED_PAGE },
-          asset_types: { 'figure.png': 'image/png' },
-        },
-        { 'figure.png': grayPng(300, 200) },
-      ),
+      requestFiles({
+        html: '<h1>第一章 总体方案</h1><p>样张正文。</p><figure id="fig_001" data-app-generation="htmlImage" data-app-size="wide"><img alt="示意图" data-app-asset-ref="assets/visual-wbs-mindmap.webp"><figcaption>图 1 示意图</figcaption></figure>',
+        export_format: { page: DECORATED_PAGE },
+      }),
     );
     const { docx, result } = outputOf(run);
     expect(result).toMatchObject({ version: 1, imageWarnings: [] });
@@ -273,8 +287,10 @@ describe.runIf(sandboxEnv.exportImage)('export entry', () => {
     expect(docxText(docx)).toContain('样张正文');
     expect(partImages(docx, 'header').length).toBe(1);
     expect(partImages(docx, 'footer').length).toBe(1);
-    // 页眉装饰、页脚装饰、正文配图。
-    expect([...docx.keys()].filter((name) => name.endsWith('.png')).length).toBe(3);
+    // 页眉装饰、页脚装饰，正文配图是镜像中的样张配图（原样嵌入）。
+    expect([...docx.keys()].filter((name) => name.endsWith('.png')).length).toBe(2);
+    const webp = [...docx].filter(([name]) => name.endsWith('.webp')).map(([, data]) => data);
+    expect(webp).toEqual([readFileSync(new URL('visual-wbs-mindmap.webp', previewAssetDirectory))]);
     // 实测（路线图 7.1：.NET 与 Chromium 在 gVisor 下能运行，样张约 1 秒级以实测为准），写在 CI 日志中。
     console.info(JSON.stringify({ runtime: sandboxEnv.runtime, template: 'export-preview', ...run.timings }));
   });
@@ -299,6 +315,19 @@ describe.runIf(sandboxEnv.exportImage)('export entry', () => {
     ['an extra file next to the request', () => [...requestFiles({ html: '<p>x</p>', export_format: {} }), { path: 'openxml-jobs', data: Buffer.from('x') }]],
     ['an asset type for a missing asset', () => requestFiles({ html: '<p>x</p>', export_format: {}, asset_types: { 'missing.png': 'image/png' } })],
   ])('rejects %s with request_invalid and no output', async (_name, files) => {
+    const run = await exportIn('export-document', files());
+    expect(run.exitCode).toBe(65);
+    expect(errorCodeOf(run)).toBe('request_invalid');
+    expect(run.files).toEqual([]);
+  });
+
+  // 7.3b：样张只能引用打进镜像的固定样张配图，worker 放入的任何配图与 asset_types 都拒绝。
+  it.each([
+    ['an image the worker put in', () => requestFiles({ html: '<p>x</p>', export_format: {} }, { 'figure.png': grayPng(10, 10) })],
+    ['an image that shadows a built-in sample', () => requestFiles({ html: '<p>x</p>', export_format: {} }, { assets: grayPng(10, 10) })],
+    ['asset types', () => requestFiles({ html: '<p>x</p>', export_format: {}, asset_types: {} })],
+    ['a preview directory the worker put in', () => [...requestFiles({ html: '<p>x</p>', export_format: {} }), { path: 'preview/visual-wbs-mindmap.webp', data: grayPng(10, 10) }]],
+  ])('preview: rejects %s with request_invalid and no output', async (_name, files) => {
     const run = await exportIn('export-preview', files());
     expect(run.exitCode).toBe(65);
     expect(errorCodeOf(run)).toBe('request_invalid');
@@ -416,10 +445,11 @@ describe.runIf(sandboxEnv.exportImage)('external references', () => {
       `<link rel="stylesheet" href="${base}/html-link.css">` +
       `<style>@import url("${base}/html-import.css"); p { background: url("${base}/html-css-url.png"); }</style>` +
       `<p style="background-image: url('${base}/html-inline-url.png')">正文</p>` +
-      `<figure id="fig_001" data-app-generation="htmlImage" data-app-size="wide"><img alt="x" data-app-asset-ref="figure.png" src="${base}/html-figure-src.png"><figcaption>图 1</figcaption></figure>`,
+      `<figure id="fig_001" data-app-generation="htmlImage" data-app-size="wide"><img alt="x" data-app-asset-ref="assets/visual-wbs-mindmap.webp" src="${base}/html-figure-src.png"><figcaption>图 1</figcaption></figure>`,
     export_format: { page: DECORATED_PAGE },
   });
-  const files = () => requestFiles(request(), { 'figure.png': grayPng(30, 20) });
+  // 样张的配图是镜像中的样张配图（7.3b），不放入任何配图。
+  const files = () => requestFiles(request());
 
   it('requests nothing from the decoration or the restricted HTML inside the sandbox', async () => {
     requests.length = 0;
@@ -446,11 +476,12 @@ describe.runIf(sandboxEnv.exportImage)('external references', () => {
 describe.runIf(sandboxEnv.exportImage)('isolation between exports', () => {
   it.each(['export-preview', 'export-document'] as const)('%s: a new sandbox sees nothing of the previous export', async (template) => {
     const secret = `SECRET-${randomUUID()}`;
-    // 整本导出的配图要在 7.4 组装的范围标记内，这里只有样张带配图；两者都放入一张配图。
-    const figure = template === 'export-preview' ? `<figure id="fig_001" data-app-generation="htmlImage" data-app-size="wide"><img alt="x" data-app-asset-ref="secret.png"><figcaption>${secret}</figcaption></figure>` : '';
+    // 样张只能用镜像中的样张配图（7.3b），带一张；整本导出放入一张配图（不引用，配图要在 7.4 组装的范围标记内）。
+    const figure = template === 'export-preview' ? `<figure id="fig_001" data-app-generation="htmlImage" data-app-size="wide"><img alt="x" data-app-asset-ref="assets/visual-wbs-mindmap.webp"><figcaption>${secret}</figcaption></figure>` : '';
+    const assets = template === 'export-document' ? { 'secret.png': grayPng(64, 48) } : {};
     const first = await exportIn(
       template,
-      requestFiles({ html: `<p>${secret}</p>${figure}`, export_format: { page: { ...DECORATED_PAGE, header_text: secret } } }, { 'secret.png': grayPng(64, 48) }),
+      requestFiles({ html: `<p>${secret}</p>${figure}`, export_format: { page: { ...DECORATED_PAGE, header_text: secret } } }, assets),
     );
     expect(docxText(outputOf(first).docx)).toContain(secret);
     const harness = harnessOf(template);
