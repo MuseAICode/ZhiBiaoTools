@@ -616,13 +616,14 @@ describe('调用方不能绕过删除条件', () => {
     expect((await sql<{ ok: boolean }>`SELECT cleanup_delete_file(${file.id}::uuid) AS ok`.execute(appDb)).rows[0]!.ok).toBe(true);
   });
 
-  it('批量删除项目、任务、事件的函数只接受上限：恢复期内的项目、未满保留期的任务和事件不受上限影响，传入极端值也只是被夹在 1~1000', async () => {
+  it('批量删除项目、任务、事件、样张请求的函数只接受上限：恢复期内的项目、未满保留期的任务、事件和样张请求不受上限影响，传入极端值也只是被夹在 1~1000', async () => {
     const ctx = await newOrg();
     const project = await insertProject(ctx, 7 * DAY - HOUR);
     const job = await insertJob(ctx, { finishedAgo: 89 * DAY });
     const event = await insertEvent(ctx, job, 29 * DAY);
+    const request = await insertPreviewRequest(ctx, 24 * HOUR - 60_000);
     for (const limit of [1, 1000, 2_147_483_647, 0, -1, null]) {
-      for (const fn of ['cleanup_delete_projects', 'cleanup_delete_jobs', 'cleanup_delete_job_events']) {
+      for (const fn of ['cleanup_delete_projects', 'cleanup_delete_jobs', 'cleanup_delete_job_events', 'cleanup_delete_template_preview_requests']) {
         const { rows } = await sql<{ n: number }>`SELECT ${sql.raw(fn)}(${limit}::integer) AS n`.execute(appDb);
         expect(rows[0]!.n, `${fn}(${limit})`).toBe(0);
       }
@@ -630,10 +631,12 @@ describe('调用方不能绕过删除条件', () => {
     expect(await exists('projects', project)).toBe(true);
     expect(await exists('jobs', job)).toBe(true);
     expect(await exists('job_events', event)).toBe(true);
+    expect(await exists('template_preview_requests', request)).toBe(true);
     // 不接受时间参数：传入时间的调用没有对应的函数。
     await expectSqlError(sql`SELECT cleanup_delete_jobs(now())`.execute(appDb), '42883');
     await expectSqlError(sql`SELECT cleanup_delete_projects(1, now() + interval '1 year')`.execute(appDb), '42883');
     await expectSqlError(sql`SELECT cleanup_file_candidates(1000, interval '0 days')`.execute(appDb), '42883');
+    await expectSqlError(sql`SELECT cleanup_delete_template_preview_requests(1, interval '0 hours')`.execute(appDb), '42883');
   });
 
   it('即使绕过函数、以清理角色直接 DELETE，策略也只放行过期的行', async () => {
@@ -711,6 +714,31 @@ describe('对象存储：先删对象，成功后再删行', () => {
     expect([...rowPresentAtDelete.values()].every(Boolean)).toBe(true);
     for (const gone of [ok, flaky]) expect(await exists('files', gone.id)).toBe(false);
     expect(store.objects.size).toBe(0);
+  });
+
+  it('样张产物同样先删对象、成功后再删行：对象删除失败时行与对象都保留，下一批重试成功', async () => {
+    const ctx = await newOrg();
+    const preview = await insertArtifact(ctx, { preview: true, createdAgo: 24 * HOUR + 60_000 });
+    const rowPresentAtDelete: boolean[] = [];
+    store.beforeDelete = async (key) => {
+      if (key === preview.key) rowPresentAtDelete.push(await exists('artifacts', preview.id));
+    };
+    store.failDelete = new Set([preview.key]);
+    const { cleaner } = newCleaner();
+    try {
+      expect(byCategory(await cleaner.runBatch()).artifacts).toMatchObject({ deleted: 0, objects: 0, failed: 1 });
+      expect(await exists('artifacts', preview.id)).toBe(true);
+      expect(store.objects.has(preview.key)).toBe(true);
+
+      store.failDelete.clear();
+      expect(byCategory(await cleaner.runBatch()).artifacts).toMatchObject({ deleted: 1, objects: 1, failed: 0 });
+      expect(rowPresentAtDelete).toEqual([true, true]);
+      expect(await exists('artifacts', preview.id)).toBe(false);
+      expect(store.objects.has(preview.key)).toBe(false);
+    } finally {
+      store.beforeDelete = null;
+      store.failDelete.clear();
+    }
   });
 
   it('未配置对象存储时有对象的行一律不删（不留孤儿对象），没有对象的项目、任务记录照常清理', async () => {

@@ -1505,7 +1505,7 @@ AI 网关加固，做法见 `docs/SERVER_DESIGN.md` 第 10.9 节。`client/` 未
 | 7.3a | 样张的服务端输入校验（从 7.3 拆出，见“样张的输入校验”）：受限 HTML 的服务端实现与前端 `restrictedHtml` 同一套白名单（常量与提示文字由测试逐项核对，行为由同一份用例在两端核对），样张校验 `validatePreviewHtml`（没有任何错误或警告、`data-app-asset-ref` 只能引用固定样张配图、只转发重新序列化的 HTML）；`export_format` 规范化与桌面版 `normalizeExportFormat` 逐项相同。不接任何接口 | 7.1 | 已完成 | #47 |
 | 7.3b | 样张在沙箱中生成（从原 7.3b 拆出，见“样张在沙箱中生成”）：样张的固定配图打进 export 镜像，preview 模式只能引用它们、不接受 worker 放入的配图与 `asset_types`；worker 端 `renderTemplatePreview`（校验与规范化 → export-preview 沙箱 → 只放 `request.json` → 取回并校验输出 → 销毁），输出校验（`result.json` 只取已知字段、docx 的 ZIP 结构检查）与错误代码到提示文字的映射；真实沙箱中的端到端测试。不接任务、接口与产物 | 7.3a | 已完成 | #48 |
 | 7.3c | 样张的存储（从原 7.3c 拆出，见“样张的存储”）：迁移 0027 新增产物种类 `template-preview`（docx，不属于项目或来源文件，带样张输入的哈希，计入组织存储配额，创建 24 小时后由清理任务删除）与样张请求表 `template_preview_requests`（校验、规范化后的 HTML 与配置，只有创建者可见，结果只能写一次，24 小时后删除）；Store 函数与同一组织内按输入哈希复用最近结果的查询。不接任务与接口 | 7.3b | 已完成 | #50 |
-| 7.3d | 样张任务：`template-preview` 任务（`export` 队列）读样张请求、按输入哈希复用或调用 7.3b 的 `renderTemplatePreview` 并存为产物、写回结果；同一用户的新请求取消排队中的旧请求（对应桌面版“新请求取代旧请求”，互斥的做法届时说明，见“样张的存储”登记事项） | 7.3c | 未开始 | — |
+| 7.3d | 样张任务：`template-preview` 任务（`export` 队列）读样张请求、按输入哈希复用或调用 7.3b 的 `renderTemplatePreview` 并存为产物、写回结果；同一用户的新请求取消排队中的旧请求（对应桌面版“新请求取代旧请求”）：#50 确认时决定**不用 `lock_key`**，新建样张任务时在同一事务中取消该用户排队中的样张任务，运行中的继续；必须有并发测试证明同一用户不会出现两个排队中的样张、也不会全部被取消 | 7.3c | 未开始 | — |
 | 7.3e | 样张接口与下载：`POST /api/export-templates/preview`（请求为样张 HTML 与配置）经 7.3a 的 `validatePreviewHtml` 校验，不通过返回 400、不入队；结果经 SSE 通知，以附件方式下载给前端的 docx-editor 预览；样张导出 Word 复用同一任务（固定使用本次设置、不参与合并）；WebBridge 的 `templates.renderPreview` 接上（或随 WebBridge 的通用机制，届时说明） | 7.3d | 未开始 | — |
 | 7.4 | 技术方案整本导出 Word：`technical-plan-export` 任务（`export` 队列，`lock_key` 按项目），入队时取快照（目录、人工正文、所选模板），worker 中按桌面版 `technicalPlanExport` 组装整本 HTML（目录编号、范围标记 `data-app-export-template` / `data-app-export-page-template`）；`data-app-asset-ref` 统一为产物引用（如 `artifact:<uuid>`），worker 只解析本项目可见的图片产物；`ai-generate` 小节在第 8 步之前按桌面版“正文未生成”的提示处理；进度经 SSE；产物新增迁移登记 docx 种类，按决定事项第 6 项保存与清理（计入组织存储配额，超出配额时导出失败并提示）；`export.word`、`export.openFile` 改为下载；**必做（#45 确认时登记）**：① sandbox-runner 对大请求体（放入的归档）改为流式转发与校验，不在内存中整体缓存，并测试多个大请求并发时 runner 的内存保持稳定；② 解决 tmpfs 计入沙箱内存导致输入接近 1 GiB 时 OpenXmlHelper 内存不足的问题，方案由 7.4 提出、用户决定 | 7.3e | 未开始 | — |
 
@@ -1644,7 +1644,9 @@ AI 网关加固，做法见 `docs/SERVER_DESIGN.md` 第 10.9 节。`client/` 未
 
 **测试**：`tests/db/templatePreview.test.ts`（写入与配额、超出配额 413、同组织可见与跨组织不可见、CHECK 逐项、Store 的参数检查、复用的时间窗与范围、请求的 RLS / 写一次 / 不可改不可删 / 大小上限、读回后哈希一致）；`tests/db/cleanup.test.ts`（24 小时前后的样张产物与请求、按 id 与以清理角色直接删除未过期的行影响 0 行、清理角色的表与函数清单）；`tests/db/migrations.test.ts`（表、函数清单与逐个回滚）；`tests/export/preview.test.ts`（`preparePreviewRequest` 的哈希）。
 
-**登记给 7.3d**：迁移 0021 的互斥键对“未结束”的任务唯一，同一用户的样张若用 `lock_key` 互斥，运行中的旧样张会使新请求返回 409，做不到桌面版“运行中的继续、只保留最后一个等待的请求”；7.3d 实现取代旧请求时说明采用的做法（例如不用 `lock_key`，入队时在同一事务中取消该用户排队中的样张任务）。
+**登记给 7.3d**：迁移 0021 的互斥键对“未结束”的任务唯一，同一用户的样张若用 `lock_key` 互斥，运行中的旧样张会使新请求返回 409，做不到桌面版“运行中的继续、只保留最后一个等待的请求”；#50 确认时决定：7.3d **不用 `lock_key`**，新建样张任务时在同一事务中取消该用户排队中的样张任务，运行中的继续；须有并发测试证明同一用户不会出现两个排队中的样张、也不会全部被取消。
+
+#50 确认时的其他决定：同意本 PR 对清理角色策略、函数与授权的修改；合并前补上样张请求批量删除函数的极端上限值用例和样张产物“先删对象、再删行”（含删除失败重试）的用例。
 
 偏离计划：原 7.3c 再拆分（见上）。
 
