@@ -546,7 +546,7 @@ RTF、HTML、MHT、Word 2003 XML、SpreadsheetML 在沙箱中先检查或清理�
 
 ### 7.9 实现（路线图 7.1）：导出沙箱
 
-Word 导出与模板样张由 OpenXmlHelper 生成 docx，页眉页脚装饰 SVG 由 Chromium 栅格化成 PNG；两者处理的都是不可信输入，所以与文档解析复用同一套沙箱机制（第 7.5 节），每次导出一个 `export` 沙箱（路线图第 7 步决定事项第 1、2 项）。7.1 只建沙箱、镜像和入口；样张任务（7.3）与整本导出任务（7.4）在其上接入。
+Word 导出与模板样张由 OpenXmlHelper 生成 docx，页眉页脚装饰 SVG 由 Chromium 栅格化成 PNG；两者处理的都是不可信输入，所以与文档解析复用同一套沙箱机制（第 7.5 节），每次导出一个 `export` 沙箱（路线图第 7 步决定事项第 1、2 项）。7.1 只建沙箱、镜像和入口；样张（7.3b 起）与整本导出任务（7.4）在其上接入。
 
 - **模板**（`templates.ts`）：一个 export 镜像、按决定事项第 5 项的两档资源上限分成两个模板名。隔离参数与 `parse` 完全相同（`--network none`、gVisor、只读根文件系统、用户 10001、`cap-drop ALL`、`no-new-privileges`、`pids` 256、不挂载任何宿主目录、不注入宿主环境变量、不保留容器日志），有单元测试逐项核对：
 
@@ -557,12 +557,13 @@ Word 导出与模板样张由 OpenXmlHelper 生成 docx，页眉页脚装饰 SVG
 
   可执行的命令只有 `export`（`node /opt/export/entry.mjs preview|document`，模式由模板写死，不能追加参数）；取回只收 `document.docx` 和 `result.json` 两个普通文件，docx 不超过 100 MiB。
 - **镜像**（`server/sandbox/export/Dockerfile`）：Node 24 + `playwright-core` 与其对应版本的 chromium-headless-shell + OpenXmlHelper 的 linux-x64 自包含发布（不裁剪；不打成单文件，单文件要把原生库解压到可写目录再加载，而 `/tmp` 是 noexec）+ Noto CJK 字体与 fontconfig 映射（模板可选的中文字体名按衬线 / 无衬线映射到 Noto Serif / Sans CJK SC，决定事项第 3 项）。装饰生成器与助手源码经具名构建上下文取自 `client/electron/shared/chrome` 与 `openxmlhelper/`，与桌面版同一份代码（测试逐个文件核对）。.NET SDK 只在构建阶段；删除包管理器和 setuid 位，与 parse 镜像、第 8 步的 Agent 镜像分开。
-- **入口**（`entry.mjs`）：读 `/work/request.json`（受限 HTML、已规范化的 `export_format`、可选的 `asset_types`）与 `/work/assets/` 中的配图（只有一层，文件名就是 `data-app-asset-ref`）→ 用装饰生成器生成页眉页脚 SVG → Chromium 栅格化（`render.mjs`）→ 运行助手一次（`openxmlhelper --workspace /work --run export`，独立进程组，超时对整个进程组 SIGKILL）→ 只把 docx 与只含已知字段的 `result.json` 写到 `/output`。失败时输出目录为空，只在标准输出给错误代码（参数不合法 64，导出失败 65），助手与浏览器的错误文字不外传。
+- **入口**（`entry.mjs`）：读 `/work/request.json`（受限 HTML、已规范化的 `export_format`、可选的 `asset_types`）与 `/work/assets/` 中的配图（只有一层，文件名就是 `data-app-asset-ref`；样张不接受，见下方 7.3b）→ 用装饰生成器生成页眉页脚 SVG → Chromium 栅格化（`render.mjs`）→ 运行助手一次（`openxmlhelper --workspace /work --run export`，独立进程组，超时对整个进程组 SIGKILL）→ 只把 docx 与只含已知字段的 `result.json` 写到 `/output`。失败时输出目录为空，只在标准输出给错误代码（参数不合法 64，导出失败 65），助手与浏览器的错误文字不外传。
 - **Chromium**：**禁用 JavaScript**（浏览器上下文 `javaScriptEnabled: false`），关闭 Chromium 自身的沙箱（`--no-sandbox`，外层是本节的沙箱），每次截图一个新的浏览器上下文；页面固定尺寸、加载后直接截图，与桌面版 `renderExactHtmlToPng` 相同。第 8 步中必须执行脚本的渲染届时逐项由用户决定（决定事项第 9 项）。
 - **助手的一次性运行模式**：`--run <任务编号>` 执行一个任务目录、写 `result.json` 后退出（0 成功、1 任务失败、2 参数不合法），与桌面版的常驻 stdin / stdout 模式共用 `JobRunner`，桌面版行为不变。
 - **配置**：sandbox-runner 的 `SANDBOX_EXPORT_IMAGE`（生产必须按摘要固定）；在导出任务上线（7.3）之前可以不配置，未配置时创建 export 沙箱返回 `SANDBOX_UNAVAILABLE`。
 - **字体与装饰（7.2）**：`GET /api/fonts`（需要登录）返回模板可选字体名的固定清单 `{ fonts: string[] }`（`src/templates/fonts.ts`，与前端 `FONT_OPTIONS` 逐项相同，单元测试核对），取代桌面版枚举本机字体的 `systemFonts.list`；它不是服务器上安装的字体，导出的 docx 保留模板选择的原字体名（决定事项第 3 项）。装饰与桌面版逐项核对：同一页面配置（8 种样式 × 10 种变体、系统模板、未规范化的配置）在沙箱中由 `buildChrome` 生成的 SVG、几何、配色与文字层与宿主上的桌面版生成器相同；入口交给 Chromium 的 SVG 与尺寸、交给助手的 `chrome_assets` 与桌面版相同（Docker 测试经完整导出流程记录；源码级的字段对应关系另有不需要 Docker 的单元测试）。
 - **样张的输入校验（7.3a）**：前端传来的样张 HTML 入队前经 `validatePreviewHtml`（`src/templates/previewHtml.ts`）校验：按与前端同一套白名单的 `parseRestrictedHtml`（`src/templates/restrictedHtml.ts`，parse5 实现，常量、提示文字与共用用例 `client/tests/fixtures/restrictedHtmlCases.json` 由两端测试核对）解析，不能有任何错误或警告，`data-app-asset-ref` 只能引用固定样张配图；只把重新序列化、不含 `src` 的 HTML 交给沙箱。`export_format` 入队前经 `normalizeExportFormat`（`src/templates/exportFormat.ts`，与桌面版逐项相同）补齐字段。
+- **样张在沙箱中生成（7.3b）**：样张的固定配图（`client/assets/content-template-preview`，与桌面版同一份文件）打进镜像的 `/opt/export/preview-assets/`；`preview` 模式下 `/work` 中只能有 `request.json`、请求中不能有 `asset_types`，入口把样张配图复制到 `/work/preview/assets/`、助手的 `asset_root` 为 `preview`，样张中的 `data-app-asset-ref="assets/<文件名>"` 与桌面版相同。worker 端 `renderTemplatePreview`（`src/export/preview.ts`）：重新校验与规范化 → 新建 `export-preview` 沙箱（忙或不可用时短间隔重试）→ 只放 `request.json` → 执行 `export` → 取回 → 校验输出（`src/export/output.ts`：`result.json` 只取 `blockCount` 与告警的 `assetRef`；`src/export/docxGuard.ts`：docx 的 ZIP 结构检查，上限与 parse 的 zipGuard 相同、逐个条目实际解压核对声明大小、条目名必须是相对路径且不重复、必须有 `[Content_Types].xml` 与 `word/document.xml`）→ 销毁沙箱。失败只给按入口错误代码决定的 `EXPORT_*` 代码与提示。任务、产物与接口随 7.3c、7.3d。
 - **测试**：`tests/sandbox/docker/isolationSuite.ts` 是按模板参数化的同一套隔离用例（断网、只读、无能力、内存 / 进程数 / fork 炸弹 / 可写目录写满 / CPU / 超时 / 中止、取回校验、沙箱之间不共享，每项有去掉加固的对照组），parse 与两个 export 模板都跑；`export.test.ts` 另验证：恶意装饰中 7 种执行脚本的方式经完整导出流程都没有执行（对照组只把浏览器上下文改为允许 JavaScript，7 种都执行了）、装饰与受限 HTML 中的外部引用在沙箱中不被请求（对照组去掉 `--network none` 后装饰的外部引用确实被请求）、一次导出之后新的沙箱中看不到上一次的任何文件、导出结果中没有上一次的内容，以及错误代码与输出为空。CI 在 gVisor 下运行，样张与整本导出的耗时写在日志中。
 
 ## 8. 部署架构

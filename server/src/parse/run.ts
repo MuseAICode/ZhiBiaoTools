@@ -8,6 +8,7 @@ import { writeArtifact } from '../artifacts/store.ts';
 import { AppError } from '../errors.ts';
 import type { FileRecord } from '../files/store.ts';
 import { JobError, JobInterruptedError, type JobContext } from '../jobs/definitions.ts';
+import { createSandboxWithRetry } from '../sandbox/createWithRetry.ts';
 import { SandboxError, type SandboxDriver, type SandboxRef } from '../sandbox/driver.ts';
 import type { SandboxFile } from '../sandbox/archive.ts';
 import { dispatchParse, isSpreadsheetFormat, metadataCommandArgs, parseCommandArgs, supportsDocumentMetadata, type ParseAnalysis, type ParseFormat } from './dispatch.ts';
@@ -88,24 +89,15 @@ export function cleanHeading(value: string): string {
  */
 export const DEFAULT_CREATE_RETRY_DELAYS_MS: readonly number[] = Object.freeze([5_000, 10_000, 20_000, 30_000, 45_000, 60_000, 60_000, 60_000]);
 
-async function createSandboxWithRetry(sandbox: SandboxDriver, context: JobContext<unknown>, delays: readonly number[]): Promise<SandboxRef> {
-  for (let attempt = 0; ; attempt += 1) {
-    try {
-      return await sandbox.create('parse', { jobId: context.jobId, signal: context.signal });
-    } catch (error) {
-      if (!(error instanceof SandboxError)) throw error;
-      if (error.code === 'SANDBOX_ABORTED') throw new JobInterruptedError();
-      const retryable = error.code === 'SANDBOX_BUSY' || error.code === 'SANDBOX_UNAVAILABLE';
-      if (!retryable) throw error;
-      if (attempt >= delays.length) {
-        throw error.code === 'SANDBOX_BUSY'
-          ? new JobError('PARSE_SANDBOX_BUSY', '解析服务繁忙（沙箱数已达上限），请稍后重新导入', { cause: error })
-          : new JobError('PARSE_UNAVAILABLE', '解析服务暂不可用，请稍后重新导入', { cause: error });
-      }
-      await context.log(error.code === 'SANDBOX_BUSY' ? '沙箱数已达上限，稍后重试' : '解析服务暂不可用，稍后重试', { attempt: attempt + 1 });
-      await abortableDelay(delays[attempt]!, context.signal);
-    }
-  }
+function createParseSandbox(sandbox: SandboxDriver, context: JobContext<unknown>, delays: readonly number[]): Promise<SandboxRef> {
+  return createSandboxWithRetry(sandbox, context, {
+    template: 'parse',
+    delaysMs: delays,
+    busy: (cause) => new JobError('PARSE_SANDBOX_BUSY', '解析服务繁忙（沙箱数已达上限），请稍后重新导入', { cause }),
+    unavailable: (cause) => new JobError('PARSE_UNAVAILABLE', '解析服务暂不可用，请稍后重新导入', { cause }),
+    busyLog: '沙箱数已达上限，稍后重试',
+    unavailableLog: '解析服务暂不可用，稍后重试',
+  });
 }
 
 /** 把沙箱操作的错误转成给用户看的原因（中止仍按中止处理）。 */
@@ -183,7 +175,7 @@ async function runInParseSandbox<T>(
   if (!object) throw new JobError('PARSE_SOURCE_MISSING', '原件不存在，请重新上传');
   const inputs: SandboxFile[] = [{ path: 'source', data: await readObject(object.body) }, ...run.extraInputs];
 
-  const sandbox = await createSandboxWithRetry(sandboxDriver, context, run.createRetryDelaysMs ?? DEFAULT_CREATE_RETRY_DELAYS_MS);
+  const sandbox = await createParseSandbox(sandboxDriver, context, run.createRetryDelaysMs ?? DEFAULT_CREATE_RETRY_DELAYS_MS);
   try {
     try {
       await sandboxDriver.copyIn(sandbox, inputs, { signal: context.signal });

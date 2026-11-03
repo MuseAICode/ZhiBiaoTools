@@ -139,7 +139,7 @@ function exportCommand(mode: 'preview' | 'document', timeoutMs: number): Sandbox
 /**
  * export-preview：模板样张（7.3 起）。隔离参数与 parse 相同（断网、gVisor、只读根文件系统、非 root、无能力），
  * 资源上限为第 7 步决定事项第 5 项的样张起步值：内存 1 GiB（无 swap）、CPU 1 核、墙钟 60 秒。
- * 输入只有样张 HTML 与配置（固定样张配图 7.3 起打进镜像），可写目录相应较小。
+ * 输入只有样张 HTML 与配置（固定样张配图 7.3b 起打进镜像，入口复制到 /work/preview/assets/），可写目录相应较小。
  */
 const EXPORT_PREVIEW_TEMPLATE: SandboxTemplate = Object.freeze({
   name: 'export-preview',
@@ -159,7 +159,7 @@ const EXPORT_PREVIEW_TEMPLATE: SandboxTemplate = Object.freeze({
   }),
   input: Object.freeze({
     directory: '/work',
-    // request.json 与 assets/<文件名>。
+    // request.json（样张，7.3b 起入口拒绝其他文件）；与 export-document 相同的两层规则。
     maxDepth: 2,
     maxFiles: 32,
     maxFileBytes: 32 * MIB,

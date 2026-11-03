@@ -5,10 +5,11 @@
 # 输入输出经 exec 中的 tar 传送。镜像中没有凭据、编译器、.NET SDK、网络工具和包管理器（npm、corepack、yarn 已删除），
 # 也没有 setuid / setgid 程序。与 parse 镜像、第 8 步的 Agent 镜像分开，各自只装自己需要的东西。
 #
-# 构建上下文是本目录，另有两个具名上下文（与桌面版同一份代码，不复制进 server/）：
+# 构建上下文是本目录，另有三个具名上下文（与桌面版同一份代码和文件，不复制进 server/）：
 #   docker build -t zhibiao-export:dev \
 #     --build-context openxmlhelper=openxmlhelper \
 #     --build-context chrome=client/electron/shared/chrome \
+#     --build-context preview-assets=client/assets/content-template-preview \
 #     server/sandbox/export
 # 部署时按构建出的镜像摘要引用（SANDBOX_EXPORT_IMAGE=...@sha256:...）。
 ARG NODE_IMAGE=node:24.21.0-bookworm-slim@sha256:d6aa754f16b3197301076f047b5def2f02ea1dbbc2ca920407d46d7ec7f87b20
@@ -60,7 +61,7 @@ RUN apt-get update \
  && find / -xdev -type f -perm /6000 -exec chmod a-s {} + \
  && groupadd --gid 10001 sandbox \
  && useradd --uid 10001 --gid 10001 --no-create-home --home-dir /tmp --shell /usr/sbin/nologin sandbox \
- && mkdir -p /work /output /opt/export/chrome
+ && mkdir -p /work /output /opt/export/chrome /opt/export/preview-assets
 
 # 模板可选的中文字体名映射到 Noto CJK；构建时生成字体缓存（根文件系统只读，运行时不写缓存）。
 COPY --chmod=0644 fonts/65-zhibiao-cjk.conf /etc/fonts/conf.d/65-zhibiao-cjk.conf
@@ -72,6 +73,8 @@ RUN ln -s "$(readlink -f /opt/ms-playwright/current)" /opt/chromium \
  && rm /opt/ms-playwright/current
 COPY --from=deps /opt/export/node_modules /opt/export/node_modules
 COPY --chmod=0644 --from=chrome *.mjs /opt/export/chrome/
+# 模板样张的固定配图（路线图 7.3b）：样张只能引用它们，入口在 preview 模式下复制到工作区，worker 不放入任何配图。
+COPY --chmod=0644 --from=preview-assets *.webp /opt/export/preview-assets/
 COPY --chmod=0644 package.json entry.mjs render.mjs /opt/export/
 
 ENV HOME=/tmp LANG=C.UTF-8 TMPDIR=/tmp
