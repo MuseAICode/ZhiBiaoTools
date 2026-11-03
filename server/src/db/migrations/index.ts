@@ -22,6 +22,11 @@ import * as technicalPlan from './0018_technical_plan.ts';
 import * as technicalPlanOutline from './0019_technical_plan_outline.ts';
 import * as technicalPlanContent from './0020_technical_plan_content.ts';
 import * as jobs from './0021_jobs.ts';
+import * as jobBilling from './0022_job_billing.ts';
+import * as artifactSupersede from './0023_artifact_supersede.ts';
+import * as cleanup from './0024_cleanup.ts';
+import * as jobStepResults from './0025_job_step_results.ts';
+import * as technicalPlanBidSectionDetection from './0026_technical_plan_bid_section_detection.ts';
 
 export const migrations: Readonly<Record<string, Migration>> = Object.freeze({
   '0001_identity': identity,
@@ -45,4 +50,9 @@ export const migrations: Readonly<Record<string, Migration>> = Object.freeze({
   '0019_technical_plan_outline': technicalPlanOutline,
   '0020_technical_plan_content': technicalPlanContent,
   '0021_jobs': jobs,
+  '0022_job_billing': jobBilling,
+  '0023_artifact_supersede': artifactSupersede,
+  '0024_cleanup': cleanup,
+  '0025_job_step_results': jobStepResults,
+  '0026_technical_plan_bid_section_detection': technicalPlanBidSectionDetection,
 });

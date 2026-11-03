@@ -25,8 +25,45 @@ describe('任务类型登记', () => {
     expect(maxAttemptsOf(definition('a', { maxAttempts: 1 }))).toBe(1);
   });
 
-  it('6.2 还没有登记任何业务任务类型', () => {
-    expect(JOB_TYPES).toEqual([]);
-    expect(jobTypeRegistry.types).toEqual([]);
+  it('登记的业务任务类型：6.6 的文档解析（parse 队列、可续跑、不调用模型），6.9 的废标检查两类（ai 队列、可续跑、调用模型），6.10 的标书查重（ai 队列、可续跑、不调用模型），6.11 的技术方案两类、6.12 的可研报告四类、6.13a 的知识库文档准备与 6.13b 的知识库匹配（ai 队列、可续跑、调用模型）', () => {
+    expect(JOB_TYPES.map((item) => item.type)).toEqual([
+      'document-parse',
+      'rejection-items-extraction',
+      'rejection-check-run',
+      'duplicate-analysis',
+      'bid-section-extraction',
+      'bid-analysis',
+      'feasibility-analysis',
+      'feasibility-parameters',
+      'feasibility-content',
+      'feasibility-human-writing',
+      'knowledge-document-prepare',
+      'knowledge-document-match',
+    ]);
+    const parse = jobTypeRegistry.get('document-parse')!;
+    expect(parse.queue).toBe('parse');
+    expect(parse.resumable).toBe(true);
+    expect(parse.billable).toBeFalsy();
+    for (const type of [
+      'rejection-items-extraction',
+      'rejection-check-run',
+      'bid-section-extraction',
+      'bid-analysis',
+      'feasibility-analysis',
+      'feasibility-parameters',
+      'feasibility-content',
+      'feasibility-human-writing',
+      'knowledge-document-prepare',
+      'knowledge-document-match',
+    ]) {
+      const definition = jobTypeRegistry.get(type)!;
+      expect(definition.queue).toBe('ai');
+      expect(definition.resumable).toBe(true);
+      expect(definition.billable).toBe(true);
+    }
+    const duplicate = jobTypeRegistry.get('duplicate-analysis')!;
+    expect(duplicate.queue).toBe('ai');
+    expect(duplicate.resumable).toBe(true);
+    expect(duplicate.billable).toBeFalsy();
   });
 });

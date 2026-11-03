@@ -1,6 +1,6 @@
-# 开发用 Docker Compose：api + worker + PostgreSQL 17 + 本地 S3 兼容对象存储（SeaweedFS）+ Redis（Valkey 8）。
+# 开发用 Docker Compose：api + worker + sandbox-runner + PostgreSQL 17 + 本地 S3 兼容对象存储（SeaweedFS）+ Redis（Valkey 8）。
 # 用法：
-#   1. server/scripts/init-dev-secrets.sh   # 首次运行：生成数据库密码、AI 主密钥、对象存储密钥和 Redis 密码到 server/.dev-secrets/（不入库）
+#   1. server/scripts/init-dev-secrets.sh   # 首次运行：生成数据库密码、AI 主密钥、对象存储密钥、Redis 密码和沙箱服务令牌到 server/.dev-secrets/（不入库）
 #   2. docker compose up --build            # migrate 执行完迁移后 api 才启动
 #   3. 访问 http://localhost:3000/healthz 和 /readyz
 #   4. 创建首个平台管理员：cd server && MIGRATION_DATABASE_PASSWORD_FILE=.dev-secrets/db_owner_password npm run admin:create -- --email <邮箱>
@@ -8,6 +8,18 @@
 # 旧仓库 PR #34 起新增 s3 服务：已有的开发环境需要重新运行 init-dev-secrets.sh 生成 s3_secret_key（已有的文件不会被覆盖）。
 # 6.1 起新增 redis 服务：同样需要重新运行 init-dev-secrets.sh 生成 redis_password。
 # 6.2 起新增 worker 服务和数据库角色 bidtools_jobs：已有的数据卷不会重跑初始化脚本，先 docker compose down -v 重建（或按 server/db/init/10-provision.sh 手工建角色）。
+# 6.4 起 worker 也拿 AI 主密钥（ai_kek），任务中的模型调用在 worker 中经 AI 网关进行；不需要新的 secret 或角色。
+# 6.6 起 worker 加入 sandbox-control 网络、拿对象存储密钥和沙箱服务令牌执行文档解析；parse 镜像加入了解析入口，改过后重新构建。
+# 6.5 起新增 sandbox-runner 服务（解析沙箱，docs/SERVER_DESIGN.md 第 7.5 节）：
+#   - 重新运行 init-dev-secrets.sh 生成 sandbox_runner_token；
+#   - 先构建 parse 沙箱镜像：docker build -t zhibiao-parse:dev server/sandbox/parse
+#   - sandbox-runner 要访问宿主的 Docker socket：Linux 上设置 DOCKER_SOCKET_GID=$(stat -c %g /var/run/docker.sock)，
+#     Docker Desktop 上不用设置（默认 0）；安装了 gVisor 的机器可设置 SANDBOX_RUNTIME=runsc（生产只允许 runsc）。
+# 7.1 起 sandbox-runner 可以创建 export 沙箱（OpenXmlHelper + Chromium，docs/SERVER_DESIGN.md 第 7.9 节），导出任务上线（7.3）之前可选：
+#   - 构建镜像（在仓库根目录）：docker build -t zhibiao-export:dev --build-context openxmlhelper=openxmlhelper
+#       --build-context chrome=client/electron/shared/chrome
+#       --build-context preview-assets=client/assets/content-template-preview server/sandbox/export（7.3b 起含样张配图）
+#   - 启动时设置 SANDBOX_EXPORT_IMAGE=zhibiao-export:dev；未设置时创建 export 沙箱返回 SANDBOX_UNAVAILABLE。
 # 重建数据库：docker compose down -v（会删除数据卷）。
 # 生产部署的 compose 与网络划分见 docs/SERVER_DESIGN.md 第 8.1 节，不使用本文件。
 name: bidtools-dev
@@ -183,7 +195,9 @@ services:
 
   # 任务队列的消费者（docs/SERVER_DESIGN.md 第 5 节）：与 api 同一镜像，入口为 dist/worker.js。不对外提供接口，
   # /healthz、/readyz 只监听容器内的回环地址，供镜像的 HEALTHCHECK 使用，不映射端口。
-  # 需要数据库（default 网络）和 Redis（backend 网络）。6.2 还没有业务任务，不需要 AI 主密钥和对象存储密钥（6.4、6.6 起加上）。
+  # 需要数据库（default 网络）和 Redis（backend 网络）。6.4 起拿 AI 主密钥：任务中的模型调用经 AI 网关，在 worker 中解密平台 Key、
+  # 冻结和结算。6.6 起执行文档解析：拿对象存储密钥（读原件、写产物）和沙箱服务令牌，加入 sandbox-control 网络调用 sandbox-runner；
+  # 解析只在 sandbox-runner 创建的断网沙箱中进行，worker 不挂载 Docker socket。
   worker:
     image: bidtools-api:dev
     build:
@@ -196,21 +210,68 @@ services:
       <<: *database-env
       DATABASE_USER: bidtools_app
       DATABASE_PASSWORD_FILE: /run/secrets/db_app_password
+      AI_KEK_FILE: /run/secrets/ai_kek
       REDIS_URL: redis://bidtools@redis:6379
       REDIS_PASSWORD_FILE: /run/secrets/redis_password
+      S3_ENDPOINT: http://s3:8333
+      S3_REGION: us-east-1
+      S3_BUCKET: bidtools-dev
+      S3_FORCE_PATH_STYLE: "true"
+      S3_ACCESS_KEY_ID: bidtools-dev
+      S3_SECRET_ACCESS_KEY_FILE: /run/secrets/s3_secret_key
+      SANDBOX_RUNNER_URL: http://sandbox-runner:3100
+      SANDBOX_RUNNER_TOKEN_FILE: /run/secrets/sandbox_runner_token
     secrets:
       - db_app_password
+      - ai_kek
       - redis_password
+      - s3_secret_key
+      - sandbox_runner_token
     depends_on:
       migrate:
         condition: service_completed_successfully
       redis:
         condition: service_healthy
+      s3:
+        condition: service_healthy
+      sandbox-runner:
+        condition: service_started
     networks:
       - default
       - backend
+      - sandbox-control
     # 收到 SIGTERM 后中止执行中的任务（可续跑的回到 queued），最多等 25 秒（src/worker.ts）。
     stop_grace_period: 30s
+    <<: *hardening
+    restart: unless-stopped
+
+  # 解析沙箱的管理服务（docs/SERVER_DESIGN.md 第 7.4、7.5 节）：与 api 同一镜像，入口为 dist/sandbox-runner.js。
+  # 唯一挂载 Docker socket 的服务（能创建容器即等同宿主 root），只按代码中写死的 parse、export 模板创建断网的沙箱容器；
+  # 只在 internal 网络 sandbox-control 上监听，不映射端口、不能访问外网和其他服务。只有 worker（6.6 起）加入该网络并拿令牌调用它。
+  # 沙箱容器由它经宿主的 Docker 创建，不在本 compose 项目中；到期的沙箱（parse 15 分钟、export 5 / 35 分钟）由它定期删除。
+  sandbox-runner:
+    image: bidtools-api:dev
+    build:
+      context: ./server
+    command: ["node", "dist/sandbox-runner.js"]
+    environment:
+      NODE_ENV: development
+      LOG_LEVEL: debug
+      HOST: 0.0.0.0
+      PORT: "3100"
+      SANDBOX_RUNTIME: ${SANDBOX_RUNTIME:-runc}
+      SANDBOX_PARSE_IMAGE: zhibiao-parse:dev
+      SANDBOX_EXPORT_IMAGE: ${SANDBOX_EXPORT_IMAGE:-}
+      SANDBOX_RUNNER_TOKEN_FILE: /run/secrets/sandbox_runner_token
+    secrets:
+      - sandbox_runner_token
+    # Docker socket 属于宿主的 docker 组（Linux）或 root 组（Docker Desktop），以该组的身份访问，进程仍是非 root 用户。
+    group_add:
+      - "${DOCKER_SOCKET_GID:-0}"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    networks:
+      - sandbox-control
     <<: *hardening
     restart: unless-stopped
 
@@ -227,11 +288,16 @@ secrets:
     file: ./server/.dev-secrets/s3_secret_key
   redis_password:
     file: ./server/.dev-secrets/redis_password
+  sandbox_runner_token:
+    file: ./server/.dev-secrets/sandbox_runner_token
 
 # backend：Redis 所在的网络，只有 api 和 worker 加入。开发环境需要把 Redis 端口映射到本机供集成测试使用，
 # 所以没有设为 internal（internal 网络不能映射端口）；生产部署的网络划分见 docs/SERVER_DESIGN.md 第 8.1 节。
+# sandbox-control：sandbox-runner 所在的内部网络（internal，不能访问外网）；只有 worker 加入以调用它（6.6），api 不加入。
 networks:
   backend:
+  sandbox-control:
+    internal: true
 
 volumes:
   pgdata:

@@ -1,15 +1,18 @@
 // AI 调用的预扣冻结与结算（docs/SERVER_DESIGN.md 第 10.3 节），数据库层见迁移 0004_ai_gateway：
 // ai_usage_begin 冻结、ai_usage_settle 按实际用量结算、ai_usage_fail 不收费并释放冻结、ai_usage_expire_holds 清理到期冻结。
 // 金额一律是 BigInt（计费单位）。组织和用户来自 TenantContext，不来自请求参数。
-import { sql, type Kysely } from 'kysely';
+import { sql, type Kysely, type Transaction } from 'kysely';
 import { GATEWAY_FAILURE_REASONS } from '../db/migrations/0004_ai_gateway.ts';
+import { JOB_STEP_FAILURE_REASONS } from '../db/migrations/0025_job_step_results.ts';
 import type { BillingProvider, Database, UsageSource } from '../db/schema.ts';
 import { withTenant, type TenantContext } from '../db/tenant.ts';
 import { AppError } from '../errors.ts';
 import { toBillingError } from './ledger.ts';
 
 export type GatewayFailureReason = (typeof GATEWAY_FAILURE_REASONS)[number];
-export { GATEWAY_FAILURE_REASONS };
+/** 任务调用的不收费原因（迁移 0025_job_step_results）：因平台原因中止、同一步骤已有结果。 */
+export type JobStepFailureReason = (typeof JOB_STEP_FAILURE_REASONS)[number];
+export { GATEWAY_FAILURE_REASONS, JOB_STEP_FAILURE_REASONS };
 
 export interface BeginUsageInput {
   requestId: string;
@@ -88,6 +91,31 @@ export async function beginUsage(db: Kysely<Database>, context: TenantContext, i
   );
 }
 
+async function settleIn(trx: Transaction<Database>, usageId: string, usage: SettleUsageInput): Promise<SettlementResult> {
+  const result = await sql<{ status: 'billed' | 'unbilled'; amount: string; balance_after: string | null; ledger_entry_id: string | null }>`
+    SELECT status, amount, balance_after, ledger_entry_id FROM ai_usage_settle(
+      ${usageId}::uuid, ${usage.inputTokens}::bigint, ${usage.cachedInputTokens}::bigint, ${usage.outputTokens}::bigint, ${usage.usageSource})`.execute(trx);
+  const row = result.rows[0]!;
+  return {
+    status: row.status,
+    amount: BigInt(row.amount),
+    balanceAfter: row.balance_after === null ? null : BigInt(row.balance_after),
+    ledgerEntryId: row.ledger_entry_id,
+  };
+}
+
+async function failIn(
+  trx: Transaction<Database>,
+  usageId: string,
+  reason: GatewayFailureReason | JobStepFailureReason,
+  usage: Omit<SettleUsageInput, 'usageSource'> | null,
+): Promise<boolean> {
+  const result = await sql<{ released: boolean }>`
+    SELECT ai_usage_fail(${usageId}::uuid, ${reason}, ${usage?.inputTokens ?? null}::bigint,
+      ${usage?.cachedInputTokens ?? null}::bigint, ${usage?.outputTokens ?? null}::bigint) AS released`.execute(trx);
+  return result.rows[0]!.released;
+}
+
 /** 按实际用量结算：扣费不超过冻结额，多余的冻结释放。已结算或已释放的调用抛 USAGE_NOT_PENDING（409）。 */
 export async function settleUsage(
   db: Kysely<Database>,
@@ -95,18 +123,112 @@ export async function settleUsage(
   usageId: string,
   usage: SettleUsageInput,
 ): Promise<SettlementResult> {
+  return mapErrors(() => withTenant(db, context, (trx) => settleIn(trx, usageId, usage)));
+}
+
+/** 任务步骤（迁移 0025_job_step_results）：同一任务内由步骤键和请求内容的 SHA-256 标识的一次逻辑调用。 */
+export interface JobStepKey {
+  jobId: string;
+  stepKey: string;
+  requestHash: Buffer;
+}
+
+export interface JobStepResult {
+  requestId: string;
+  content: string;
+  reasoningContent: string;
+  finishReason: string | null;
+  usage: SettleUsageInput;
+}
+
+export interface JobStepSettlement {
+  /** false：同一步骤已有另一次调用的结果（并发的执行者先提交），本次调用不收费，返回先提交的结果。 */
+  stored: boolean;
+  settlement: SettlementResult;
+  result: JobStepResult;
+}
+
+async function findStepIn(trx: Transaction<Database>, context: TenantContext, step: JobStepKey): Promise<JobStepResult | null> {
+  const row = await trx
+    .selectFrom('job_step_results as s')
+    .innerJoin('usage_records as u', (join) => join.onRef('u.org_id', '=', 's.org_id').onRef('u.id', '=', 's.usage_id'))
+    .select([
+      'u.request_id', 's.content', 's.reasoning_content', 's.finish_reason', 's.input_tokens', 's.cached_input_tokens',
+      's.output_tokens', 's.usage_source',
+    ])
+    .where('s.org_id', '=', context.orgId)
+    .where('s.job_id', '=', step.jobId)
+    .where('s.step_key', '=', step.stepKey)
+    .where('s.request_hash', '=', step.requestHash)
+    .executeTakeFirst();
+  if (!row) return null;
+  return {
+    requestId: row.request_id,
+    content: row.content,
+    reasoningContent: row.reasoning_content,
+    finishReason: row.finish_reason,
+    usage: {
+      inputTokens: Number(row.input_tokens),
+      cachedInputTokens: Number(row.cached_input_tokens),
+      outputTokens: Number(row.output_tokens),
+      usageSource: row.usage_source,
+    },
+  };
+}
+
+/** 取回任务步骤已保存的结果（续跑时）；没有时为 null。 */
+export async function findJobStepResult(db: Kysely<Database>, context: TenantContext, step: JobStepKey): Promise<JobStepResult | null> {
+  return withTenant(db, context, (trx) => findStepIn(trx, context, step));
+}
+
+/**
+ * 任务调用的结算：在同一事务中保存调用结果并结算（迁移 0025_job_step_results）。事务提交前崩溃，结果和扣费都不存在，
+ * 冻结到期后不收费；提交后崩溃，续跑时经 findJobStepResult 取回结果，不再调用服务商。同一步骤已有结果（另一个执行者
+ * 先提交）时本次调用改为不收费（duplicate_step），返回已有的结果。
+ */
+export async function settleJobStep(
+  db: Kysely<Database>,
+  context: TenantContext,
+  usageId: string,
+  step: JobStepKey,
+  result: Omit<JobStepResult, 'usage'>,
+  usage: SettleUsageInput,
+): Promise<JobStepSettlement> {
   return mapErrors(() =>
     withTenant(db, context, async (trx) => {
-      const result = await sql<{ status: 'billed' | 'unbilled'; amount: string; balance_after: string | null; ledger_entry_id: string | null }>`
-        SELECT status, amount, balance_after, ledger_entry_id FROM ai_usage_settle(
-          ${usageId}::uuid, ${usage.inputTokens}::bigint, ${usage.cachedInputTokens}::bigint, ${usage.outputTokens}::bigint, ${usage.usageSource})`.execute(trx);
-      const row = result.rows[0]!;
-      return {
-        status: row.status,
-        amount: BigInt(row.amount),
-        balanceAfter: row.balance_after === null ? null : BigInt(row.balance_after),
-        ledgerEntryId: row.ledger_entry_id,
-      };
+      let inserted: { usage_id: string } | undefined;
+      try {
+        inserted = await trx
+          .insertInto('job_step_results')
+          .values({
+            org_id: context.orgId,
+            job_id: step.jobId,
+            step_key: step.stepKey,
+            request_hash: step.requestHash,
+            usage_id: usageId,
+            content: result.content,
+            reasoning_content: result.reasoningContent,
+            finish_reason: result.finishReason,
+            input_tokens: usage.inputTokens,
+            cached_input_tokens: usage.cachedInputTokens,
+            output_tokens: usage.outputTokens,
+            usage_source: usage.usageSource,
+          })
+          .onConflict((conflict) => conflict.columns(['org_id', 'job_id', 'step_key', 'request_hash']).doNothing())
+          .returning('usage_id')
+          .executeTakeFirst();
+      } catch (error) {
+        // INSERT 策略：用量记录不是本任务的、或已经结算或释放（例如冻结到期后已被清理任务标为 abandoned）。
+        if ((error as { code?: unknown } | null)?.code === '42501') throw Object.assign(new Error('usage is not pending'), { code: 'BL010' });
+        throw error;
+      }
+      if (inserted) {
+        return { stored: true, settlement: await settleIn(trx, usageId, usage), result: { ...result, usage } };
+      }
+      await failIn(trx, usageId, 'duplicate_step', usage);
+      const existing = await findStepIn(trx, context, step);
+      if (!existing) throw new Error('job step result disappeared');
+      return { stored: false, settlement: { status: 'unbilled', amount: 0n, balanceAfter: null, ledgerEntryId: null }, result: existing };
     }),
   );
 }
@@ -116,26 +238,31 @@ export async function failUsage(
   db: Kysely<Database>,
   context: TenantContext,
   usageId: string,
-  reason: GatewayFailureReason,
+  reason: GatewayFailureReason | JobStepFailureReason,
   usage: Omit<SettleUsageInput, 'usageSource'> | null = null,
 ): Promise<boolean> {
-  return mapErrors(() =>
-    withTenant(db, context, async (trx) => {
-      const result = await sql<{ released: boolean }>`
-        SELECT ai_usage_fail(${usageId}::uuid, ${reason}, ${usage?.inputTokens ?? null}::bigint,
-          ${usage?.cachedInputTokens ?? null}::bigint, ${usage?.outputTokens ?? null}::bigint) AS released`.execute(trx);
-      return result.rows[0]!.released;
-    }),
-  );
+  return mapErrors(() => withTenant(db, context, (trx) => failIn(trx, usageId, reason, usage)));
 }
 
 /**
- * 把已到期、未结算的冻结标为 unbilled（abandoned）。跨组织，不需要租户上下文；由 src/server.ts 定时执行。
+ * 把已到期、未结算的冻结标为 unbilled（abandoned）。跨组织，不需要租户上下文；由 worker 的清理任务每批执行（src/cleanup/）。
  * 到期的冻结在此之前就已经不占用余额，这里只是收尾。
  */
 export async function expireStaleHolds(db: Kysely<Database>): Promise<number> {
   const result = await sql<{ expired: number }>`SELECT ai_usage_expire_holds() AS expired`.execute(db);
   return result.rows[0]!.expired;
+}
+
+/**
+ * 入队、继续任务前的余额门槛（迁移 0022_job_billing 的 billing_job_start_check）：可用余额低于最低启动余额（1 元）时
+ * 抛 INSUFFICIENT_BALANCE（402）。在调用方的事务中执行（组织取该事务的 app.org_id），失败时整个事务回滚。
+ */
+export async function assertJobStartBalance(trx: Transaction<Database>): Promise<void> {
+  try {
+    await sql`SELECT billing_job_start_check()`.execute(trx);
+  } catch (error) {
+    throw mapUsageError(error);
+  }
 }
 
 /** 可用余额 = 余额 − 进行中（未到期）的冻结，在同一事务中读取。 */

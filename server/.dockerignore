@@ -8,6 +8,8 @@ vitest.config.ts
 Dockerfile
 .dockerignore
 vitest.db.config.ts
+vitest.sandbox.config.ts
+sandbox
 db
 scripts
 .dev-secrets

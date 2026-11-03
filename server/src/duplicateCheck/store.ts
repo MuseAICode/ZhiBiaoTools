@@ -10,6 +10,9 @@
 // 按字段合并。给第 6 步查重任务用的写函数（saveAnalysisSection，取代桌面版 updateState 中的分析部分）在本步一并实现，
 // 参数不合法（id 为空或超长、父目录项不存在）是调用方的程序错误，抛 TypeError；说明、错误等文本超长时截短，不让任务失败。
 // 文件选择的签名按当前可见的文件现算（文件 id、大小、上传完成时间），分析结果的 signature 与它不同即已失效。
+//
+// 第 6 步 6.10：分析由任务 duplicate-analysis 执行（src/duplicateCheck/job.ts），写入带任务开始时的签名，文件选择已变化时不写入；
+// 状态中的 analysisTask 是本项目最近一次分析任务，任务已结束而分析仍是 running 时按未完成显示（取代桌面版的启动时恢复）。
 import { createHash } from 'node:crypto';
 import { sql, type Kysely, type Transaction } from 'kysely';
 import {
@@ -40,11 +43,24 @@ import type {
 } from '../db/schema.ts';
 import { withTenant, type TenantContext } from '../db/tenant.ts';
 import { AppError } from '../errors.ts';
+import { isFinalStatus, latestProjectJobs, type JobRecord } from '../jobs/store.ts';
+import { jobBody, type JobBody } from '../jobs/view.ts';
 import { serializeJsonObject } from '../jsonObject.ts';
 
 /** 一次最多选的招标文件、投标文件数。 */
 export const DUPLICATE_CHECK_TENDER_FILES_MAX = 20;
 export const DUPLICATE_CHECK_BID_FILES_MAX = 50;
+
+/** 标书查重分析任务（第 6 步 6.10，src/duplicateCheck/job.ts）。 */
+export const DUPLICATE_ANALYSIS_JOB_TYPE = 'duplicate-analysis';
+
+/** 同一项目同时只有一个分析任务（与桌面版同组互斥相同）。 */
+export function duplicateCheckLockKey(projectId: string): string {
+  return `project:${projectId}:duplicate-check`;
+}
+
+/** 任务已结束（或不存在）而分析仍是 running 时的说明（与桌面版启动时恢复中断任务的文案相同）。 */
+const STALE_ANALYSIS_MESSAGE = '上次标书查重分析未完成，请重新分析';
 
 // ---- 读出的状态 ----
 
@@ -234,8 +250,8 @@ export interface DuplicateCheckState {
   activeAnalysisTab: DuplicateCheckSection;
   /** 当前文件选择的签名；分析结果的 signature 与它不同即已失效。 */
   signature: string;
-  /** 后台任务状态随第 6 步（jobs），本步一律为 null。 */
-  analysisTask: null;
+  /** 最近一次分析任务（jobs，与 GET /api/jobs/:jobId 相同的形式）；没有时为 null。 */
+  analysisTask: JobBody | null;
   metadataAnalysis: MetadataAnalysis | null;
   outlineAnalysis: OutlineAnalysis | null;
   contentAnalysis: ContentAnalysis | null;
@@ -1065,26 +1081,57 @@ async function readImageAnalysis(
   };
 }
 
-/** 在已设置上下文的事务中读取完整状态（与桌面版 loadState 相同，任务状态先返回 null）。 */
+/** 分析仍是 running 而任务已结束或不存在（worker 崩溃且续跑次数用完等）：按未完成显示，只改读出的状态。暂停中的任务仍是 running。 */
+function settleStale<T extends SectionBase>(analysis: T | null, task: JobRecord | undefined): T | null {
+  if (!analysis || analysis.status !== 'running' || (task && !isFinalStatus(task.status))) return analysis;
+  return { ...analysis, status: 'error', progress: 100, message: STALE_ANALYSIS_MESSAGE };
+}
+
+/** 在已设置上下文的事务中读取完整状态（与桌面版 loadState 相同）。 */
 export async function readState(trx: Trx, projectId: string): Promise<DuplicateCheckState> {
   const files = await readFiles(trx, projectId);
   const ui = await readUiState(trx, projectId);
   const sections = await readSections(trx, projectId);
+  const task = (await latestProjectJobs(trx, projectId, [DUPLICATE_ANALYSIS_JOB_TYPE])).get(DUPLICATE_ANALYSIS_JOB_TYPE);
   const fileNames = new Map([...files.tenderFiles, ...files.bidFiles].map((file) => [file.id, file.fileName]));
   return {
     ...files,
     ...ui,
     signature: selectionSignature(files),
-    analysisTask: null,
-    metadataAnalysis: await readMetadataAnalysis(trx, projectId, sections.get('metadata'), files.bidFiles, fileNames),
-    outlineAnalysis: await readOutlineAnalysis(trx, projectId, sections.get('outline'), files.bidFiles),
-    contentAnalysis: await readContentAnalysis(trx, projectId, sections.get('content'), files.bidFiles),
-    imageAnalysis: await readImageAnalysis(trx, projectId, sections.get('image'), files.bidFiles, fileNames),
+    analysisTask: task ? jobBody(task) : null,
+    metadataAnalysis: settleStale(await readMetadataAnalysis(trx, projectId, sections.get('metadata'), files.bidFiles, fileNames), task),
+    outlineAnalysis: settleStale(await readOutlineAnalysis(trx, projectId, sections.get('outline'), files.bidFiles), task),
+    contentAnalysis: settleStale(await readContentAnalysis(trx, projectId, sections.get('content'), files.bidFiles), task),
+    imageAnalysis: settleStale(await readImageAnalysis(trx, projectId, sections.get('image'), files.bidFiles, fileNames), task),
   };
 }
 
 export async function loadDuplicateCheck(db: Kysely<Database>, context: TenantContext, projectId: string): Promise<DuplicateCheckState> {
   return withTenant(db, context, (trx) => readState(trx, projectId));
+}
+
+export interface AnalysisInputs {
+  tenderFiles: DuplicateCheckFile[];
+  bidFiles: DuplicateCheckFile[];
+  /** 当前文件选择的签名。 */
+  signature: string;
+  /** 四类分析各自的状态与签名（没有时不出现）。 */
+  sections: Partial<Record<DuplicateCheckSection, { status: DuplicateCheckStatus; signature: string | null }>>;
+}
+
+/** 分析任务开始时读取的输入：文件选择、签名与四类分析的状态（不读分析结果）。 */
+export async function readAnalysisInputs(db: Kysely<Database>, context: TenantContext, projectId: string): Promise<AnalysisInputs> {
+  return withTenant(db, context, async (trx) => {
+    const files = await readFiles(trx, projectId);
+    const sections = await readSections(trx, projectId);
+    return {
+      ...files,
+      signature: selectionSignature(files),
+      sections: Object.fromEntries(
+        [...sections.entries()].map(([section, row]) => [section, { status: oneOf(row.status, DUPLICATE_CHECK_STATUSES, 'pending'), signature: row.signature }]),
+      ),
+    };
+  });
 }
 
 // ---- 任务写入 ----
@@ -1361,6 +1408,8 @@ async function saveImageDetails(trx: Trx, context: TenantContext, projectId: str
  * 状态、进度、说明、签名、开始时间只写给出的字段，统计按字段合并；结果字段（files、contentFiles、duplicateGroups 等）
  * 给出时整体替换。analysis 为 null 时删除这一类的状态和全部结果。分析结果引用的文件必须是当前选中的文件，
  * 否则被 RLS 拒绝（文件选择已变化时任务的写入失败）。
+ * options.expectedSignature（任务开始时的文件选择签名）：在同一事务中与当前签名核对，不同时不写入、返回 false
+ * （与桌面版 updateAnalysisField 的签名检查相同）。其余情况返回 true。
  */
 export async function saveAnalysisSection<S extends DuplicateCheckSection>(
   db: Kysely<Database>,
@@ -1368,14 +1417,16 @@ export async function saveAnalysisSection<S extends DuplicateCheckSection>(
   projectId: string,
   section: S,
   analysis: SectionInputs[S] | null,
-): Promise<void> {
+  options: { expectedSignature?: string } = {},
+): Promise<boolean> {
   if (!(DUPLICATE_CHECK_SECTIONS as readonly string[]).includes(section)) throw new TypeError(`分析类型不合法：${section}`);
-  await withTenant(db, context, async (trx) => {
+  return withTenant(db, context, async (trx) => {
     // 与文件选择、清空串行：重新选择文件时进行中的写入要么在其之前完成，要么之后因文件已不在选择中被拒绝。
     await lockProject(trx, projectId);
+    if (options.expectedSignature !== undefined && selectionSignature(await readFiles(trx, projectId)) !== options.expectedSignature) return false;
     if (!analysis) {
       await clearSectionRows(trx, projectId, section);
-      return;
+      return true;
     }
     const input = analysis as SectionStateInput & Record<string, unknown>;
     const existing = await trx
@@ -1410,5 +1461,6 @@ export async function saveAnalysisSection<S extends DuplicateCheckSection>(
     else if (section === 'outline') await saveOutlineDetails(trx, context, projectId, analysis as OutlineAnalysisInput);
     else if (section === 'content') await saveContentDetails(trx, context, projectId, analysis as ContentAnalysisInput);
     else await saveImageDetails(trx, context, projectId, analysis as ImageAnalysisInput);
+    return true;
   });
 }

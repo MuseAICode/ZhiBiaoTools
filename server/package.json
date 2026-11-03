@@ -15,6 +15,7 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:db": "vitest run --config vitest.db.config.ts",
+    "test:sandbox": "vitest run --config vitest.sandbox.config.ts",
     "db:migrate": "node src/db/migrate.ts latest",
     "db:rollback": "node src/db/migrate.ts down",
     "admin:create": "node src/cli/create-admin.ts"
@@ -27,6 +28,7 @@
     "fastify": "5.12.5",
     "ioredis": "6.0.0",
     "kysely": "0.29.6",
+    "parse5": "8.0.1",
     "pg": "8.23.1"
   },
   "devDependencies": {

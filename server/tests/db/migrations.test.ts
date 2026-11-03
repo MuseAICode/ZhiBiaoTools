@@ -39,6 +39,7 @@ const APPLICATION_TABLES = [
   'files',
   'invitations',
   'job_events',
+  'job_step_results',
   'jobs',
   'knowledge_blocks',
   'knowledge_candidate_items',
@@ -109,10 +110,19 @@ const APP_FUNCTIONS = [
   'billing_admin_credit',
   'billing_admin_reverse',
   'billing_charge_amount',
+  'billing_job_start_check',
   'billing_ledger_apply',
   'billing_reject_change',
   'billing_require_platform_admin',
   'billing_upstream_cost',
+  'cleanup_artifact_candidates',
+  'cleanup_delete_artifact',
+  'cleanup_delete_file',
+  'cleanup_delete_job_events',
+  'cleanup_delete_jobs',
+  'cleanup_delete_projects',
+  'cleanup_file_candidates',
+  'cleanup_unreferenced_keys',
   'credential_library_guard',
   'export_templates_guard',
   'files_guard',
@@ -217,6 +227,11 @@ describe('迁移升级与回滚', () => {
       (await sql<{ prosrc: string }>`SELECT prosrc FROM pg_proc WHERE proname = 'ai_usage_begin'`.execute(testDb.admin)).rows.map((row) => row.prosrc);
     expectSuccess(await migrateToLatest(owner));
     expect((await source())[0]).toContain('ai_model_price');
+    expect(expectSuccess(await migrateDown(owner))).toEqual(['Down:0026_technical_plan_bid_section_detection']);
+    expect(expectSuccess(await migrateDown(owner))).toEqual(['Down:0025_job_step_results']);
+    expect(expectSuccess(await migrateDown(owner))).toEqual(['Down:0024_cleanup']);
+    expect(expectSuccess(await migrateDown(owner))).toEqual(['Down:0023_artifact_supersede']);
+    expect(expectSuccess(await migrateDown(owner))).toEqual(['Down:0022_job_billing']);
     expect(expectSuccess(await migrateDown(owner))).toEqual(['Down:0021_jobs']);
     expect(expectSuccess(await migrateDown(owner))).toEqual(['Down:0020_technical_plan_content']);
     expect(expectSuccess(await migrateDown(owner))).toEqual(['Down:0019_technical_plan_outline']);

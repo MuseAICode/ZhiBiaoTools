@@ -4,7 +4,7 @@
 // - bucket 私有，对象键由 files 表的生成列给出（'org/{orgId}/files/{fileId}'），这里不拼接用户输入；
 // - 上传是流式的（lib-storage 的分片上传），不整体读入内存；中止或出错时放弃分片上传，不留下对象；
 // - 凭据只在本模块使用，不写日志；SDK 不读取环境变量、配置文件或实例元数据中的其他凭据。
-import { DeleteObjectCommand, GetObjectCommand, HeadObjectCommand, NoSuchKey, NotFound, S3Client } from '@aws-sdk/client-s3';
+import { DeleteObjectCommand, GetObjectCommand, HeadObjectCommand, ListObjectsV2Command, NoSuchKey, NotFound, S3Client } from '@aws-sdk/client-s3';
 import { Upload } from '@aws-sdk/lib-storage';
 import type { Readable } from 'node:stream';
 import type { ObjectStorageConfig } from '../config.ts';
@@ -23,6 +23,17 @@ export interface ObjectStore {
   exists(key: string): Promise<boolean>;
   /** 删除对象；不存在不报错。 */
   delete(key: string): Promise<void>;
+}
+
+export interface ListedObject {
+  key: string;
+  lastModified: Date;
+}
+
+/** 按前缀分页列出对象（清理任务找孤儿对象用，src/cleanup/）。 */
+export interface ObjectLister {
+  /** 按键的字典序返回 prefix 下、键大于 startAfter 的至多 maxKeys 个对象；truncated 表示后面还有。 */
+  list(options: { prefix: string; startAfter?: string; maxKeys: number }): Promise<{ objects: ListedObject[]; truncated: boolean }>;
 }
 
 /** 分片大小和并发：单个上传最多占用约 partSize × (queueSize + 1) 的内存。 */
@@ -49,7 +60,7 @@ function isNotFound(error: unknown): boolean {
   return status === 404;
 }
 
-export function createS3ObjectStore(config: ObjectStorageConfig, client: S3Client = createS3Client(config)): ObjectStore {
+export function createS3ObjectStore(config: ObjectStorageConfig, client: S3Client = createS3Client(config)): ObjectStore & ObjectLister {
   const bucket = config.bucket;
   return {
     async put(key, body, options) {
@@ -97,6 +108,17 @@ export function createS3ObjectStore(config: ObjectStorageConfig, client: S3Clien
 
     async delete(key) {
       await client.send(new DeleteObjectCommand({ Bucket: bucket, Key: key }));
+    },
+
+    async list({ prefix, startAfter, maxKeys }) {
+      const page = await client.send(
+        new ListObjectsV2Command({ Bucket: bucket, Prefix: prefix, MaxKeys: maxKeys, ...(startAfter ? { StartAfter: startAfter } : {}) }),
+      );
+      const objects: ListedObject[] = [];
+      for (const item of page.Contents ?? []) {
+        if (item.Key && item.LastModified) objects.push({ key: item.Key, lastModified: item.LastModified });
+      }
+      return { objects, truncated: page.IsTruncated === true };
     },
   };
 }

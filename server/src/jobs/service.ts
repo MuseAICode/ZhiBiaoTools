@@ -5,6 +5,7 @@ import type { Kysely } from 'kysely';
 import type { Database } from '../db/schema.ts';
 import type { TenantContext } from '../db/tenant.ts';
 import type { JobTypeRegistry } from './definitions.ts';
+import { NULL_JOB_NOTIFIER, type JobNotifier } from './notify.ts';
 import type { JobDispatcher } from './queue.ts';
 import { insertJob, requestCancel, requestPause, requestResume, type JobRecord, type NewJob } from './store.ts';
 
@@ -14,6 +15,8 @@ export interface JobServiceDependencies {
   /** 未配置 Redis 时为 null：只写 jobs，由 worker 的对账派发。 */
   dispatcher: JobDispatcher | null;
   log: Pick<FastifyBaseLogger, 'warn'>;
+  /** 状态变化后的推送（6.3）；不提供时不推送。 */
+  notifier?: JobNotifier;
 }
 
 async function dispatchBestEffort(deps: JobServiceDependencies, job: JobRecord): Promise<void> {
@@ -26,26 +29,36 @@ async function dispatchBestEffort(deps: JobServiceDependencies, job: JobRecord):
   }
 }
 
-/** 入队：任务类型必须已登记，参数先经该类型校验。lock_key 冲突时抛 409 JOB_LOCKED。 */
+/**
+ * 入队：任务类型必须已登记，参数先经该类型校验。lock_key 冲突时抛 409 JOB_LOCKED；会调用模型的任务类型（billable）
+ * 可用余额低于最低启动余额时抛 402 INSUFFICIENT_BALANCE（与写入在同一事务）。
+ */
 export async function enqueueJob(deps: JobServiceDependencies, context: TenantContext, input: NewJob): Promise<JobRecord> {
   const definition = deps.registry.get(input.type);
   if (!definition) throw new TypeError(`任务类型未登记：${input.type}`);
   definition.parseParams(input.params);
-  const job = await insertJob(deps.db, context, input);
+  const job = await insertJob(deps.db, context, { ...input, checkBalance: definition.billable === true });
+  await (deps.notifier ?? NULL_JOB_NOTIFIER).changed(job);
   await dispatchBestEffort(deps, job);
   return job;
 }
 
 export async function cancelJob(deps: JobServiceDependencies, context: TenantContext, jobId: string): Promise<JobRecord> {
-  return (await requestCancel(deps.db, context, jobId)).job;
+  const { job } = await requestCancel(deps.db, context, jobId);
+  await (deps.notifier ?? NULL_JOB_NOTIFIER).changed(job);
+  return job;
 }
 
 export async function pauseJob(deps: JobServiceDependencies, context: TenantContext, jobId: string): Promise<JobRecord> {
-  return (await requestPause(deps.db, context, jobId)).job;
+  const { job } = await requestPause(deps.db, context, jobId);
+  await (deps.notifier ?? NULL_JOB_NOTIFIER).changed(job);
+  return job;
 }
 
 export async function resumeJob(deps: JobServiceDependencies, context: TenantContext, jobId: string): Promise<JobRecord> {
-  const change = await requestResume(deps.db, context, jobId);
+  // 从暂停继续前同样检查余额（余额不足暂停的任务充值后才能继续）。
+  const change = await requestResume(deps.db, context, jobId, (type) => deps.registry.get(type)?.billable === true);
+  await (deps.notifier ?? NULL_JOB_NOTIFIER).changed(change.job);
   if (change.dispatch) await dispatchBestEffort(deps, change.job);
   return change.job;
 }

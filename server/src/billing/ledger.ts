@@ -76,7 +76,7 @@ function pgErrorCode(error: unknown): unknown {
   return (error as { code?: unknown } | null)?.code;
 }
 
-/** 把数据库抛出的计费错误（迁移 0003_billing ~ 0005_platform_models 中的 SQLSTATE）转成给用户看的 AppError，其他错误原样抛出。 */
+/** 把数据库抛出的计费错误（迁移 0003_billing ~ 0005_platform_models、0022_job_billing 中的 SQLSTATE）转成给用户看的 AppError，其他错误原样抛出。 */
 export function toBillingError(error: unknown): unknown {
   switch (pgErrorCode(error)) {
     case 'BL001':
@@ -106,6 +106,8 @@ export function toBillingError(error: unknown): unknown {
       return new AppError(503, 'AI_MODEL_PRICE_CONFLICT', '该模型标记为免费但价格不为零，暂时无法使用', { cause: error });
     case 'BL014':
       return new AppError(404, 'AI_MODEL_NOT_FOUND', '模型不存在', { cause: error });
+    case 'BL015':
+      return new AppError(409, 'JOB_NOT_RUNNING', '任务不在执行中，不能调用模型', { cause: error });
     case '22023':
       return new AppError(400, 'BAD_REQUEST', '请求不合法', { cause: error });
     case '42501':

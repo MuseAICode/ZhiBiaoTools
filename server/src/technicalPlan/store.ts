@@ -23,9 +23,12 @@
 //
 // 桌面版合并的招标正文（tender-original.md）和按投标范围裁剪的工作副本（tender.md）不再保存：读取时由各招标文件解析出的
 // Markdown 现算（readTenderMarkdown），投标范围只记 id 和标题。给第 6 步任务用的写函数：saveDocumentParse（文档的解析
-// 结果）、saveBidItems（招标解析项的结果）、prepareBidSectionExtraction / saveBidSectionExtraction（多标段识别）、
+// 结果与疑似多标段检测摘要）、saveBidItems / resetBidAnalysisForRerun（招标解析项的结果）、prepareBidSectionExtraction /
+// saveBidSectionExtraction（多标段识别）；这几个函数接受任务开始时的输入签名（inputSignatures），在写入的同一事务中（项目锁内）
+// 核对，招标文件、投标范围变化后旧任务的写入被拒绝（6.11）。其余：
 // saveGeneratedOutline（目录生成的结果与字数控制快照）、saveContentSections / saveContentPlans / saveContentGenerationItem /
 // saveContentGenerationRuntime（第 8 步的正文生成）；全局事实生成同样经 saveGlobalFacts 写入。
+import { createHash } from 'node:crypto';
 import { sql, type Kysely, type Transaction } from 'kysely';
 import {
   TECHNICAL_PLAN_BID_SECTION_MODES,
@@ -68,7 +71,15 @@ import { withTenant, type TenantContext } from '../db/tenant.ts';
 import { AppError } from '../errors.ts';
 import { TECHNICAL_PLAN_CONTENT_MAX } from '../db/migrations/0019_technical_plan_outline.ts';
 import type { ObjectStore } from '../files/objectStore.ts';
+import { isFinalStatus, latestProjectJobs, type JobRecord } from '../jobs/store.ts';
+import { jobBody, type JobBody } from '../jobs/view.ts';
 import { storageDisabled } from '../knowledgeBase/content.ts';
+import {
+  combineBidSectionDetections,
+  parseBidSectionDetectionSummary,
+  type BidSectionDetection,
+  type BidSectionDetectionSummary,
+} from './bidSectionDetector.ts';
 import { collectLeafItems, normalizeContentPlan, retainRuntimeAfterOutlineChange, serializeRuntime, type ContentRuntime } from './content.ts';
 import {
   buildOutline,
@@ -101,6 +112,22 @@ export const TECHNICAL_PLAN_REFERENCE_DOCUMENTS_MAX = 100;
 export const TECHNICAL_PLAN_MARKDOWN_READ_MAX_BYTES = 32 * 1024 * 1024;
 /** 默认的导出模板：系统模板“标准投标”（桌面版 tpl-system-standard-bid）。 */
 export const DEFAULT_EXPORT_TEMPLATE_KEY = 'standard-bid';
+
+/** 多标段识别与招标解析两类任务（第 6 步 6.11，src/technicalPlan/jobs.ts）。 */
+export const BID_SECTION_EXTRACTION_JOB_TYPE = 'bid-section-extraction';
+export const BID_ANALYSIS_JOB_TYPE = 'bid-analysis';
+
+/**
+ * 技术方案的任务互斥（与桌面版 technical-plan 组的 group-exclusive 相同）：同一项目同时只有一个技术方案任务。第 8 步的目录、
+ * 全局事实、正文生成任务使用同一个键。
+ */
+export function technicalPlanLockKey(projectId: string): string {
+  return `project:${projectId}:technical-plan`;
+}
+
+/** 任务记录已结束、结果仍是 running 时显示的原因（与桌面版重启后的 recoverInterruptedBidAnalysisTask 等相同）。 */
+const STALE_BID_ANALYSIS_MESSAGE = '上次招标文件解析未完成，请重新解析';
+const STALE_BID_SECTION_EXTRACTION_MESSAGE = '上次多标段识别未完成，请重新识别';
 
 // ---- 读出的状态 ----
 
@@ -212,9 +239,14 @@ export interface TechnicalPlanState extends TechnicalPlanGenerationConfig {
   bidSections: TechnicalPlanBidSection[];
   bidSectionExtractionStatus: TechnicalPlanRunStatus;
   bidSectionExtractionError: string | null;
-  /** 后台任务状态随第 6 步（jobs），本步一律为 null。 */
-  bidSectionExtractionTask: null;
-  bidAnalysisTask: null;
+  /**
+   * 疑似多标段检测（取代桌面版 checkBidSections）：各解析成功的招标文件的检测摘要合并的结果。有解析成功的招标文件缺少摘要时
+   * 为 null（不提示）。
+   */
+  bidSectionDetection: BidSectionDetection | null;
+  /** 本项目最近一次的多标段识别、招标解析任务（与 GET /api/jobs/:jobId 相同的形式），没有时为 null。 */
+  bidSectionExtractionTask: JobBody | null;
+  bidAnalysisTask: JobBody | null;
   /** 目录（含各节正文），还没有目录时为 null。 */
   outlineData: TechnicalPlanOutlineData | null;
   /** 目录生成时生效的字数控制，没有时为 null。 */
@@ -436,7 +468,9 @@ async function defaultGenerationConfig(trx: Trx): Promise<TechnicalPlanGeneratio
 
 // ---- 读取 ----
 
-async function readDocuments(trx: Trx, projectId: string): Promise<(TechnicalPlanDocument & { role: TechnicalPlanDocumentRole })[]> {
+type DocumentRow = TechnicalPlanDocument & { role: TechnicalPlanDocumentRole; detection: Record<string, unknown> | null };
+
+async function readDocuments(trx: Trx, projectId: string): Promise<DocumentRow[]> {
   const rows = await trx
     .selectFrom('technical_plan_documents as d')
     .innerJoin('files as f', 'f.id', 'd.file_id')
@@ -449,6 +483,7 @@ async function readDocuments(trx: Trx, projectId: string): Promise<(TechnicalPla
       'd.content_hash',
       'd.parser_label',
       'd.error',
+      'd.bid_section_detection',
       'd.created_at as imported_at',
       'f.display_name',
       'f.extension',
@@ -475,7 +510,28 @@ async function readDocuments(trx: Trx, projectId: string): Promise<(TechnicalPla
     contentHash: row.content_hash,
     parserLabel: row.parser_label,
     error: row.error,
+    detection: row.bid_section_detection,
   }));
+}
+
+/** 合并解析成功的招标文件的检测摘要；有文件缺少摘要或摘要不合法时为 null。 */
+function bidSectionDetectionOf(documents: readonly DocumentRow[]): BidSectionDetection | null {
+  const summaries: BidSectionDetectionSummary[] = [];
+  for (const document of documents) {
+    if (document.role !== 'tender' || document.status !== 'success') continue;
+    if (!document.detection) return null;
+    try {
+      summaries.push(parseBidSectionDetectionSummary(document.detection));
+    } catch {
+      return null;
+    }
+  }
+  return combineBidSectionDetections(summaries);
+}
+
+/** 结果仍是 running、但对应的任务已结束或不存在（执行者失联后被标为失败、已取消等）时，按未完成显示。 */
+function isStale(task: JobRecord | undefined): boolean {
+  return !task || isFinalStatus(task.status);
 }
 
 /** 读取生成配置；还没有保存过时返回默认值（不预先插入行）。 */
@@ -643,7 +699,16 @@ export async function readState(trx: Trx, projectId: string): Promise<TechnicalP
     overview: meta?.outline_project_overview ?? null,
   });
   const snapshot = meta?.outline_word_control_snapshot;
-  const strip = ({ role: _role, ...document }: TechnicalPlanDocument & { role: TechnicalPlanDocumentRole }): TechnicalPlanDocument => document;
+  const strip = ({ role: _role, detection: _detection, ...document }: DocumentRow): TechnicalPlanDocument => document;
+  const jobs = await latestProjectJobs(trx, projectId, [BID_SECTION_EXTRACTION_JOB_TYPE, BID_ANALYSIS_JOB_TYPE]);
+  const extractionTask = jobs.get(BID_SECTION_EXTRACTION_JOB_TYPE);
+  const analysisTask = jobs.get(BID_ANALYSIS_JOB_TYPE);
+  // 与桌面版 recoverInterruptedBidAnalysisTask 相同：任务已结束时仍是 running 的解析项按未完成显示（只改读出的状态）。
+  const analysisStale = isStale(analysisTask);
+  for (const item of items) {
+    if (item.status === 'running' && analysisStale) Object.assign(item, { status: 'error', error: STALE_BID_ANALYSIS_MESSAGE });
+  }
+  const extractionStale = meta?.bid_section_extraction_status === 'running' && isStale(extractionTask);
   // 原方案只有一份；从回收站恢复了被替换的旧原方案时取最近导入的一份。
   const originalPlans = documents.filter((document) => document.role === 'original-plan');
   const originalPlan = originalPlans.reduce<(typeof originalPlans)[number] | null>(
@@ -663,10 +728,11 @@ export async function readState(trx: Trx, projectId: string): Promise<TechnicalP
     bidAnalysisTasks: tasks,
     bidAnalysisProgress: bidAnalysisProgress(config.bidAnalysisSelectedTaskIds, new Map(items.map((item) => [item.id, item.status]))),
     bidSections: normalizeBidSections(meta?.bid_sections ?? []),
-    bidSectionExtractionStatus: meta?.bid_section_extraction_status ?? 'idle',
-    bidSectionExtractionError: meta?.bid_section_extraction_error ?? null,
-    bidSectionExtractionTask: null,
-    bidAnalysisTask: null,
+    bidSectionExtractionStatus: extractionStale ? 'error' : (meta?.bid_section_extraction_status ?? 'idle'),
+    bidSectionExtractionError: extractionStale ? STALE_BID_SECTION_EXTRACTION_MESSAGE : (meta?.bid_section_extraction_error ?? null),
+    bidSectionDetection: bidSectionDetectionOf(documents),
+    bidSectionExtractionTask: extractionTask ? jobBody(extractionTask) : null,
+    bidAnalysisTask: analysisTask ? jobBody(analysisTask) : null,
     outlineData: outline,
     outlineWordControlSnapshot: snapshot ? normalizeWordControl(snapshot) : null,
     globalFacts: await readGlobalFacts(trx, projectId),
@@ -969,6 +1035,8 @@ async function visibleDocuments(trx: Trx, projectId: string, role: TechnicalPlan
 
 export interface ImportTenderFilesResult {
   addedCount: number;
+  /** 新导入的文件（待解析，由接口入队解析任务）。 */
+  addedFileIds: string[];
   /** 已导入到本项目的文件（跳过）。 */
   skippedCount: number;
   state: TechnicalPlanState;
@@ -976,7 +1044,7 @@ export interface ImportTenderFilesResult {
 
 /**
  * 导入招标文件（取代桌面版 importTenderDocument）：与桌面版相同追加到已有招标文件之后，已导入到本项目的文件跳过。新文件
- * 挂到本项目（files.project_id）并登记，停在待解析（解析随第 6 步）。有新文件时清空下游（clearDownstreamFromTender）；
+ * 挂到本项目（files.project_id）并登记，停在待解析（由接口入队解析任务，6.6）。有新文件时清空下游（clearDownstreamFromTender）；
  * 全部跳过时不做改动。文件不可用（不存在、其他组织的、未上传完成、已删除、用途不是 tender、属于其他项目或已是原方案）时
  * 整体失败，返回 400；每个项目最多 TECHNICAL_PLAN_TENDER_FILES_MAX 份。
  */
@@ -987,14 +1055,14 @@ export async function importTenderFiles(db: Kysely<Database>, context: TenantCon
     const existing = await visibleDocuments(trx, projectId, 'tender');
     const existingIds = new Set(existing.map((row) => row.file_id));
     const added = ids.filter((id) => !existingIds.has(id));
-    if (added.length === 0) return { addedCount: 0, skippedCount: ids.length, state: await readState(trx, projectId) };
+    if (added.length === 0) return { addedCount: 0, addedFileIds: [], skippedCount: ids.length, state: await readState(trx, projectId) };
     if (existing.length + added.length > TECHNICAL_PLAN_TENDER_FILES_MAX) {
       throw new AppError(400, 'TECHNICAL_PLAN_DOCUMENT_LIMIT', `每个项目最多导入 ${TECHNICAL_PLAN_TENDER_FILES_MAX} 份招标文件`);
     }
     const next = existing.reduce((max, row) => Math.max(max, row.sort_order + 1), 0);
     await attachDocuments(trx, context, projectId, 'tender', added, next);
     await clearDownstreamFromTender(trx, context, projectId);
-    return { addedCount: added.length, skippedCount: ids.length - added.length, state: await readState(trx, projectId) };
+    return { addedCount: added.length, addedFileIds: added, skippedCount: ids.length - added.length, state: await readState(trx, projectId) };
   });
 }
 
@@ -1142,6 +1210,14 @@ export async function readTenderMarkdown(db: Kysely<Database>, context: TenantCo
     if (error instanceof BidSectionError) throw new AppError(409, 'TECHNICAL_PLAN_BID_SECTION_INVALID', error.message, { cause: error });
     throw error;
   }
+}
+
+/**
+ * 合并的原始招标正文（桌面版 readOriginalTenderMarkdown 读取的 tender-original.md，不按投标范围裁剪）：多标段识别任务的输入。
+ */
+export async function readOriginalTenderMarkdown(db: Kysely<Database>, context: TenantContext, projectId: string, objectStore: ObjectStore | null): Promise<string> {
+  const source = await withTenant(db, context, (trx) => tenderMarkdownSource(trx, projectId));
+  return readCombinedMarkdown(objectStore, source.artifacts);
 }
 
 /**
@@ -1476,6 +1552,50 @@ export async function clearTechnicalPlan(db: Kysely<Database>, context: TenantCo
 
 // ---- 任务写入 ----
 
+/** 任务开始时的输入签名（写入时核对）。 */
+export interface TechnicalPlanInputSignatures {
+  /** 招标文件：按导入顺序的文件、解析状态、Markdown 产物与正文哈希（多标段识别的输入）。 */
+  tender: string;
+  /** 招标文件加上单 / 多标段、识别出的标段与选中的投标范围（招标解析的输入）。 */
+  analysis: string;
+}
+
+/** 写入前核对的签名：给出的每一项都须与当前相同。 */
+export type SignatureGuard = Partial<TechnicalPlanInputSignatures>;
+
+const sha256Hex = (text: string) => createHash('sha256').update(text, 'utf8').digest('hex');
+
+async function readSignatures(trx: Trx, projectId: string): Promise<TechnicalPlanInputSignatures> {
+  const documents = await trx
+    .selectFrom('technical_plan_documents')
+    .select(['file_id', 'status', 'markdown_artifact_id', 'content_hash'])
+    .where('project_id', '=', projectId)
+    .where('role', '=', 'tender')
+    .orderBy('sort_order')
+    .orderBy('created_at')
+    .orderBy('file_id')
+    .execute();
+  const meta = await trx.selectFrom('technical_plan_meta').select(['bid_sections', 'selected_section_id']).where('project_id', '=', projectId).executeTakeFirst();
+  const config = await trx.selectFrom('technical_plan_generation_config').select('bid_section_mode').where('project_id', '=', projectId).executeTakeFirst();
+  const tender = sha256Hex(JSON.stringify(documents.map((row) => [row.file_id, row.status, row.markdown_artifact_id, row.content_hash])));
+  const analysis = sha256Hex(
+    JSON.stringify([tender, config?.bid_section_mode ?? null, meta?.selected_section_id ?? null, normalizeBidSections(meta?.bid_sections ?? [])]),
+  );
+  return { tender, analysis };
+}
+
+/** 当前的输入签名（任务开始时读取，写入时作为 SignatureGuard 传回）。 */
+export async function inputSignatures(db: Kysely<Database>, context: TenantContext, projectId: string): Promise<TechnicalPlanInputSignatures> {
+  return withTenant(db, context, (trx) => readSignatures(trx, projectId));
+}
+
+/** 在已加项目锁的事务中核对签名。 */
+async function guardHolds(trx: Trx, projectId: string, guard: SignatureGuard | undefined): Promise<boolean> {
+  if (!guard || (guard.tender === undefined && guard.analysis === undefined)) return true;
+  const current = await readSignatures(trx, projectId);
+  return (guard.tender === undefined || guard.tender === current.tender) && (guard.analysis === undefined || guard.analysis === current.analysis);
+}
+
 export interface DocumentParseInput {
   status?: TechnicalPlanDocumentStatus;
   markdownArtifactId?: string | null;
@@ -1484,12 +1604,14 @@ export interface DocumentParseInput {
   contentHash?: string | null;
   parserLabel?: string | null;
   error?: string | null;
+  /** 疑似多标段检测摘要（招标文件解析成功时由解析任务算出），null 清空。 */
+  bidSectionDetection?: BidSectionDetectionSummary | null;
 }
 
 /**
  * 写入一份招标文件或原方案的解析结果（给第 6 步的解析任务用，取代桌面版导入时同步解析写入的 markdownPath、contentHash 等）：
  * 只写给出的字段。markdownArtifactId 只能是本文档原件的 Markdown 产物，否则被 RLS 拒绝。文档已移除（原件进回收站）时
- * 返回 false。参数不合法（文件 id、产物 id 不是 uuid，哈希超长）是调用方的程序错误，抛 TypeError。
+ * 返回 false。参数不合法（文件 id、产物 id 不是 uuid，哈希超长，检测摘要不合法）是调用方的程序错误，抛 TypeError。
  */
 export async function saveDocumentParse(
   db: Kysely<Database>,
@@ -1506,6 +1628,9 @@ export async function saveDocumentParse(
     ...(hasOwn(input, 'contentHash') ? { content_hash: optionalKey(input.contentHash, '正文哈希') } : {}),
     ...(hasOwn(input, 'parserLabel') ? { parser_label: optionalText(input.parserLabel, TECHNICAL_PLAN_LABEL_MAX) } : {}),
     ...(hasOwn(input, 'error') ? { error: optionalText(input.error, TECHNICAL_PLAN_TEXT_MAX) } : {}),
+    ...(hasOwn(input, 'bidSectionDetection')
+      ? { bid_section_detection: input.bidSectionDetection ? JSON.stringify(parseBidSectionDetectionSummary(input.bidSectionDetection)) : null }
+      : {}),
   };
   return withTenant(db, context, async (trx) => {
     await lockProject(trx, projectId);
@@ -1524,19 +1649,8 @@ export interface BidItemInput {
   error?: string | null;
 }
 
-/**
- * 写入招标解析项的结果（给第 6 步的招标解析任务用，取代桌面版 updateTechnicalPlan 的 bidAnalysisTasks / bidAnalysisItem /
- * projectOverview / techRequirements）：与桌面版 saveBidItems 相同，给出的项逐项覆盖写入（名称默认取任务列表，排序按任务
- * 列表），null 或空对象删除全部结果。解析项 id 不在任务列表中是调用方的程序错误，抛 TypeError；文本超长时截短。
- */
-export async function saveBidItems(
-  db: Kysely<Database>,
-  context: TenantContext,
-  projectId: string,
-  items: Partial<Record<string, BidItemInput>> | null,
-): Promise<void> {
-  const entries = Object.entries(items ?? {});
-  const rows = entries.map(([itemId, item]) => {
+function bidItemRows(context: TenantContext, projectId: string, items: Partial<Record<string, BidItemInput>>) {
+  return Object.entries(items).map(([itemId, item]) => {
     if (!isBidItemId(itemId)) throw new TypeError(`招标解析项不合法：${JSON.stringify(itemId.slice(0, 64))}`);
     return {
       org_id: context.orgId,
@@ -1549,38 +1663,86 @@ export async function saveBidItems(
       sort_order: bidItemSortOrder(itemId),
     };
   });
-  await withTenant(db, context, async (trx) => {
+}
+
+async function upsertBidItems(trx: Trx, rows: ReturnType<typeof bidItemRows>): Promise<void> {
+  await trx
+    .insertInto('technical_plan_bid_items')
+    .values(rows)
+    .onConflict((oc) =>
+      oc.columns(['project_id', 'item_id']).doUpdateSet((eb) => ({
+        label: eb.ref('excluded.label'),
+        status: eb.ref('excluded.status'),
+        content: eb.ref('excluded.content'),
+        error: eb.ref('excluded.error'),
+        sort_order: eb.ref('excluded.sort_order'),
+      })),
+    )
+    .execute();
+}
+
+/**
+ * 写入招标解析项的结果（给第 6 步的招标解析任务用，取代桌面版 updateTechnicalPlan 的 bidAnalysisTasks / bidAnalysisItem /
+ * projectOverview / techRequirements）：与桌面版 saveBidItems 相同，给出的项逐项覆盖写入（名称默认取任务列表，排序按任务
+ * 列表），null 或空对象删除全部结果。给出 guard 时先核对签名，不符时不写入并返回 false。解析项 id 不在任务列表中是调用方的
+ * 程序错误，抛 TypeError；文本超长时截短。
+ */
+export async function saveBidItems(
+  db: Kysely<Database>,
+  context: TenantContext,
+  projectId: string,
+  items: Partial<Record<string, BidItemInput>> | null,
+  guard?: SignatureGuard,
+): Promise<boolean> {
+  const rows = bidItemRows(context, projectId, items ?? {});
+  return withTenant(db, context, async (trx) => {
     await lockProject(trx, projectId);
+    if (!(await guardHolds(trx, projectId, guard))) return false;
     if (rows.length === 0) {
       await trx.deleteFrom('technical_plan_bid_items').where('project_id', '=', projectId).execute();
-      return;
+      return true;
     }
-    await trx
-      .insertInto('technical_plan_bid_items')
-      .values(rows)
-      .onConflict((oc) =>
-        oc.columns(['project_id', 'item_id']).doUpdateSet((eb) => ({
-          label: eb.ref('excluded.label'),
-          status: eb.ref('excluded.status'),
-          content: eb.ref('excluded.content'),
-          error: eb.ref('excluded.error'),
-          sort_order: eb.ref('excluded.sort_order'),
-        })),
-      )
-      .execute();
+    await upsertBidItems(trx, rows);
+    return true;
+  });
+}
+
+/**
+ * 全部重新解析前的重置（与桌面版 runBidAnalysisTask 在 force_rerun 时的 initialPartial 相同）：选中的解析项恢复为空的 idle，
+ * 删除目录（含正文）与全局事实，目录的项目名称、概述、字数控制快照和正文生成的运行进度清空，正文生成选项恢复默认值；
+ * 引用的知识库文档、步骤与其他解析项不变。签名不符时不写入并返回 false。
+ */
+export async function resetBidAnalysisForRerun(
+  db: Kysely<Database>,
+  context: TenantContext,
+  projectId: string,
+  itemIds: readonly TechnicalPlanBidItemId[],
+  guard: SignatureGuard,
+): Promise<boolean> {
+  const rows = bidItemRows(context, projectId, Object.fromEntries(itemIds.map((id) => [id, { status: 'idle', content: '', error: null }])));
+  return withTenant(db, context, async (trx) => {
+    await lockProject(trx, projectId);
+    if (!(await guardHolds(trx, projectId, guard))) return false;
+    if (rows.length > 0) await upsertBidItems(trx, rows);
+    await deleteOutlineAndFacts(trx, projectId);
+    await writeMeta(trx, context, projectId, RESET_OUTLINE_META);
+    await updateGenerationConfig(trx, context, projectId, { contentGenerationOptions: DEFAULT_CONTENT_OPTIONS });
+    return true;
   });
 }
 
 /**
  * 开始多标段识别（给第 6 步的识别任务用，与桌面版 prepareBidSectionExtraction 相同）：清空下游，生成配置切到多标段，
- * 识别结果与投标范围清空，状态置为 running。
+ * 识别结果与投标范围清空，状态置为 running。给出 guard 时先核对签名，不符时不写入并返回 false。
  */
-export async function prepareBidSectionExtraction(db: Kysely<Database>, context: TenantContext, projectId: string): Promise<void> {
-  await withTenant(db, context, async (trx) => {
+export async function prepareBidSectionExtraction(db: Kysely<Database>, context: TenantContext, projectId: string, guard?: SignatureGuard): Promise<boolean> {
+  return withTenant(db, context, async (trx) => {
     await lockProject(trx, projectId);
+    if (!(await guardHolds(trx, projectId, guard))) return false;
     await clearDownstreamFromBidSectionChange(trx, context, projectId);
     await updateGenerationConfig(trx, context, projectId, { bidSectionMode: 'multiple' });
     await writeMeta(trx, context, projectId, { ...RESET_BID_SECTIONS, bid_section_extraction_status: 'running' });
+    return true;
   });
 }
 
@@ -1593,15 +1755,16 @@ export interface BidSectionExtractionInput {
 
 /**
  * 写入多标段识别的状态与结果（给第 6 步的识别任务用，取代桌面版 updateTechnicalPlan 的 bidSections /
- * bidSectionExtractionStatus / bidSectionExtractionError）：只写给出的字段。整理后的标段列表超过大小上限是调用方的程序
- * 错误，抛 TypeError；文本超长时截短。
+ * bidSectionExtractionStatus / bidSectionExtractionError）：只写给出的字段。给出 guard 时先核对签名，不符时不写入并返回 false。
+ * 整理后的标段列表超过大小上限是调用方的程序错误，抛 TypeError；文本超长时截短。
  */
 export async function saveBidSectionExtraction(
   db: Kysely<Database>,
   context: TenantContext,
   projectId: string,
   input: BidSectionExtractionInput,
-): Promise<void> {
+  guard?: SignatureGuard,
+): Promise<boolean> {
   const set: MetaPatch = {};
   if (hasOwn(input, 'status')) set.bid_section_extraction_status = oneOf(input.status, TECHNICAL_PLAN_RUN_STATUSES, 'idle');
   if (hasOwn(input, 'error')) set.bid_section_extraction_error = optionalText(input.error, TECHNICAL_PLAN_TEXT_MAX);
@@ -1611,9 +1774,11 @@ export async function saveBidSectionExtraction(
     if (sections !== null && Buffer.byteLength(sections) > (TECHNICAL_PLAN_BID_SECTIONS_MAX_BYTES * 3) / 4) throw new TypeError('标段列表过大');
     set.bid_sections = sections;
   }
-  await withTenant(db, context, async (trx) => {
+  return withTenant(db, context, async (trx) => {
     await lockProject(trx, projectId);
+    if (!(await guardHolds(trx, projectId, guard))) return false;
     await writeMeta(trx, context, projectId, set);
+    return true;
   });
 }
 

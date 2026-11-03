@@ -43,6 +43,8 @@ import type {
 } from '../db/schema.ts';
 import { withTenant, type TenantContext } from '../db/tenant.ts';
 import { AppError } from '../errors.ts';
+import { isFinalStatus, latestProjectJobs, type JobRecord } from '../jobs/store.ts';
+import { jobBody, type JobBody } from '../jobs/view.ts';
 
 /** 每个项目最多的招标文件、投标文件数（与标书查重相同）。 */
 export const REJECTION_CHECK_TENDER_DOCUMENTS_MAX = 20;
@@ -50,6 +52,19 @@ export const REJECTION_CHECK_BID_DOCUMENTS_MAX = 50;
 
 /** 合并的招标正文的页签（与桌面版相同）。 */
 export const TENDER_TAB = 'tender';
+
+/** 废标项解析与检查两类任务（第 6 步 6.9，src/rejectionCheck/jobs.ts）。 */
+export const REJECTION_ITEMS_EXTRACTION_JOB_TYPE = 'rejection-items-extraction';
+export const REJECTION_CHECK_RUN_JOB_TYPE = 'rejection-check-run';
+
+/** 两类任务互斥（与桌面版的 group-exclusive 相同）：同一项目同时只有一个废标检查任务。 */
+export function rejectionCheckLockKey(projectId: string): string {
+  return `project:${projectId}:rejection-check`;
+}
+
+/** 任务记录已结束、结果仍是 running 时显示的原因（与桌面版重启后的 recoverInterruptedRejectionCheckTasks 相同）。 */
+const STALE_EXTRACTION_MESSAGE = '上次解析未完成，请重新解析';
+const STALE_CHECK_MESSAGE = '上次检查未完成，请重新检查';
 
 // ---- 读出的状态 ----
 
@@ -165,9 +180,9 @@ export interface RejectionCheckState extends UiState {
   rejectionCheckResult: CheckResult<RiskFinding>;
   typoCheckResult: CheckResult<TypoFinding>;
   logicCheckResult: CheckResult<LogicFinding>;
-  /** 后台任务状态随第 6 步（jobs），本步一律为 null。 */
-  extractionTask: null;
-  checkTask: null;
+  /** 最近一次废标项解析任务、检查任务（jobs，与 GET /api/jobs/:jobId 相同的形式）；没有时为 null。 */
+  extractionTask: JobBody | null;
+  checkTask: JobBody | null;
 }
 
 // ---- 错误 ----
@@ -449,11 +464,28 @@ async function readResult<T extends RejectionCheckResultType>(trx: Trx, projectI
   };
 }
 
-/** 在已设置上下文的事务中读取完整状态（与桌面版 loadRejectionCheck 相同，任务状态先返回 null）。 */
-export async function readState(trx: Trx, projectId: string): Promise<RejectionCheckState> {
+/** 结果仍是 running、但对应的任务已结束或不存在（执行者失联后被标为失败、已取消等）时，按未完成显示。 */
+function settleStale<T extends { status: RejectionCheckRunStatus; error: string | null }>(result: T, task: JobRecord | undefined, message: string): T {
+  if (result.status !== 'running' || (task && !isFinalStatus(task.status))) return result;
+  return { ...result, status: 'error', error: message, ...('progressMessage' in result ? { progressMessage: message } : {}) };
+}
+
+/** 当前输入的签名（在已加锁的事务中读取，任务写入前核对）。 */
+async function currentSignatures(trx: Trx, projectId: string): Promise<Signatures> {
   const documents = await readDocuments(trx, projectId);
   const ui = await readUiState(trx, projectId);
   const extraction = await readExtraction(trx, projectId);
+  return computeSignatures({ ...documents, extraction, customCheckItems: ui.customCheckItems });
+}
+
+/** 在已设置上下文的事务中读取完整状态（与桌面版 loadRejectionCheck 相同）。 */
+export async function readState(trx: Trx, projectId: string): Promise<RejectionCheckState> {
+  const documents = await readDocuments(trx, projectId);
+  const ui = await readUiState(trx, projectId);
+  const tasks = await latestProjectJobs(trx, projectId, [REJECTION_ITEMS_EXTRACTION_JOB_TYPE, REJECTION_CHECK_RUN_JOB_TYPE]);
+  const extractionTask = tasks.get(REJECTION_ITEMS_EXTRACTION_JOB_TYPE);
+  const checkTask = tasks.get(REJECTION_CHECK_RUN_JOB_TYPE);
+  const extraction = settleStale(await readExtraction(trx, projectId), extractionTask, STALE_EXTRACTION_MESSAGE);
   // 当前文档页签不可用时与桌面版相同回退：有招标文件回到合并的招标正文，否则第一份投标文件。
   const tab = ui.activeDocumentTab;
   const tabValid = tab === TENDER_TAB || [...documents.tenderDocuments, ...documents.bidDocuments].some((document) => document.id === tab);
@@ -464,11 +496,11 @@ export async function readState(trx: Trx, projectId: string): Promise<RejectionC
     activeDocumentTab,
     signatures: computeSignatures({ ...documents, extraction, customCheckItems: ui.customCheckItems }),
     invalidBidAndRejectionItems: extraction,
-    rejectionCheckResult: await readResult(trx, projectId, 'rejection'),
-    typoCheckResult: await readResult(trx, projectId, 'typo'),
-    logicCheckResult: await readResult(trx, projectId, 'logic'),
-    extractionTask: null,
-    checkTask: null,
+    rejectionCheckResult: settleStale(await readResult(trx, projectId, 'rejection'), checkTask, STALE_CHECK_MESSAGE),
+    typoCheckResult: settleStale(await readResult(trx, projectId, 'typo'), checkTask, STALE_CHECK_MESSAGE),
+    logicCheckResult: settleStale(await readResult(trx, projectId, 'logic'), checkTask, STALE_CHECK_MESSAGE),
+    extractionTask: extractionTask ? jobBody(extractionTask) : null,
+    checkTask: checkTask ? jobBody(checkTask) : null,
   };
 }
 
@@ -569,6 +601,8 @@ export interface ImportDocumentsInput {
 
 export interface ImportDocumentsResult {
   addedCount: number;
+  /** 新导入的文件（待解析，由接口入队解析任务）。 */
+  addedFileIds: string[];
   /** 已导入到本项目的文件（与桌面版跳过重复文件相同，不再导入）。 */
   skippedCount: number;
   state: RejectionCheckState;
@@ -576,7 +610,7 @@ export interface ImportDocumentsResult {
 
 /**
  * 导入招标文件或投标文件（取代桌面版 importDocument）：把已上传的 tender 文件挂到本项目（files.project_id）并按给出的
- * 顺序追加到同类文档之后，文档停在待解析（解析随第 6 步）。已导入到本项目的文件跳过。有新文档时与桌面版相同：招标文件
+ * 顺序追加到同类文档之后，文档停在待解析（由接口入队解析任务，6.6）。已导入到本项目的文件跳过。有新文档时与桌面版相同：招标文件
  * 清空解析结果和三类检查结果，当前页签回到合并的招标正文；投标文件清空三类检查结果，当前页签切到第一份新投标文件。
  * 文件不可用（不存在、其他组织的、未上传完成、已删除、用途不是 tender、属于其他项目）时整体失败，返回 400。
  */
@@ -635,7 +669,7 @@ export async function importDocuments(
       else await clearCheckResults(trx, projectId);
       await writeMeta(trx, context, projectId, { active_document_tab: role === 'tender' ? TENDER_TAB : added[0]! });
     }
-    return { addedCount: added.length, skippedCount: ids.length - added.length, state: await readState(trx, projectId) };
+    return { addedCount: added.length, addedFileIds: added, skippedCount: ids.length - added.length, state: await readState(trx, projectId) };
   });
 }
 
@@ -716,6 +750,24 @@ export async function replaceTenderDocuments(
     await writeMeta(trx, context, projectId, { active_document_tab: TENDER_TAB });
     return readState(trx, projectId);
   });
+}
+
+/** 文档的类别（移除前决定取消哪些任务）；文档不存在或已移除时为 null。 */
+export async function findDocumentRole(
+  db: Kysely<Database>,
+  context: TenantContext,
+  projectId: string,
+  fileId: string,
+): Promise<RejectionCheckDocumentRole | null> {
+  const row = await withTenant(db, context, (trx) =>
+    trx
+      .selectFrom('rejection_check_documents')
+      .select('role')
+      .where('project_id', '=', projectId)
+      .where('file_id', '=', fileId.toLowerCase())
+      .executeTakeFirst(),
+  );
+  return row?.role ?? null;
 }
 
 /**
@@ -902,21 +954,32 @@ export interface ExtractionInput {
   error?: string | null;
 }
 
+export interface TaskWriteOptions {
+  /**
+   * 任务开始时输入的签名（解析结果写招标文件签名，废标项检查写 rejectionInput，错别字、逻辑检查写 bid）：给出时在同一事务中
+   * 与当前签名核对，不一致（任务开始后导入、移除了文档，或改了解析结果、自定义检查项）时不写入、返回 false。
+   */
+  expectedSignature?: string;
+}
+
 /**
  * 写入无效投标与废标项的解析结果（给第 6 步的解析任务用，取代桌面版 updateState 的 invalidBidAndRejectionItems）：
  * 与桌面版 saveExtraction 相同整体写入，没给出的字段取默认值，正文去掉外层的 '''；null 删除解析结果。
+ * options.expectedSignature 与当前招标文件签名不一致时不写入，返回 false。
  */
 export async function saveExtraction(
   db: Kysely<Database>,
   context: TenantContext,
   projectId: string,
   extraction: ExtractionInput | null,
-): Promise<void> {
-  await withTenant(db, context, async (trx) => {
+  options: TaskWriteOptions = {},
+): Promise<boolean> {
+  return withTenant(db, context, async (trx) => {
     await lockProject(trx, projectId);
+    if (options.expectedSignature !== undefined && (await currentSignatures(trx, projectId)).tender !== options.expectedSignature) return false;
     if (!extraction) {
       await trx.deleteFrom('rejection_check_extraction').where('project_id', '=', projectId).execute();
-      return;
+      return true;
     }
     const values = {
       status: oneOf(extraction.status, REJECTION_CHECK_RUN_STATUSES, 'idle'),
@@ -930,6 +993,7 @@ export async function saveExtraction(
       .values({ project_id: projectId, org_id: context.orgId, ...values })
       .onConflict((oc) => oc.column('project_id').doUpdateSet(values))
       .execute();
+    return true;
   });
 }
 
@@ -1037,6 +1101,7 @@ function findingRows(type: RejectionCheckResultType, context: TenantContext, pro
  * 写入一类检查的状态与问题（给第 6 步的检查任务用，取代桌面版 updateState 的 rejectionCheckResult / typoCheckResult /
  * logicCheckResult）：状态、签名、当前问题、进度说明、错误只写给出的字段，问题给出时整体替换。result 为 null 时删除这一类
  * 的状态和全部问题。问题引用的必须是本项目当前的投标文件，否则被 RLS 拒绝（文档已移除时任务的写入失败）。
+ * options.expectedSignature 与这一类当前应匹配的签名（废标项为 rejectionInput，其余为 bid）不一致时不写入，返回 false。
  */
 export async function saveCheckResult<T extends RejectionCheckResultType>(
   db: Kysely<Database>,
@@ -1044,14 +1109,19 @@ export async function saveCheckResult<T extends RejectionCheckResultType>(
   projectId: string,
   type: T,
   result: CheckResultInput<FindingInputs[T]> | null,
-): Promise<void> {
+  options: TaskWriteOptions = {},
+): Promise<boolean> {
   assertResultType(type);
-  await withTenant(db, context, async (trx) => {
+  return withTenant(db, context, async (trx) => {
     await lockProject(trx, projectId);
+    if (options.expectedSignature !== undefined) {
+      const signatures = await currentSignatures(trx, projectId);
+      if ((type === 'rejection' ? signatures.rejectionInput : signatures.bid) !== options.expectedSignature) return false;
+    }
     if (!result) {
       await trx.deleteFrom('rejection_check_results').where('project_id', '=', projectId).where('result_type', '=', type).execute();
       await deleteFindingRows(trx, type, projectId);
-      return;
+      return true;
     }
     const set = {
       ...(hasOwn(result, 'status') ? { status: oneOf(result.status, REJECTION_CHECK_RUN_STATUSES, 'idle') } : {}),
@@ -1066,5 +1136,6 @@ export async function saveCheckResult<T extends RejectionCheckResultType>(
       await deleteFindingRows(trx, type, projectId);
       await insertChunked(rows, (chunk) => trx.insertInto(FINDING_TABLES[type]).values(chunk as never).execute());
     }
+    return true;
   });
 }

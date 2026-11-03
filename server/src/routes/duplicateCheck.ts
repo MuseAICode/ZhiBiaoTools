@@ -2,14 +2,16 @@
 // kind 是 duplicate-check，不符一律 404。组织内成员都可以查看和编辑（组织内共享，第 9 节第 2 项），可见性、
 // 写权限与删除可见性由 RLS 保证。对应桌面版 duplicateCheck.loadState / saveFiles / saveUiState / clear / exportExcel。
 //
-// GET    /api/projects/:projectId/duplicate-check            完整状态（文件选择、页面状态、四类分析结果，任务状态随第 6 步）
+// GET    /api/projects/:projectId/duplicate-check            完整状态（文件选择、页面状态、四类分析结果、最近一次分析任务）
 // PUT    /api/projects/:projectId/duplicate-check/files      重新选择招标文件、投标文件（挂已上传的 duplicate-check 文件），清空分析结果
 // PATCH  /api/projects/:projectId/duplicate-check/ui-state   保存页面步骤和分析页签
 // DELETE /api/projects/:projectId/duplicate-check            清空（选中的文件进回收站）
 // GET    /api/projects/:projectId/duplicate-check/export     当前结果导出为 Excel（附件下载）
+// POST   /api/projects/:projectId/duplicate-check/analysis   开始分析（{ force? }，202 { job }；取代桌面版 tasks.startDuplicateAnalysis）
 //
-// 查重分析本身（解析、元数据、目录、正文、图片）随第 6 步的任务队列，分析结果由任务经 saveAnalysisSection 写入；
-// 桌面版的 updateState 只给任务用，不开放为接口。
+// 查重分析本身（解析、元数据、目录、正文、图片）是任务 duplicate-analysis（第 6 步 6.10，src/duplicateCheck/job.ts），
+// 分析结果由任务经 saveAnalysisSection 写入，桌面版的 updateState 只给任务用，不开放为接口；任务的进度、取消、暂停、继续经
+// /api/jobs 与 SSE。重新选择文件和清空之后取消进行中的分析任务（其后续写入因文件选择的签名不符被拒绝）。
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import type { Kysely } from 'kysely';
 import { tenantOf } from '../auth/hooks.ts';
@@ -25,12 +27,16 @@ import {
   saveUiState,
   type SaveFilesInput,
 } from '../duplicateCheck/store.ts';
+import { cancelDuplicateAnalysisJobs, startDuplicateAnalysis } from '../duplicateCheck/job.ts';
 import { AppError } from '../errors.ts';
 import { attachmentDisposition } from '../files/filename.ts';
+import type { JobServiceDependencies } from '../jobs/service.ts';
+import { jobBody } from '../jobs/view.ts';
 import { PROJECT_ID_PARAMS, requireProject } from '../projects/access.ts';
 
 export interface DuplicateCheckRouteDependencies {
   db: Kysely<Database>;
+  jobs: JobServiceDependencies;
   /** 测试用：导出时间。 */
   now?: () => Date;
 }
@@ -55,6 +61,12 @@ const UI_STATE_SCHEMA = {
   type: 'object',
   properties: { step: STEP, activeAnalysisTab: TAB },
   minProperties: 1,
+  additionalProperties: false,
+} as const;
+
+const ANALYSIS_SCHEMA = {
+  type: 'object',
+  properties: { force: { type: 'boolean' } },
   additionalProperties: false,
 } as const;
 
@@ -83,7 +95,12 @@ export async function registerDuplicateCheckRoutes(app: FastifyInstance, deps: D
   app.put<ProjectParams & { Body: SaveFilesInput }>(
     '/:projectId/duplicate-check/files',
     { schema: { params: PROJECT_ID_PARAMS, body: FILES_SCHEMA } },
-    async (request) => saveFiles(db, tenantOf(request), await project(request), request.body),
+    async (request) => {
+      const projectId = await project(request);
+      const state = await saveFiles(db, tenantOf(request), projectId, request.body);
+      await cancelDuplicateAnalysisJobs(deps.jobs, tenantOf(request), projectId);
+      return state;
+    },
   );
 
   app.patch<ProjectParams & { Body: { step?: DuplicateCheckStep; activeAnalysisTab?: DuplicateCheckSection } }>(
@@ -92,8 +109,26 @@ export async function registerDuplicateCheckRoutes(app: FastifyInstance, deps: D
     async (request) => saveUiState(db, tenantOf(request), await project(request), request.body),
   );
 
-  app.delete<ProjectParams>('/:projectId/duplicate-check', { schema: { params: PROJECT_ID_PARAMS } }, async (request) =>
-    clearDuplicateCheck(db, tenantOf(request), await project(request)),
+  app.delete<ProjectParams>('/:projectId/duplicate-check', { schema: { params: PROJECT_ID_PARAMS } }, async (request) => {
+    const projectId = await project(request);
+    const result = await clearDuplicateCheck(db, tenantOf(request), projectId);
+    await cancelDuplicateAnalysisJobs(deps.jobs, tenantOf(request), projectId);
+    return result;
+  });
+
+  app.post<ProjectParams & { Body: { force?: boolean } }>(
+    '/:projectId/duplicate-check/analysis',
+    {
+      schema: { params: PROJECT_ID_PARAMS, body: ANALYSIS_SCHEMA },
+      // 请求体可以省略（不强制重新分析）。
+      preValidation: async (request) => {
+        request.body ??= {};
+      },
+    },
+    async (request, reply) => {
+      const job = await startDuplicateAnalysis(deps.jobs, tenantOf(request), await project(request), request.body.force === true);
+      return reply.code(202).send({ job: jobBody(job) });
+    },
   );
 
   // 与文件下载相同：一律附件、nosniff、sandbox CSP。单元格文本一律写成内联字符串，不会被当作公式求值。

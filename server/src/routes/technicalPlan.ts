@@ -22,9 +22,13 @@
 // PUT    /api/projects/:projectId/technical-plan/chapters/:nodeId                   手工保存一节正文
 // DELETE /api/projects/:projectId/technical-plan/content-generation                 重置正文阶段（保留目录、全局事实和生成配置）
 // DELETE /api/projects/:projectId/technical-plan                                    清空（招标文件与原方案进回收站）
+// POST   /api/projects/:projectId/technical-plan/bid-section-extraction             开始多标段识别（入队 bid-section-extraction）
+// POST   /api/projects/:projectId/technical-plan/bid-analysis                       开始招标解析（入队 bid-analysis）
 //
-// 文档解析、多标段识别、招标解析随第 6 步的任务队列；checkBidSections（疑似多标段的检测）随第 6 步由任务在服务端计算；
-// 目录生成 / 调整、全局事实生成 / 调整随第 6 步（或第 8 步）；正文生成随第 8 步；openBidTemplate、previewContentWord 随第 7 步。
+// 导入招标文件、上传原方案后自动入队文档解析（6.6，src/parse/）。多标段识别与招标解析是任务（6.11，src/technicalPlan/jobs.ts），结果由任务
+// 经 Store 函数写入，进度、取消、暂停、继续经 /api/jobs 与 SSE；与桌面版相同，招标文件变化（导入、移除）和清空时取消本项目进行中的技术方案
+// 任务。疑似多标段检测（桌面版 checkBidSections）由解析任务在 worker 中算出，在 GET 的 bidSectionDetection 中返回。
+// 目录生成 / 调整、全局事实生成 / 调整、正文生成随第 8 步；openBidTemplate、previewContentWord 随第 7 步。
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import type { Kysely } from 'kysely';
 import { tenantOf } from '../auth/hooks.ts';
@@ -45,16 +49,20 @@ import {
   TECHNICAL_PLAN_WORDS_MAX,
 } from '../db/migrations/0018_technical_plan.ts';
 import { TECHNICAL_PLAN_CONTENT_MAX, TECHNICAL_PLAN_FACT_CONTENT_MAX, TECHNICAL_PLAN_FACT_ID_MAX } from '../db/migrations/0019_technical_plan_outline.ts';
-import type { Database, TechnicalPlanStep } from '../db/schema.ts';
+import type { Database, TechnicalPlanBidItemId, TechnicalPlanStep } from '../db/schema.ts';
 import { attachmentDisposition } from '../files/filename.ts';
 import type { ObjectStore } from '../files/objectStore.ts';
 import { storageDisabled } from '../knowledgeBase/content.ts';
+import type { JobServiceDependencies } from '../jobs/service.ts';
+import { jobBody } from '../jobs/view.ts';
+import { enqueueDocumentParses } from '../parse/enqueue.ts';
 import { PROJECT_ID_PARAMS, requireProject } from '../projects/access.ts';
 import {
   TECHNICAL_PLAN_FACT_GROUPS_MAX,
   TECHNICAL_PLAN_OUTLINE_NODES_MAX,
   TECHNICAL_PLAN_OUTLINE_SAVE_REASONS,
 } from '../technicalPlan/outline.ts';
+import { cancelTechnicalPlanJobs, startBidAnalysis, startBidSectionExtraction } from '../technicalPlan/jobs.ts';
 import {
   clearTechnicalPlan,
   findTenderFileMarkdown,
@@ -85,6 +93,8 @@ export interface TechnicalPlanRouteDependencies {
   db: Kysely<Database>;
   /** 读取招标文件的 Markdown 用；未配置时读取已解析的文件返回 503（还没有 Markdown 时除外）。 */
   objectStore: ObjectStore | null;
+  /** 导入后入队文档解析任务（6.6）。 */
+  jobs: JobServiceDependencies;
 }
 
 const UUID = { type: 'string', pattern: '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$' } as const;
@@ -229,6 +239,16 @@ const GLOBAL_FACTS_SCHEMA = {
   additionalProperties: false,
 } as const;
 
+// 只重新解析其中的项（taskIds）或全部重新解析（forceRerun）；请求体可以省略。
+const BID_ANALYSIS_SCHEMA = {
+  type: 'object',
+  properties: {
+    taskIds: { ...BID_TASK_IDS, minItems: 1 },
+    forceRerun: { type: 'boolean' },
+  },
+  additionalProperties: false,
+} as const;
+
 const CHAPTER_PARAMS = {
   type: 'object',
   properties: { ...PROJECT_ID_PARAMS.properties, nodeId: UUID },
@@ -272,6 +292,14 @@ export async function registerTechnicalPlanRoutes(app: FastifyInstance, deps: Te
     return (await requireProject(db, tenantOf(request), request.params.projectId, 'technical-plan')).id;
   }
 
+  /**
+   * 招标文件变化、清空后取消进行中的技术方案任务。桌面版在提交前取消；这里在提交后取消，提交与取消之间旧任务的写入因签名不符被拒绝，
+   * 响应中的状态在取消后重新读取，与桌面版一致。
+   */
+  async function cancelJobs(request: FastifyRequest, projectId: string): Promise<void> {
+    await cancelTechnicalPlanJobs(deps.jobs, tenantOf(request), projectId);
+  }
+
   app.get<ProjectParams>('/:projectId/technical-plan', { schema: { params: PROJECT_ID_PARAMS } }, async (request) =>
     loadTechnicalPlan(db, tenantOf(request), await project(request)),
   );
@@ -303,12 +331,22 @@ export async function registerTechnicalPlanRoutes(app: FastifyInstance, deps: Te
   app.post<ProjectParams & { Body: { fileIds: string[] } }>(
     '/:projectId/technical-plan/tender-files',
     { schema: { params: PROJECT_ID_PARAMS, body: TENDER_FILES_SCHEMA } },
-    async (request) => importTenderFiles(db, tenantOf(request), await project(request), request.body.fileIds),
+    async (request) => {
+      const projectId = await project(request);
+      const result = await importTenderFiles(db, tenantOf(request), projectId, request.body.fileIds);
+      await enqueueDocumentParses(deps.jobs, tenantOf(request), projectId, 'technical-plan-tender', result.addedFileIds);
+      if (result.addedCount === 0) return result;
+      await cancelJobs(request, projectId);
+      return { ...result, state: await loadTechnicalPlan(db, tenantOf(request), projectId) };
+    },
   );
 
-  app.delete<FileParams>('/:projectId/technical-plan/tender-files/:fileId', { schema: { params: FILE_PARAMS } }, async (request) =>
-    removeTenderFile(db, tenantOf(request), await project(request), request.params.fileId),
-  );
+  app.delete<FileParams>('/:projectId/technical-plan/tender-files/:fileId', { schema: { params: FILE_PARAMS } }, async (request) => {
+    const projectId = await project(request);
+    await removeTenderFile(db, tenantOf(request), projectId, request.params.fileId);
+    await cancelJobs(request, projectId);
+    return loadTechnicalPlan(db, tenantOf(request), projectId);
+  });
 
   app.get<FileParams>('/:projectId/technical-plan/tender-files/:fileId/markdown', { schema: { params: FILE_PARAMS } }, async (request, reply) => {
     const { artifact } = await findTenderFileMarkdown(db, tenantOf(request), await project(request), request.params.fileId);
@@ -333,7 +371,16 @@ export async function registerTechnicalPlanRoutes(app: FastifyInstance, deps: Te
   app.put<ProjectParams & { Body: { fileId: string } }>(
     '/:projectId/technical-plan/original-plan',
     { schema: { params: PROJECT_ID_PARAMS, body: ORIGINAL_PLAN_SCHEMA } },
-    async (request) => setOriginalPlan(db, tenantOf(request), await project(request), request.body.fileId),
+    async (request) => {
+      const projectId = await project(request);
+      const state = await setOriginalPlan(db, tenantOf(request), projectId, request.body.fileId);
+      // 新上传的原方案（待解析）入队；已是本项目原方案的文件不重复入队。
+      const plan = state.originalPlanFile;
+      if (plan && plan.id === request.body.fileId.toLowerCase() && plan.status === 'pending') {
+        await enqueueDocumentParses(deps.jobs, tenantOf(request), projectId, 'technical-plan-original-plan', [plan.id]);
+      }
+      return state;
+    },
   );
 
   app.delete<ProjectParams>('/:projectId/technical-plan/original-plan', { schema: { params: PROJECT_ID_PARAMS } }, async (request) =>
@@ -368,7 +415,29 @@ export async function registerTechnicalPlanRoutes(app: FastifyInstance, deps: Te
     resetContentGeneration(db, tenantOf(request), await project(request)),
   );
 
-  app.delete<ProjectParams>('/:projectId/technical-plan', { schema: { params: PROJECT_ID_PARAMS } }, async (request) =>
-    clearTechnicalPlan(db, tenantOf(request), await project(request)),
+  app.delete<ProjectParams>('/:projectId/technical-plan', { schema: { params: PROJECT_ID_PARAMS } }, async (request) => {
+    const projectId = await project(request);
+    const result = await clearTechnicalPlan(db, tenantOf(request), projectId);
+    await cancelJobs(request, projectId);
+    return result;
+  });
+
+  app.post<ProjectParams>('/:projectId/technical-plan/bid-section-extraction', { schema: { params: PROJECT_ID_PARAMS } }, async (request, reply) => {
+    const job = await startBidSectionExtraction(deps.jobs, tenantOf(request), await project(request));
+    return reply.code(202).send({ job: jobBody(job) });
+  });
+
+  app.post<ProjectParams & { Body: { taskIds?: TechnicalPlanBidItemId[]; forceRerun?: boolean } }>(
+    '/:projectId/technical-plan/bid-analysis',
+    {
+      schema: { params: PROJECT_ID_PARAMS, body: BID_ANALYSIS_SCHEMA },
+      preValidation: async (request) => {
+        request.body ??= {};
+      },
+    },
+    async (request, reply) => {
+      const job = await startBidAnalysis(deps.jobs, tenantOf(request), await project(request), request.body);
+      return reply.code(202).send({ job: jobBody(job) });
+    },
   );
 }

@@ -14,8 +14,8 @@
 | 3 | 配置与 AI 网关 | 进行中 | 旧仓库 PR #31（计费账本：组织余额、只追加的账本、带版本的价格表、幂等扣费、管理员手动充值与冲正，不调用 AI）、旧仓库 PR #32（AI 网关：调用前预扣冻结、按实际用量结算、冻结超时自动释放、`usage_records`、平台 Key 信封加密、DeepSeek / 通义千问流式适配、`POST /api/ai/chat`）、旧仓库 PR #33（平台模型白名单 `platform_models`：只有登记且启用、并有生效价格的模型能调用，免费须显式标记；管理员登记 / 启用 / 停用接口；用户断开时中止上游请求的端到端测试） |
 | 4 | 文件上传 / 下载 / 资源协议 | 进行中 | 旧仓库 PR #34（文件存储：S3 兼容对象存储、本地 SeaweedFS、`files` 表与强制 RLS、按内容校验类型、大小上限与组织配额、附件方式下载、7 天恢复期）、#6（上传白名单补齐桌面版能导入的内容：OLE 内容的 `.docx`，`.doc/.wps` 的 RTF / HTML / MHT / Word 2003 XML，`.xls` 的 HTML 表格 / SpreadsheetML，`%PDF-` 前有多余字节的 PDF） |
 | 5 | 数据层迁移（按业务逐个） | 已完成 | 旧仓库 PR #35（拆分计划，见“第 5 步说明”；记录上传白名单与桌面版的差距）、#7（5.1 项目：`projects` 表、`files.project_id`、项目接口、路由层归属校验、项目级表的迁移与测试模板）、#8（5.2 生成产物存储：`artifacts` 表、Store、只读接口；项目软删除与其下文件、产物联动，由 RLS 强制）、#9（5.3 配置：`org_settings`、`user_settings`、`GET/PATCH /api/settings`；写权限与删除可见性由 RLS 强制）、#10（5.4 导出模板：`export_templates`、`/api/export-templates` 增删改查与复制；系统模板只读、修改删除权限由 RLS 强制，迁移命令同步系统模板）、#11（5.5 资信库：6 张表、`/api/credential-library`；权限与删除可见性由 RLS 强制，图片随所引用文件的生命周期）、#12（5.6 知识库（一）：`knowledge_folders`、`_documents`、`_document_steps`、`/api/knowledge-base` 文件夹与文档管理；权限与删除可见性由 RLS 强制，文档随原件的生命周期）、#14（5.7 知识库（二）：切块、条目、匹配结果等 7 张表，检索与读取条目 / 分析 / Markdown 接口；删除可见性与写权限由 RLS 强制，随文档可见）、#16（5.8 标书查重：13 张项目级表、`/api/projects/:projectId/duplicate-check` 状态 / 文件选择 / 页面状态 / 清空 / Excel 导出；删除可见性与写权限由 RLS 强制，随项目和所选原件可见）、#17（5.8 后续：`files.project_id` 设置后不能再改，由触发器强制；xlsx 写出器防公式注入，回车按原样写出）、#18（5.9 废标检查：7 张项目级表、`/api/projects/:projectId/rejection-check` 状态 / 导入与移除文档 / 页面状态 / 切换与删除问题 / 清空 / Excel 导出；删除可见性与写权限由 RLS 强制，文档随原件可见，签名由服务端现算）、#19（5.10 可研报告：4 张项目级表、`/api/projects/:projectId/feasibility-report` 状态 / 步骤 / 项目信息 / 资料分析 / 目录配置 / 目录（`reason` 协议）/ 关键参数 / 正文 / 资料导入与移除 / 资料 Markdown / 清空；删除可见性与写权限由 RLS 强制，资料随原件、引用随知识库文档可见）、#20（5.11 技术方案（一）：6 张项目级表、`/api/projects/:projectId/technical-plan` 状态 / 步骤 / 生成配置 / 招标解析配置 / 正文生成选项 / 招标文件导入与移除 / 招标文件与合并正文的 Markdown / 原方案 / 投标范围选择 / 清空；删除可见性与写权限由 RLS 强制，文档随原件、引用随知识库文档可见，导出模板只能是本组织的或系统模板）、#21（5.12 技术方案（二）：目录与全局事实 2 张项目级表、`PUT .../outline`（`reason` 协议，节点 UUID 稳定、编号现算）与 `PUT .../global-facts`，下游清空扩展到目录与全局事实；删除可见性与写权限由 RLS 强制））、#22（5.13 技术方案（三）：正文生成状态与编排 2 张项目级表、`PUT .../chapters/:nodeId`、`DELETE .../content-generation`，目录保存与全局事实、下游清空扩展到正文生成状态、编排与运行进度；废标检查 `POST .../tender-from-technical-plan` 复制原件与 Markdown；删除可见性与写权限由 RLS 强制） |
-| 6 | 任务队列与 worker | 进行中 | #23（拆分计划，见“第 6 步说明”）、#24（6.1 Redis 接入：Valkey 8 开启 ACL、`REDIS_URL` / `REDIS_PASSWORD[_FILE]`、`/readyz` 检查 Redis、CI 起 Valkey）、#25（6.2 `jobs` / `job_events` 表与 worker 骨架：BullMQ 只派发、`jobs` 为唯一权威，认领加 `run_id` 隔离令牌与数据库租约，Redis 重启或清空后从 `jobs` 对账恢复入队；新增定义者角色 `bidtools_jobs`） |
-| 7 | OpenXmlHelper 容器化与离屏渲染（前置：CI 新增 .NET 编译与 OpenXmlHelper 测试，见“第 9 步说明”的品牌改名第三部分） | 未开始 | — |
+| 6 | 任务队列与 worker | 已完成 | #23（拆分计划，见“第 6 步说明”）、#24（6.1 Redis 接入：Valkey 8 开启 ACL、`REDIS_URL` / `REDIS_PASSWORD[_FILE]`、`/readyz` 检查 Redis、CI 起 Valkey）、#25（6.2 `jobs` / `job_events` 表与 worker 骨架：BullMQ 只派发、`jobs` 为唯一权威，认领加 `run_id` 隔离令牌与数据库租约，Redis 重启或清空后从 `jobs` 对账恢复入队；新增定义者角色 `bidtools_jobs`）、#26（6.3 SSE 推送 `GET /api/events`：每组织一条 Stream + 频道，`Last-Event-ID` 补发与 `resync`、心跳、会话定期重新校验、单用户连接数上限；任务状态、进度、日志经 worker 推送，取消 / 暂停经控制频道立即送达 worker）、#27（6.4 worker 接入 AI 网关与余额：任务调用记 `job_id` / `job_type`，`jobs.billed_amount` 在结算的同一事务中累加，入队和继续前检查最低启动余额 1 元，运行中余额不足暂停为 `paused` / `insufficient_balance` 并推送，按“组织 + 服务商”的 Redis 分布式信号量）、#28（6.5 解析沙箱基础设施：`sandbox-runner` 服务、`SandboxDriver` 接口、断网的 `parse` 模板与镜像，取回归档逐项校验，gVisor 下的隔离测试）、#29（测试修复：`jobQueue.test.ts` 中模拟清空 Redis 的 `wipeQueueKeys` 改为原子的 Lua 脚本，清空后的断言改为“被清空的任务不再被任何键引用”，消除与运行中 worker 的竞态）、#30（6.6 解析任务（一）：`document-parse` 任务在断网沙箱中按记录的 MIME 解析二进制与纯文本格式，ZIP 炸弹与 PDF 页数检查，产物经 `writeArtifact` 写入、重新解析时旧产物标为已被替换（迁移 0023），三个模块导入后自动入队；parse 镜像加入解析入口与 LibreOffice 安全设置；沙箱总数上限的测试）、#31（6.6 补充：LibreOffice 转换超时改为对整个进程组 SIGKILL，补“解析卡住时任务按时结束并销毁沙箱”的测试）、#32（6.7 解析任务（二）文本类格式：Office 2003 XML 含 DTD 即拒绝，RTF 去掉域指令与 OLE 链接，HTML 按白名单重新生成、不留任何远程资源，MHT 先解开 MIME；恶意样本与对照组测试，远程资源测试在沙箱内监听所有连接）、#33（6.8 清理任务：新增定义者角色 `bidtools_cleanup`（迁移 0024），worker 每小时跨组织删除超过保留期的文件、产物、项目、遗留上传与任务记录，先删对象后删行，孤儿对象，冻结到期收尾移到 worker；清理角色对计费表没有任何权限）、#34（6.4a 步骤幂等：迁移 0025 新建 `job_step_results`，任务调用必须带步骤键，结果与结算同一事务提交，续跑时同一步骤取回结果、不再调用服务商、不再扣费；worker 关闭、租约丢失中止的调用不收费）、#35（6.9 废标检查任务：`rejection-items-extraction`、`rejection-check-run`，招标文件按导入顺序合并正文，结果带开始时的签名写入、文档变化后旧任务的写入被拒绝，状态中返回最近的任务；第一个调用 AI 的业务任务，按步骤键续跑不重复扣费）、#36（6.10a 标书查重任务 `duplicate-analysis`：正文在 parse 沙箱中解析并做逐文档提取（目录、句子、图片位置，`analysis.json`）、#37（6.10b 标书查重的文档格式元数据：每份投标文件在只提取元数据的 parse 沙箱中读取 docx / OLE / PDF 的属性与结构，worker 校验 `metadata.json` 后并入），目录 / 正文 / 图片比对在 worker 中进行；元数据先只有文件基本信息，文档格式的元数据随 6.10b）、#38（6.11 技术方案任务（一）：多标段识别 `bid-section-extraction`、招标解析 `bid-analysis`，结果带开始时的输入签名写入；疑似多标段检测改为线性扫描，由解析任务在 worker 中按文件算出摘要（迁移 0026），读取时合并）、#39（6.12 可研报告任务：资料分析、关键参数、正文生成与自然化审校四类任务，结果带开始时的输入签名写入；正文任务未结束时不能改目录与正文，保存上游内容时取消任务）、#40（6.13a 知识库文档准备任务 `knowledge-document-prepare`：在 parse 沙箱中解析、切块、首轮与补充提取候选条目，按步骤续用，文档带上最近的任务、中断按状态显示，重试，删除文档 / 文件夹后取消任务）、#41（6.13b 知识库段落匹配：文档准备完成后接着匹配、遗漏补漏、保存最终条目与报告，已完成的段与步骤续用；新增 `knowledge-document-match` 与 `POST .../documents/:documentId/match` 重新匹配）、#42（6.14 登录、注册、找回密码等限流的计数改存 Redis，api 各实例共用；Redis 不可用时退回进程内存计数） |
+| 7 | OpenXmlHelper 容器化与离屏渲染（前置：CI 新增 .NET 编译与 OpenXmlHelper 测试，见“第 9 步说明”的品牌改名第三部分） | 进行中 | #43（前置：CI 新增 .NET 编译与 OpenXmlHelper 测试，见“第 7 步说明”）、#44（拆分计划与 9 项决定事项，见“第 7 步说明”）、#45（7.1 export 沙箱：助手一次性运行模式、镜像、模板与隔离测试，见“第 7 步说明”）、#46（7.2 字体与装饰：`GET /api/fonts`，装饰生成器在沙箱中的输出与桌面版逐项核对，见“第 7 步说明”）、#47（7.3a 样张的服务端输入校验：受限 HTML 与前端同一套白名单、`export_format` 与桌面版相同的规范化，两端用同一份用例核对，见“第 7 步说明”）、#48（7.3b 样张在沙箱中生成：固定样张配图打进 export 镜像、样张不接受 worker 放入的配图，worker 端 `renderTemplatePreview` 与输出校验（docx 的 ZIP 结构检查），见“第 7 步说明”） |
 | 8 | Agent 沙箱 | 未开始 | — |
 | 9 | 收尾与上线 | 进行中 | #1（品牌改名第一部分：用户可见文字和文档）、#2（品牌改名第二部分：代码标识符、数据与协议、打包，新增 CI 禁用词检查）、#5（品牌改名第三部分：原产品名缩写前缀改为中性前缀 `app`，禁用词检查加入该缩写） |
 
@@ -407,7 +407,7 @@ AI 网关加固，做法见 `docs/SERVER_DESIGN.md` 第 10.9 节。`client/` 未
 
 | 模块 | 表 | 本步的服务端接口 | 依赖 | 推迟到 |
 |---|---|---|---|---|
-| A 应用壳层 | 无 | 无（`database.getStatus` 由 `/readyz` 取代；更新、GPU、系统字体在 Web 端做空实现） | — | 第 9 步（bridge 空实现）；系统字体列表随第 7 步镜像字体 |
+| A 应用壳层 | 无 | 无（`database.getStatus` 由 `/readyz` 取代；更新、GPU、系统字体在 Web 端做空实现） | — | 第 9 步（bridge 空实现）；系统字体列表随第 7 步镜像字体（7.2：`GET /api/fonts`，#46） |
 | B 配置 | 新表 `org_settings`、`user_settings`（拆自 `user_config.json`，不在 SQLite 中） | `GET/PATCH /api/settings`（组织级：选用的 `platform_model_id`、并发、导出偏好；用户级：界面偏好、`agent_auto_answer_enabled`）；返回中不含任何 Key | `platform_models`（旧仓库 PR #33） | 设置页“选择模型 + 查看单价”的前端接入随第 3 步后续 PR |
 | C AI / Agent | 无 SQLite 表；Pi 持久任务状态 `task-state.json` | 无 | — | **第 8 步**（改存 `jobs.checkpoint`） |
 | D 后台任务 | 各模块的 `*_tasks`、`task_logs` | 无 | — | **第 6 步**（`jobs` / `job_events`） |
@@ -446,7 +446,7 @@ AI 网关加固，做法见 `docs/SERVER_DESIGN.md` 第 10.9 节。`client/` 未
 
 - **第 6 步（任务队列）**：所有 `*_tasks` / `task_logs`；所有解析任务（招标文件、原方案、可研资料、废标文档、查重文件、知识库文档）；招标解析、多标段识别、查重分析、废标项解析与检查、可研资料分析与关键参数、知识库准备与匹配；所有进度推送（`onTaskEvent`、`knowledgeBase.onEvent`）；过期文件与产物的物理清理；
 - **第 6 步核实、可能推迟到第 8 步**：技术方案的目录生成 / 调整、全局事实生成 / 调整，可研报告的目录生成 / 调整。它们经 `agentService.runTask` 调用 Pi，路线图第 6 步原计划在队列中迁移，需先确认这些任务的 Pi 是否用到 `read/write/bash` 等命令工具；用到则随第 8 步迁移；
-- **第 7 步（OpenXmlHelper 与离屏渲染）**：模板样张 `renderPreview`、Word 导出、`previewContentWord`、模板提取；
+- **第 7 步（OpenXmlHelper 与离屏渲染）**：模板样张 `renderPreview`、Word 导出、`previewContentWord`、模板提取（#44 决定 `previewContentWord` 和模板提取移到第 8 步，见“第 7 步说明”）；
 - **第 8 步（Agent 沙箱）**：正文生成、章节重写、原方案还原、格式自检、Agent 问答，Pi 持久任务状态，开发者 Agent 监视器。
 
 #### 项目（#7，5.1）
@@ -874,21 +874,24 @@ AI 网关加固，做法见 `docs/SERVER_DESIGN.md` 第 10.9 节。`client/` 未
 | 6.0 | 拆分计划（本节）与 10 项决定 | — | 是（按本次要求，已确认） | 已完成 | #23 |
 | 6.1 | Redis 接入：`docker-compose.yml` 新增 `redis`（发行版见决定事项第 3 项；开启密码和 ACL，只在 `backend` 网络、开发时只绑 `127.0.0.1`）；配置 `REDIS_URL`、`REDIS_PASSWORD[_FILE]`（`init-dev-secrets.sh` 生成）；`/readyz` 加入 Redis 检查；CI 的 `server-checks` 加 Redis 服务容器。不含队列 | — | 否 | 已完成 | #24 |
 | 6.2 | `jobs` 表与 worker 骨架：迁移新建 `jobs`（`SERVER_DESIGN.md` 第 5.1 节的字段，`project_id` 可空供组织级任务，强制 RLS）和 `job_events`（取代 `task_logs`，只追加）；互斥用部分唯一索引（见下方“互斥”）；`src/jobs/`（入队、取消、暂停、继续、checkpoint、状态机，事务内检查互斥和组织级并发）；BullMQ 生产者与 `src/worker.ts` 消费者（同一镜像、不同入口，compose 新增 `worker` 服务）；stalled 恢复；`GET /api/jobs`、`GET /api/jobs/:jobId`、`POST /api/jobs/:jobId/cancel`。只注册一个测试用任务类型，不迁移业务任务 | 6.1 | **是**（实现时新增定义者角色 `bidtools_jobs`，见下方“jobs 表与 worker 骨架”） | 已完成 | #25 |
-| 6.3 | SSE 推送：`GET /api/events`，worker 发布到 Redis `events:org:{orgId}` 并追加 Stream，api 按连接的组织和用户过滤后写出；`Last-Event-ID` 补发、超出窗口推 `resync`、25 秒心跳；会话吊销、移出组织后关闭连接（定期重新校验会话）；单用户连接数上限 | 6.2 | 否 | 未开始 | — |
-| 6.4 | worker 接入 AI 网关与余额：网关在 worker 中运行，任务调用记 `job_id` / `job_type`；`usage_records.job_id` 不补外键（任务记录到保留期会被删除，用量记录不可修改、永久保留，见“决定事项”第 10 项），只保留 `job_id` / `job_type` 的值；`jobs.billed_amount` 与结算在同一事务中累加（改 `ai_usage_settle`）；入队前检查最低启动余额（决定事项第 7 项）；运行中冻结失败时暂停为 `paused` / `insufficient_balance`，经 SSE 推送（取代 `onBalanceInsufficient`），充值后继续不重复扣费；AI 网关按组织 + 服务商的并发上限改为 Redis 分布式信号量（取 `org_settings.concurrency_limit` 与平台上限的较小值） | 6.2、6.3 | **是**（计费） | 未开始 | — |
-| 6.5 | 解析沙箱基础设施：`sandbox-runner` 服务、`SandboxDriver` 接口、`parse` 模板、解析镜像（见下方“文件解析的隔离”）；隔离测试 | 6.2 | **是**（沙箱） | 未开始 | — |
-| 6.6 | 解析任务（一）二进制与纯文本格式：`parse` 队列；按记录的 MIME 分派（见下方分派表）；ZIP 炸弹、PDF 页数、超时检查；产出经 `writeArtifact` 写入；重新解析时替换旧产物（第 5 步 #8 留下）；接入技术方案、废标检查、可研报告三个模块的文档解析（`saveDocumentParse` / `saveSourceParse`），导入后自动入队 | 6.5 | 否 | 未开始 | — |
-| 6.7 | 解析任务（二）文本类格式（#6 放行的 RTF、HTML、MHT、Word 2003 XML、SpreadsheetML）：逐项满足“第 6 步解析要求”，用恶意样本测试（XXE、实体膨胀、外链图片 / 样式 / `<iframe>`、RTF `INCLUDEPICTURE` / `INCLUDETEXT`、MHT 外部 `Content-Location`） | 6.6 | 否 | 未开始 | — |
-| 6.8 | 清理任务：过期文件、产物、项目的对象与行的物理删除，遗留 `uploading` 行，按对象键前缀找出的孤儿对象，冻结到期收尾（`expireStaleHolds` 从 api 的定时器移到 worker 的定时任务），超过保留期的 `jobs` / `job_events`；跨组织，用新的 `NOLOGIN` 定义者角色 `bidtools_cleanup` 写 `SECURITY DEFINER` 函数，要求见“决定事项”第 9、10 项 | 6.2 | **是**（新增数据库角色） | 未开始 | — |
-| 6.9 | 废标检查任务：`rejection-items-extraction`、`rejection-check-run`；任务按招标文件顺序合并正文，经 `computeSignatures` 写签名；`loadState` 返回任务状态 | 6.4、6.6 | 否 | 未开始 | — |
-| 6.10 | 标书查重任务：`duplicate-analysis`。`duplicateCheckService.cjs` 自己用 `adm-zip`、`cfb`、`cheerio`、`pdf-parse` 读原件（正文、元数据、目录、图片），这部分提取放进 `parse` 沙箱，产出正文与图片产物；比对计算在 worker 中进行，经 `saveAnalysisSection` 写入 | 6.5、6.6 | 否 | 未开始 | — |
-| 6.11 | 技术方案任务（一）：招标解析 `bid-analysis`、多标段识别 `bid-section-extraction`；`checkBidSections`（疑似多标段检测）在 worker 中计算并写入状态，改写正则消除平方级回溯（#20 留下）；导入招标文件前取消本项目的技术方案任务（#20 留下） | 6.4、6.6 | 否 | 未开始 | — |
-| 6.12 | 可研报告任务：`feasibility-analysis`、`feasibility-parameters`、`feasibility-content`、`feasibility-human-writing`（后两项按“决定事项”第 4 项提前到第 6 步）；服务端合并资料（取代 `readCombinedSourceMarkdown`）；正文生成或审校运行、暂停时不能修改目录和手工改正文（`assertContentUnlocked`，#19 留下） | 6.4、6.6 | 否 | 未开始 | — |
-| 6.13 | 知识库任务：文档准备（解析、切块、条目抽取）、`retryDocument`、`startMatching`、`knowledgeBase.onEvent` 改为 SSE；文档在处理中被删除时任务停止（写入影响 0 行即退出，#12 留下）；取代 `recoverInterruptedDocuments` | 6.4、6.6 | 否 | 未开始 | — |
-| 6.14 | 登录、注册、找回密码的限流从进程内存换成 Redis（旧仓库 PR #29 留下，多实例部署前必须完成），接口与参数不变 | 6.1 | **是**（鉴权） | 未开始 | — |
+| 6.3 | SSE 推送：`GET /api/events`，worker 发布到 Redis `events:org:{orgId}` 并追加 Stream，api 按连接的组织和用户过滤后写出；`Last-Event-ID` 补发、超出窗口推 `resync`、25 秒心跳；会话吊销、移出组织后关闭连接（定期重新校验会话）；单用户连接数上限 | 6.2 | 否 | 已完成 | #26 |
+| 6.4 | worker 接入 AI 网关与余额：网关在 worker 中运行，任务调用记 `job_id` / `job_type`；`usage_records.job_id` 不补外键（任务记录到保留期会被删除，用量记录不可修改、永久保留，见“决定事项”第 10 项），只保留 `job_id` / `job_type` 的值；`jobs.billed_amount` 与结算在同一事务中累加（改 `ai_usage_settle`）；入队前检查最低启动余额（决定事项第 7 项）；运行中冻结失败时暂停为 `paused` / `insufficient_balance`，经 SSE 推送（取代 `onBalanceInsufficient`），充值后继续不重复扣费；AI 网关按组织 + 服务商的并发上限改为 Redis 分布式信号量（取 `org_settings.concurrency_limit` 与平台上限的较小值） | 6.2、6.3 | **是**（计费） | 已完成 | #27 |
+| 6.4a | **步骤幂等，必做**（#27 确认时登记）：平台自身故障（worker 崩溃、租约收回、重启）导致的重复调用不向用户收费。现状：一次调用已结算、任务还没保存 checkpoint 时 worker 崩溃，续跑会重做这一步并再次扣费。二选一：步骤结果与 checkpoint 同一事务提交（结算、写结果、写 checkpoint 一起提交），或给每一步加幂等键（`jobId + 步骤键`，续跑时同一步已结算的调用直接复用结果或不再收费）；测试须覆盖“结算后、checkpoint 前崩溃”只扣费一次。**必须在第一个调用 AI 的业务任务 PR（6.9、6.11、6.12、6.13 中最先做的那个）之前完成** | 6.4 | **是**（计费） | 已完成 | #34 |
+| 6.5 | 解析沙箱基础设施：`sandbox-runner` 服务、`SandboxDriver` 接口、`parse` 模板、解析镜像（见下方“文件解析的隔离”）；隔离测试 | 6.2 | **是**（沙箱） | 已完成 | #28 |
+| 6.6 | 解析任务（一）二进制与纯文本格式：`parse` 队列；按记录的 MIME 分派（见下方分派表）；ZIP 炸弹、PDF 页数、超时检查；产出经 `writeArtifact` 写入；重新解析时替换旧产物（第 5 步 #8 留下）；接入技术方案、废标检查、可研报告三个模块的文档解析（`saveDocumentParse` / `saveSourceParse`），导入后自动入队；parse 镜像加入解析入口与其 npm 依赖，并同时加入 LibreOffice 的全局设置：链接更新设为从不、禁用宏（从 6.7 提前，#28 确认时决定，与解析入口同时上线）；**sandbox-runner 对同时存在的沙箱总数设硬上限**（#28 确认时登记）：计入全部带沙箱标签的容器，含已停止、已到期但尚未清理的残留沙箱，超出时拒绝创建并返回明确错误（429 `SANDBOX_BUSY`，文案“沙箱数已达上限，请稍后重试”），解析任务按可重试处理；6.5 已按此计数（`SANDBOX_MAX_ACTIVE`，默认 8），6.6 补测试：残留（已停止、已到期未清理）的沙箱计入上限、超出时的错误码与文案、清理后可再创建 | 6.5 | 否（实际：涉及沙箱镜像与 jszip 双许可证，按需确认处理，#30 已确认） | 已完成 | #30、#31 |
+| 6.7 | 解析任务（二）文本类格式（#6 放行的 RTF、HTML、MHT、Word 2003 XML、SpreadsheetML）：逐项满足“第 6 步解析要求”，用恶意样本测试（XXE、实体膨胀、外链图片 / 样式 / `<iframe>`、RTF `INCLUDEPICTURE` / `INCLUDETEXT`、MHT 外部 `Content-Location`） | 6.6 | 否（实际：涉及解析沙箱，按本次要求确认后合并） | 已完成 | #32 |
+| 6.8 | 清理任务：过期文件、产物、项目的对象与行的物理删除，遗留 `uploading` 行，按对象键前缀找出的孤儿对象，冻结到期收尾（`expireStaleHolds` 从 api 的定时器移到 worker 的定时任务），超过保留期的 `jobs` / `job_events`；跨组织，用新的 `NOLOGIN` 定义者角色 `bidtools_cleanup` 写 `SECURITY DEFINER` 函数，要求见“决定事项”第 9、10 项 | 6.2 | **是**（新增数据库角色，已确认） | 已完成 | #33 |
+| 6.9 | 废标检查任务：`rejection-items-extraction`、`rejection-check-run`；任务按招标文件顺序合并正文，经 `computeSignatures` 写签名；`loadState` 返回任务状态 | 6.4、6.4a、6.6 | 否 | 已完成 | #35 |
+| 6.10a | 标书查重任务：`duplicate-analysis`。`duplicateCheckService.cjs` 自己用 `adm-zip`、`cfb`、`cheerio`、`pdf-parse` 读原件（正文、元数据、目录、图片），这部分提取放进 `parse` 沙箱，产出正文与图片产物；比对计算在 worker 中进行，经 `saveAnalysisSection` 写入。**#36 拆分**：本项做正文提取（沙箱中同时做逐文档的目录、句子、图片位置提取，HTML 表格要用 cheerio，只能在沙箱中）与全部比对，元数据先只有文件基本信息（文件名、扩展名、大小、SHA-256） | 6.5、6.6 | 否 | 已完成 | #36 |
+| 6.10b | 标书查重：文档格式的元数据（docx 的 core / app / custom 属性与 rsid，OLE 的属性集、存储结构与疑似账号痕迹、OLE Word 转 docx 后的属性，PDF 的 Info / XMP / 原始记录 / 结构 / 签名与附件）在 parse 沙箱中提取（桌面版 `extractMetadata` 中用 `adm-zip`、`cfb`、`pdf-parse` 的部分），worker 校验后并入元数据项。**实际做法**：每份投标文件另开一个只提取元数据的 parse 沙箱（`metadata=duplicate-check`），文本类 Word 格式也读取转换后的 docx 属性 | 6.10a | 否 | 已完成 | #37 |
+| 6.11 | 技术方案任务（一）：招标解析 `bid-analysis`、多标段识别 `bid-section-extraction`；`checkBidSections`（疑似多标段检测）在 worker 中计算并写入状态，改写正则消除平方级回溯（#20 留下）；导入招标文件前取消本项目的技术方案任务（#20 留下）。**实际做法**：检测由解析任务对每份招标文件算出摘要写入文档（迁移 0026），读取状态时合并，见“技术方案任务（一）（#38，6.11）” | 6.4、6.4a、6.6 | 否 | 已完成 | #38 |
+| 6.12 | 可研报告任务：`feasibility-analysis`、`feasibility-parameters`、`feasibility-content`、`feasibility-human-writing`（后两项按“决定事项”第 4 项提前到第 6 步）；服务端合并资料（取代 `readCombinedSourceMarkdown`）；正文生成或审校运行、暂停时不能修改目录和手工改正文（`assertContentUnlocked`，#19 留下）。**实际做法**：正文锁另含排队与取消中的任务，运行中的也不能改目录（见“可研报告任务（#39，6.12）”） | 6.4、6.4a、6.6 | 否 | 已完成 | #39 |
+| 6.13a | 知识库任务（一）文档准备：解析、切块、首轮与补充提取、合并候选条目（停在 `ready_for_matching`）；`retryDocument`；`knowledgeBase.onEvent` 改为 SSE；文档在处理中被删除时任务停止（#12 留下）；取代 `recoverInterruptedDocuments`。**#40 拆分**：6.13 拆为 6.13a、6.13b，见“知识库任务（一）（#40，6.13a）” | 6.4、6.4a、6.6 | 否 | 已完成 | #40 |
+| 6.13b | 知识库任务（二）段落匹配：按统一分段匹配、遗漏补漏、保存最终条目与报告；文档准备完成后接着自动匹配（桌面版非开发者模式）；`startMatching`（重新匹配） | 6.13a | 否 | 已完成 | #41 |
+| 6.14 | 登录、注册、找回密码的限流从进程内存换成 Redis（旧仓库 PR #29 留下，多实例部署前必须完成），接口与参数不变。**实际做法**：未用 `@fastify/rate-limit`，按现有算法写 Lua 脚本；Redis 不可用时退回进程内存计数，见“登录限流改用 Redis（#42，6.14）” | 6.1 | **是**（鉴权） | 已完成 | #42 |
 | 6.15 | MinerU 解析（决定事项第 6 项：第一版不提供，以后决定提供时才做） | 6.6 | 视决定 | 不做（第一版） | — |
 
-顺序说明：6.1~6.3 是所有任务的基础；6.4 让任务能调模型；6.5~6.7 让文档能被解析，第 5 步所有“导入后读 Markdown”的模块都依赖它。6.8 只依赖 6.2，可与 6.5~6.7 并行，宜早做：6.6 起重新解析会产生被替换的旧产物。业务任务按路线图第 6 节“先迁无 Agent 的短任务（查重、废标、招标解析）”排在后面，废标检查结构最简单、最先做。6.14 只依赖 6.1，可随时插入。“需确认后合并”按 `CLAUDE.md`“自动合并”判断：涉及计费、鉴权、沙箱、数据库角色的不自行合并。
+顺序说明：6.1~6.3 是所有任务的基础；6.4 让任务能调模型，6.4a 保证平台故障导致的重复调用不收费，是所有调用 AI 的业务任务（6.9、6.11、6.12、6.13）的前置；6.5~6.7 让文档能被解析，第 5 步所有“导入后读 Markdown”的模块都依赖它。6.8 只依赖 6.2，可与 6.5~6.7 并行，宜早做：6.6 起重新解析会产生被替换的旧产物。业务任务按路线图第 6 节“先迁无 Agent 的短任务（查重、废标、招标解析）”排在后面，废标检查结构最简单、最先做。6.14 只依赖 6.1，可随时插入。“需确认后合并”按 `CLAUDE.md`“自动合并”判断：涉及计费、鉴权、沙箱、数据库角色的不自行合并。
 
 **第 6 步完成后仍不在服务端的任务**（随第 7、8 步）：技术方案目录生成 / 调整、全局事实生成 / 调整、正文生成、章节重写、原方案还原、格式自检，可研目录生成 / 调整，模板提取、Word 导出与样张；技术方案“正文生成运行或暂停中不能调整目录 / 手工改正文”的检查随第 8 步的正文生成任务一起做（第 6 步中技术方案没有会持有这个锁的任务）。
 
@@ -948,30 +951,33 @@ AI 网关加固，做法见 `docs/SERVER_DESIGN.md` 第 10.9 节。`client/` 未
 
 | # | 事项 | 来源 | 本计划的处理 |
 |---|---|---|---|
-| 1 | 过期文件与产物的物理清理（7 天恢复期满的文件、产物、项目，遗留 `uploading` 行；对象先删、行后删） | 第 4 步（旧仓库 PR #34）、5.2（#8）、第 9 步上线检查“文件存储” | 6.8 |
-| 2 | 对象存储中的孤儿对象（如从技术方案复制到废标检查时清理失败的残留，按对象键前缀处理） | 5.13（#22，`fromTechnicalPlan.ts`） | 6.8 |
-| 3 | 重新解析时替换旧产物（产物没有单独的删除接口） | 5.2（#8） | 6.6，被替换的产物由 6.8 清理 |
-| 4 | 按记录的 MIME 分派，只在沙箱中解析 | 第 4 步（#6）“第 6 步解析要求” | 6.5、6.6、6.7，见上方分派表 |
-| 5 | 解析沙箱完全断网 | 同上 | 6.5（`--network none` + 测试） |
-| 6 | HTML / MHT / RTF 禁止加载远程资源（含 RTF 域、OLE 链接、MHT 外部 `Content-Location`） | 同上 | 6.7 |
-| 7 | XML 类格式禁用 DTD 和外部实体（含实体膨胀、XInclude），交给解析器前检查并有测试 | 同上 | 6.7：含 `<!DOCTYPE` 一律拒绝 |
-| 8 | MHT 先解包再交给 LibreOffice | 同上 | 6.7 |
-| 9 | ZIP 炸弹、PDF 页数等解析阶段的防护 | 第 4 步（旧仓库 PR #34）、`SERVER_DESIGN.md` 第 6.2 节 | 6.6 |
+| 1 | 过期文件与产物的物理清理（7 天恢复期满的文件、产物、项目，遗留 `uploading` 行；对象先删、行后删） | 第 4 步（旧仓库 PR #34）、5.2（#8）、第 9 步上线检查“文件存储” | 6.8，已完成（#33） |
+| 2 | 对象存储中的孤儿对象（如从技术方案复制到废标检查时清理失败的残留，按对象键前缀处理） | 5.13（#22，`fromTechnicalPlan.ts`） | 6.8，已完成（#33） |
+| 3 | 重新解析时替换旧产物（产物没有单独的删除接口） | 5.2（#8） | 6.6，已完成（#30，迁移 0023 的 `superseded_at`）；被替换的产物由 6.8 清理（#33） |
+| 4 | 按记录的 MIME 分派，只在沙箱中解析 | 第 4 步（#6）“第 6 步解析要求” | 6.5、6.6、6.7，见上方分派表；已完成（#30、#32） |
+| 5 | 解析沙箱完全断网 | 同上 | 6.5（`--network none` + 测试），已完成（#28） |
+| 6 | HTML / MHT / RTF 禁止加载远程资源（含 RTF 域、OLE 链接、MHT 外部 `Content-Location`） | 同上 | 6.7，已完成（#32） |
+| 7 | XML 类格式禁用 DTD 和外部实体（含实体膨胀、XInclude），交给解析器前检查并有测试 | 同上 | 6.7：含 `<!DOCTYPE` 等声明一律拒绝，已完成（#32） |
+| 8 | MHT 先解包再交给 LibreOffice | 同上 | 6.7，已完成（#32） |
+| 9 | ZIP 炸弹、PDF 页数等解析阶段的防护 | 第 4 步（旧仓库 PR #34）、`SERVER_DESIGN.md` 第 6.2 节 | 6.6，已完成（#30） |
 | 10 | MinerU（`tender` 用途加 ppt、pptx、jp2 和图片类型） | 第 4 步上传白名单差距第 5 项 | 第一版不提供（决定事项第 6 项）；以后提供时另开 6.15 |
 | 11 | 目录生成 / 调整、全局事实生成 / 调整（技术方案）、可研目录生成 / 调整是否用到命令工具 | 第 5 步拆分计划 | 已核实用到，随第 8 步（见上方） |
 | 12 | 所有 `*_tasks` / `task_logs` 由 `jobs` / `job_events` 取代，`loadState` 返回任务状态 | 第 5 步拆分计划 | 6.2，各模块 PR 接入 |
-| 13 | 进度推送（`onTaskEvent`、`knowledgeBase.onEvent`、`onBalanceInsufficient`） | 第 5 步、第 3 步 | 6.3、6.4、6.13 |
-| 14 | 入队检查余额、运行中耗尽暂停、`jobs.billed_amount`、`usage_records.job_id`（决定不加外键，见“决定事项”第 10 项） | 第 2、3 步（`SERVER_DESIGN.md` 第 10.3、10.8 节） | 6.4 |
-| 15 | AI 网关在 worker 中运行；按组织 + 服务商的并发信号量（Redis），取 `org_settings.concurrency_limit` 与平台上限的较小值 | 第 3 步（旧仓库 PR #32）、5.3（#9） | 6.4 |
-| 16 | 限流从进程内存换成 Redis | 第 2 步（旧仓库 PR #29） | 6.14 |
+| 13 | 进度推送（`onTaskEvent`、`knowledgeBase.onEvent`、`onBalanceInsufficient`） | 第 5 步、第 3 步 | 6.3、6.4（`onBalanceInsufficient` 由 `job` 事件的 `pauseReason` 取代，已完成 #27）、6.13a（`knowledgeBase.onEvent` 由 `job` / `job.progress` / `job.log` 事件取代，文档带上任务 id，已完成 #40） |
+| 14 | 入队检查余额、运行中耗尽暂停、`jobs.billed_amount`、`usage_records.job_id`（决定不加外键，见“决定事项”第 10 项） | 第 2、3 步（`SERVER_DESIGN.md` 第 10.3、10.8 节） | 6.4，已完成（#27） |
+| 15 | AI 网关在 worker 中运行；按组织 + 服务商的并发信号量（Redis），取 `org_settings.concurrency_limit` 与平台上限的较小值 | 第 3 步（旧仓库 PR #32）、5.3（#9） | 6.4，已完成（#27） |
+| 16 | 限流从进程内存换成 Redis | 第 2 步（旧仓库 PR #29） | 6.14，已完成（#42） |
 | 17 | `/readyz` 加入 Redis 检查 | 第 2 步（旧仓库 PR #27、#28） | 6.1，已完成（#24） |
-| 18 | `checkBidSections` 在 worker 中计算，并消除正则的平方级回溯 | 5.11（#20） | 6.11 |
-| 19 | 导入招标文件前取消本项目的后台任务；导入原方案时校验原图资源 | 5.11（#20） | 6.11（取消）、6.6（解析时校验原图资源） |
-| 20 | 可研“正文生成或审校运行中不能改目录 / 手工改正文”（`assertContentUnlocked`）；服务端合并资料（`readCombinedSourceMarkdown`） | 5.10（#19） | 6.12 |
+| 18 | `checkBidSections` 在 worker 中计算，并消除正则的平方级回溯 | 5.11（#20） | 6.11，已完成（#38：线性扫描，解析任务按文件算出摘要，读取时合并） |
+| 19 | 导入招标文件前取消本项目的后台任务；导入原方案时校验原图资源 | 5.11（#20） | 6.11（取消，已完成 #38）、6.6（解析时校验原图资源，已完成 #30：Markdown 引用的图片必须都在解析输出中） |
+| 20 | 可研“正文生成或审校运行中不能改目录 / 手工改正文”（`assertContentUnlocked`）；服务端合并资料（`readCombinedSourceMarkdown`） | 5.10（#19） | 6.12，已完成（#39：正文锁由 Store 在保存目录、手工改正文时检查任务状态；合并资料由 `readCombinedSourceMarkdown` 在服务端读取，不开放为接口） |
 | 21 | 技术方案“正文生成运行或暂停中不能调整目录 / 手工改正文”、重置正文时取消正文生成任务、`saveGlobalFacts` 写“手工保存”任务记录 | 5.12（#21）、5.13（#22） | 正文生成任务随第 8 步，锁和取消随它一起做；“手工保存”任务记录建议不迁移（`job_events` 只记任务的事件） |
-| 22 | 知识库文档处理中被删除时任务停止；`recoverInterruptedDocuments` 由任务队列负责 | 5.6（#12） | 6.13 |
-| 23 | 废标检查由任务合并招标正文、经 `computeSignatures` 写签名 | 5.9（#18） | 6.9 |
-| 24 | 冻结到期收尾从 api 定时器移到 worker | 第 3 步（旧仓库 PR #32，现由 `src/server.ts` 定时执行） | 6.8 |
+| 22 | 知识库文档处理中被删除时任务停止；`recoverInterruptedDocuments` 由任务队列负责 | 5.6（#12） | 6.13a，已完成（#40：Store 读写 404 时任务停止，删除文档 / 文件夹后取消任务；中断由读取时按任务状态显示） |
+| 23 | 废标检查由任务合并招标正文、经 `computeSignatures` 写签名 | 5.9（#18） | 6.9，已完成（#35） |
+| 24 | 冻结到期收尾从 api 定时器移到 worker | 第 3 步（旧仓库 PR #32，原由 `src/server.ts` 定时执行） | 6.8，已完成（#33，改由 worker 的清理任务每批执行） |
+| 25 | 平台故障导致的重复调用不收费：结算后、checkpoint 前崩溃的步骤续跑时不再扣费（步骤结果与 checkpoint 同一事务提交，或步骤幂等键） | 6.4（#27 确认时登记） | 6.4a，已完成（#34：步骤幂等键，结果与结算同一事务提交，见“步骤幂等（#34，6.4a）”） |
+| 26 | 平台模型的上下文长度：桌面版由用户按模型配置 `context_length_limit`（默认 400,000 字），任务据此决定是否分段；Web 版 `platform_models` 没有这一项，6.9 起的任务一律用默认值（`src/ai/textSplit.ts`），超过模型实际上下文时服务商报错、不收费、任务失败 | 6.9（#35） | 建议给 `platform_models` 加上下文长度（涉及修改已有表与平台管理接口，需确认）；6.11（#38）仍用默认值，未决定前不做 |
+| 27 | JSON 输出模式：桌面版的 JSON 请求带 `response_format: json_object`，网关的 `ChatRequest` 没有这一项（`request_hash` 也不含它），6.9 的 JSON 请求只靠提示词约束、解析失败时修复和重试（与桌面版相同的 3 次） | 6.9（#35） | 需要时在网关加入（改请求哈希的计算，只影响新的调用）；6.11（#38）的识别与解析同样不带，JSON 解析项与桌面版相同不解析输出，以后评估 |
 
 #### Redis 接入（#24，6.1）
 
@@ -997,7 +1003,7 @@ AI 网关加固，做法见 `docs/SERVER_DESIGN.md` 第 10.9 节。`client/` 未
 - **接口**：`GET /api/jobs?projectId=&active=&limit=`、`GET /api/jobs/:jobId`（含最近 200 条事件）、`POST /api/jobs/:jobId/cancel`。任务在组织内共享（与项目相同），成员都可以查看和取消；其他组织的任务返回 404；响应不含参数和 checkpoint。入队、暂停、继续没有接口，由各业务模块的 PR 按需开放。
 - **worker 进程**：`src/worker.ts`，与 api 同一镜像、入口 `node dist/worker.js`；compose 新增 `worker` 服务（`default` + `backend` 网络，只拿应用角色密码和 Redis 密码，`/healthz`、`/readyz` 只监听容器内回环地址供 `HEALTHCHECK` 使用，`stop_grace_period: 30s`）。`src/jobs/registry.ts` 中还没有业务任务类型；测试用的两个任务类型（可续跑、不可续跑）只在 `tests/db/jobFixtures.ts` 中登记。
 - **依赖**：`bullmq` 6.3.11（MIT，2026-10-01 发布）；新增传递依赖 `cron-parser` 5.10.1、`luxon` 3.7.2、`msgpackr` 2.1.0、`msgpackr-extract` 3.0.4（可选，原生加速）、`node-gyp-build-optional-packages` 5.2.2、`node-abort-controller` 3.1.1，均为 MIT。BullMQ 在 6.1 的 ACL 下正常工作（Lua 脚本、`CLIENT SETNAME` 不属于 `@admin`），`start-valkey.sh` 不需要调整。
-- **测试**：`tests/db/jobQueue.test.ts`（真实 Valkey）覆盖：执行一次与事件；重复投递只执行一次；伪造的派发组织；清空 Redis 后排队中、延后中、执行中的任务全部恢复且各执行一次（执行中的任务租约有效，不被收回）；worker 与 Redis 一起“重启”；worker 运行中 Redis 被清空，经哨兵自动对账；入队时 Redis 不可用；**真实重启 Valkey**（CI 中 `docker restart valkey`，由 `TEST_REDIS_RESTART_COMMAND` 指定）后不手动对账、任务不丢失不重复；执行者崩溃后从 checkpoint 续跑、原执行者的写入被隔离；不可续跑类型、超过执行次数；worker 正常关闭后续跑；组织级并发；互斥；取消、暂停、继续。`tests/db/jobs.test.ts` 覆盖 RLS、列级授权、约束、`JB001`、并发入队互斥、并发认领只有一次成功、对账函数（只返回 id，分页不重复）、`bidtools_jobs` 的属性与权限（只对 `jobs` 的 5 列有 `SELECT`，对其他表包括计费表没有任何权限）和接口。
+- **测试**：`tests/db/jobQueue.test.ts`（真实 Valkey）覆盖：执行一次与事件；重复投递只执行一次；伪造的派发组织；清空 Redis 后排队中、延后中、执行中的任务全部恢复且各执行一次（执行中的任务租约有效，不被收回）；worker 与 Redis 一起“重启”；worker 运行中 Redis 被清空，经哨兵自动对账；入队时 Redis 不可用；**真实重启 Valkey**（CI 中 `docker restart valkey`，由 `TEST_REDIS_RESTART_COMMAND` 指定）后不手动对账、任务不丢失不重复；执行者崩溃后从 checkpoint 续跑、原执行者的写入被隔离；不可续跑类型、超过执行次数；worker 正常关闭后续跑；组织级并发；互斥；取消、暂停、继续。#29 修复了其中的测试竞态：`tests/db/jobFixtures.ts` 的 `wipeQueueKeys` 原先分批 `SCAN` + `DEL`，运行中的 worker 可以在两批之间取走任务并写下锁，使锁逃过删除（真实的清空是原子的，不会出现）；改为在一个 Lua 脚本中完成。清空后运行中的 worker 会合法地重建 `delayed`、`meta`、`events` 等通用键，所以“清空后键数为 0”的断言改为“被清空的任务不再被任何键引用”（`queueKeysReferencing`，清空后立即与 300 ms 后各查一次）。`tests/db/jobs.test.ts` 覆盖 RLS、列级授权、约束、`JB001`、并发入队互斥、并发认领只有一次成功、对账函数（只返回 id，分页不重复）、`bidtools_jobs` 的属性与权限（只对 `jobs` 的 5 列有 `SELECT`，对其他表包括计费表没有任何权限）和接口。
 
 偏离计划（均需确认）：
 
@@ -1005,6 +1011,395 @@ AI 网关加固，做法见 `docs/SERVER_DESIGN.md` 第 10.9 节。`client/` 未
 2. **崩溃恢复不依赖 BullMQ 的 stalled 检测**（拆分计划写的是“由 stalled 检测转交”）：Redis 被清空后 BullMQ 的执行中记录和锁都不在了，stalled 检测无从发现；改为数据库租约 + 对账，BullMQ 的 stalled 检测只会造成重复投递，由认领条件挡住。
 3. **取消、暂停信号经续租轮询数据库**（设计第 5.6 节写的是发布 `cancel:{jobId}`）：最长延迟一个续租间隔（15 秒）；6.3 接入 Redis 发布订阅后可以缩短，数据库仍是权威。
 4. **api 的 `REDIS_URL` 仍是可选**（6.1 写的是“6.2 接入任务队列时改为必需”）：6.2 没有入队接口，api 不使用队列；worker 未设置 `REDIS_URL` 时拒绝启动。第一个提供入队接口的业务 PR 给 api 接上派发，Redis 不可用时任务由对账派发。
+
+#### SSE 推送（#26，6.3）
+
+做法见 `docs/SERVER_DESIGN.md` 第 5.5、5.6 节。没有新增依赖、没有迁移，`client/` 未改动。要点：
+
+- **键与脚本**（`src/events/stream.ts`）：每个组织一条 Stream `stream:org:{orgId}` 和一个频道 `events:org:{orgId}`。发布是一个 Lua 脚本，原子地 `XADD`（ID 由 Redis 生成、单调递增）→ 按 1000 条和 10 分钟裁剪 → `PEXPIRE` 10 分钟 → 向频道 `PUBLISH` “ID 空格 JSON”。补发也是一个脚本：Stream 不存在、上次的 ID 比最后生成的还大、或比下限还小时返回 `resync`，否则返回之后的全部事件。事件 64 KB 以内，类型限 `[a-z][a-z0-9.-]*`；
+- **发布**（`src/events/publisher.ts`）：worker 和 api 在事务提交之后调用，尽力而为：Redis 不可用时写一条 warn 日志并丢弃，不影响任务（第 8.4 节“进度事件可丢”），丢了的由前端重连时的 `resync` 兜底。只在首次连上之前等待（最多 2 秒），之后断线期间立即丢弃，不拖慢任务；
+- **订阅**（`src/events/hub.ts`，api 进程）：一条订阅连接，按组织引用计数 `SUBSCRIBE`；新连接先订阅（等 Redis 确认），期间的实时事件先缓存，再按 `Last-Event-ID` 补发，最后按 ID 去重放出缓存，所以补发与实时之间不漏、不重。指定了 `userId` 的事件只送给该用户（任务事件不指定，组织内共享，与 `GET /api/jobs` 一致）；
+- **接口**（`src/routes/events.ts`）：`GET /api/events`，需要登录，组织和用户取自会话。开头 `retry: 3000`，补发之后推一条不带 id 的 `ready`（前端先等 `ready` 再拉快照），每 25 秒一条注释行心跳；每 60 秒经 `auth_session_lookup` 重新校验会话，会话过期、被吊销、用户被停用或移出组织后推 `closed`（`reason: session`）并断开；订阅连接断开（`unavailable`）、服务关闭（`shutdown`，在 `preClose` 中断开，不阻塞关闭）、客户端积压超过 1 MB（`overflow`）同样推 `closed` 后断开。每个用户在本进程中最多 10 条连接，超出 429 `EVENTS_TOO_MANY_CONNECTIONS`；未配置或连不上 Redis 时 503 `EVENTS_UNAVAILABLE`。响应带 helmet 的安全头、`Cache-Control: no-store`、`X-Accel-Buffering: no`、`Connection: close`；
+- **任务事件**（`src/jobs/notify.ts`）：`job`（任务当前状态，与 `GET /api/jobs/:jobId` 的任务部分相同，状态变化后重新读出再推送）、`job.progress`、`job.log`（与 `events` 相同，不含事件数据），都不含参数和 checkpoint。worker 在认领、进度、日志、结束、对账改变状态后推送；api 在入队、取消、暂停、继续后推送（`POST /api/jobs/:jobId/cancel` 已接入）。`jobBody` 从路由移到 `src/jobs/view.ts` 供两处共用；
+- **控制频道**：取消、暂停后 api 向 `{BullMQ 前缀}:jobs:control` 发布任务 id，worker 收到后对正在执行的该任务立即续租一次，从 `jobs` 读到请求并中止，不必等到下一次续租（6.2 最长 15 秒）。消息不被信任，只触发一次查询；错过时最迟在下一次续租发现。
+- **测试**：`tests/db/events.test.ts`（真实 PostgreSQL 与 Valkey）覆盖：组织隔离与按用户过滤、退订与重新订阅；补发、补发与并发发布交错时不漏不重；`resync` 的四种情况（ID 格式不对、不是这条 Stream 生成的、Stream 不存在、之后的事件已被裁剪）与仍在窗口内的补发、条数与过期时间；Redis 不可达；接口的 401 / 503、响应头、心跳、任务从入队到结束的推送（同组织的另一用户收到、其他组织收不到）、HTTP 上的 `Last-Event-ID`、会话吊销与移出组织、连接数上限、取消经控制频道在续租间隔 15 秒时立即生效、服务关闭；**真实重启 Valkey**（`TEST_REDIS_RESTART_COMMAND`）后连接推 `closed` 断开、重连得到 `resync`。`tests/events/stream.test.ts` 覆盖 ID 比较、事件解析与序列化（换行经 JSON 转义，不能伪造 SSE 字段）。
+
+偏离计划与设计：
+
+1. **控制频道是一个 `jobs:control`**（设计第 5.6 节写的是每个任务一个 `cancel:{jobId}`，并标为“随 6.3 接入”，拆分计划的 6.3 一行没有列出）：worker 不必按任务订阅、退订；暂停也走同一频道。消息只有任务 id，伪造的消息最多引起一次多余的查询。设计文档已同步；
+2. **补发的下限不用 `max-deleted-entry-id`**：实测 Redis 7 / Valkey 的 `XTRIM` / `XADD MAXLEN` 裁剪不更新这个字段（只有 `XDEL` 更新），所以改为“没有 `XDEL` 时以第一条的 ID 为下限”：上次的 ID 比第一条还小，就是之后的事件已被裁剪，或者来自已过期的上一条同名 Stream，都推 `resync`；
+3. **Redis 断开时关闭所有推送连接**，而不是在 api 中重连后逐个补发：订阅连接断开期间的实时事件已经错过，由浏览器重连时带 `Last-Event-ID` 补发，逻辑只有一份。Redis 不可用期间 `GET /api/events` 返回 503，浏览器的 `EventSource` 遇到非 200 会停止自动重连，所以**第 9 步的 `WebBridge` 要自己按退避间隔重建连接**（已加入第 9 步上线检查）；
+4. **连接数上限是每个 api 进程各自计数**：多实例时一个用户最多 实例数 × 10 条；扩展为多个 api 实例前改为跨实例计数（已加入第 9 步上线检查“实时推送”一条）；
+5. **推送连接不延长会话**：建立连接时照常经登录钩子续期，之后长时间打开的页面不会让会话一直有效，到期后推 `closed` 断开；
+6. **`job` 事件的到达顺序可能与提交顺序不同**（并发变化时各自重新读出再推送），前端按 `updatedAt` 取较新的一条；任务状态的权威始终是 `jobs` 表。
+
+#### worker 接入 AI 网关与余额（#27，6.4）
+
+做法见 `docs/SERVER_DESIGN.md` 第 5.3、10.1、10.3、10.10 节。`client/` 未改动，没有新增依赖。要点：
+
+- **迁移 0022_job_billing**：
+  - `jobs.billed_amount`（`bigint`，计费单位）：`ai_usage_settle` 在插入扣费、更新用量记录的同一事务中累加，只增不减（触发器 `JB002`）；应用角色没有该列的 `UPDATE` 权限，入队时也不能指定。任务已结束后才到达的结算（执行者失联后原调用才结束）照常扣费并累加，`jobs_guard` 改为已结束的任务只允许累加 `billed_amount`、其他列仍报 `JB001`、`updated_at` 不变；
+  - `usage_records.job_id` 按决定事项第 10 项**不加外键**，只保留 `job_id` / `job_type` 的值；任务记录被保留期清理删除后，累加影响 0 行，扣费照常；
+  - `ai_usage_begin`：`source = 'job'` 时任务必须属于本组织且状态为 `running`（`queued`、`paused`、`cancelling`、已结束、其他组织的任务一律 `BL015` → 409 `JOB_NOT_RUNNING`，不冻结、不写用量记录）；`job_type` 取任务记录中的值，传入的值与之不符时拒绝；
+  - 计费角色 `bidtools_billing` 新增对 `jobs` 的列级 `SELECT (id, org_id, type, status, billed_amount)`、`UPDATE (billed_amount)` 和只限当前组织（`app.org_id`）的两条策略，没有新增数据库角色；
+  - `jobs.pause_reason`：只在 `paused` 时可以有值（`CHECK`），目前只有 `insufficient_balance`；继续、取消时清除；
+  - `billing_job_start_check()`：可用余额（余额 − 未到期的冻结）低于 `JOB_MIN_START_BALANCE`（10,000 计费单位 = 1 元，决定事项第 7 项，写在迁移中）时 `BL001` → 402 `INSUFFICIENT_BALANCE`。
+- **入队与继续**（`src/jobs/service.ts`）：任务类型定义新增 `billable`（会调用模型）；`billable` 的任务入队时在写入的同一事务中检查最低启动余额，不足时不写任务；从 `paused` 继续前同样检查，不足时 402、任务仍是 `paused` 并保留原因。不调用模型的任务（解析、导出、清理）不检查。
+- **worker 中的调用**（`src/jobs/runner.ts`、`src/worker.ts`）：worker 加载主密钥（compose 的 `worker` 服务新增 `ai_kek` secret 和 `AI_KEK_FILE`），创建同一个 AI 网关模块；任务经 `context.ai.chat()` 调用，`source: 'job'`、`jobId`、`jobType` 由执行者填写，任务被取消、暂停时随 `signal` 中止，已产生的用量照常结算。冻结失败（余额不足）时抛 `JobBalanceExhaustedError`，之后本次执行中的调用直接失败（任务吞掉错误也不能继续花钱），执行结束后 `finishRun` 把任务改为 `paused` / `insufficient_balance`（已请求取消时仍为 `cancelled`），写一条带原因的 `paused` 事件，经 6.3 的 `job` 事件推送（`pauseReason` 字段，取代设计中的 `onBalanceInsufficient`）。用户充值后“继续”，任务从上次的 checkpoint 开始：已扣费的调用其结果已写入 checkpoint，不会重做、不会重复扣费（测试中 4 步的任务在第 3 步暂停，继续后服务商共收到 4 次请求、扣费 4 次）。网关的其他错误转成 `JobError`（代码和文案与接口相同）；未配置主密钥时 `AI_UNAVAILABLE`。
+- **并发信号量**（`src/ai/concurrency.ts`）：每个“组织 + 服务商”一个 Redis 有序集合，获取是一个 Lua 脚本（删掉到期的名额，未满时加入本次的随机令牌，分值为到期时间，用 Redis 服务器时钟），释放即删除令牌；名额最长占用一个冻结时长（`AI_HOLD_TTL_SECONDS`），进程崩溃未释放时到期自动收回。上限取 `org_settings.concurrency_limit`（默认 10）与平台上限 `AI_CONCURRENCY_MAX`（新配置，默认 10）的较小值。网关在白名单检查之后、解密 Key 和冻结之前取得名额，调用结束后释放；交互式调用最多等 `AI_CONCURRENCY_WAIT_MS`（新配置，默认 30 秒）后 429 `AI_CONCURRENCY_LIMITED`，任务中的调用一直等到被取消。Redis 不可用时不放行（交互式调用等待超时后 503 `AI_CONCURRENCY_UNAVAILABLE`），api 未配置 `REDIS_URL` 时不限制并发（与 6.3 之前的行为相同）。
+- **测试**：`tests/db/jobBilling.test.ts`（真实 PostgreSQL、Valkey 和本机模拟服务商）覆盖：`billed_amount` 与本任务扣费一致、到期冻结和交互式调用不计入、任务结束后才到达的结算、只增不减、应用角色和计费角色的列级权限、`pause_reason` 约束；冻结时的任务检查（其他组织、不存在、`queued` / `paused` / `cancelling` / 已结束、类型不符）；最低启动余额（恰好 1 元、差 1 个单位、进行中的冻结占用、不调用模型的任务、调用方不能绕过）；从暂停继续的余额检查；运行中余额耗尽暂停（已完成的调用按实际用量扣费、暂停后没有进行中的冻结）、推送、充值后续跑不重复调用和扣费；调用进行中取消任务（立即关闭上游连接、按已产生的用量估算结算且不超过冻结额、冻结释放、不再发起后续调用）；worker 在调用中途崩溃（冻结到期后不再占用余额、清理后标为 abandoned 不收费，租约过期后从 checkpoint 续跑，已扣费的步骤不重做）；任务吞掉余额错误；上游错误和未配置网关；排队等名额时取消；信号量的上限、等待超时、释放、互不影响、20 个并发获取只成功 3 个、到期收回、取消、Redis 不可用；网关按组织设置与平台上限的较小值限制并发、超时不冻结不调用服务商。去掉结算中的累加、冻结时的任务检查、入队门槛、已结束任务的列保护、信号量的上限判断，分别有 3、1、3、1、6 个用例失败。
+
+偏离计划与设计：
+
+1. **入队门槛只对会调用模型的任务类型生效**（设计第 10.3 节写的是“该任务类型的最低启动额度，默认 1 元”，决定事项第 7 项是“全局 1 元”）：解析、导出、清理任务不花钱，余额为 0 也应该能导入文件；按任务类型的不同额度仍按决定事项第 7 项“有需要时再加”；
+2. **任务调用要求任务正在执行**（拆分计划未列出）：防止失联的旧执行者或其他组织的任务编号继续冻结和扣费，`cancelling` 的任务也不再开始新的调用；
+3. **已结束的任务允许累加 `billed_amount`**：调整了 6.2 的 `jobs_guard`（其他列仍不可改），否则执行者失联后才结束的调用会因 `JB001` 结算失败，变成“上游已收费、用户未扣费”；
+4. **余额不足的暂停不经 `pause_requested`**：执行者在本次执行结束时直接写入 `paused` / `insufficient_balance`，不需要等一次续租；
+5. **新配置 `AI_CONCURRENCY_MAX`、`AI_CONCURRENCY_WAIT_MS`**（拆分计划只写了“平台上限”）；
+6. **冻结到期收尾（`expireStaleHolds`）仍在 api 的定时器中**，按拆分计划随 6.8 移到 worker（已完成，#33）。
+
+**已知缺口（#27 确认时登记为 6.4a，必做；已由 #34 消除，见“步骤幂等（#34，6.4a）”）**：任务中的一次调用已结算、任务还没保存 checkpoint 时 worker 崩溃，续跑会重做这一步并再次扣费（两次调用在服务商侧都真实发生）。原则是平台自身故障导致的重复调用不向用户收费，所以在第一个调用 AI 的业务任务 PR 之前，用“步骤结果与 checkpoint 同一事务提交”或“步骤幂等键”消除这个窗口，并加入第 9 步上线检查。其余情况已有测试：冻结后、结算前崩溃的调用不收费，已保存 checkpoint 的步骤不重做。
+
+#### 解析沙箱基础设施（#28，6.5）
+
+按“文件解析的隔离”的方案 B 和决定事项第 1、2、5 项实现，做法见 `docs/SERVER_DESIGN.md` 第 7.5 节。只建基础设施，不解析任何文档（6.6 起）；没有迁移，`client/` 未改动，没有新增 npm 依赖。要点：
+
+- **`SandboxDriver`**（`src/sandbox/driver.ts`）：`create / copyIn / exec / copyOut / destroy`，两个实现：sandbox-runner 进程内直接调用 Docker Engine API 的 `createDockerSandboxDriver`（`src/sandbox/docker.ts`，经 unix socket 的最小客户端 `dockerApi.ts`，无第三方依赖），和 worker 中经 HTTP 调用 sandbox-runner 的 `createSandboxRunnerClient`（`src/sandbox/client.ts`）；
+- **`parse` 模板**（`src/sandbox/templates.ts`，写死在代码中）：`--network none`、只读根文件系统、用户 10001、`cap-drop ALL`、`no-new-privileges`、`--init`、内存 2 GiB 无 swap、CPU 1 核、`pids` 256、`nofile` 1024，`/tmp`、`/input`、`/output` 为 `noexec,nosuid,nodev` 的 tmpfs（1 GiB / 256 MiB / 1 GiB），不挂载任何宿主目录和卷、不注入宿主环境变量、不保留容器日志；可执行的命令只有 `parse`（`node /opt/parse/entry.mjs` + 至多 8 个不含路径的参数，墙钟 10 分钟，超时即终止整个沙箱）；沙箱最长存活 15 分钟；
+- **sandbox-runner**（`src/sandbox-runner.ts`，与 api 同一镜像、入口 `dist/sandbox-runner.js`）：唯一挂载 Docker socket 的服务；接口只收“模板名 + 任务 id”和模板中的命令名与参数（多余字段 400），每个请求带共享令牌（Docker secret `sandbox_runner_token`），之后的操作带 `X-Sandbox-Job`。状态全在容器标签中（模板、任务 id、到期时间），本身无状态；每次操作按名称查出容器并核对标签，不是本服务创建的、任务不符、已到期或已停止的一律 404，不能借它在其他容器中执行命令。同时存在的沙箱数上限 8（`SANDBOX_MAX_ACTIVE`），到期的每 30 秒删除。启动时检查配置的运行时已在 Docker 中登记；生产环境 `SANDBOX_RUNTIME` 只能是 `runsc`、`SANDBOX_PARSE_IMAGE` 必须按摘要固定，否则拒绝启动；
+- **输入输出**：经 exec 中的 `tar` 传送（`src/sandbox/archive.ts`，读写 tar 均无第三方依赖）。放入前按模板检查（只有普通文件、一层路径、至多 4 个、单个 128 MiB）；取回的归档来自沙箱，按不可信输入在 worker 中逐项校验，任一项不符整体拒绝（`SANDBOX_OUTPUT_REJECTED`）：只收普通文件（拒绝符号链接、硬链接、设备文件、FIFO、稀疏文件等）、路径按段校验（`..`、绝对路径、隐藏在 ustar prefix / PAX / GNU 长名中的穿越）、至多两层、至多 2,010 个文件、单个 100 MiB、合计 1 GiB、扩展名只有 `md json png jpg jpeg gif webp bmp`、同一路径不能出现两次、头部校验和正确、必须有结束块；流的字节数超过上限即中止；
+- **镜像**（`server/sandbox/parse/Dockerfile`）：与 api 相同的 Node 24 基础镜像（按 digest 固定）+ `libreoffice-writer-nogui`、`libreoffice-calc-nogui` + `fonts-noto-cjk`、`fonts-dejavu-core`；删除 npm / corepack / yarn、去掉全部 setuid / setgid 位，建用户 10001；没有凭据、编译器、网络工具；
+- **compose**：新增 `sandbox-runner` 服务和 `internal: true` 的 `sandbox-control` 网络（只有 sandbox-runner，6.6 起 worker 加入），`init-dev-secrets.sh` 生成 `sandbox_runner_token`；开发环境先 `docker build -t zhibiao-parse:dev server/sandbox/parse`，Linux 上设置 `DOCKER_SOCKET_GID`；
+- **CI**：`server-checks` 安装 gVisor（`runsc` 20260810.0，Apache-2.0，按写死的 SHA-512 校验），登记为 Docker 运行时后 reload（不重启 Docker），构建 parse 镜像，在 `runsc` 下跑 `npm run test:sandbox`（含 LibreOffice 转换用例）；job 超时从 15 分钟改为 30 分钟；
+- **测试**：单元测试（`tests/sandbox/*.test.ts`）覆盖构造的恶意归档（各种条目类型、穿越、校验和、截断、超量、PAX 键）、模板参数、配置、sandbox-runner 接口（令牌、多余字段、未登记的命令、任务不符、worker 端校验）。隔离测试（`tests/sandbox/docker/isolation.test.ts`，真实 Docker）：只有 `lo`，连接 Docker 网桥网关上的监听端口、`169.254.169.254`、外网、内网地址、UDP 全部失败，`redis` / `postgres` 等名称解析失败；根文件系统只读（`EROFS`）、`/tmp` 不能执行、用户 10001、无能力、`NoNewPrivs`；没有 setuid 程序、网络工具、包管理器和编译器；容器参数与模板一致；资源上限见下方“资源上限实测”；输入输出往返；取回时符号链接、硬链接、FIFO、超量文件、不允许的扩展名、过深路径、不安全文件名被拒绝；两个沙箱之间不共享任何文件；数量上限、到期清理；经 HTTP 的完整流程只能执行登记的命令、不能操作冒名的容器。**对照组**：去掉 `--network none` 后同一探测能连上宿主（含 sandbox-runner）、去掉只读后根以 `rw` 挂载、去掉内存 / pids / CPU 上限后同样的分配、进程数、并行度能达到、原始归档中确有被校验拒绝的符号链接条目，证明测试能发现这些加固被去掉。#28 确认前补充了资源上限与访问控制的用例后共 35 项：本机（runc、不含 LibreOffice 的镜像）32 项通过、3 项 LibreOffice 用例跳过，CI（GitHub 托管运行器，gVisor `runsc` 20260810.0）34 项通过、1 项跳过（CPU 对照组，要求宿主至少 3 核）。gVisor 下只读根文件系统对非 root 用户的写入返回 `EACCES`（先检查权限），所以测试改为核对根挂载的 `ro` 选项。
+
+**资源上限实测**（`tests/sandbox/docker/isolation.test.ts` 的 `resource limits`，每项都验证宿主不受影响：Docker 照常响应、新建的沙箱 15 秒内能执行命令）：
+
+| 场景 | 用例 | 结果 | 宿主侧的断言 | 对照组 |
+|---|---|---|---|---|
+| 内存超限（分配 4 GiB） | `kills a process that exceeds the memory limit without exhausting host memory` | 进程被终止（退出码非 0，没有输出“allocated”） | 期间宿主可用内存的最低值比开始时少不到 2 GiB + 768 MiB | 去掉内存上限后同样的分配成功 |
+| 进程数 | `limits the number of processes` | 同时启动 400 个进程，成功的少于 256 个，其余 `EAGAIN` | — | 去掉 pids 上限后 400 个全部启动 |
+| fork 炸弹 | `contains a fork bomb without flooding the host` | `bomb() { while :; do bomb & done; }` 在 pids 上限处被挡住。runc：`Cannot fork`，8 秒超时后整个沙箱被终止（宿主线程增量 257）。gVisor：约 0.4 秒后 runsc 的控制通道断开（exec 以 128 返回，`containerManager.WaitPID failed: EOF`），**容器仍在运行**（宿主线程增量 230），销毁后才结束 | 期间宿主线程总数的增量少于 pids 上限 + 64；销毁后容器不存在、10 秒内宿主线程数回落到基线 + 64 以内 | （去掉 pids 上限的炸弹会拖垮 CI 运行器，用上一行的对照组代替） |
+| 写满临时目录 | `stops writes when a scratch directory is full and does not touch the host disk` | `/tmp`、`/input`、`/output` 分别写到各自上限（1 GiB / 256 MiB / 1 GiB）时 `ENOSPC` | 宿主根文件系统的可用空间减少不到 64 MiB（可写目录都是 tmpfs，根只读） | — |
+| CPU 死循环 / 超时 | `limits a CPU busy loop to one core and terminates it at the time limit` | 4 个线程空转的总吞吐不到 1 个线程的 1.6 倍（限制为 1 核）；`for (;;) {}` 在 3 秒超时后整个沙箱被终止 | Docker 与新沙箱正常 | 去掉 CPU 上限后 4 线程吞吐超过 1 线程的 2 倍（宿主至少 3 核时运行） |
+| 命令超时、调用方中止 | `terminates the sandbox when a command exceeds its time limit`、`… when the caller aborts` | 沙箱被终止，之后的操作 404 | — | — |
+
+由 fork 炸弹的 gVisor 结果得出的约定：**exec 的任何非 0 结果（含超时、128 等运行时错误）之后，调用方都必须销毁沙箱，不再复用**；6.6 的解析任务在 `finally` 中 `destroy`，sandbox-runner 的到期清理（15 分钟）是兜底。沙箱内失控的进程在销毁前仍受内存、CPU、pids 上限约束。
+
+**sandbox-runner 的访问控制**：
+
+- **哪些服务能连到它**：它只监听 `sandbox-control` 网络（`internal: true`：没有出口、不映射端口）。这个网络上只有 sandbox-runner 和（6.6 起）worker；api、postgres、redis、s3 都不在上面，解析不到也路由不到它。生产部署同样（设计第 8.1 节）。
+- **令牌如何校验**：每个请求（`/healthz`、`/readyz` 除外，它们只返回固定的 `status`）在路由处理之前由 `onRequest` 钩子检查 `Authorization: Bearer <令牌>`：对请求中的令牌和配置的令牌各取 SHA-256 后用 `timingSafeEqual` 比较（长度固定，不因长度不同提前返回），缺失或不符一律 401。令牌至少 32 个字符，只经 Docker secret（`SANDBOX_RUNNER_TOKEN_FILE`）给 sandbox-runner 和 worker，不写进日志（日志只记方法和路径，有测试）。令牌之外，每个沙箱还绑定任务 id，操作必须带同一个任务 id，并且只能操作本服务创建（带标签）的容器。
+- **沙箱容器能否访问它**：不能。沙箱是 `--network none`（只有 `lo`），不在 `sandbox-control` 上，也解析不到 `sandbox-runner`；沙箱内没有令牌。用例 `cannot be reached from inside a sandbox` 让 sandbox-runner 监听所有地址后，从沙箱经网桥网关、`127.0.0.1` 和名称访问都失败，对照组（网桥网络）能访问到。
+- **Docker 权限**：sandbox-runner 用到的 Docker API 只有 `GET /_ping`、`GET /info`、`GET /containers/json`（按标签过滤）、`POST /containers/create`、`POST /containers/{id}/start`、`GET /containers/{id}/json`、`POST /containers/{id}/kill`、`DELETE /containers/{id}`、`POST /containers/{id}/exec`、`POST /exec/{id}/start`、`GET /exec/{id}/json`。直接挂载 Docker socket 时它拥有全部 Docker 权限（等同宿主 root），所以生产环境要按第 9 步上线检查“解析沙箱”一条收窄。
+
+**LibreOffice 在 gVisor 下的实测**（“文件解析的隔离”中“以 6.5 的实测为准”）：RTF、OLE `.doc`、HTML（需 `--infilter=HTML (StarWriter)`）转 docx 均成功，沙箱创建约 140–220 ms，单个小文件转换（含 LibreOffice 冷启动）约 2.4–3.4 秒，与计划中“gVisor 约 150–500 ms + LibreOffice 冷启动 1~2 秒”量级一致。**不需要**启用设计第 7.2 节预留的“LibreOffice 改用 runc + 严格 seccomp”方案。
+
+偏离计划（均需确认）：
+
+1. **输入输出经 exec 中的 `tar` 传送，不用 `docker cp`**：gVisor 下 `docker cp` 写不进沙箱内的 tmpfs（只读根文件系统上也不能写）；由沙箱内的 tar 生成的归档按不可信输入在 worker 中校验，sandbox-runner 只原样转出并限制字节数，不在持有 Docker 权限的进程中解析沙箱的输出。
+2. **镜像暂不含 `doc2markdown/` 的 npm 依赖和解析入口**（计划写的是“Node 24 + `doc2markdown/` 所需的 npm 依赖 + LibreOffice + 中文字体”）：依赖与入口随 6.6 的分派实现一起加入（另列版本和许可证），6.5 的 `/opt/parse/entry.mjs` 是退出码 64 的占位。LibreOffice 关闭链接更新、不执行宏的全局设置原计划随 6.7，#28 确认时决定**提前到 6.6**，与解析入口同时上线（解析入口上线前镜像中的 LibreOffice 不处理任何上传文件）。
+3. **apt 包不按版本固定**：基础镜像按 digest 固定，LibreOffice 等取构建时 Debian bookworm 的当前版本（含安全更新）；部署时按构建出的镜像摘要引用（生产配置强制 `@sha256:`），镜像漏洞扫描随第 9 步。
+4. **新增 `sandbox-control` 网络**（设计第 8.1 节原写 sandbox-runner 在 `backend`）：只有 worker 需要调用它，放在单独的 internal 网络上，api、数据库、Redis 都连不到它，它也连不到它们。
+5. **worker 尚未接入**：`SANDBOX_RUNNER_URL`、令牌的配置和 `context.sandbox` 随 6.6（第一个使用它的任务）加入，6.5 的 worker 与之前相同（6.6 已接入，#30）。
+
+已知限制：开发环境直接挂载 Docker socket，等同宿主 root，sandbox-runner 被攻破即宿主被攻破，所以它只在 internal 网络上、只接受固定模板；生产环境须用 Docker API 代理或 rootless Docker 收窄（第 9 步上线检查）；worker 共用一个令牌，以任务 id 绑定沙箱只防误用，不防被攻破的 worker。
+
+#### 解析任务（一）二进制与纯文本格式（#30，6.6）
+
+做法见 `docs/SERVER_DESIGN.md` 第 7.6 节。`client/` 未改动。要点：
+
+- **任务**（`src/parse/job.ts`）：`document-parse`，`parse` 队列，可续跑（重来即从头解析），不调用模型（不检查余额）。参数只有 `target`（`technical-plan-tender` / `technical-plan-original-plan` / `rejection-check` / `feasibility-report`）和 `fileId`，项目取自任务记录；互斥键 `document-parse:{fileId}`。流程：文档标为 `running` → 按记录的 MIME 分派（`src/parse/dispatch.ts`）→ 从对象存储取出原件 → 新建 parse 沙箱 → `copyIn`（固定名 `source`，不带文件名）→ 执行解析入口（参数只有 `format=` / `images=` / `charset=`）→ `copyOut`（归档按模板校验）→ 校验输出内容（`src/parse/output.ts`）→ 经 `writeArtifact` 写图片和 Markdown → 经 `saveDocumentParse` / `saveSourceParse` 写回（`status`、`markdownArtifactId`、`contentChars`、`contentHash` = 正文 SHA-256、`parserLabel` = “本地解析”）→ 该文件之前的产物标为已被替换。**沙箱在 `finally` 中销毁**（exec 的任何非 0 结果、超时、中止、取回失败之后同样）；
+- **导入后自动入队**（`src/parse/enqueue.ts`）：技术方案导入招标文件、上传原方案（只有新上传的，保留图片），废标检查导入招标 / 投标文件，可研报告导入资料，在导入事务提交之后每个新文件入队一个任务；已有未结束的同一文件任务（`JOB_LOCKED`）时不重复入队。导入接口的响应多了 `addedFileIds`。api 进程 6.6 起在配置了 Redis 时创建派发器（`src/server.ts`），未配置时只写 `jobs`、由 worker 对账派发；
+- **分派**：PDF → `pdf`；docx → `docx`；xlsx → `xlsx`；`application/msword`、`application/vnd.ms-works`（OLE 的 .doc / .docx / .wps）→ `word-ole`（LibreOffice 转 docx 后按 docx）；`application/vnd.ms-excel` → `xls-ole`（SheetJS）；`text/plain` / `text/markdown; charset=utf-8|gb18030` → 按记录的编码解码（不经解析器，也在沙箱中）。RTF、HTML、MHT、`application/xml` 记为解析失败 `PARSE_FORMAT_NOT_READY`（6.7 开放），其他类型 `PARSE_UNSUPPORTED_FORMAT`，都不创建沙箱；
+- **解析入口**（`server/sandbox/parse/`）：`entry.mjs` + `convert.mjs`（转换逻辑搬自桌面版 `doc2markdown/convert.mjs`，输出尽量一致）+ `zipGuard.mjs`。docx、xlsx 和 LibreOffice 转出的 docx 先做 ZIP 检查：条目数 10,000、声明的解压后总大小 1 GiB、单条目压缩比 100:1，再逐个条目实际解压（只计数）核对不超过声明值（中央目录可伪造）；PDF 先只读出页数，超过 3,000 页拒绝。图片只收 png / jpeg / gif / webp / bmp，至多 2,000 张，写到 `/output/images/image-NNNN.*`。失败时只在标准输出最后一行给错误代码（退出码 65，参数不合法 64），解析库的控制台输出一律丢弃；给用户的文案由 worker 按代码决定，不采用沙箱输出的文字；
+- **输出校验**（worker）：只能有 `content.md`、`manifest.json` 和清单中登记的图片（编号连续、MIME 与扩展名一致、文件头与 MIME 一致）；Markdown 必须是合法 UTF-8。Markdown 中的图片引用（含 HTML 表格中的 `<img>`）只保留指向本次输出图片的，改写为 `/api/artifacts/{id}/content`，其他图片（远程地址、`data:`）去掉；引用了输出中没有的图片时整体拒绝（`PARSE_IMAGE_MISSING`“原方案图片资源缺失，请重新导入原 Word”，即桌面版导入原方案时的“校验原图资源”，第 5 步 #20 留下）。表格类格式与桌面版相同以文件名作一级标题（由 worker 加，沙箱中不知道文件名）；
+- **失败**：文档标为 `error`，原因写进文档（如“文件的压缩比异常（单个条目超过 100:1），已拒绝解析”“PDF 超过 3,000 页，已拒绝解析”“文件解析超时（超过 10 分钟）”），任务以对应代码失败（`PARSE_*`），之前和写了一半的产物都标为已被替换。程序错误同样把文档标为“文件解析失败”，原错误只写日志（任务 `JOB_FAILED`）。取消时文档标为“解析已取消”；worker 关闭、租约丢失时不写文档，由续跑的执行者重新解析；写回前先确认仍持有租约；
+- **沙箱数已达上限**（429 `SANDBOX_BUSY`，“沙箱数已达上限，请稍后重试”）和 sandbox-runner 暂不可用时按可重试处理：任务按 5 秒起、约 5 分钟内的退避间隔重试创建（写任务日志），用完仍不行才失败（`PARSE_SANDBOX_BUSY` / `PARSE_UNAVAILABLE`）。worker 经 HTTP 收到 `SANDBOX_BUSY` 时用同一文案（`SANDBOX_BUSY_MESSAGE`）；
+- **迁移 0023_artifact_supersede**：`artifacts.superseded_at`，只能由空设为当前时间一次（时间由触发器写入），只有 `ready` 的产物能被标记，其他列仍不可改（`AR003`），应用角色只多了这一列的 `UPDATE`；`findArtifact`、`listArtifacts` 不再返回已被替换的产物；它们在 6.8 清理之前仍计入配额。RLS 策略、配额函数、数据库角色都没有改；
+- **LibreOffice 安全设置**（从 6.7 提前，与解析入口同时上线）：`server/sandbox/parse/libreoffice/zhibiao-security.xcd` 放在镜像的 `share/registry` 下，各项 `finalized`：宏安全级别 3（非常高、没有受信任位置）、`DisableMacrosExecution`、`BlockUntrustedRefererLinks`，Writer 与 Calc 的链接更新为“从不”（2），Writer 的域和图表不在加载时更新。已在 LibreOffice 24.2 上经 UNO 读取配置验证生效，用户配置（每次转换新建在 `/tmp`）中写相反的值也改不了；CI 的完整镜像中由测试核对文件内容并在其下转换 OLE Word。**宏与链接更新的实测**（#30 确认前按要求补充，`tests/sandbox/docker/parse.test.ts` 的 “LibreOffice macro and link-update settings in the parse image”，在 CI 的完整镜像与 gVisor 下运行）：样本 `macro-autorun.odt`（`samples/make-macro-sample.py` 由 LibreOffice 生成）的 Basic 宏绑定在 OnLoad、OnViewCreated、OnFocus、OnLayoutFinished 上，执行时写 `/tmp/zhibiao-macro-marker`。① 经解析入口（`format=word-ole`，LibreOffice 转 docx 后 mammoth 解析）转换完成后标记文件不存在；② 用最宽松的用户配置（宏安全级别 0、允许执行、链接“总是”更新）在沙箱中“打开”样本，标记文件不存在；③ 同一镜像中用用户配置里的应用级 Basic 宏（`macro:///`）读取有效配置，叠加同样宽松的用户配置后仍是宏安全级别 3、禁用宏执行、阻止不受信任的外部资源、Writer / Calc 链接更新 2（从不）、Writer 域与图表不更新；④ **对照组**：CI 从完整镜像派生只删掉 `zhibiao-security.xcd` 的镜像（`TEST_SANDBOX_CONTROL_IMAGE`），② 中宏执行、标记文件出现，③ 读出的是用户配置的值。**以 `--convert-to` 转换时做不出对照组**：实测 LibreOffice 转换时根本不触发文档事件宏（没有视图），即使宏安全级别 0、没有 xcd 也不执行，所以 ① 在两种镜像中结果相同，只证明解析路径不执行宏；对照组放在会触发事件的“打开文档”路径上（② ④）。本机（LibreOffice 24.2）用同样的脚本验证了四种组合；
+- **worker 接入**：新配置 `SANDBOX_RUNNER_URL`、`SANDBOX_RUNNER_TOKEN[_FILE]`（至少 32 个字符），worker 6.6 起也创建对象存储；`JobContext` 新增 `objectStore`、`sandbox`。compose 的 worker 加入 `sandbox-control` 网络、拿对象存储密钥和沙箱服务令牌；api 仍不在该网络上；
+- **镜像**：多阶段构建，构建阶段按 `server/sandbox/parse/package-lock.json` 执行 `npm ci --omit=dev --ignore-scripts`，最终镜像只复制 `node_modules`，仍不含 npm。新增依赖（只在沙箱镜像中，`server/package.json` 没有变化）：`mammoth` 1.13.0（BSD-2-Clause）、`pdf-parse` 2.4.5（Apache-2.0）、`pdfjs-dist` 6.4.299（Apache-2.0）、`turndown` 7.2.4（MIT）、`turndown-plugin-gfm` 1.0.2（MIT）、`cheerio` 1.2.0（MIT）、SheetJS `xlsx` 0.20.3（Apache-2.0，与客户端相同取自 `vendor/` 中的官方 tgz），版本与客户端相同、发布均超过两周；传递依赖见 #30 的审计报告，其中 `jszip` 3.10.2 为 “MIT OR GPL-3.0-or-later” 双许可证，按 MIT 使用（#30 确认）。CI 另对这份 lockfile 跑 `npm audit --audit-level=high`；
+- **测试**：单元测试 `tests/sandbox/zipGuard.test.ts`（构造的 ZIP：条目数、伪造的大小、压缩比与 1 MiB 门槛、加密、ZIP64、损坏的 deflate）、`tests/parse/dispatch.test.ts`、`tests/parse/output.test.ts`、`tests/sandbox/sandboxCap.test.ts`；数据库测试 `tests/db/parseJob.test.ts`（导入后入队、写回与产物、图片改写、重新解析替换旧产物、各种失败的文案与文档状态、`finally` 中销毁、上限重试、取消与关闭、迁移 0023 的守卫与授权，以及经 worker 与真实 Valkey 从导入到解析完成的完整流程）；沙箱测试 `tests/sandbox/docker/parse.test.ts`（真实沙箱中解析 docx（含图片）、pdf、xlsx、OLE xls、GB18030 文本、Markdown 去图，ZIP 炸弹三种、3,001 页 PDF、内容与格式不符时的代码，镜像中的 LibreOffice 安全设置；`TEST_SANDBOX_OFFICE=1` 时 OLE Word 经 LibreOffice 转换）。本机（runc、不含 LibreOffice 的镜像，PostgreSQL 16）全部通过（LibreOffice 用例跳过），完整镜像与 gVisor 下的结果以 CI 为准。
+
+**沙箱总数上限的测试**（#28 确认时登记）：`tests/sandbox/sandboxCap.test.ts`（Docker 桩）与 `tests/sandbox/docker/isolation.test.ts` 的 `counts stopped and expired-but-unswept sandboxes toward the cap…`（真实 Docker）覆盖：已停止的（模拟超时被终止）、已到期但尚未清理的、其他 sandbox-runner 进程创建的沙箱都计入上限；超出时 `SANDBOX_BUSY` 与文案“沙箱数已达上限，请稍后重试”，经 HTTP 为 429 且 worker 端保留代码和文案；并发创建不超过上限；到期清理或销毁残留后可以再创建。计数逻辑 6.5 已按此实现，本 PR 只把文案提成常量。
+
+偏离计划：
+
+1. **新增迁移 0023**（拆分计划只写了“重新解析时替换旧产物”）：产物写入后不可修改、没有删除接口，必须有一个标记才能让 6.8 找出被替换的产物；只加一列和列级授权，不改策略和角色。
+2. **6.7 的格式解析失败而不是排队等待**：RTF、HTML、MHT、Office 2003 XML 的文档标为失败（“暂不支持解析，请另存为 docx / xlsx 后重新导入”），6.7 上线后重新导入即可解析。
+3. **emf / wmf / tiff / svg 等图片丢弃**：桌面版原样保存，但迁移 0008 只登记了位图（能执行脚本的类型存不进来），Word 导出（第 7 步）若需要图元文件再议。
+4. **单条目压缩比只检查解压后不小于 1 MiB 的条目**：小条目即使压缩比很高也放不大，正常文档中重复的小 XML 常超过 100:1；另外按实际解压的大小核对声明值，这是计划之外加的。
+5. **没有“重新解析”接口**：失败的文档按桌面版的习惯移除后重新上传；“替换旧产物”目前在任务续跑时生效，6.7 起若开放重新解析同样适用。
+
+**解析卡住时的终止**（#31，#30 合并后补充）：各级时限与终止方式——
+- LibreOffice 转换 **8 分钟**：`soffice` 是 shell 脚本，exec 成 `oosplash`，转换由其子进程 `soffice.bin` 进行。#30 超时后只对直接子进程（`oosplash`）发 SIGKILL，`soffice.bin` 是否结束取决于 LibreOffice 自己在父进程死亡后的处理（本机实测入口返回时它仍在运行，随后才退出），不由代码保证。#31 改为在独立的进程组中运行（`detached`），超时后对整个进程组 SIGKILL 并等首进程结束，返回新的错误代码 `office_conversion_timeout`（“老式 Word 文件转换超时（超过 8 分钟）”）；不依赖 SIGTERM（gVisor 下 LibreOffice 不响应 SIGTERM）。正常结束后同样清理一次进程组；
+- 解析命令墙钟 **10 分钟**（parse 模板）：到时 sandbox-runner 终止整个沙箱容器（不是发信号给进程），任务得到 `timedOut`，以 `PARSE_TIMEOUT` 失败；
+- worker 调用 sandbox-runner 的请求超时 **10 分 30 秒**（模板上限 + 30 秒）：sandbox-runner 无响应时任务以 `PARSE_UNAVAILABLE` 失败；
+- 任务在 `finally` 中**销毁沙箱**（上面任何一种都会走到）；兜底是沙箱最长存活 **15 分钟**，到期由 sandbox-runner 每 30 秒的清理删除。
+
+测试：`tests/sandbox/docker/parse.test.ts` 的 “kills the whole LibreOffice process group when the conversion times out”（真实沙箱中持续冻结 `soffice.bin`，转换上限经只能调小的 `ZHIBIAO_PARSE_OFFICE_TIMEOUT_MS` 调为 5 秒：入口在 5–20 秒内以 `office_conversion_timeout` 退出，沙箱中没有活着的 LibreOffice 进程）；`tests/sandbox/docker/parseJob.test.ts`（真实沙箱 + 真实数据库执行 `document-parse`：LibreOffice 卡住时任务以 `PARSE_OFFICE_CONVERSION_TIMEOUT` 失败；整个解析命令卡住时由命令墙钟上限（测试中 8 秒代替 10 分钟）终止沙箱，任务以 `PARSE_TIMEOUT` 失败；两者都在 45 秒内结束、文档标为失败、沙箱容器不存在）。CI 的沙箱测试步骤因此也连接 PostgreSQL 服务容器。本机（LibreOffice 24.2）先验证了冻结脚本：新实现入口约 5.8 秒返回、无残留；#30 的实现入口返回时 `soffice.bin` 仍在运行。
+
+已知限制：执行次数用完（`JOB_ATTEMPTS_EXHAUSTED`，例如 worker 连续崩溃）时文档停在 `running`；租约丢失与新执行者之间仍有很小的窗口，最坏结果是一份文档的产物被提前标为已被替换（读取不到 Markdown），重新导入可恢复；6.8 清理时应跳过仍被文档引用的产物。
+
+#### 解析任务（二）文本类格式（#32，6.7）
+
+逐项满足 #6 的“第 6 步解析要求”中文本类格式的三条（XML 禁用 DTD 与外部实体、HTML / MHT / RTF 禁止加载远程资源、MHT 先解包），做法见 `docs/SERVER_DESIGN.md` 第 7.7 节。没有迁移、没有新增依赖（`server/` 与 parse 镜像的 lockfile 都没有变化），`client/` 未改动。要点：
+
+- **分派**（`src/parse/dispatch.ts`）：`application/rtf` → `rtf`，`message/rfc822` → `mht`，`text/html` 在 `.doc` / `.wps` 中是 `html-word`、在 `.xls` 中是 `html-sheet`，`application/xml` 同样分为 `word-xml` / `spreadsheet-xml`（扩展名取上传时登记的值，#6 的约定；其他扩展名 `PARSE_UNSUPPORTED_FORMAT`）。6.6 的 `PARSE_FORMAT_NOT_READY` 不再出现。表格类（`html-sheet`、`spreadsheet-xml`）与 xlsx 一样由 worker 以文件名作一级标题；
+- **Office 2003 XML**（`server/sandbox/parse/markupGuard.mjs` 的 `assertSafeXml`，交给 LibreOffice / SheetJS 之前）：整个文件按 UTF-8 严格解码，除注释与 CDATA 外出现任何 `<!` 声明（`<!DOCTYPE`、`<!ENTITY`、`<!ELEMENT`、`<!ATTLIST`、`<!NOTATION`，不分大小写、含 `<! DOCTYPE`）即拒绝 `xml_doctype`，不尝试安全地解析 DTD；含 XInclude 命名空间或 `<?xml-stylesheet` 拒绝 `xml_external_reference`；缺少 XML 声明、声明的编码不是 UTF-8（例如 UTF-7 的 `+ADw-!DOCTYPE` 在按 UTF-8 检查时看不到）、含 NUL、不是合法 UTF-8 拒绝 `xml_invalid`。没有 DTD 就不存在外部实体和实体膨胀；
+- **RTF**（`sanitizeRtf`）：按组结构（控制字、`\binN` 原始字节、`\'hh`）逐字节处理，目标控制字出现在组内**任何位置**（不只组首；LibreOffice 不要求在组首）都去掉整个组：`fldinst`（域指令，INCLUDEPICTURE / INCLUDETEXT / INCLUDE / LINK / DDE 等全在其中，不论如何转义或拆组）、`datafield`、`template`、`filetbl` / `subdocument`、`fontemb` / `fontfile`、`hl*`、`objdata` / `objlink` / `linkval`、`htmltag` / `mhtmltag`；`\object` 只留其 `\result` 子组；形状属性 `pibName` / `pibFlags` / `*BlipName` 等（链接图片）去掉。域的显示结果 `fldrslt` 保留。`\'` 后不是两位十六进制、参数超过 10 位、括号不配对、`\bin` 越界、嵌套超过 512 层时拒绝 `rtf_invalid`（与 LibreOffice 的切分可能不一致的写法不放行）；
+- **HTML**（`server/sandbox/parse/htmlSanitize.mjs`）：先识别字符集（BOM → `<meta charset>` → UTF-8 → GB18030），再用 cheerio（parse5，不访问网络）读出、按白名单**重新生成**：只留正文结构元素，脚本、样式、`<link>`、`<base>`、`<meta>`、`<iframe>` / `<frame>`、`<object>` / `<embed>` / `<applet>`、音视频、SVG / MathML、表单等连同内容去掉，其他元素（含 Word 的 `o:p`、`v:shape`）只留文字；属性只留 `colspan` / `rowspan` / `start`、图片的 `alt` / `width` / `height`、链接的 `href`（只收 http / https / mailto 绝对地址与 `#锚点`，链接不会被加载）；图片只留 `data:` 位图（文件头与类型一致）。`style`、`background`、`srcset`、CSS `url()` / `@import`、注释与条件注释一律不输出；
+- **MHT**（`extractMht`）：解开 MIME（头部折行、`multipart/*` 递归、base64 / quoted-printable / 7bit / 8bit / binary），正文取 `start` 参数指定的或第一个 `text/html` 部分，按其 `charset` 解码；图片只在包内查找（`cid:`、`Content-Location` 原样或按正文的 `Content-Location` 解析相对地址；内容在包内时即使 `Content-Location` 是远程地址也用包内字节），找到的转成 `data:`、找不到的去掉，`message/external-body` 等指向外部的部分从不跟随。上限：嵌套 8 层、叶子部分 2,000 个、单个头部块 64 KiB / 200 个字段，超过 `mht_too_complex`；没有 `MIME-Version`、multipart 缺少 boundary 或找不到分隔行、base64 不合法、未知的传输编码、multipart 声明了编码 `mht_invalid`；没有 HTML 部分 `mht_no_html`。没有结束分隔行（截断）时最后一部分到末尾为止。之后与 HTML 相同清理；
+- **LibreOffice**：RTF、HTML（含 MHT 解出的）、Word 2003 XML 与 OLE Word 共用一个转换函数（`convertWithOffice`），沿用 6.6 的独立进程组、8 分钟超时后对整个进程组 SIGKILL、正常结束后清理进程组、转出的 docx 做 ZIP 检查；文本类格式都指定导入过滤器（`Rich Text Format`、`HTML (StarWriter)`、`MS Word 2003 XML`），不让 LibreOffice 按内容另行识别。表格类由 SheetJS 从已检查 / 已清理的字符串读取；
+- **错误代码与文案**：`xml_invalid`、`xml_doctype`、`xml_external_reference`、`rtf_invalid`、`mht_invalid`、`mht_too_complex`、`mht_no_html`，任务代码 `PARSE_` 加大写，文案由 worker 决定（例如“XML 文件含 DTD 声明（<!DOCTYPE> 等），为防止外部实体与实体膨胀已拒绝解析，请另存为 docx / xlsx 后重新导入”）。
+
+**实测：只靠 LibreOffice 的设置不够**：未经清理的 HTML 交给 LibreOffice 时，`<img>` 被镜像设置中的 `BlockUntrustedRefererLinks` 挡住，但 `<link>` 样式表和 CSS 背景图片照样请求（OPTIONS / HEAD / GET）——CI 中正式镜像（bookworm 的 LibreOffice 7.4，gVisor）与本机 LibreOffice 24.2 都如此，所以清理是必需的。RTF 的 INCLUDETEXT / INCLUDEPICTURE、OLE 链接、`pibName`，Word 2003 XML 的 VML 图片、域、超链接在转换时都没有请求；本机 24.2 中 Word 2003 XML 的外部实体没有被展开、billion laughs 转换失败，SheetJS 不展开实体（原样留下引用），这些是解析器的现状，6.7 不依赖它们。另：本机 LibreOffice 24.2 在固定路径找不到 CA 证书包时不发 HTTP 请求，bookworm 的 7.4 没有这个限制（正式镜像中没有证书包，照样请求），所以远程资源测试与对照组都在正式镜像中做，不依赖证书包。
+
+**测试**：
+
+- 单元测试 `tests/sandbox/markupGuard.test.ts`（47 项）：XML 的 XXE（本地文件、远程、参数实体）、billion laughs、二次膨胀、空 DTD、小写与带空格的 doctype、根元素之后 / CDATA 中的声明、XInclude、xml-stylesheet、UTF-7 / GB2312 / UTF-16 声明、非法 UTF-8 与 NUL，对照组为去掉 DTD 的同一文档与真实样本通过；RTF 的各种域写法（转义、拆组、非组首、大小写）、OLE 对象、`\bin` 中的括号、嵌套上限、线性用时，对照组为普通 RTF 原样输出；MHT 的包内图片查找（远程地址从不跟随）、`start`、quoted-printable 与 GB2312、单一部分、截断、嵌套上限（8 层通过、9 层拒绝）、部分数与头部上限、80 MiB 消息线性解析、七种畸形；HTML 字符集。`tests/parse/dispatch.test.ts` 与 `tests/db/parseJob.test.ts` 改为新的分派与错误代码；
+- 沙箱测试 `tests/sandbox/docker/parseMarkup.test.ts`（34 项）：沙箱内只有 `lo`，测试在其中 `127.0.0.1:18080` 起一个记录一切连接的监听，样本中的远程地址都指向它。XML 的五类恶意样本在两种格式下都以错误代码拒绝、5 秒内结束、没有连接、输出中没有 `/etc/passwd` 的内容；对照组：去掉 DTD 的同一文档能解析，正文原样含 `root:x:0:0` 的文档在输出中能看到它（证明“没有”的断言有效），去掉检查时 SheetJS 会解析 XXE 文档。HTML（`html-word`、`html-sheet`）、MHT、RTF、Word 2003 XML 经解析入口转换成功、内嵌 / 包内图片保留、**没有任何连接**、没有读到 `/etc/passwd`。对照组：在同一正式镜像中把未经清理的 HTML 直接交给 LibreOffice（安全设置已加载），监听收到样式表与背景图片的请求；未经处理的 RTF 转出的 docx 中仍有 INCLUDETEXT 域，处理后没有。MHT 的畸形、无正文、部分过多、嵌套过深经入口得到对应代码，90 MiB 的 MHT 能在上限内解析；六种真实样本都能解析。`tests/sandbox/docker/parse.test.ts` 的“LibreOffice 卡住时终止整个进程组”扩展到 `rtf`、`html-word`、`mht`、`word-xml`。本机：gVisor 之外的 runc；不含 LibreOffice 的正式镜像跑全部沙箱测试，另用宿主 LibreOffice 24.2 拼出的测试镜像跑需要 LibreOffice 的用例；bookworm 的 LibreOffice 7.4 与 gVisor 下以 CI 为准（对照组只在能发请求的 LibreOffice 上成立，CI 的正式镜像满足）。
+
+偏离计划：
+
+1. **XML 除 `<!DOCTYPE` 外还拒绝其他声明、XInclude、xml-stylesheet 和非 UTF-8 编码**（分派表写的是“含 `<!DOCTYPE` 一律拒绝”）：声明的编码与检查时的解码不一致会让检查失效，其余都是同类的外部引用。Office 导出的这两种 XML 都是 UTF-8，误拒的代价是“另存为 docx / xlsx”。
+2. **Word 2003 XML 不做远程资源的预处理**（要求中“禁止加载远程资源”列的是 HTML / MHT / RTF）：实测 LibreOffice 转换时 VML 图片、域、超链接都不请求，测试在正式镜像中核对了没有连接；以后若发现会请求，再按 RTF 的做法处理。
+3. **HTML 中的超链接保留**（只限 http / https / mailto 绝对地址）：链接不会被加载，测试核对了没有连接；`javascript:`、`file:`、相对地址的链接去掉。
+
+#### 清理任务（#33，6.8）
+
+逐项实现“决定事项（#23）”第 9、10 项。`client/` 未改动，没有新增依赖。要点：
+
+- **迁移 0024_cleanup**：新增定义者角色 `bidtools_cleanup`（`NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS NOINHERIT`，迁移角色以 `INHERIT FALSE, SET TRUE` 加入；已加入 `10-provision.sh`、测试 harness、`src/db/roles.ts` 和第 9 步上线检查“数据库角色”一条；已有的开发数据卷需要 `docker compose down -v` 重建，或按脚本手工建角色）。它是 8 个 `SECURITY DEFINER` 函数的属主，只对 `files`、`artifacts`、`projects`、`jobs`、`job_events` 有列级 `SELECT`（只有判断条件要用的列）和 `DELETE`，没有 `UPDATE` / `INSERT`，对其他表（含计费账本、余额、价格表、用量记录、平台凭据、平台模型）没有任何授权、没有为它建的策略。项目、文件被删除时级联到项目级表、文档表的外键动作由表属主执行，不需要给它授权；
+- **删除条件只在数据库中**，同一份 SQL 表达式同时写进函数和只对它生效的 `DELETE` 策略（函数写错也删不掉恢复期内的行）：
+  - 文件：已上传、删除超过 7 天，或所属项目删除超过 7 天；`uploading` 登记超过 24 小时；
+  - 产物：被替换超过 7 天、所属项目或来源文件已过期，`writing` 登记超过 24 小时；
+  - 项目：删除超过 7 天，且其下文件、产物已删完（外键不级联，先删产物、再删文件、最后删项目）；
+  - 任务：已结束超过 90 天（事件随之级联删除）；事件：创建超过 30 天。
+  函数只接受行 id（`cleanup_delete_file` / `cleanup_delete_artifact`，重新检查条件，未过期的 id 只影响 0 行）、批量上限（夹在 1~1000）或对象键（`cleanup_unreferenced_keys`，只读），不接受时间、保留期或组织；过期只按数据库的 `now()` 计算；
+- **过期是单调的**：恢复期满后不能恢复（FS002、PJ002），被替换、已结束不能撤销（AR003、JB001）；本迁移另外让 `files_guard` / `artifacts_guard` 拒绝登记 24 小时后才完成的上传 / 写入（`FS006` → 408 `UPLOAD_TIMEOUT`、`AR005`）。所以 worker 删掉对象之后这一行一定仍然可删，不会留下“行在、对象已删”；
+- **worker**（`src/cleanup/cleanup.ts`，`src/worker.ts` 启动后 1 分钟第一批，之后每小时一批，上一批结束后才计时；关闭时在下一项之前停止）：冻结收尾 → 产物 → 文件（先删对象，成功或对象已不存在后再调删行函数；对象删除失败的行保留、计入 `failed`，下一批重试）→ 项目 → 孤儿对象 → 任务 → 事件。孤儿对象按前缀 `org/` 分页列出（`ObjectLister`，S3 `ListObjectsV2` + `StartAfter`），每批最多 10,000 个、从上次停下的位置继续、到末尾后从头开始；只删除修改时间超过 7 天、形如 `org/{org}/files|artifacts/{id}`、数据库中没有对应行的对象，其他形式的键一律不动。未配置 `S3_BUCKET` 时有对象的行一律不删，只清理项目、任务记录和冻结；
+- **冻结到期收尾**：`expireStaleHolds`（`bidtools_billing` 所属的 `ai_usage_expire_holds`）从 api 的 60 秒定时器移到 worker 的每批，以应用角色调用，不经清理角色；
+- **日志**：每批按 8 个类别（`holds`、`artifacts`、`files`、`uploading`、`projects`、`orphans`、`jobs`、`job_events`）各记一行 info `cleanup batch`，字段 `category`、`deleted`、`objects`、`failed`、`durationMs`，不含对象键、文件名和 id；一类出错不影响其他类，出错的类同样记一行（`failed: 1`），另记一条只含错误名称和代码的警告（S3 / 数据库的错误消息可能带对象键）；
+- **测试**：`tests/db/cleanup.test.ts`（26 项，真实 PostgreSQL；最后一组用真实 S3 兼容服务）：
+  - 角色：属性与成员关系，应用角色不能 `SET ROLE`；对 6 张计费表 7 种表级权限、4 种列级权限全部为假，没有为它建的策略；全库只对 5 张表有权限且只有 `DELETE` 与列级 `SELECT`；以清理角色直接读、删、`TRUNCATE` 计费表一律 42501；8 个函数的属主、`SECURITY DEFINER`、固定 `search_path`、参数只有 `p_limit integer` / `p_id uuid` / `p_keys text[]`；`ai_usage_expire_holds` 仍属于 `bidtools_billing`；
+  - 保留期边界（各类别保留期前后各差 1 小时）：文件、项目（连同其下文件、产物、对象、项目级表、任务记录）、被替换的产物（引用它的文档改为空）、来源文件过期的产物、遗留上传与写入（含对象已不存在）、任务与事件（未结束的任务不论多久都不删）；每类每批 1000 行上限；
+  - 不能绕过：按 id 删除恢复期内 / 未删除 / 上传未超时 / 项目在恢复期内的文件和产物一律 0 行，候选列表中也没有它们；过期文件还挂着产物时删不掉；极端上限值；带时间参数的调用没有对应函数（42883）；以清理角色直接 `DELETE` 五张表，策略只放行过期的行；改会话时区、设置租户上下文不影响判断；
+  - 对象：删除对象时行仍在；对象删除失败的行与对象都保留、下一批重试成功；未配置对象存储；孤儿对象（年龄、形式、其他组织前缀下同 id、有对应行的不删）；分批扫描与失败计数；
+  - 日志：8 行、字段固定，不含文件名、对象键、文件 id、任务 id、组织 id；一类出错的处理；
+  - 计费：两个已结算的任务（写入账本扣费和用量记录）结束 100 天、其中一个所属项目删除 8 天，另有一条到期未结算的冻结。清理后任务和项目被删除，6 张计费表的行数不变，账本、余额、价格表、平台凭据、平台模型的全部内容（按行序列化后的 SHA-256）不变；用量记录的 id、`job_id`、金额不变，只有到期的冻结被计费函数标为 `unbilled` / `abandoned`；再跑一批什么都不变；
+  - 定时执行与关闭；`tests/db/migrations.test.ts` 同步函数清单与逐个回滚；项目级表模板 `tests/db/projectTable.ts` 新增 `cleanupRoles`（除 `SELECT` 外还有 `DELETE` 策略的定义者角色，模板检查属性且只有这两种策略），`files`、`artifacts` 两处声明 `bidtools_cleanup`。
+  另做了反向验证（改代码后跑本文件，再改回）：`DELETE` 策略改为放行全部，1 项失败（直接 `DELETE`）；只去掉函数中的条件，全部通过（策略兜底）；两者都去掉，3 项失败；给清理角色授 `usage_records` 的 `SELECT`，3 项失败；先删行再删对象，1 项失败；去掉 `FS006`，1 项失败；不看孤儿对象的修改时间，2 项失败。
+
+偏离计划（均已在 #33 确认）：
+
+1. **`files_guard`、`artifacts_guard` 新增 24 小时期限**（`FS006`、`AR005`，拆分计划未列出）：否则极慢的上传可能在对象被删后才完成，留下“已上传、对象不存在”的行。上传接口把 `FS006` 映射为 408 `UPLOAD_TIMEOUT`；解析任务写产物最长约 15 分钟，不受影响。
+2. **“上传超时”取 24 小时**：上传接口只有 60 秒的空闲超时、没有总时长上限，24 小时远大于 100 MiB 文件的正常上传时间。
+3. **被替换的产物保留 7 天**（决定事项只写了“产物超过 7 天恢复期”，被替换的产物没有恢复操作）：与文件、项目的恢复期相同，从被替换时算起。
+4. **项目被物理删除时，其下的任务记录随项目级联删除**（即使任务结束还不满 90 天）：这是 6.2 迁移 0021 建表时的外键设计（`jobs_project_fkey ON DELETE CASCADE`）；若要保留，就得把项目行（及全部项目级表的内容）留到 90 天后，与“项目删除后 7 天删除”冲突。用量记录不受影响（没有外键，`job_id` 的值保留）。已写进第 9 步隐私声明一条。#33 确认：接受，项目物理删除时其任务记录一并删除，用量记录与账本不受影响。
+5. **冻结收尾从每 60 秒改为每小时一次**（随清理批次）：到期的冻结本来就不占用余额（`billing_active_holds` 按到期时间判断），收尾只是把记录标为 `unbilled` / `abandoned`，在此之前这类记录的状态仍是 `pending`，最长 1 小时。
+6. **多个 worker 不加锁**：删除函数重新检查条件、删除已不存在的对象不报错，同时执行只会多做一次；清理角色没有 `UPDATE`，所以批量删除不用 `FOR UPDATE`，后到的删除影响 0 行。
+7. **已知限制**：与 `bidtools_jobs` 相同，api 与 worker 共用应用角色，api 进程也能调用清理函数（只能删除已过期的行、只能得到过期行的 id 和对象键、只能判断给定的对象键有没有对应行）；以后 worker 改用独立的登录角色时，只把执行权授给它。未完成的分片上传不是对象，按前缀列不出来，由第 9 步上线检查“文件存储”中的生命周期规则清理。
+
+#### 步骤幂等（#34，6.4a）
+
+消除 6.4 登记的窗口：任务中的一次调用已结算、任务还没保存 checkpoint 时 worker 崩溃，续跑会重做这一步、服务商被再调用一次、用户被再扣一次费。两个方案中选了**步骤幂等键**，并让“写结果”与“结算”在同一事务中提交（偏离说明见下）。
+
+- **迁移 0025_job_step_results**：新表 `job_step_results`，键为 `(org_id, job_id, step_key, request_hash)`，存调用的完整输出（`content`、`reasoning_content`、`finish_reason`）和用量，`usage_id` 引用产生它的用量记录（每条用量记录最多一条结果）。强制 RLS：应用角色只读本组织的行；`INSERT` 只能引用本任务、尚未结算（`pending`）的用量记录；没有 `UPDATE`、`DELETE` 授权。复合外键挂在 `jobs` 上 `ON DELETE CASCADE`，随任务记录的 90 天保留期由清理任务一并删除；项目被物理删除时（`jobs_project_fkey` 级联）随其下的任务记录一并删除，不等满 90 天（与“决定事项”第 4 项的任务记录相同）。两条都已测，用量记录与账本不受影响。`usage_records.failure_reason` 新增两个不收费原因 `platform_interrupted`、`duplicate_step`，`ai_usage_fail` 同步放行（其余与 0004 相同，down 恢复）；
+- **任务调用必须带步骤键**（`JobChatRequest.stepKey`，网关对 `source = 'job'` 的调用强制、对交互式调用拒绝）：在本任务内标识“同一次逻辑调用”，取值须在续跑时能重新算出（如 `section:<id>`），有意重试要换键（如 `section:<id>:try-2`）。`request_hash` 是请求内容（服务商、模型、最大输出、temperature、消息）的 SHA-256：暂停期间用户改了输入、续跑时同一步骤的请求不同，就是新的调用，照常收费；
+- **网关**（`src/ai/gateway.ts`）：任务调用先按步骤键和请求哈希查已保存的结果，有则直接返回（`reused: true`），不检查并发名额、不冻结、不调用服务商、不扣费。调用完整结束时经 `settleJobStep`（`src/billing/usage.ts`）在**一个事务**中先写结果、再 `ai_usage_settle` 结算：提交前崩溃，结果和扣费都不存在，冻结到期后不收费（`abandoned`），续跑重新调用、只扣这一次；提交后崩溃，续跑时取回结果。同一步骤被两个执行者同时完成（原执行者失联但仍在运行）时，后提交的一方插入冲突，同一事务中把自己的调用改为不收费（`duplicate_step`）并返回先提交的结果；
+- **平台原因中止的调用不收费**：worker 关闭（SIGTERM）或租约丢失时任务被中止，进行中的调用原来按已产生的用量收费、续跑再完整调用一次，同样是平台故障导致的重复扣费。runner 传入 `platformAborted`（中止原因为 `shutdown` / `lease-lost`），网关改为不收费（`platform_interrupted`），不保存部分结果。用户取消、暂停中止的调用照旧按已产生的用量收费（第 10.1 节），也不保存部分结果，继续时重新调用；
+- **测试**（`tests/db/jobBilling.test.ts` 新增 8 个用例，真实 PostgreSQL、Valkey 和本机模拟服务商）：**第 0 步已结算、checkpoint 未保存时执行者崩溃，租约过期后新 worker 续跑：第 0 步取回已保存的结果，服务商共收到 3 次请求（不是 4 次）、扣费 3 次、`billed_amount` 与账本一致**；结果与结算同一事务（用量已释放时结算失败、结果不保存；用量不属于本任务时结果写不进、不扣费；结果已写入后扣费时注入故障，整个事务回滚，冻结到期后不收费）；两个执行者并发完成同一步骤只扣费一次、后者 `duplicate_step`、两边结果相同；同一请求取回不调用服务商，请求内容 / 最大输出 / temperature / 步骤 / 任务不同都是新的调用；worker 关闭与租约丢失时中止的调用不收费、续跑每步只扣费一次；`job_step_results` 的 RLS、不能改删、跨组织不能写、随任务记录删除；项目物理删除时随任务记录一并删除（任务结束不满 90 天也删）。`tests/db/aiGateway.test.ts` 补步骤键的校验。去掉调用前的查找、改回普通结算（不写结果）、去掉平台中止的判断、去掉插入冲突处理、去掉 `job_step_results` 对 `jobs` 的级联，分别有 2、4、2、1、2 个用例失败。
+
+**偏离与说明**：
+
+1. **选了步骤幂等键，没有选“结算、写结果、写 checkpoint 同一事务提交”**：后者要把结算从网关移到任务代码中、和业务 Store 写入及 `jobs.checkpoint`（带 `run_id` 条件）放进一个事务，每个业务任务都要按这个协议改写；步骤键只要求任务给每次调用一个稳定的键，业务任务的代码仍可原样搬运。与登记的“步骤键”方案的区别是结果和结算在同一事务中写入（登记中“或不再收费”的退路不需要：同一步骤一律取回结果、服务商不会被重复调用，只有两个执行者恰好同时在调用时服务商被调用两次，后者不收费）；
+2. **AI 输出存进数据库**：结果只在 `job_step_results`（强制 RLS，不写日志），与 checkpoint 中的业务结果同等对待；随任务记录的保留期删除，已加入第 9 步上线检查“任务计费”一条写进隐私声明；
+3. **单独一个 PR，没有并入下一个业务任务**：6.4a 涉及计费、须确认后合并，并入 6.9 会让计费改动和业务搬运混在一起难以审查；6.9 起的业务任务按本节的约定传步骤键。
+
+#### 废标检查任务（#35，6.9）
+
+只改 `server/`，不改 `client/`，没有新增依赖、数据库角色和迁移，没有修改已有的 RLS 策略。桌面版 `rejectionCheckTask.cjs` 的提示词、分段与滚动检查、结果整理原样搬运（逐项与桌面版的内部函数比对过输出：提示词、三类结果整理、按上下文长度切分、JSON 解析与修复消息完全相同）。
+
+- **两类任务**（`src/rejectionCheck/jobs.ts`，登记到 `src/jobs/registry.ts`）：`rejection-items-extraction`（参数为空）与 `rejection-check-run`（参数为三项检查的开关），`ai` 队列，`billable`（入队检查最低启动余额），可续跑；两类互斥，`lock_key` 为 `project:{projectId}:rejection-check`（与桌面版同组互斥相同），冲突 409 `JOB_LOCKED`。
+  - 输入在任务开始时从数据库读取，不取自参数：招标文件按导入顺序读出各自的 Markdown 产物、去掉首尾空白后以空行合并（取代桌面版保存的合并招标文档），投标文件逐份读取；文档须全部解析成功（有失败的提示移除后重新导入，未完成的提示稍后再试），正文合计不超过 32 MiB。模型取组织设置中选择的平台模型（`src/jobs/chat.ts` 的 `resolveJobModel`），没有选择时失败并写入原因。
+  - 废标项解析（`src/bidAnalysis/discardedBids.ts`，6.11 迁移招标解析时合并）：与桌面版 `runInvalidBidAndRejectionItemsExtraction` 相同，超过上下文长度时分段解析后合并，只返回“未提取到”时完整重跑一次；结果经 `saveExtraction` 写入，带招标文件签名。
+  - 三类检查（`src/rejectionCheck/checks.ts`）并发执行：不分段时废标项分析、检查、定稿三轮，错别字、逻辑各一次；超过上下文长度时废标项与逻辑按投标包滚动检查（增量 patch 由程序合并为累计状态，20 条一批定稿后全局合稿），错别字按文件分段。多个检查共用投标文件原文时先预热前缀缓存（`maxOutputTokens: 1`，失败不影响后续）。JSON 请求按桌面版 `collectJsonResponse` 最多调用 3 次、每次不合法时先请模型修复。
+  - 每次调用的步骤键由调用位置决定（`extraction`、`extraction:segment:N`、`rejection:analysis`、`rejection:segment:N`、`rejection:final:N`、`typo:document:N:segment:M`、`logic:merge` 等，JSON 的重新调用和修复另加 `:try-N`、`:repair-N`），续跑时同一步骤取回已保存的结果，不再调用服务商、不再扣费（6.4a）。为此模型没给 id 的中间条目改为按内容生成 id（桌面版是随机 id，会让续跑时的请求内容不同）；测试检查了同一输入、同一模型输出时每一步的请求内容完全相同。
+  - 结果经 `saveCheckResult` 写入：问题 id 统一改为 `rejection-finding-1` 等（不采用模型给出的 id，避免重复或超长），当前问题为第一条，签名为任务开始时的 `signatures.rejectionInput`（废标项）或 `signatures.bid`（错别字、逻辑）。某一类失败时其余照常写入，失败的写给用户看的原因（`JobError` 的文案，其他错误一律“{检查名}失败”，原错误交给执行者写日志），任务以“N 个检查任务失败”失败。
+  - 暂停、余额不足、中断（租约丢失、worker 关闭）与取消时不改写结果：继续后从头执行、已完成的调用取回结果；余额不足的错误不被吞掉，执行者照 6.4 暂停任务。
+  - 任务日志只写阶段和条数，不写文档正文和模型输出。
+- **写入带开始时的签名**（`saveExtraction` / `saveCheckResult` 新增 `expectedSignature`，返回是否写入）：在写入的同一事务中（项目咨询锁内）与当前签名核对，任务开始后导入、移除了文档或改了解析结果、自定义检查项时不写入，旧任务的结果不会覆盖新的状态；检查结果因此被拒绝时任务以 `REJECTION_CHECK_INPUT_CHANGED` 失败。
+- **接口**（`src/routes/rejectionCheck.ts`）：`POST .../rejection-check/extraction`、`POST .../rejection-check/check`（`{ runOptions? }`，不给出时取已保存的检查选项，给出时只运行开启的，对应桌面版的“重新检查某一项”），返回 202 `{ job }`；前置条件不满足时 409（`REJECTION_CHECK_DOCUMENT_NOT_READY`、`REJECTION_CHECK_EXTRACTION_REQUIRED` 等，文案与桌面版的提示相同），余额不足 402。任务的进度、取消、暂停、继续经已有的 `/api/jobs` 与 SSE。与桌面版相同，招标文件变化（导入、移除、从技术方案读取、清空）后取消本项目进行中的两类任务，投标文件变化后只取消检查（不等待执行者退出，其后续写入因签名不符被拒绝）。
+- **状态中的任务**：`GET .../rejection-check` 的 `extractionTask`、`checkTask` 为本项目最近一次的两类任务（与 `GET /api/jobs/:jobId` 相同的形式，`src/jobs/store.ts` 新增 `latestProjectJobs`，供其他模块的 `loadState` 共用）。结果仍是 `running` 而对应的任务已结束或不存在时，按未完成显示（“上次解析未完成，请重新解析”“上次检查未完成，请重新检查”，取代桌面版启动时的 `recoverInterruptedRejectionCheckTasks`，只改读出的状态、不写库）；任务暂停中仍显示 `running`。
+- **测试**：`tests/rejectionCheck/checks.test.ts`（结果整理、一次检查与分段滚动检查的流程、续跑时请求内容不变）、`tests/ai/textSplit.test.ts`、`tests/ai/json.test.ts`、`tests/jobs/chat.test.ts`；`tests/db/rejectionCheckJobs.test.ts`（真实 PostgreSQL 与 Valkey，模型调用用桩）覆盖两类任务的成功、重跑与分段、前置条件、未选择模型、输出为空、部分失败、只运行开启的检查、余额不足、任务中文档变化，接口的前置检查、互斥、402、取消、按未完成显示，以及经 worker 从接口入队到执行完成。去掉检查结果的签名核对、解析结果的签名核对、按未完成显示、导入后取消任务、不吞掉余额与中断错误、统一问题 id，以及把内容 id 改回随机 id，分别有 1、1、2、1、1、1、2 个用例失败。
+
+偏离与说明：
+
+1. **上下文长度一律用默认值 400,000 字**：平台模型没有上下文长度的配置，登记为上方事项第 26 项；
+2. **JSON 请求没有 `response_format`**：网关不支持，登记为上方事项第 27 项；
+3. **括号配平只从前 32 个左括号开始扫描**（`src/ai/json.ts`）：桌面版从每个左括号开始，病态输出下是平方级，服务端共享 CPU 时不能接受；正常输出的解析结果不变；
+4. **3 次都不合法时的原因不含解析错误的细节**：桌面版附上 `JSON.parse` 的错误消息，其中可能含模型输出片段；
+5. **文档须全部解析成功才能开始**：桌面版导入时同步解析，不存在“解析中”的文档；
+6. **不再写 checkpoint**：续跑从头执行，已完成的调用按步骤键取回（6.4a），不需要另存中间状态；
+7. 本地验证用的是 PostgreSQL 16 与 Redis 7（CI 用 PostgreSQL 17 与 Valkey 8）；`tests/db/files.test.ts` 需要 S3 兼容服务，只在 CI 中运行。
+
+#### 标书查重任务（一）（#36，6.10a）
+
+只改 `server/`（含 parse 镜像中的解析入口），不改 `client/`；没有新增依赖、迁移、数据库角色，没有修改已有的 RLS 策略。做法见 `docs/SERVER_DESIGN.md` 第 7.8 节。桌面版 `duplicateCheckService.cjs` 的提取与比对函数原样搬运，本地按同一批输入（仓库中的长文档与构造的投标文件）逐项与桌面版的内部函数比对过输出：目录、招标句子、正文句子（含 HTML 表格）、图片位置、招标原文匹配的原因、目录重复 / 相似组与两两相似度完全相同。
+
+- **任务**（`src/duplicateCheck/job.ts`，登记到 `src/jobs/registry.ts`）：`duplicate-analysis`，参数 `{ force }`，`ai` 队列（设计第 5.2 节），不调用模型（不检查余额），可续跑（从头执行），互斥键 `project:{projectId}:duplicate-check`。流程与桌面版相同：四类分析写初始状态 → 投标文件的元数据 → 招标、投标文件逐个提取正文 → 目录、正文、图片比对 → 汇总写入；已有当前签名下全部成功的结果且不是 `force` 时直接结束（“无需重复分析”）。
+  - **提取在沙箱中**：每份文件一个 parse 沙箱（保留图片），解析入口加参数 `analysis=duplicate-check`，另写 `analysis.json`：目录（`buildOutlineItems`）、招标句子（`splitTenderSentences`）、正文句子（`splitContentSentences`，HTML 表格经 cheerio 读取）、图片位置（只收本次输出的图片），代码在 `server/sandbox/parse/duplicateText.mjs`（只用内置功能，宿主上的单元测试可直接导入）与 `duplicateTables.mjs`（cheerio）。表格类格式的文件名由 worker 放入 `/input/title`，提取时与桌面版相同作一级标题，`content.md` 不变（标题仍由写入时加）。
+  - **比对在 worker 中**（`src/duplicateCheck/analysis.ts`）：`analysis.json` 按不可信输入校验（字段不多不少、数量与长度上限、目录项编号连续、父目录项在前且层级与路径相符、图片只能引用本次输出、非法 UTF-8 拒绝），不合规时该文件按“解析结果不符合要求，已拒绝”失败、不写产物；招标原文白名单、目录比对、重复句、重复图片（按写入的图片内容的 SHA-256，预览图是第一份文件中的图片产物）。长循环中定期让出事件循环（任务租约靠定时器续期），相似度预先算二元组、最长公共子序列用两行滚动数组，结果不变。
+  - 投标文件逐个提取后立即计入比对，不在内存中保留全部正文；招标文件先提取，有一份失败时与桌面版相同不用白名单、继续比对。
+  - **写入**：正文与图片经 6.6 的同一流程写为产物（抽出为 `src/parse/run.ts`，`document-parse` 改为调用它，行为不变）；开始时把这些文件之前的产物标为已被替换（上次的结果已清空，续跑时也包括上次写了一半的），单个文件失败时它写了一半的产物同样标为已被替换。分析结果经 `saveAnalysisSection` 写入，新增 `expectedSignature`：在写入的同一事务中（项目咨询锁内）与当前文件选择的签名核对，不同时不写入，任务以 `DUPLICATE_CHECK_INPUT_CHANGED` 结束。
+  - **失败**：单个文件解析失败时记下原因（与 6.6 相同的文案），其余照常；目录、图片中该文件为“正文内容尚未成功提取，无法进行目录分析”，任务最后以 `DUPLICATE_CHECK_PARTIAL_FAILED`“标书查重分析完成，部分结果失败”结束（桌面版任务状态为 error）；程序错误（数据库、对象存储故障等）该文件记为“正文提取失败”，写完结果后把原错误交给执行者写日志。暂停、中断、取消时不改写结果。
+  - **元数据**：本 PR 只有文件基本信息：文件名、扩展名（与桌面版相同带点）、大小、原件的 SHA-256（取 `files.sha256`），标签、规范化的比较值、日期、Base64 解码项与桌面版相同；文档格式的元数据随 6.10b。
+- **接口**（`src/routes/duplicateCheck.ts`）：`POST /api/projects/:projectId/duplicate-check/analysis`（`{ force? }`，202 `{ job }`；没有投标文件 409 `DUPLICATE_CHECK_BID_MISSING`，已有进行中的任务 409 `JOB_LOCKED`）。重新选择文件（`PUT .../files`）与清空之后取消本项目进行中的分析任务。`GET` 的 `analysisTask` 改为最近一次分析任务（`latestProjectJobs`），四类分析仍是 `running` 而任务已结束或不存在时按“上次标书查重分析未完成，请重新分析”显示（取代桌面版启动时的 `recoverInterruptedDuplicateCheckTask`，只改读出的状态）。
+- **测试**：单元测试 `tests/duplicateCheck/analysis.test.ts`（逐文档提取、`analysis.json` 的 24 种不合规输出、白名单的各种匹配原因、目录比对、重复句与图片的排序、元数据项，期望值取自桌面版同名函数的结果）、`tests/parse/output.test.ts`、`tests/parse/dispatch.test.ts`；数据库测试 `tests/db/duplicateCheckJob.test.ts`（真实 PostgreSQL 与 Valkey，沙箱用桩，输出由 `duplicateText.mjs` 现算）覆盖完整分析、不重复分析与 `force`、没有投标文件、单个文件失败、提取结果不合规、写产物时的程序错误、招标文件失败、表格类文件的标题、任务中重新选择文件、暂停与租约丢失、按未完成显示，接口的前置检查、互斥、取消，以及经 worker 从接口入队到执行完成；沙箱测试 `tests/sandbox/docker/parse.test.ts` 新增 4 项（真实沙箱中 docx 的 `analysis.json`、HTML 表格经 cheerio 读取、表格类的标题文件、未知的 `analysis` 参数）。去掉签名核对、按未完成显示、重新选择文件后取消、清空后取消、开始时替换旧产物、失败时替换产物、正文白名单、图片路径校验、父目录项层级校验、父目录项路径校验、`analysis.json` 必须存在、暂停时不改写、表格类的标题，分别有 1、1、1、1、1、1、3、1、1、1、1、1、1 个用例失败。
+
+偏离与说明：
+
+1. **6.10 拆为 6.10a、6.10b**：文档格式的元数据（桌面版用 `adm-zip`、`cfb`、`pdf-parse` 读原件的部分，约 700 行）要在沙箱中另写一种提取，与本 PR 的正文提取、比对相互独立，拆开以保持可审；本 PR 中元数据页签只有文件基本信息。
+2. **逐文档的文本提取也放进沙箱**（计划写的是“正文与图片产物；比对计算在 worker 中进行”）：正文句子要读 Markdown 中 HTML 表格的文字，桌面版用 cheerio，worker 中不运行 HTML 解析器，所以目录、句子、图片位置都在沙箱中算好，worker 只校验和比对。
+3. **不提供文件的创建 / 修改 / 访问时间**：桌面版取本机文件系统的时间，Web 版只有上传时间，同一天上传的文件都会被标为“同一天”。
+4. **目录、图片的中间进度只写计数与说明**：桌面版每处理一份文件就写一次全部目录项，这里结果在最后整体写入，避免重复写入大量行。
+5. **图片位置的编号只计本次输出中的图片**：远程地址、`data:` 等在写回 Markdown 时就被去掉（6.6），不再计入；桌面版尝试读取后跳过读不到的。
+6. 本地验证用的是 PostgreSQL 16 与 Redis 7（CI 用 PostgreSQL 17 与 Valkey 8），沙箱测试在 runc 与不含 LibreOffice 的本地镜像中运行（镜像构建阶段在本机连不上 apt / npm 源，改为复制本机安装的依赖），gVisor 与完整镜像以 CI 为准；`tests/db/files.test.ts` 与 `cleanup.test.ts` 的真实 S3 用例只在 CI 中运行。
+7. 搬运时发现桌面版的两处原有行为，按原样保留：正文白名单的“骨架”匹配实际不会命中（生成骨架键时去标点把占位符的花括号也去掉了）；格式字段的“安全尾部”中写死了三个具体单位名称。
+
+#### 标书查重任务（二）（#37，6.10b）
+
+只改 `server/`（含 parse 镜像中的解析入口），不改 `client/`；没有新增依赖、迁移、数据库角色，没有修改已有的 RLS 策略。做法见 `docs/SERVER_DESIGN.md` 第 7.8 节。桌面版 `duplicateCheckService.cjs` 中 `extractMetadata` 读取文档本身的部分（约 700 行）原样搬运到 `server/sandbox/parse/duplicateMetadata.mjs`，本地按同一批输入逐项与桌面版的同名函数比对过输出：仓库中的 `sample.docx` / `sample.doc` / `sample.pdf`、构造的带全部属性的 docx、经 LibreOffice 转出的 doc 与 pdf（老式 Word 含转成 docx 后的属性），以及构造的 OLE 属性集（代码页 936、UTF-16、字典中的自定义属性、向量、时长、宏存储、正文中的疑似账号痕迹）与 PDF 片段（Info、XMP、字面量 / 十六进制字符串、增量保存、签名、表单、附件），字段与顺序完全相同。
+
+- **沙箱中只提取元数据**：解析入口新增参数 `metadata=duplicate-check`（只接受 docx、word-ole、pdf 与 RTF / HTML / MHT / Word 2003 XML，不能与 `images`、`analysis` 同时给出），不转换正文，只写 `metadata.json`（`{ version: 1, fields: [[键, 值], …] }`，按桌面版的字段顺序）。docx 先做 ZIP 炸弹检查，条目用内置 zlib 读取（取代 adm-zip）；OLE 用镜像中 SheetJS 自带的 CFB（与桌面版的 cfb 同为 1.2.2）；PDF 用已有的 pdf-parse（与桌面版同为 2.4.5）；代码页解码用内置 TextDecoder（取代 iconv-lite）。老式 Word 与文本类 Word 格式经与正文相同的 LibreOffice 转换（`convert.mjs` 抽出 `convertToDocx`，正文转换改为调用它，行为不变）后读取 docx 属性。文档本身读取失败与桌面版相同不算失败，记为 `metadata_error` 字段。输出前按上限整理（字段 1,000 个、键 512 字、值 8,000 字、合计 100 万字），正常文档不会触发。
+- **worker 校验后并入**（`src/duplicateCheck/analysis.ts` 的 `parseDocumentMetadata`）：只能有 `metadata.json`（`src/parse/output.ts` 的 `validateMetadataOutput`）；结构、字段数与长度、键的规则（固定名称的键、`ole_prop_<编号>`、`custom:<属性名>`、规范化的 `ole_signal:` / `wps:` / `pdf_info:` / `pdf_xmp:` / `pdf_raw:` 键，均可带 `converted_docx:` 前缀）、不能冒充文件基本信息或 Base64 解码项、键不重复、值不含控制字符、`metadata_error` 只能是固定文字、非法 UTF-8 拒绝。沙箱与 worker 的键表、上限、格式一致由单元测试检查。字段并在文件基本信息之后，标签、比较值、日期与 Base64 解码项仍由 worker 计算。
+- **任务**（`src/duplicateCheck/job.ts`）：元数据阶段每份投标文件调用 `extractMetadataInSandbox`（`src/parse/run.ts`，与正文解析共用取原件、建沙箱、执行、取回、销毁的流程），每份完成后写一次进度；表格、纯文本类文件不开沙箱，只有基本信息。沙箱层面失败（超时、沙箱繁忙、输出不合规等）该文件记为失败、保留基本信息，其余照常，正文提取不受影响，任务最后以“部分结果失败”结束；程序错误写完结果后交给执行者写日志；暂停、中断、取消时不改写结果。
+- **测试**：单元测试 `tests/duplicateCheck/metadata.test.ts`（期望值 `metadataExpected.json` 取自桌面版同名函数；docx / OLE / PDF 三类提取、老式 Word 的合并顺序与失败文字、文本类格式不按 OLE 读取、ZIP 炸弹与读取失败、输出整理、两侧规则一致、worker 的 22 种不合规输出）、`tests/parse/dispatch.test.ts`、`tests/parse/output.test.ts`；数据库测试 `tests/db/duplicateCheckJob.test.ts` 新增 2 项（沙箱记下的读取失败、超时与输出不合规时保留基本信息且正文照常、冒充基本信息被拒绝；元数据阶段暂停不改写、正文不开始），原有用例补上元数据沙箱的调用与重复的元数据项；沙箱测试 `tests/sandbox/docker/parse.test.ts` 新增 5 项（真实沙箱中 docx / PDF / OLE 的结果与桌面版相同，有 LibreOffice 时 OLE 带转换后的属性、RTF 只读转换后的属性，读取失败记为 `metadata_error`，不合法的参数组合）。去掉 `metadata_error` 的固定文字检查、`:base64_decoded` 键的拒绝、重复键的拒绝、冒充基本信息的拒绝、并入文档元数据、沙箱失败时只记该文件、失败时保留基本信息、文本类格式不按 OLE 读取、沙箱输出前的键整理，分别有 1、2、1、2、2、2、1、1、1 个用例失败。
+
+偏离与说明：
+
+1. **元数据单独开沙箱**（计划写的是“在 parse 沙箱中提取”，没有说明与正文的关系）：正文转换失败（如扫描版 PDF 没有文字层）时解析入口不写任何结果，与正文同一次执行会连元数据一起丢掉；桌面版两者相互独立。代价是每份投标文件多一次沙箱启动，老式 Word 多一次 LibreOffice 转换（桌面版同样转换两次）。
+2. **文本类 Word 格式（扩展名 doc / wps 的 RTF、HTML、MHT、Word 2003 XML）只读取转换后的 docx 属性**：桌面版按扩展名走老式 Word 的流程，OLE 读取必然失败并在 `metadata_error` 中记下错误；这里不尝试按 OLE 读取，也不记这条错误。上传时记为 OLE 的 `.docx` 按老式 Word 读取（桌面版按 docx 读取必然失败）。
+3. **`metadata_error` 只有固定文字**（“元数据读取失败”“OLE 元数据读取失败”“转换 DOCX 元数据读取失败”及后两者的组合）：桌面版附上解析库的错误消息，沙箱输出的文字不直接给用户看（与 6.6 的错误代码相同）。
+4. **代码页解码用 TextDecoder**：与 iconv-lite 在少数编码的个别未定义字节上可能不同（如 windows-1252 的 0x81 等），开头的 BOM 与 iconv-lite 相同去掉；latin1 按字节转换（TextDecoder 的 latin1 实为 windows-1252）。
+5. **沙箱输出有上限**（见上）：桌面版不限；超出时丢弃多余字段或截断过长的值，正常文档远达不到。
+6. 本地验证用的是 PostgreSQL 16 与 Redis 7（CI 用 PostgreSQL 17 与 Valkey 8），沙箱测试在 runc 与不含 LibreOffice 的本地镜像中运行（镜像构建阶段在本机连不上 apt 源，改为复制本机安装的依赖；需要 LibreOffice 的用例另在宿主上的 LibreOffice 24.2 验证），gVisor 与完整镜像以 CI 为准。
+7. 搬运时发现桌面版的一处原有行为，按原样保留：LibreOffice 写出的 doc 中 SummaryInformation 的代码页是 65001，按 16 位有符号数读出为 -535，于是按 latin1 解码，标题等中文属性成为乱码（转换后的 docx 属性正常，`converted_docx:` 前缀下可见）。
+
+#### 技术方案任务（一）（#38，6.11）
+
+只改 `server/`，不改 `client/`；没有新增依赖、数据库角色，没有修改已有的 RLS 策略。新增迁移 `0026_technical_plan_bid_section_detection`（`technical_plan_documents` 加一列与该列的 UPDATE 授权）。桌面版 `bidSectionExtractionTask.cjs`、`bidAnalysisTask.cjs`、`segmentedAiResultMerger.cjs`、`bidSectionContext.cjs`、`markdownLineView.cjs` 的提示词、行号视图、结果整理与流程原样搬运，单元测试加载桌面版文件，用同一输入对照完整的请求序列与结果（18 个解析项的单段 / 分段 / 带投标范围提示、整项无结果重跑，多标段识别的单段 / 多段合并 / 不足两个标段）。
+
+- **两类任务**（`src/technicalPlan/jobs.ts`，登记到 `src/jobs/registry.ts`）：`bid-section-extraction`（参数为空）与 `bid-analysis`（`{ taskIds, forceRerun }`），`ai` 队列，`billable`，可续跑；互斥键 `project:{projectId}:technical-plan`（与桌面版 technical-plan 组相同，第 8 步的目录、全局事实、正文生成任务沿用），冲突 409 `JOB_LOCKED`。
+  - 输入在任务开始时从数据库读取：招标文件须全部解析成功；识别读合并的原始招标正文（新增 `readOriginalTenderMarkdown`），解析读按投标范围裁剪后的正文（`readTenderMarkdown`）与已保存的解析配置。多标段时须已识别、已选择仍有效的投标范围（文案与桌面版相同）。
+  - 多标段识别（`src/technicalPlan/sectionExtraction.ts`）：开始时经 `prepareBidSectionExtraction` 清空下游、切到多标段；正文加行号（`lineView.ts`）后逐段 `segment:N`、多段时 `merge`，JSON 按 `collectJsonResponse` 的 3 次重试与修复；少于两个标段、JSON 不合法、未选择模型时写入失败原因。
+  - 招标解析（`src/bidAnalysis/prompts.ts`，废标检查的 `discardedBids.ts` 合并到这里，原有步骤键与请求不变）：选中的项并发解析，多于一项时先按段预热公共前缀；步骤键 `item:<id>`（分段 `:segment:N` / `:merge`，整项无结果重跑 `:try-2`）。续跑时已成功的项不再重跑；`taskIds` 只重新解析其中的项；`forceRerun` 先清空选中的项、目录、全局事实与正文阶段并恢复正文生成选项（新增 `resetBidAnalysisForRerun`，与桌面版 `force_rerun` 相同）。单项失败写入原因、其余照常；必填项未完成时任务以 `TECHNICAL_PLAN_BID_ANALYSIS_INCOMPLETE`（“必填解析项未完成：…”）失败。
+  - **写入带开始时的输入签名**（`inputSignatures`：`tender` 为招标文件的顺序、解析状态、产物与正文哈希，`analysis` 另含单 / 多标段、识别结果与选中的投标范围）：`saveBidItems`、`resetBidAnalysisForRerun`、`prepareBidSectionExtraction`、`saveBidSectionExtraction` 在写入的同一事务中（项目锁内）核对，不符时不写入；任务以 `TECHNICAL_PLAN_INPUT_CHANGED` 结束。暂停、余额不足、中断与取消时不改写结果。
+- **疑似多标段检测**（取代桌面版 `checkBidSections`，`src/technicalPlan/bidSectionDetector.ts`）：判定规则与桌面版相同，改为一次扫描找出数字、“第”、单位等的最长连续段按段判断，行文本按行缓存，耗时与正文长度成正比（构造的长数字串、长空白串、长行在本地均为毫秒级）。招标正文由多份文件合并、各自解析和移除，所以由 `document-parse` 任务在 worker 中对每份招标文件算出摘要（总数声明的最大值、标段定义与行首【N】的集合，集合最多 10 个元素，判定只看是否达到 2）写入 `technical_plan_documents.bid_section_detection`，`GET .../technical-plan` 的 `bidSectionDetection` 合并解析成功的文件的摘要，结果与桌面版对合并正文整体检测相同（有解析成功的文件缺少摘要时为 `null`，不提示）。4,000 组随机拼接的输入与桌面版逐个比对相同。
+- **行号视图**：桌面版对超长行中每个“![”向后扫描到行尾，病态输入是平方级；方括号配对改为一次扫描（结果相同），图片目标的圆括号扫描在一行内共用步数预算（行长 4 倍加 10 万步，正常文档用不完），每 2,000 行让出一次事件循环。
+- **接口**（`src/routes/technicalPlan.ts`）：`POST .../technical-plan/bid-section-extraction`、`POST .../technical-plan/bid-analysis`（`{ taskIds?, forceRerun? }`，可省略），返回 202 `{ job }`；前置条件不满足 409，余额不足 402。导入（有新增文件时）、移除招标文件与清空后取消本项目进行中的技术方案任务，响应中的状态在取消后读取；导入原方案不取消（与桌面版相同）。`GET` 的 `bidSectionExtractionTask`、`bidAnalysisTask` 为最近一次的两类任务；解析项、识别状态仍是 `running` 而任务已结束或不存在时按未完成显示（“上次招标文件解析未完成，请重新解析”“上次多标段识别未完成，请重新识别”，取代桌面版启动时的恢复，只改读出的状态）。
+- **公共部分**：中止判断与可中断的等待抽到 `src/jobs/control.ts`，废标检查改为引用，行为不变。
+- **测试**：单元测试 `tests/technicalPlan/bidSectionDetector.test.ts`、`sectionExtraction.test.ts`、`tests/bidAnalysis/prompts.test.ts`；数据库测试 `tests/db/technicalPlanJobs.test.ts`（真实 PostgreSQL 与 Valkey，模型用桩）覆盖两类任务的成功、分段、失败原因、前置条件、续跑与重新解析、全部重新解析、多标段、输入变化、余额不足，接口的前置检查、互斥、402、取消、按未完成显示，以及经 worker 从接口入队到执行完成；`tests/db/parseJob.test.ts` 新增解析写入检测摘要与合并。去掉签名核对、解析项按未完成显示、识别状态按未完成显示、导入 / 移除 / 清空后取消、全部重新解析时清空下游、续跑跳过已成功的项、不吞掉中断与余额错误、解析任务写入检测摘要，分别有 2、2、1、1、1、1、1、1、1、1 个用例失败。
+
+偏离与说明：
+
+1. **疑似多标段检测按文件计算、读取时合并**（计划写的是“在 worker 中计算并写入状态”）：招标文件分别解析、可单独移除，对合并正文整体计算需要在每次变化后再起一个任务；按文件算出可合并的摘要后，移除文件不需要重新计算。与桌面版的唯一差别：总数声明中的空白不会跨过两份文件的边界。为此新增迁移 0026（一列与该列的 UPDATE 授权，不改策略）。
+2. **招标解析的配置取已保存的值**：桌面版随任务参数传入解析模式与选中项（Renderer 启动前先保存），这里只传 `taskIds` 与 `forceRerun`。
+3. **取消在提交之后**：桌面版在导入、移除招标文件提交前取消并等待任务退出；这里提交后取消、不等待，提交与取消之间旧任务的写入因签名不符被拒绝。
+4. **上下文长度与 JSON 输出模式**仍按登记事项第 26、27 项处理（默认 400,000 字，不带 `response_format`）。
+5. 单项失败时，非 `JobError` 的原因写“解析失败”（桌面版写原错误消息），原错误交给执行者写日志；行号视图的病态输入、模型输出中格式错误的 `include_ranges` 不再抛错（桌面版会以“…is not a function”失败）。
+6. 本地验证用的是 PostgreSQL 16 与 Redis 7（CI 用 PostgreSQL 17 与 Valkey 8）；`tests/db/files.test.ts`、`cleanup.test.ts` 的真实 S3 用例与 `redis.test.ts` 的 ACL 用例需要 CI 的服务配置，只在 CI 中运行。
+
+#### 可研报告任务（#39，6.12）
+
+只改 `server/`，不改 `client/`；没有新增依赖、数据库角色、迁移，没有修改已有的 RLS 策略。桌面版 `feasibilityReportTasks.cjs`、`feasibilityReportPrompts.cjs` 中这四类任务用到的提示词、分段、知识库素材挑选、事实保护与流程原样搬运（`src/feasibilityReport/prompts.ts`）；单元测试加载桌面版文件，把服务端任务的 Store 换成内存实现，用同一输入、同一模型输出对照完整的请求序列（消息逐字相同）与写入的结果（资料分析的单段 / 分段合并 / 无资料、关键参数带 / 不带知识库、正文全部生成 / 只补充未完成章节接着审校、单独的自然化审校）。
+
+- **四类任务**（`src/feasibilityReport/jobs.ts`，登记到 `src/jobs/registry.ts`）：`feasibility-analysis`、`feasibility-parameters`、`feasibility-human-writing`（参数为空）与 `feasibility-content`（`{ onlyMissing }`），`ai` 队列，`billable`，可续跑；互斥键 `project:{projectId}:feasibility-report`（与桌面版 feasibility-report 组相同，第 8 步的目录生成 / 调整沿用），冲突 409 `JOB_LOCKED`。
+  - 输入在任务开始时从数据库读取：资料分析读合并的资料正文（`readCombinedSourceMarkdown`，取代桌面版同名函数：各资料的 Markdown 按导入顺序、去掉首尾空白后以“## 文件名”开头、空行连接，合计不超过 32 MiB），资料须全部解析成功，没有资料时只按项目参数分析；关键参数与正文生成读目录配置引用的知识库文档中处理成功的文档的最终条目（`readReferenceKnowledgeItems`，取代桌面版 `getOutlineReferences` / `readReferences`）。
+  - 资料分析：超过上下文长度时逐段 `analysis:segment:N` 后 `analysis:merge`，否则 `analysis`；JSON 按 `collectJsonResponse` 的 3 次重试与修复；结果整理成九个板块的 Markdown，经 `saveAnalysisResult` 写入并清空目录和关键参数（与用户保存资料分析相同）。
+  - 关键参数：`parameters`，经 `saveKeyParametersResult` 写入并清空全部正文。
+  - 正文生成：首次执行时（`onlyMissing` 为假）先清空全部正文；多于一章时预热公共前缀（`content:warmup`），逐章 `content:<nodeId>` 生成（知识库素材与目标字数同桌面版），接着预热（`review:warmup`）后逐章 `review:<nodeId>` 自然化审校，审校结果丢了数量、单位、【待补充】【待确认】时保留原文（`protectFacts`）。单独的自然化审校只审校，不预热（与桌面版相同）。
+  - **续跑**：从头重新执行，已完成的调用按步骤键取回已保存的结果（6.4a）。正文任务另存 checkpoint（阶段、已审校的章节、正在审校的一章与审校前正文的哈希）：已写入正文的章节不再生成，已审校的不再审校；审校结果已写入、checkpoint 还没保存时中断，续跑时正文哈希已变化即视为已审校（审校的请求含正文，重新审校会是另一次收费的调用）。测试覆盖了“审校写入后、checkpoint 前中断”与“生成写入后中断”，续跑后的调用次数与不中断时相同。
+  - **写入带开始时的输入签名**（`inputSignature`：项目信息、资料的顺序 / 解析状态 / 产物 / 正文哈希、资料分析、目录结构与目录的项目名称和概述、关键参数；不含页面步骤、目录配置和正文）：四个写入函数在写入的同一事务中（项目锁内）核对，不符时不写入，任务以 `FEASIBILITY_REPORT_INPUT_CHANGED` 结束。暂停、余额不足、中断与取消时不改写结果。
+  - 任务日志只写阶段、章节序号与条数（章节 id 放在事件数据中），不写资料正文、章节标题和模型输出。
+- **正文锁**（取代桌面版 `assertContentUnlocked`）：正文生成或审校任务未结束（排队、运行、暂停、取消中）时，`PUT .../outline` 与 `PUT .../chapters/:nodeId` 返回 409 `FEASIBILITY_REPORT_CONTENT_LOCKED`（文案与桌面版相同），检查在 Store 的事务中（项目锁内）读任务状态；任务自己的写入（`saveChapterResult`）不检查锁。正文生成暂停中启动其他可研任务返回 409 `FEASIBILITY_REPORT_CONTENT_PAUSED`（与桌面版 `assertTaskCanStart` 相同），继续经 `POST /api/jobs/:jobId/resume`。
+- **接口**（`src/routes/feasibilityReport.ts`）：`POST .../feasibility-report/analysis-job`、`.../key-parameters-job`、`.../content-job`（`{ onlyMissing? }`，可省略）、`.../human-writing-job`，返回 202 `{ job }`；前置条件不满足 409（“请先填写项目名称”“请先生成报告目录”“请先生成关键参数”“请先生成正文，再进行自然化审校”，资料未解析完成 / 解析失败），余额不足 402。与桌面版相同，保存项目信息、资料分析、目录、关键参数，导入、移除资料与清空后取消本项目未结束的可研任务（含暂停中的；桌面版此时删除任务记录），响应中的状态在取消后读取；保存页面步骤与目录配置不取消。`GET` 的 `analysisTask`、`parametersTask`、`contentTask`、`humanWritingTask` 为最近一次的四类任务，`outlineTask`、`outlineAdjustmentTask` 随第 8 步仍为 `null`。
+- **测试**：单元测试 `tests/feasibilityReport/jobs.test.ts`（与桌面版对照、续跑、输入变化）；数据库测试 `tests/db/feasibilityReportJobs.test.ts`（真实 PostgreSQL 与 Valkey，模型用桩）覆盖签名覆盖的内容、签名不符时不写入、合并资料、引用的知识库条目、四类任务的成功与前置条件、正文锁、暂停中不能启动其他任务、402、互斥、保存上游内容时取消，以及经 worker 从接口入队到依次完成资料分析、关键参数、正文生成。去掉签名核对、正文锁、保存后取消、续跑时的正文哈希判断、续跑时不再清空、暂停中的启动检查、事实保护、签名中的目录结构，分别有 2、2、1、1、2、1、3、1 个用例失败。
+
+偏离与说明：
+
+1. **正文锁的范围更大**：桌面版只在运行、暂停中加锁，且保存目录前先取消运行中的任务（运行中的正文生成会被取消、目录照常保存，暂停中的才拒绝）；这里排队、运行、暂停、取消中一律拒绝，用户先取消任务再改目录，避免任务与用户交替写入同一章。
+2. **继续暂停的正文生成经 `/api/jobs/:jobId/resume`**：桌面版是带 `resume` 参数重新启动；`onlyMissing`（只补充未完成章节）保留为新任务的参数。
+3. **资料须全部解析成功才能分析**：桌面版导入时同步解析，不存在“解析中”的资料。
+4. **关键参数为空时任务失败**（“可研关键参数未返回内容”）：桌面版写入空的关键参数，之后正文生成因“请先生成关键参数”失败。
+5. **状态中的任务为最近一次的任务**：桌面版在上游变化时删除下游的任务记录；这里任务记录保留（保留期内），前端以结果是否为空判断是否需要重新生成。
+6. **签名不含目录配置**：与桌面版保存目录配置时不取消任务相同，任务开始后改了引用的知识库文档、目标字数不影响本次结果。
+7. **取消在提交之后**（与 6.11 相同）：提交与取消之间旧任务的写入因签名不符被拒绝。
+8. **日志不含章节标题**：桌面版写“正在撰写：章节标题”，这里写“正在撰写第 N/M 章”，章节 id 在事件数据中。
+9. **上下文长度与 JSON 输出模式**仍按登记事项第 26、27 项处理（默认 400,000 字，不带 `response_format`）。
+10. 本地验证用的是 PostgreSQL 16 与 Redis 7（CI 用 PostgreSQL 17 与 Valkey 8）；`tests/db/files.test.ts`、`cleanup.test.ts` 的真实 S3 用例与 `redis.test.ts` 的 ACL 用例需要 CI 的服务配置，只在 CI 中运行。
+
+#### 知识库任务（一）（#40，6.13a）
+
+只改 `server/`，不改 `client/`；没有新增依赖、迁移、数据库角色，没有修改已有的 RLS 策略。桌面版 `knowledgeBaseService.cjs` 中文档准备用到的切块、筛选、统一分段、提示词与候选条目整理原样搬运（`src/knowledgeBase/prepare.ts`）；单元测试加载桌面版文件（electron 与 `fileService.cjs` 换成桩）逐项对照，数据库测试用同一解析结果、同一模型输出执行桌面版的 `prepareDocument`（开发者模式、内存 Store）与服务端任务，全部模型请求逐字相同（单段与多段），写入的块、筛除块、候选条目与步骤结果相同。
+
+- **任务**（`src/knowledgeBase/jobs.ts`，登记到 `src/jobs/registry.ts`）：`knowledge-document-prepare`，参数 `{ documentId }`，`ai` 队列，`billable`，可续跑，组织级（`project_id` 为空），互斥键 `knowledge-document:{documentId}`（与桌面版按文档的 activePreparations / activeMatches 相同，6.13b 的匹配沿用）。流程与桌面版相同，按 `knowledge_document_steps` 逐步执行、已成功的步骤续用：`copy_source`（原件已在对象存储中，只记一步）→ `convert_markdown`（parse 沙箱中解析，不保留图片，去掉代码块围栏后经 `writeArtifact` 写入 Markdown 产物，产物只挂在来源文件下；之前的产物标为已被替换，失败时连同写了一半的一起标为已被替换）→ `build_blocks` → `extract_first_items` / `extract_supplement_items`（按统一分段并发，第一个实际执行的阶段先按段预热块前缀）→ `merge_candidates`，文档停在 `ready_for_matching`。
+  - 模型取组织设置中选择的平台模型，在第一次调用模型前读取：没有选择时解析与切块照常保存，选择后重试续用；步骤键 `warmup[:segment:N]`、`first-items[:segment:N]`、`supplement-items[:segment:N]`（JSON 的重试与修复另加 `:try-N`、`:repair-N`），续跑时已完成的调用取回结果、不再扣费（6.4a）；
+  - 失败时文档与该步骤标为 error，写给用户看的原因（解析失败与 6.6 相同的文案，“筛选后没有可分析的正文内容”“AI 未提取出可用知识条目”“知识库条目提取失败，AI 未返回有效 JSON”等），程序错误写“处理失败”并交给执行者写日志；用户取消时标为“处理已取消”；暂停、余额不足、中断时不改写文档和步骤；
+  - 文档被删除（原件进回收站）后 Store 读写 404，任务在下一次读写时停止并正常结束（写入影响 0 行即退出，#12 留下）；任务日志只写阶段与段数，不写文件名、正文和模型输出。
+- **接口**（`src/routes/knowledgeBase.ts`）：挂文档后逐个入队（入队失败如余额不足 402 时文档标为 error 并写入原因，充值后可重试）；新增 `GET .../documents/:documentId`、`POST .../documents/:documentId/retry`（202，处理中 409 `KNOWLEDGE_DOCUMENT_BUSY`，非失败 409 `KNOWLEDGE_DOCUMENT_NOT_RETRYABLE`，文案与桌面版相同，余额不足 402）；删除文档、文件夹后取消其中文档的处理任务。文档响应带 `job`（最近一次的任务，与 `GET /api/jobs/:jobId` 相同的形式；`src/jobs/store.ts` 新增 `latestLockKeyJobs`，`listJobs` 可按互斥键查）；处理中而任务已结束或不存在的文档按“上次任务中断，请点击重试继续处理”显示（取代桌面版启动时的 `recoverInterruptedDocuments`，只改读出的状态、不写库）。
+- **进度推送**：任务进度与文档进度相同，阶段说明写进任务日志，经 SSE 已有的 `job` / `job.progress` / `job.log` 事件推送，前端按 `job.id` 对应到文档（取代桌面版的 `knowledge-base:event`）。
+- **测试**：单元测试 `tests/knowledgeBase/prepare.test.ts`（切块与七种筛选原因、分段、提示词、输出整理与桌面版对照）；数据库测试 `tests/db/knowledgeBaseJobs.test.ts`（真实 PostgreSQL 与 Valkey，沙箱与模型用桩）覆盖与桌面版对照、暂停后续跑、未选择模型、重新解析与产物替换、四种失败、处理中被删除、取消，接口的入队、中断显示、重试、余额不足、删除后取消，以及经 worker 从挂文档到候选条目提取完成。去掉中断显示、步骤续用、取消时标记、删除后停止、入队失败时标记、删除文档后取消、删除文件夹后取消、失败时替换产物、成功时替换产物、重试的状态检查、重试的处理中检查，或在日志中写文件名，分别有 1、2、1、1、1、1、1、1、1、1、1、2 个用例失败。
+
+偏离与说明：
+
+1. **6.13 拆为 6.13a、6.13b**：段落匹配、遗漏补漏与保存结果（桌面版约 600 行，另有一套分段、条目子批与补漏合并）与文档准备相互独立，拆开以保持可审；6.13a 完成后文档停在 `ready_for_matching`（桌面版开发者模式的文案“可开始自动分段匹配”），6.13b 接着自动匹配并提供 `startMatching`。
+2. **文档准备在 `ai` 队列**：`SERVER_DESIGN.md` 第 5.2 节把“知识库文档准备”列在 `parse` 队列；任务同时解析（沙箱）和调用模型，与标书查重（6.10）相同放在 `ai` 队列，解析在沙箱中、受沙箱总数上限约束，已同步修改设计第 5.2 节。
+3. **进度经已有的任务事件推送**：不新增事件类型（新增要改 `JobContext` 与推送接口），前端按文档的 `job.id` 对应。
+4. **重试先把文档标为“等待处理”再入队**：桌面版直接开始处理；这里入队到开始执行之间显示等待处理，入队失败时恢复为 error。
+5. **不迁移旧数据兼容分支**：桌面版对没有步骤记录的旧候选条目、旧 Markdown 补写步骤记录，Web 版没有旧数据；`parser_label` 与桌面版相同不写入。
+6. **空解析结果的文案**沿用 6.6 的“未提取到有效 Markdown 内容，请检查文件内容”（桌面版“文档未解析出有效 Markdown 内容”）；JSON 三次不合法时的原因不含解析错误细节（与 6.9 偏离第 4 项相同）；上下文长度与 JSON 输出模式仍按登记事项第 26、27 项处理。
+7. 本地验证用的是 PostgreSQL 16 与 Redis 7（CI 用 PostgreSQL 17 与 Valkey 8）；`tests/db/files.test.ts`、`cleanup.test.ts` 的真实 S3 用例与 `redis.test.ts` 的 ACL 用例只在 CI 中运行。
+
+#### 知识库任务（二）（#41，6.13b）
+
+只改 `server/`，不改 `client/`；没有新增依赖、迁移、数据库角色，没有修改已有的 RLS 策略。桌面版 `knowledgeBaseService.cjs` 中匹配用到的条目子批、匹配与补漏的提示词、区间整理、子批结果合并、最终条目与报告原样搬运（`src/knowledgeBase/match.ts`），流程搬运自 `matchDocument`；单元测试 `tests/knowledgeBase/match.test.ts` 加载桌面版逐项对照，数据库测试用同一解析结果、同一模型输出执行桌面版的 `prepareDocument` + `matchDocument`（非开发者模式、内存 Store）与服务端任务，全部模型请求逐字相同（单段，以及多段且匹配与补漏都拆条目子批），写入的块、候选条目、匹配批次、最终条目、舍弃块组、报告与步骤结果相同。
+
+- **任务**（`src/knowledgeBase/jobs.ts`）：`knowledge-document-prepare` 在 `merge_candidates` 之后接着匹配（桌面版非开发者模式，文案“正在自动匹配段落”）；新增 `knowledge-document-match`（参数 `{ documentId, force }`，`ai` 队列，`billable`，可续跑，组织级，互斥键与准备相同 `knowledge-document:{documentId}`），只做匹配。流程与桌面版相同：
+  - `match_batches`：与准备共用统一分段（块前缀逐字相同），逐段匹配；整段请求超出预算时块前缀不变、条目按预算拆成子批，多批时先预热本段前缀；每段记匹配批次与指纹（本段块 id + 全部候选条目 id），已成功且指纹相同的段续用，已保存的任一批次与计划不一致时清空全部批次；
+  - `recover_missing`：遗漏块最多补漏 2 轮，按条目壳扣除预算后切段并发，超出预算时拆条目子批（子批结果每个块只归属一次：matches > new_items > discarded），新增条目编号延续；两轮后仍遗漏的由系统舍弃；
+  - `save_result`：回填正文，经 `saveMatchResult` 同一事务保存候选条目（含补漏新增）、最终条目、舍弃块组与报告，文档写“整理完成，共 N 条，覆盖率 X%”；
+  - 步骤键 `match[:segment:N][:items:M]`、`recovery:R[:segment:N][:items:M]`，预热另加 `:warmup`，续跑时已完成的调用取回结果、不再扣费（6.4a）；失败时匹配批次、步骤与文档写入原因（“知识库段落匹配失败，AI 未返回有效 JSON”“知识库遗漏段落补漏失败，AI 未返回有效 JSON”“缺少正文 block，请重新上传文档”“缺少候选知识条目，请等待条目提取完成”），暂停、余额不足、中断时不改写；
+  - `force`（已处理完成的文档重新匹配）：先确认已选择模型，再清除匹配批次及之后的结果。
+- **接口**：新增 `POST /api/knowledge-base/documents/:documentId/match`（202，取代桌面版 `startMatching`）：候选条目已提取（`ready_for_matching`）、处理完成或失败（含按中断显示）的文档可以开始匹配，处理完成的按 `force` 重新匹配；已有任务时 409 `KNOWLEDGE_DOCUMENT_BUSY`“该文档正在匹配中”（文档在匹配阶段）或 409 `KNOWLEDGE_DOCUMENT_NOT_MATCHABLE`“请等待候选知识条目提取完成”，状态不允许时同样 409 `KNOWLEDGE_DOCUMENT_NOT_MATCHABLE`；文档先标为“等待匹配段落”再入队，入队失败（余额不足 402 等）时恢复原来的状态。重试（`retry`）的准备任务完成后同样接着匹配，续用已完成的段。
+- **测试**：单元测试 `tests/knowledgeBase/match.test.ts`；数据库测试 `tests/db/knowledgeBaseJobs.test.ts` 新增与桌面版的全流程对照（400000 与 3000 字上下文）、匹配中暂停后续跑、批次与计划不一致时清空、匹配 / 补漏 JSON 不合法、匹配失败后重试、重新匹配（不强制时续用、未选择模型时不清除、强制时重做）、开始匹配接口，经 worker 的完整流程改为到“整理完成”。去掉自动匹配、批次续用、批次不一致时清空、强制时先确认模型、入队时的 force、入队失败时恢复状态、匹配中的 409 检查，分别有 10、2、1、1、1、1、1 个用例失败。
+
+偏离与说明：
+
+1. **重新匹配用单独的任务类型**：桌面版 `startMatching` 直接调用 `matchDocument`；这里新增 `knowledge-document-match`，与准备任务共用互斥键，前端按文档的 `job.id` 对应进度（同 6.13a 偏离第 3 项）。
+2. **开始匹配先标为“等待匹配段落”**：桌面版立即开始；入队到开始执行之间显示等待，入队失败时恢复原状态（同 6.13a 偏离第 4 项，但不改为 error，避免已完成的文档因余额不足被标为失败）。
+3. **强制重新匹配先确认已选择模型**：桌面版先清除再调用；这里没有选择模型时不清除已完成的结果。
+4. 桌面版的 `matchResult`（匹配批次、补漏轮次的完整 JSON）不单独保存：5.7 的 `saveMatchResult` 不含这一列，补漏轮次已在 `recover_missing` 步骤结果中；日志只写段数、轮次与条目数。
+5. 本地验证用的是 PostgreSQL 16 与 Redis 7（CI 用 PostgreSQL 17 与 Valkey 8）；`files.test.ts`、`cleanup.test.ts` 的真实 S3 用例与 `redis.test.ts` 的 ACL 用例只在 CI 中运行。
+
+#### 登录限流改用 Redis（#42，6.14）
+
+只改 `server/`，不改 `client/`；没有新增依赖、迁移、数据库角色，没有修改已有的 RLS 策略。接口、参数与错误响应（429 `TOO_MANY_REQUESTS`、`Retry-After`）不变。
+
+- **共享计数**（`src/auth/rateLimitStore.ts`）：固定窗口与连续失败退避各一个 Lua 脚本（原子执行），算法与进程内存实现相同（被拒绝的请求不计数、窗口不延长；第 freeFailures + n 次失败锁定 baseDelayMs × 2^(n-1)，不超过 maxDelayMs，成功后清零，最近一次失败超过 maxDelayMs 后作废）。时间取 Redis 服务器时钟，不受各实例时钟偏差影响。键为 `ratelimit:auth:{限流器名}:{SHA-256 前 32 位}`，邮箱和 IP 不以明文写入 Redis，键长有界；每个键都带过期时间，不需要清理任务。连接用 `failFastRedisOptions`：未连接时命令立即失败，登录请求不等待重连。
+- **退回进程内存**（`createAuthRateLimiters`）：Redis 出错（未连接、超时、内存满拒绝写入）时该次判断改用本进程的内存计数，仍然限流。日志都是 warn 级，不逐次写：进入时一条（`auth rate limit redis unavailable, falling back to in-process limits`）；仍在退回中时最多每分钟一条，写明已持续多久（`degradedMs`）；恢复时一条（`auth rate limit redis recovered, shared limits restored`，`degradedMs` 为退回的总时长）。未配置 `REDIS_URL` 时只用进程内存（开发、测试），启动日志提示 `auth rate limits are per process`。
+- **接线**：`src/server.ts` 按 `REDIS_URL` 创建并在关闭时释放，`buildApp` 新增 `rateLimitStore`；限流器方法改为异步，`routes/auth.ts`、`routes/admin.ts` 改为 `await`，同一请求的多个维度并发判断。
+- **客户端 IP**：按 IP 的键仍取 `request.ip`，由 Fastify 按 `TRUSTED_PROXIES` 解析（旧仓库 PR #30），存储换成 Redis 不影响这一步：默认不信任代理时伪造的 `X-Forwarded-For` 一律忽略，配置可信代理后只采信代理附加的最右一项，绕过代理直连时同样忽略。进程内存计数的测试见 `tests/clientIp.test.ts`，Redis 计数的测试见 `tests/db/rateLimitStore.test.ts` 的“客户端 IP（TRUSTED_PROXIES）”（直接核对 Redis 中按哪个 IP 计数，伪造的 IP 计数为 0）。
+- **测试**：单元测试 `tests/auth/rateLimit.test.ts` 新增共享计数优先、出错退回内存且不放行超限请求、退回 / 持续 / 恢复三种 warn 日志及其 `degradedMs`、清零时两边都清；数据库测试 `tests/db/rateLimitStore.test.ts`（真实 Redis）覆盖窗口计数与剩余时长、窗口到期恢复、两个实例共用限额、键中无明文邮箱且有过期时间、退避的指数增长与上限、解锁与记录作废、大量失败不溢出，以及两个 api 实例按同一份限额返回 429、Redis 不可用时登录接口照常限流、客户端 IP 的三种情形。
+
+偏离与说明（以下 3 项已在 #42 确认）：
+
+1. **未用 `@fastify/rate-limit`**：`SERVER_DESIGN.md` 第 3.5 节写的是 `@fastify/rate-limit` + Redis。它不支持“连续失败后指数退避”和“按邮箱”这类在路由内部算键的判断，沿用旧仓库 PR #29 的算法写成 Lua 脚本，不新增依赖。
+2. **Redis 不可用时退回进程内存计数**（不是全部放行，也不是全部拒绝）：全部拒绝会让 Redis 故障变成无法登录；全部放行会让故障期间失去暴力破解防护。退回内存后这段时间的限额按实例数放大，与 6.14 之前相同。
+3. Redis 重启或被清空时计数清零（Valkey 不持久化，第 8.4 节），攻击者最多多得一个窗口的额度、退避锁定提前解除。
+4. 本地验证用的是 PostgreSQL 16 与 Redis 7（CI 用 PostgreSQL 17 与 Valkey 8）。
 
 #### 决定事项（#23）
 
@@ -1026,6 +1421,204 @@ AI 网关加固，做法见 `docs/SERVER_DESIGN.md` 第 10.9 节。`client/` 未
 10. **任务记录的保留期**：**同意**。已结束的 `jobs` 保留 90 天、`job_events` 保留 30 天，写进隐私声明。**保留期清理不涉及计费数据，账本永久保留**：`billing_ledger` 不删除（其不可修改、不可删除的触发器不变），`usage_records` 同样不删除；因此 6.4 不给 `usage_records.job_id` 加外键（否则删除任务记录会被外键挡住或连带用量记录），用量记录中只保留 `job_id` / `job_type` 的值，任务删除后按任务汇总的费用仍可从用量记录算出。
 
 两处偏离均已确认：可研正文生成与自然化审校提前到第 6 步（第 4 项）；任务互斥改用通用的 `lock_key`（见“任务模型的细化”，6.2 实现时同步修改 `SERVER_DESIGN.md` 第 5.1、5.3 节）。
+
+### 第 7 步说明
+
+#### 前置：CI 新增 .NET 编译与 OpenXmlHelper 测试（#43）
+
+品牌改名第三部分（#5）登记的前置事项，在 Word 导出迁到服务端之前完成。只改 `openxmlhelper/`、CI 和文档，不改助手的行为（`OpenXmlHelper.csproj` 只加 `InternalsVisibleTo`，打包脚本 `prepare-openxml-helper.cjs` 只发布助手项目，测试项目不进安装包）。
+
+- **测试项目** `openxmlhelper/tests/OpenXmlHelper.Tests/`（xUnit，45 个用例）：按 Main 的约定写 `request.json`、经 `JobRunner` 执行、读 `result.json` 和生成的 docx，不依赖仓库中的二进制文件（配图在测试中生成 PNG）：
+  - 协议与路径：`ping`、未知动作、缺 `request.json`、任务编号与任务目录不能越出工作区、`output` 只能是任务目录内的 docx、`asset_root` 不能越出工作区；真实拉起助手进程，验证一行 `run` 进、一行 `done` 出，无法解析的信号和非法编号不使进程退出；
+  - 配图：四种 `data-app-size` 的画框宽度与比例、`max_width_percent`、cover 居中裁切与 contain 不裁切、图注保留与配图提示 `template` 不写入、图片缺失时原位提示并返回 `imageWarnings`、文件头无法识别时只按非可核对类型的声明原样嵌入、figure 结构错误与越出工作区的 `data-app-asset-ref` 直接失败；
+  - 表格预设：`imageText`（44%）、`threeImages`、`fourImages`、无预设时按含 `colspan` 的逻辑网格计算，单元格内配图不受独立配图的宽度上限限制；
+  - 标题编号：自定义模板的各占位符（`{zh}`、`{full}`、`{num}`、`{circled}`、`{alpha}`、`{ROMAN}` 等）、`outline-decimal` 与不编号、整本导出按 `data-app-outline-number` 编号且正文内部标题不参与、基础范围直接用目录编号；
+  - 页面范围：`data-app-export-page-template` 切换时下一页分节、相同页面范围的样式范围不分节、基础页面沿用纸张方向与页边距但页眉页脚为空、页码起始值只写一次，整本输出通过 Open XML 校验（Microsoft 365）。
+- **CI**：新增 `OpenXmlHelper build / test` 任务：按 `global.json` 安装 .NET SDK，按测试项目的 `packages.lock.json` 以 locked mode 还原，NuGetAudit 检查直接与传递依赖（high / critical 视为错误），Release 编译后运行测试。
+- **新增依赖**（只在测试项目）：`Microsoft.NET.Test.Sdk` 18.10.1（MIT）、`xunit` 2.9.3（Apache-2.0）、`xunit.runner.visualstudio` 3.1.5（Apache-2.0）；传递依赖 `Microsoft.CodeCoverage`、`Microsoft.TestPlatform.ObjectModel`、`Microsoft.TestPlatform.TestHost`（MIT），`xunit.abstractions`、`xunit.analyzers`、`xunit.assert`、`xunit.core`、`xunit.extensibility.*`（Apache-2.0）。
+- **测试串行执行**：渲染器有进程级的 HTML 与配图缓存（静态字段，非线程安全），助手本来一次只跑一个任务，测试同样关闭并行。服务端扩展时按进程（容器实例）扩展，不在同一进程内并发跑任务。
+
+发现的问题（本 PR 不改助手行为，登记给第 7 步）：
+
+1. **整本导出缺少 `page` 一节时报错**：`whole_document: true` 而 `export_format` 没有 `page` 时抛出“Operation is not valid due to the current state of the object.”。桌面版 Main 经 `normalizeExportFormat` 总会补齐，服务端调用助手前同样要先规范化 `export_format`，不要把未规范化的用户配置直接交给助手。
+2. **`openxmlhelper/开发说明.md` 提到的 `client/scripts/check-technical-plan-export.cjs` 不存在**：其中配图、表格预设、标题编号和页面范围已由本 PR 的测试覆盖，八种图片格式逐一识别与格式错配尚未覆盖，第 7 步 Word 导出迁移时补上（#45 已补上，说明中的对应句子已改为指向测试）；`--ipc` 的 Electron 链路检查随第 7 步改为服务端接口测试后，删除该说明。
+
+#### 拆分计划（#44）
+
+只做计划，不改代码。9 项决定事项已在 #44 确认，见本节末尾“决定事项（#44）”。
+
+**范围核实**（按桌面版代码逐项核对路线图第 7 步写的“Word 导出、模板样张、模板提取，离屏渲染”）：
+
+| 桌面版功能 | Main 实现 | 用到的助手动作 / 离屏渲染 | 输入从哪里来 | 归属 |
+|---|---|---|---|---|
+| 模板样张 `templates.renderPreview` | `templateIpc` → `openXmlHelperService.renderRestrictedHtmlDocx`（预览队列：同一请求合并、新请求取代旧请求、按内容哈希缓存） | `render-restricted-html-docx`（非整本）；页眉页脚装饰 SVG 经隐藏窗口转 PNG（`chromeAssetService` → `localImageRenderService`） | Renderer 按模板配置组装的样张 HTML（`src/shared/bodyHtml/documentTemplate.ts`）、随包的样张配图 `assets/content-template-preview` | **第 7 步** |
+| 模板样张导出 Word（`export.word` 的 `template_html`） | `exportService` → `createRestrictedHtmlDocx` | 同上 | 同上 | **第 7 步** |
+| 技术方案整本导出 Word（`export.word`） | `technicalPlanExport.build` → `createRestrictedHtmlDocx(..., { wholeDocument: true })`，最长 30 分钟 | `render-restricted-html-docx`（`whole_document`）；页眉页脚 PNG 同上 | 目录与人工正文（第 5 步已入库）；`ai-generate` 小节的 HTML 与配图在**正文 Agent 工作区**（第 8 步） | **第 7 步**；AI 小节的读取随第 8 步接上 |
+| 小节 Word 预览 `technicalPlan.previewContentWord` | `contentGenerationOutput.previewContentSection` | `render-restricted-html-docx` | 只读正文 Agent 工作区中的 `正文/<id>.html` 和 `所选模板配置.json` | **第 8 步**（偏离，见下） |
+| 模板提取 | `templateExtractionTask` 驱动 Pi Agent，Agent 用 `write` / `edit` 写分类文件，再经 Pi 工具 `openxml` 调用 | `list-blocks`、`extract-chapters`、`scan-template-fields`、`apply-template-fields` | 用户上传的招标 Word 原件 | **第 8 步**（偏离，见下） |
+| 正文插入 Word | Pi 工具 `openxml` | `insert-body-html` | Agent 生成的受限 HTML | **第 8 步** |
+| HTML / Mermaid 配图转 PNG | `localImageRenderService` | 离屏 Chromium，执行页面脚本 | AI 生成的 HTML / Mermaid | **第 8 步**（消费方是正文生成） |
+| docx-editor 分页测量（布局预算、格式自检） | `contentGenerationLayout` + `wordLayoutPreload` | 离屏 Chromium，执行 docx-editor | 正文生成过程中的 Word | **第 8 步** |
+| 系统字体列表 `systemFonts.list` | `systemFontService`（枚举本机字体） | — | — | **第 7 步**（第 5 步表 A 登记“随第 7 步镜像字体”） |
+
+结论：第 7 步只有三个用户功能（模板样张、样张导出 Word、整本导出 Word）和字体列表；它们用到的离屏渲染只有**页眉页脚装饰 SVG 转 PNG**（不执行页面脚本）。其余助手动作和离屏渲染的消费方都在 Agent 任务里，随第 8 步迁移，届时复用本步建好的沙箱模板。
+
+**OpenXmlHelper 在服务端的运行方式**
+
+要求：助手处理的都是不可信输入——AI 生成的受限 HTML、用户填写的模板配置（页眉文字、编号模板等）、Renderer 传来的样张 HTML，第 8 步起还有用户上传的招标 Word（模板提取）。它在进程内用 AngleSharp、HtmlToOpenXml、Open XML SDK 解析这些输入，与第 6 步的文档解析属于同一类风险（`SERVER_DESIGN.md` 第 7.1 节“LibreOffice 转换、文档解析、Chromium 渲染 AI 生成的 HTML……复用同一套沙箱”）。
+
+| | A. 常驻 `openxml` 容器，与 worker 共享临时卷（设计第 1.1、8.1 节原方案） | B. 每个任务一个沙箱，经 `sandbox-runner` 新增 `export` 模板 **（采用）** | C. 每个组织一个常驻助手进程 |
+|---|---|---|---|
+| 做法 | 保留“任务目录 + 一行 JSON 信号”协议，worker 把输入写到共享卷，向常驻进程发 `run` | 与 `parse` 模板同一套机制：`--network none`、gVisor、只读根文件系统、非 root、`cap-drop ALL`、资源与时长上限；worker 经 `copyIn` 放入请求和配图，沙箱内一次性运行助手，`copyOut` 取回 docx 与 `result.json` 并校验；用完即毁 | 按组织懒启动、空闲回收的助手容器，组织之间不共享 |
+| 隔离强度 | 弱：所有组织共用一个进程和一个卷，被利用的一次转换能读到之后经过它的其他组织的文件；助手的静态缓存（解析过的 HTML、按路径缓存的配图，最多 32 MiB）跨任务存活；`ResolveWorkspacePath` 只做大小写不敏感的前缀比较、不解析符号链接，在共享卷上不能作为隔离边界 | 强：单个任务一个全新容器，断网，不共享任何状态，缓存随沙箱销毁；路径问题被限制在本任务自己的文件内 | 中：组织之间隔离，同一组织的任务之间共享 |
+| 与设计 | 一致（但与第 6 步决定事项第 1 项“处理不可信输入一律进沙箱”不一致） | 偏离设计第 1.1、8.1 节的部署形态，符合第 6.2、7.1 节和第 6 步的做法；实现时同步改设计 | 偏离；要新写容器生命周期管理 |
+| 工作量 | 起步最小；要新写共享卷、进程守护、崩溃重启 | 中：沙箱基础设施第 6 步已有，只加模板、镜像和助手的一次性运行模式 | 最大 |
+| 性能 | 无额外启动开销 | 每个任务多一次容器启动（gVisor 约 150–500 ms）加 .NET 启动（自包含发布约 100–300 ms）；样张约 1 秒级，7.1 实测；整本导出本来就是分钟级 | 首次冷启动，之后同 A |
+
+**采用 B**（决定事项第 1 项）。具体约定（7.1 实现，同步写进 `SERVER_DESIGN.md` 第 1.1、7、8.1 节）：
+
+- **助手的一次性运行模式**：新增命令行参数（如 `openxmlhelper --workspace /work --run <job>`），执行一个任务目录、写 `result.json` 后退出，退出码表示成败；常驻 stdin / stdout 模式保留给桌面版，两种模式共用 `JobRunner`，桌面版行为不变；
+- **镜像**：Node 24（运行装饰生成器与入口脚本）+ Playwright 的 Chromium + 助手 `linux-x64` 自包含发布（不裁剪，同桌面版打包约定）+ 开源中文字体（决定事项第 3 项），按 digest 固定，不含编译器和网络工具；与 `parse` 镜像、第 8 步的 Agent 镜像分开；
+- **沙箱内的流程**（入口 `node /opt/export/entry.mjs <mode>`，参数只有模式名）：读 `/work` 中的请求 → 用 `client/electron/shared/chrome/index.mjs`（镜像构建时复制，与桌面版同一份代码，测试核对一致）生成页眉页脚 SVG → Chromium 转 PNG（**禁用 JavaScript**：浏览器上下文 `javaScriptEnabled: false`，装饰页面固定尺寸、加载后直接截图，桌面版 `renderExactHtmlToPng` 本来也不执行脚本；断网）→ 运行助手一次 → 只把 docx 和 `result.json` 留在输出目录；
+- **输入**：worker 组装好的请求（HTML、规范化后的 `export_format`）与配图；配图只由 worker 按 `data-app-asset-ref` 解析成本项目可见的产物后放入（RLS 决定可见性，见 7.4），沙箱不能按引用自己去取；样张的固定配图打进镜像；样张 HTML 由前端传来，入队前在服务端用与 `restrictedHtml` 同一套白名单重新校验，不通过即拒绝（决定事项第 8 项，见 7.3）；
+- **输出校验**：只收 `.docx` 与 `result.json` 两个普通文件，大小上限；`result.json` 只取 `ok`、`blockCount`、`imageWarnings` 等已知字段，给用户的失败原因按错误代码决定，不直接采用助手的错误文字（同 6.6）；docx 写入前再做一次 ZIP 结构检查（条目数、解压大小）；
+- **规范化 `export_format`**：服务端在入队时按桌面版 `normalizeExportFormat` 规范化（#43 发现的问题第 1 项），助手不再收到缺字段的配置；
+- **测试**：与 `parse` 模板相同的隔离测试（断网、只读、超时与超内存终止、取回时拒绝符号链接和多余文件），另加：受限 HTML 中的远程图片、`<link>`、CSS `url()` 不被请求；装饰 SVG 中的外部引用不被加载；.NET 与 Chromium 在 gVisor 下能运行（设计第 7.2 节预留的兼容性问题以实测为准）。
+
+**拆分与顺序**（样张先于整本导出：样张的输入最简单、没有项目数据，先用它把沙箱、镜像和下载链路跑通；整本导出再加快照、配图解析、长任务进度和产物保存）：
+
+| 序号 | 内容 | 依赖 | 状态 | PR |
+|---|---|---|---|---|
+| 7.0 | 前置：CI 新增 .NET 编译与 OpenXmlHelper 测试 | — | 已完成 | #43 |
+| 7.p | 拆分计划（本节） | 7.0 | 已完成 | #44 |
+| 7.1 | `export` 沙箱：助手一次性运行模式（C#，含测试）、镜像（Node + Chromium + 助手 + 开源字体与 fontconfig 映射）、`export` 模板与资源上限、入口脚本（Chromium 禁用 JavaScript，有测试证明页面脚本不执行）、gVisor 下的隔离与兼容测试，CI 构建镜像并运行；补上 #43 未覆盖的八种图片格式识别与格式错配用例 | 7.0 | 已完成 | #45 |
+| 7.2 | 字体与装饰：`GET /api/fonts` 返回模板可选字体名的固定清单（取代 `systemFonts.list`，含义见决定事项第 3 项）；装饰生成器在沙箱中的输出与桌面版逐项核对（同一配置生成的 SVG 一致） | 7.1 | 已完成 | #46 |
+| 7.3a | 样张的服务端输入校验（从 7.3 拆出，见“样张的输入校验”）：受限 HTML 的服务端实现与前端 `restrictedHtml` 同一套白名单（常量与提示文字由测试逐项核对，行为由同一份用例在两端核对），样张校验 `validatePreviewHtml`（没有任何错误或警告、`data-app-asset-ref` 只能引用固定样张配图、只转发重新序列化的 HTML）；`export_format` 规范化与桌面版 `normalizeExportFormat` 逐项相同。不接任何接口 | 7.1 | 已完成 | #47 |
+| 7.3b | 样张在沙箱中生成（从原 7.3b 拆出，见“样张在沙箱中生成”）：样张的固定配图打进 export 镜像，preview 模式只能引用它们、不接受 worker 放入的配图与 `asset_types`；worker 端 `renderTemplatePreview`（校验与规范化 → export-preview 沙箱 → 只放 `request.json` → 取回并校验输出 → 销毁），输出校验（`result.json` 只取已知字段、docx 的 ZIP 结构检查）与错误代码到提示文字的映射；真实沙箱中的端到端测试。不接任务、接口与产物 | 7.3a | 已完成 | #48 |
+| 7.3c | 样张任务与产物：`template-preview` 任务（`export` 队列，`lock_key` 按用户，新请求取消排队中的旧请求，对应桌面版“新请求取代旧请求”）调用 7.3b 的 `renderTemplatePreview`；docx 存为产物（迁移登记 docx 种类与不属于项目的样张产物，1 天后由清理任务删除，计入组织存储配额）；同一组织内按内容哈希复用最近的结果 | 7.3b | 未开始 | — |
+| 7.3d | 样张接口与下载：`POST /api/export-templates/preview`（请求为样张 HTML 与配置）经 7.3a 的 `validatePreviewHtml` 校验，不通过返回 400、不入队；结果经 SSE 通知，以附件方式下载给前端的 docx-editor 预览；样张导出 Word 复用同一任务（固定使用本次设置、不参与合并）；WebBridge 的 `templates.renderPreview` 接上（或随 WebBridge 的通用机制，届时说明） | 7.3c | 未开始 | — |
+| 7.4 | 技术方案整本导出 Word：`technical-plan-export` 任务（`export` 队列，`lock_key` 按项目），入队时取快照（目录、人工正文、所选模板），worker 中按桌面版 `technicalPlanExport` 组装整本 HTML（目录编号、范围标记 `data-app-export-template` / `data-app-export-page-template`）；`data-app-asset-ref` 统一为产物引用（如 `artifact:<uuid>`），worker 只解析本项目可见的图片产物；`ai-generate` 小节在第 8 步之前按桌面版“正文未生成”的提示处理；进度经 SSE；产物新增迁移登记 docx 种类，按决定事项第 6 项保存与清理（计入组织存储配额，超出配额时导出失败并提示）；`export.word`、`export.openFile` 改为下载；**必做（#45 确认时登记）**：① sandbox-runner 对大请求体（放入的归档）改为流式转发与校验，不在内存中整体缓存，并测试多个大请求并发时 runner 的内存保持稳定；② 解决 tmpfs 计入沙箱内存导致输入接近 1 GiB 时 OpenXmlHelper 内存不足的问题，方案由 7.4 提出、用户决定 | 7.3d | 未开始 | — |
+
+7.2 与 7.3 没有合并（#46 单独完成 7.2）。7.3 拆成 7.3a（输入校验）与 7.3b（任务、接口与产物），理由见“样张的输入校验（#47，7.3a）”；原 7.3b 再拆成 7.3b（沙箱中生成）、7.3c（任务与产物）、7.3d（接口与下载），理由见“样张在沙箱中生成（#48，7.3b）”。
+
+**登记给第 8 步**（本步不做，第 8 步复用 `export` 模板或在其上新增模板；其中**必须执行页面脚本**的功能，按决定事项第 9 项在第 8 步拆分计划中逐项列出、由用户决定：Mermaid 转图要运行 `mermaid.js`，HTML 配图转图要在页面中运行测量脚本取内容包围盒，docx-editor 分页测量与格式自检要运行整个 docx-editor）：模板提取、`insert-body-html`、小节 Word 预览 `previewContentWord`、整本导出中 `ai-generate` 小节的读取、HTML / Mermaid 配图转 PNG（需要执行页面脚本）、docx-editor 分页测量与格式自检的定位书签。Agent 在沙箱中调用 `openxml` 时，按设计第 7.3 节走业务工具 RPC：worker 校验参数和归属后在 `export` 沙箱中执行，不把助手放进 Agent 沙箱。
+
+**与路线图、设计的偏离**（已在 #44 确认）：
+
+1. **助手按任务进沙箱，不做常驻共享卷容器**（决定事项第 1 项）：偏离 `SERVER_DESIGN.md` 第 1.1、8.1 节和本文第 4、5 节的原方案，理由见上表；
+2. **模板提取移到第 8 步**：路线图第 6 节写在第 7 步，但它由 Pi Agent 驱动，Agent 要用 `write` / `edit` 写分类文件（`templateExtractionTask.cjs`），与第 6 步把目录生成等改随第 8 步的理由相同；
+3. **小节 Word 预览移到第 8 步**：它只读正文 Agent 工作区（第 5 步说明把它列在第 7 步），工作区的服务端形态由第 8 步决定；
+4. **离屏渲染在本步只做装饰 SVG 转 PNG**：路线图写“离屏渲染改成 Playwright”，其中 HTML / Mermaid 转图和 docx-editor 分页测量的消费方都在第 8 步，本步把 Chromium 放进 `export` 镜像并验证能在 gVisor 下运行，第 8 步再加执行脚本的渲染。
+
+#### 决定事项（#44）
+
+1. **助手的运行方式**：**采用 B**，每个任务一个 `export` 沙箱。
+2. **镜像与模板的划分**：**一个 `export` 模板**（Node + Chromium + 助手），一次导出只启动一个沙箱。
+3. **字体**：镜像只装开源字体 Noto CJK（SIL OFL 1.1），用 fontconfig 把宋体、仿宋映射到衬线体，黑体映射到无衬线体。**服务端字体只影响排版测量和装饰 PNG 中的文字**，导出的 docx 保留模板选择的原字体名，由用户的 Word 用本机字体显示。`GET /api/fonts` 返回模板可选字体名的固定清单，不是服务器上实际安装的字体。
+4. **范围调整**：模板提取、小节 Word 预览、HTML / Mermaid 转图与分页测量**随第 8 步**（偏离第 2~4 项）。
+5. **资源上限**：**采用起步值**。样张：内存 1 GiB、CPU 1 核、墙钟 60 秒。整本导出：内存 2 GiB、CPU 1 核、墙钟 20 分钟。输入不超过 1 GiB，配图不超过 2,000 张，输出 docx 不超过 100 MiB。`export` 队列全局并发 2，组织级任务并发 3。
+6. **导出产物的保存**：整本导出的 docx 每个项目只保留最近一次，7 天后由清理任务删除；样张结果 1 天后删除。**两者都计入组织存储配额**。
+7. **计费**：导出和样张**不计费、不检查余额**，只靠队列并发、互斥和请求频率限制控制用量。
+8. **样张 HTML 的来源**：**接受前端传来的 HTML**，但服务端必须用与 `restrictedHtml` 同一套白名单重新校验，不通过即拒绝；不能只做大小和结构检查（7.3）。
+9. **Chromium 自身的沙箱**：**同意关闭**（`--no-sandbox`，外层是断网、只读、非 root 的 gVisor 沙箱），但**导出时禁用 Chromium 的 JavaScript**。第 7 步只有装饰转图用到 Chromium，不需要执行脚本。第 8 步中必须执行脚本的功能（Mermaid、HTML 配图测量、docx-editor 分页测量）届时逐项列出，由用户决定。
+
+#### export 沙箱（#45，7.1）
+
+按拆分计划的方案 B 和决定事项第 1、2、3、5、9 项实现，做法见 `docs/SERVER_DESIGN.md` 第 7.9 节（同步修改了第 1.1、8.1 节对 OpenXmlHelper 的描述和第 1 节技术栈表）。只建沙箱、镜像和入口，不接任何任务（7.3 起）；没有迁移，`client/` 未改动，`server/package.json` 没有变化。要点：
+
+- **助手的一次性运行模式**（C#）：`openxmlhelper --workspace <目录> --run <任务编号>` 执行一个任务目录、写 `result.json` 后退出，退出码 0 成功、1 任务失败（原因在 `result.json`）、2 参数不合法（不执行任务）；不读 stdin、不写信号。参数解析移到 `Host/CommandLine.cs`，一次性运行在 `Host/OneShot.cs`，与常驻模式共用 `JobRunner`，桌面版行为不变。新增测试 `OneShotTests`（10 项，含真实拉起进程、stdin 保持打开时也立即退出）；
+- **八种图片格式**（#43 登记）：`ImageFormatTests` 24 项——PNG、JPEG、GIF、BMP、WebP、TIFF、EMF、WMF 逐一按文件头识别（Word 图片部件类型、宽高比）；扩展名与声明类型都冒充另一种格式时按内容嵌入；声明为可核对格式而内容无法识别时原位提示并返回 `imageWarnings`。测试中按需生成各格式的文件头，不提交二进制文件。OpenXmlHelper 测试共 79 项；
+- **模板**（`src/sandbox/templates.ts`）：`export-preview`（内存 1 GiB、CPU 1 核、命令墙钟 60 秒、沙箱最长 5 分钟）与 `export-document`（内存 2 GiB、CPU 1 核、命令墙钟 20 分钟、沙箱最长 35 分钟，输入至多 2,000 张配图 + 请求、合计 1 GiB），同一个 `export` 镜像；网络、只读、用户、能力、挂载、环境变量、日志与 parse 完全相同（单元测试逐项核对）；输入在 `/work`（两层：`request.json`、`assets/<文件名>`），取回只收 `document.docx` 与 `result.json`（docx 不超过 100 MiB）；命令只有 `export`，模式由模板写死、不能追加参数。实测导出峰值约 76 个线程、150 MiB 内存，`pids` 沿用 256；
+- **镜像**（`server/sandbox/export/Dockerfile`）：多阶段构建——.NET SDK 阶段发布助手（linux-x64、自包含、不裁剪、不打成单文件）；Node 阶段按 lockfile 安装 `playwright-core` 并下载对应版本的 chromium-headless-shell；最终镜像为与 api 相同的 Node 24 基础镜像 + chromium-headless-shell 的运行库 + `libicu72` + `fontconfig`、`fonts-noto-cjk`、`fonts-dejavu-core`，删除 npm / corepack / yarn 与 setuid 位，用户 10001，没有 .NET SDK、编译器、网络工具。装饰生成器（`client/electron/shared/chrome/*.mjs`）与助手源码经具名构建上下文取得，与桌面版同一份代码；
+- **字体映射**（决定事项第 3 项，`fonts/65-zhibiao-cjk.conf`）：前端 `FONT_OPTIONS` 及其 CSS 回退名中，衬线类（宋体、仿宋、楷体、隶书、华文宋体等）映射到 Noto Serif CJK SC，无衬线类（黑体、微软雅黑、等线、幼圆、苹方等）映射到 Noto Sans CJK SC；构建时生成字体缓存。测试按前端 `FONT_TO_CSS` 中每个字体名的 CSS 通用族（serif / sans-serif）逐个核对 `fc-match` 的结果；
+- **入口**（`entry.mjs`、`render.mjs`）：读 `/work/request.json`（受限 HTML、已规范化的 `export_format`、可选 `asset_types`）与 `/work/assets/` → 装饰生成器生成页眉页脚 SVG → Chromium 栅格化（**禁用 JavaScript**，`--no-sandbox`，每次截图一个新的浏览器上下文，固定画布、加载后直接截图，倍率与桌面版相同为 3）→ 运行助手一次（独立进程组，样张 45 秒 / 整本 18 分钟后对整个进程组 SIGKILL）→ `/output` 只有 docx 与只含 `version`、`blockCount`、`imageWarnings`（截断）的 `result.json`。`/work` 中出现其他文件、请求不合法、`asset_types` 引用不存在的配图时拒绝。失败时输出目录为空，只在标准输出给错误代码（`request_invalid`、`too_many_images`、`chrome_render_failed`、`helper_failed`、`helper_timeout`、`output_too_large`，参数不合法 64、导出失败 65），助手和浏览器的错误文字不外传；
+- **sandbox-runner**：新增 `SANDBOX_EXPORT_IMAGE`（生产必须按摘要固定）；`SandboxTemplate` 新增 `image` 字段，driver 按镜像名取引用。compose 的 sandbox-runner 透传 `SANDBOX_EXPORT_IMAGE`，开头注释写了构建命令；
+- **CI**：`server-checks` 构建 export 镜像（具名构建上下文），沙箱测试步骤加 `TEST_SANDBOX_EXPORT_IMAGE`，另对 `sandbox/export/package-lock.json` 跑 `npm audit --audit-level=high`；job 超时从 30 分钟改为 50 分钟；
+- **新增依赖**（只在 export 镜像中）：`playwright-core` 1.63.0（Apache-2.0，2026-09-04 发布，没有传递依赖），它下载的 chromium-headless-shell（Chrome for Testing 153.0.8010.12，revision 1243，BSD-3-Clause 及其第三方组件许可证）；apt 包 `fontconfig`（MIT 类）、`fonts-noto-cjk`（SIL OFL 1.1）、`libicu72`（Unicode / ICU 许可证）及 Chromium 的运行库（LGPL / MIT / BSD 类的系统库，动态链接）。OpenXmlHelper 的 NuGet 依赖不变。
+
+**测试**（`npm run test:sandbox`，CI 在 gVisor 下运行）：
+
+- **与 parse 相同的隔离用例**：把 `tests/sandbox/docker/isolation.test.ts` 中的网络、文件系统与权限、资源上限、放入与取回、沙箱之间不共享的用例抽成按模板参数化的 `isolationSuite.ts`（parse 的用例内容不变，内存分配量、进程数、写满的目录、取回规则改为取自模板），parse、`export-preview`、`export-document` 各跑一遍（`exportIsolation.test.ts`，每个模板 26 项）。每项都有去掉该项加固的对照组：去掉 `--network none` 后连上宿主、去掉只读后根以 `rw` 挂载、去掉内存上限后分配模板上限两倍的内存成功、去掉 pids 上限后 400 个进程全部启动、去掉 CPU 上限后 4 线程并行（宿主至少 3 核时）、原始归档中确有被校验拒绝的符号链接；
+- **Chromium 禁用 JavaScript**（`export.test.ts`）：恶意装饰 SVG 含 7 种执行脚本的方式——SVG `<script>`、SVG `<image onerror>`、`foreignObject` 中的 `<img onerror>`、`<iframe srcdoc>` 中的脚本、SMIL `onbegin`、SVG 之后的 HTML `<script>`、根 `<svg onload>`，每种成功时把自己的格子涂红。它经 Node 的模块加载钩子替换装饰生成器的输出后走**完整的导出流程**（入口、渲染、助手都是镜像中的原样代码），从导出的 docx 中取出页眉图片解码：7 个格子都是白色，导出正常完成。**对照组**：同一钩子另把渲染模块拿到的浏览器上下文改为 `javaScriptEnabled: true`（其他不变），7 个格子全部变红；
+- **外部引用**：装饰中的远程 `<image>`、`foreignObject` 中的 `<img>` 与 `<link>`、`@import` 与 CSS `url()`，受限 HTML 中的 `<link>`、`@import`、CSS `url()`、内联样式的 `url()`、配图的 `src`，指向宿主上的监听端口：沙箱中导出成功、监听端口没有收到任何请求。**对照组**：去掉 `--network none`，同一导出中 Chromium 请求了装饰的 5 个外部地址（`/svg-image.png`、`/foreign-object-img.png`、`/foreign-object-link.css`、`/svg-import.css`、`/svg-css-url.svg`），助手没有请求受限 HTML 中的任何地址（它只按 `data-app-asset-ref` 读沙箱内的文件）；
+- **任务间隔离**（两个模板各一项）：带唯一标记的导出完成后，原沙箱中确有输入、装饰 PNG、助手任务目录和浏览器配置目录；新建的沙箱中 `/work`、`/output`、`/tmp` 为空、找不到标记，再导出一次的结果中没有标记；
+- **端到端与错误**：样张（装饰 + 配图）与整本导出经模板登记的命令完成；请求不合法的 4 种情况与助手失败时只给错误代码、输出为空；镜像中的装饰生成器与仓库逐个文件 SHA-256 一致；
+- **结果**：本机 runc（Ubuntu 运行库的等价镜像，见下）：parse 隔离 33 项通过、3 项 LibreOffice 用例跳过，export 隔离 52 项、export 专用 15 项全部通过。本机 gVisor（`runsc` 20260810.0，与 CI 同版本）：parse 隔离、export 隔离（两个模板）与 export 专用用例共 103 项，100 项通过、3 项 LibreOffice 用例跳过（本机镜像不含 LibreOffice）。CI（Debian 正式镜像、gVisor）的结果与耗时以 CI 日志为准。
+
+**实测耗时**（.NET 与 Chromium 在 gVisor 下都能运行，不需要设计第 7.2 节预留的 runc 方案）：本机 runc 下样张约 2.4 秒、整本（两段正文）约 2.2 秒；本机 gVisor 下样张约 6.4–8.0 秒、整本约 6.3–6.9 秒（多次运行），其中 playwright-core 加载约 1.0 秒、Chromium 启动约 1.4 秒、两次截图约 1.3 秒、关闭浏览器约 1.4 秒、助手冷启动（ping）约 0.65 秒；沙箱创建约 0.3–0.6 秒。**比拆分计划估计的“样张约 1 秒级”慢**（本机是嵌套虚拟化，CI 的数字写在日志中）；60 秒上限仍有充分余量，7.3 的按内容哈希复用结果可以避免重复生成，届时再评估是否需要优化（例如浏览器关闭不等待、装饰 PNG 按配置缓存）。
+
+偏离计划（#45 确认时均已同意）：
+
+1. **两个模板名**：决定事项第 2 项是“一个 `export` 模板”，决定事项第 5 项又给了样张与整本两档资源上限，而模板的资源上限在创建容器时就固定。实现为同一个 export 镜像、同一套隔离参数、两个模板名 `export-preview` / `export-document`，只有资源上限、可写目录大小和入口模式不同。
+2. **`SANDBOX_EXPORT_IMAGE` 暂时可选**：导出任务（7.3）上线之前不强制部署 export 镜像，未配置时创建 export 沙箱返回 `SANDBOX_UNAVAILABLE`；7.3 起改为必需。
+3. **助手不打成单文件**：拆分计划写“同桌面版打包约定”，桌面版是单文件发布；单文件运行时要把原生库解压到可写目录再加载，沙箱中可写的 `/tmp` 是 noexec，所以服务端发布为自包含目录（同样不裁剪）。
+4. **样张固定配图暂不打进镜像**：拆分计划写“样张的固定配图打进镜像”，它只在 7.3 使用，随 7.3 加入。
+5. **apt 包不按版本固定**：与 parse 镜像相同（6.5 偏离第 3 项），基础镜像按 digest 固定，部署时按构建出的镜像摘要引用；.NET SDK 构建镜像按 digest 固定，`playwright-core` 按 lockfile 固定、它下载的浏览器版本由 `playwright-core` 版本决定。
+
+发现的问题（登记给 7.3 / 7.4）：
+
+1. **整本模式下配图要在范围标记内**：`whole_document: true` 时不在 `section[data-app-export-template]` 内的 figure 报“img 必须位于 figure 内”，7.4 由 worker 组装带范围标记的整本 HTML（同桌面版 `technicalPlanExport`），测试中的整本导出暂不带配图；
+2. **sandbox-runner 的请求体上限随 export-document 提高到约 1.1 GiB**：放入的归档在 sandbox-runner 中整体缓冲后校验，export 队列并发 2 时最坏占用约 2.2 GiB 内存。#45 确认时定为 **7.4 必做**：改为流式转发，不在内存中整体缓存，并测试多个大请求并发时 runner 内存稳定；
+3. **tmpfs 计入沙箱内存**：export-document 的 `/work`（1.25 GiB）与 `/tmp` 都在 2 GiB 内存上限之内，输入接近 1 GiB 时留给助手的内存不足 1 GiB。#45 确认时定为 **7.4 必做**：方案由 7.4 提出（例如按输入大小拒绝、调整上限或改变输入的存放方式），用户决定。
+
+#45 确认时的其他决定：libdbus-1-3（AFL-2.1 或 GPL-2.0+ 双许可证）按 AFL-2.1 使用；样张耗时（本机 gVisor 6–8 秒）在 7.3 再评估；`client/` 新出现的 `follow-redirects`、`joi` 两个 high（经开发依赖 `wait-on`，main 上已有）修复版本发布满两周则另开 PR 修复，否则并入 11-03 的统一升级——修复版本 `follow-redirects` 1.16.2（10-25 发布）、`joi` 18.3.1（10-28 发布）在 10-31 都不满两周，并入 11-03 那批（两周分别在 11-08、11-11 满）。
+
+已知限制：本机网络不能访问 Debian 软件源与 Playwright 的下载地址，本机测试用的是 scratchpad 中的等价镜像（Ubuntu 24.04 的同名运行库、本机预装的同一 revision 1243 的 chromium-headless-shell、同一份 Node 24、助手发布、字体映射、入口与装饰生成器，不提交）；正式 Dockerfile 只在 CI 中构建。
+
+#### 字体与装饰（#46，7.2）
+
+按拆分计划 7.2 和决定事项第 3 项实现。没有迁移，`client/` 未改动，没有新增依赖，export 镜像不变。
+
+- **`GET /api/fonts`**（`src/routes/fonts.ts`，需要登录）：返回 `{ fonts: string[] }`，即模板可选字体名的固定清单（`src/templates/fonts.ts` 的 `TEMPLATE_FONT_NAMES`），取代桌面版枚举本机字体的 `systemFonts.list`。清单与前端 `FONT_OPTIONS` 逐项相同、顺序相同，每个名字都有前端 `FONT_TO_CSS` 的回退（export 镜像的 fontconfig 映射按它核对，见 7.1）；不随用户或组织变化，响应 `cache-control: no-store`（与其他需要登录的接口相同）。它不是服务器上安装的字体：导出的 docx 保留模板选择的原字体名。前端字体选择器把它与 `FONT_OPTIONS`、模板中已用的字体名合并去重，结果与桌面版没有装本机字体时相同。
+- **装饰与桌面版逐项核对**（同一配置生成的 SVG 一致）：
+  - 核对用的页面配置（`tests/sandbox/docker/exportDecorationCases.ts`）：8 种样式 × 10 种变体（全开、只有页眉、只有页脚、只有页码、文字为空、自定义高度 / 文字位置 / 边距、配色与字体、A3 横向双栏、Letter 超长文字与超长角标、越界取值），外加桌面版 3 个系统模板的页面配置，都经桌面版 `normalizeExportFormat` 规范化；另有 3 份未规范化的配置（空对象、只有样式、旧样式名 `spine`）。共 86 份；
+  - **生成器**（Docker，`export.test.ts`）：在 export 沙箱中用镜像里的 `/opt/export/chrome/index.mjs` 对每份配置执行 `buildChrome`，页眉 SVG、页脚 SVG 以及几何 + 配色 + 文字层（JSON）的 SHA-256 与宿主上桌面版 `client/electron/shared/chrome/index.mjs`（桌面版 `chromeAssetService` 加载的同一个文件）的结果逐份相同；另核对每种样式确实画出了装饰、不同配置的 SVG 互不相同，避免比较的是空值；
+  - **入口**（Docker，8 种样式各一次完整导出）：经模块加载钩子记录入口交给 Chromium 的每段 SVG 与尺寸（钩子只包装 `rasterizeSvg`，其余为镜像中的原样代码），与桌面版 `buildChrome` 的页眉 / 页脚 SVG 及 `widthCm` / 高度相同；入口写给助手的 `chrome_assets` 中由几何决定的字段与桌面版 `createRestrictedHtmlDocx` 的取值相同，`root` / 文件名两端各自约定（桌面版按内容哈希命名）；docx 中的装饰图片数与 SVG 数一致；
+  - **源码对应关系**（不需要 Docker，`tests/sandbox/exportEntry.test.ts`）：入口与桌面版 `openXmlHelperService.cjs` 中 `chrome_assets` 的字段与取值表达式逐行相同（只有 `root` 不同）；两端都由 `buildChrome(export_format.page)` 取得装饰；SVG 外包的固定尺寸容器、cm 到 CSS 像素的换算与 `chromeAssetService.rasterizeSvg` 相同。任何一边改动而另一边没跟上时测试失败。
+- **前端**：WebBridge 仍是空壳（第 1 步），`systemFonts.list` 与其他已有接口一样，随 WebBridge 的通用机制接上（`fetch('/api/fonts')` 后取 `fonts`）；本 PR 不改 `client/`。
+
+偏离计划：无。栅格化后的 PNG 不与桌面版逐像素比较（桌面版是 Electron 自带的 Chromium 与本机字体，像素不可能相同；计划要求的是 SVG 一致），两端栅格化参数（禁用脚本、固定画布、倍率 3、`--font-render-hinting=none` 等）已在 7.1 对齐。
+
+已知限制：本机网络不能访问 Playwright 的下载地址，本机测试用的 export 镜像是 scratchpad 中正式 Dockerfile 的变体（只把 chromium-headless-shell 的下载换成本机预装的同一 revision 1243，并经会话代理访问 Debian 软件源与 NuGet，不提交）；正式镜像只在 CI 中构建。
+
+#### 样张的输入校验（#47，7.3a）
+
+**拆分（偏离拆分计划）**：7.3 原为一行，包含入参校验、任务、接口、产物、内容哈希复用、SSE、下载、镜像中的样张配图与 WebBridge，一个 PR 难以审查。按 `CLAUDE.md`“每个 PR 只做一件事”拆成 7.3a（本节：两项入参的服务端校验，纯函数与测试，不接任何接口）与 7.3b（其余内容，范围不变）。7.4 依赖改为 7.3b。
+
+只改 `server/`（新增依赖 parse5）与 `client/tests/`（新增共用用例与前端测试），不改产品代码的行为；没有迁移、接口、数据库角色，export 镜像不变。要点：
+
+- **受限 HTML 的服务端实现**（`server/src/templates/restrictedHtml.ts`）：前端 `client/src/shared/bodyHtml/restrictedHtml.ts` 中 `parseRestrictedHtml` 的逐函数对应版本。前端在浏览器中用 `DOMParser`，服务端用同一套 HTML5 解析算法的 parse5（关闭脚本，与 `DOMParser` 创建的文档相同，`noscript` 的内容按标记解析），序列化同为 HTML5 算法；提示文字相同。不能直接共用前端源码：前端依赖浏览器 DOM，api 镜像只含 `server/`；
+- **白名单只维护一份、由测试逐项核对**（决定事项第 8 项与拆分计划“服务端与前端共用或由测试逐项核对一致”）：
+  - 常量：`tests/templates/restrictedHtml.test.ts` 读前端源码，标签集合（主块、行内、允许、危险、未知块）、`data-app-generation` / `data-app-size` / `data-app-fit` / `data-app-preset` 的取值、id 规则、分隔注释逐项相同；`allowedAttributes`、`isWorkspaceRelativeAssetRef`、`validateTableGrid`、`parseRestrictedHtml` 的函数体逐行相同（去掉注释）；48 条提示文字相同；
+  - 行为：共用用例 `client/tests/fixtures/restrictedHtmlCases.json`（49 条：各块类型、表格预设与网格错误、配图与越界引用、危险标签、svg / math、被解析器移到 head 的元素、未知块与行内标签、事件与样式属性、noscript / xmp / plaintext 等原始文本元素、frameset、实体与引号、错误嵌套、CDATA / doctype / 注释、大小写、空白字符，以及正文模板与前端样张）。期望结果是前端 `parseRestrictedHtml` 在 jsdom 中的输出，前端测试 `client/tests/src/restrictedHtmlCases.test.ts` 核对前端仍得到它（改了前端规则时用 `UPDATE_RESTRICTED_HTML_CASES=1` 重新记录），服务端测试核对服务端得到完全相同的块、问题列表、规范化 HTML 与预览 HTML。两边任何一处改动而另一边没跟上时测试失败；
+  - 变异检查（本地）：把服务端改为开启脚本解析、改动规范化中的任一字段规则时，对应测试失败。
+- **样张校验** `validatePreviewHtml`（`server/src/templates/previewHtml.ts`，7.3d 的接口在入队前调用）：UTF-8 不超过 256 KiB；按 `parseRestrictedHtml` 解析必须至少一个块、**没有任何错误或警告**（前端对多余标签、属性、事件处理器只警告并删除，这里一律拒绝），唯一例外是 `img` 的 `src`（前端样张把它换成打包后的图片地址，同桌面版 `DOCUMENT_DISPLAY_TEMPLATE_HTML`，按前端 `allowImageSrc` 的规则允许，但不转发）；每个 `img` 必须有 `data-app-asset-ref` 且只能是 5 张固定样张配图之一（`PREVIEW_ASSET_REFS`，测试核对与桌面版随包配图、前端样张的图片表、正文模板中的引用三者一致）。通过后只返回由解析树重新序列化、不含 `src` 的 HTML（再解析一遍必须原样得到它、没有任何问题）和用到的配图；拒绝结果只有原因代码与问题数，不回显输入。解析时被移到 head 的元素（如片段开头的 `<script>`、`<meta>`）与前端相同被丢弃，不进入转发的 HTML；
+- **`export_format` 规范化**（`server/src/templates/exportFormat.ts`，#43 发现的问题第 1 项）：桌面版 `exportFormatDefaults.cjs` 中 `defaultExportFormat` / `normalizeExportFormat` 的服务端版本，逐字段相同（包括桌面版原样透传的 `body_text.spacing_*`、`line_spacing_*`）。`tests/templates/exportFormat.test.ts` 用同一批输入与桌面版的函数比较（`Object.is`，-0 与 0 也区分）：非对象、默认配置、系统模板、每个叶子字段（共 100 多个）× 40 余种取值、每一段换成非对象、2,000 份固定种子的随机配置；
+- **新增依赖**：`parse5` 8.0.1（MIT，2026-04-19 发布，与前端 jsdom 所用版本相同）及其依赖 `entities` 8.1.0（BSD-2-Clause，2026-09-07 发布），只在 `server/`。
+
+登记给 7.3b（引用映射已在 #48 决定，见下节；WebBridge 一项随 7.3d）：沙箱入口约定 `/work/assets/` 只有一层、文件名就是 `data-app-asset-ref`，样张的引用是 `assets/<文件名>`，7.3b 把样张配图打进镜像时一并决定引用的映射；WebBridge 目前全部是空壳（第 1 步），`templates.renderPreview` 若没有通用的请求与 SSE 机制可用，同 7.2 的 `systemFonts.list` 随 WebBridge 的通用机制接上，届时在 7.3b 说明。
+
+偏离计划：7.3 拆分（见上）。
+
+#### 样张在沙箱中生成（#48，7.3b）
+
+**拆分（偏离拆分计划）**：7.3a 之后的 7.3b 仍包含沙箱调用、任务、产物迁移与清理、内容哈希复用、接口、SSE、下载和 WebBridge，其中产物要新增迁移（docx 种类、不属于项目的样张产物、1 天的保留期与清理），一个 PR 难以审查。按 `CLAUDE.md`“每个 PR 只做一件事”拆成 7.3b（本节：沙箱中生成样张，不接任务、接口与产物）、7.3c（任务与产物）、7.3d（接口与下载），范围合计不变。7.4 依赖改为 7.3d。
+
+没有迁移、接口、数据库角色，没有新增依赖，`client/` 未改动。要点：
+
+- **样张配图打进镜像**（7.1 偏离第 4 项、7.3a 登记的引用映射）：`client/assets/content-template-preview/*.webp`（与桌面版同一份文件）经具名构建上下文 `preview-assets` 复制到镜像的 `/opt/export/preview-assets/`（CI、`docker-compose.yml` 注释与 Dockerfile 开头的构建命令同步加上）。入口在 `preview` 模式下把它们复制到 `/work/preview/assets/`，助手的 `asset_root` 为 `preview`，所以样张中的 `data-app-asset-ref="assets/<文件名>"` 与桌面版相同，不需要改写 HTML；
+- **样张不接受 worker 放入的配图**：`preview` 模式下 `/work` 中只能有 `request.json`，请求中不能有 `asset_types`，否则 `request_invalid`。样张由 7.3a 的 `validatePreviewHtml` 限定只能引用 5 张固定配图，这里再保证样张沙箱中不会出现任何项目或用户的图片。`document` 模式不变（7.4 由 worker 放入本项目可见的配图）；
+- **worker 端 `renderTemplatePreview`**（`server/src/export/preview.ts`，7.3c 的任务调用）：样张 HTML 经 `validatePreviewHtml` 重新校验（不通过抛 `PREVIEW_HTML_INVALID`，不创建沙箱）、配置经 `normalizeExportFormat` 规范化 → 新建 `export-preview` 沙箱 → `copyIn` 只放 `request.json`（重新序列化的 HTML 与规范化的配置）→ 执行模板登记的 `export` 命令 → `copyOut` → 校验输出 → `finally` 中销毁沙箱。沙箱忙或 sandbox-runner 暂不可用时按 1、2、4、8、15 秒重试创建（样张是交互操作，比解析的约 5 分钟短），用完失败；中止抛 `JobInterruptedError`。新建沙箱的重试从 `src/parse/run.ts` 抽成共用的 `src/sandbox/createWithRetry.ts`，解析的行为与文案不变；
+- **输出校验**（`server/src/export/output.ts`、`docxGuard.ts`）：只收 `document.docx` 与 `result.json`；`result.json` 只能有 `version`（1）、`blockCount`（非负整数）、`imageWarnings`（每项只有字符串 `assetRef` 与 `reason`，长度与条数在入口写出的上限内），返回时只保留 `blockCount` 与告警的 `assetRef`（`reason` 是助手的文字，不采用）。docx 的 ZIP 结构检查与 parse 沙箱的 zipGuard 同样的上限（条目 10,000、解压后合计 1 GiB、1 MiB 以上条目压缩比 100:1，拒绝 ZIP64、加密、多卷与非 store / deflate），逐个条目实际解压核对声明大小（只计数，zlib 流式接口），另要求条目名是相对路径、没有 `..` / `.` / 空段 / 反斜杠 / 控制字符、不重复、本地头与中央目录一致，必须有 `[Content_Types].xml` 与 `word/document.xml`。worker 不解析 docx 中的 XML；
+- **错误代码**：入口的 8 个代码（单元测试从 `entry.mjs` 源码核对清单完整）映射为 `EXPORT_REQUEST_INVALID`、`EXPORT_DECORATION_FAILED`、`EXPORT_WORD_FAILED`、`EXPORT_TIMEOUT`、`EXPORT_OUTPUT_TOO_LARGE`、`EXPORT_TOO_MANY_IMAGES`、`EXPORT_FAILED` 等，另有 `EXPORT_UNAVAILABLE`、`EXPORT_SANDBOX_BUSY`、`EXPORT_OUTPUT_REJECTED`；提示文字由代码决定，不采用沙箱输出与助手的文字。
+
+**测试**：
+
+- 单元测试（不需要 Docker）：`tests/export/docxGuard.test.ts`（各项上限、伪造的声明大小、条目名、缺少必需部件、截断与不一致的归档）、`output.test.ts`（多余文件、`result.json` 的 15 种不合法形状、上限值正好通过、入口错误代码）、`preview.test.ts`（记录调用的假驱动：只放 `request.json` 且其中是重新序列化的 HTML 与规范化的配置、不合法的样张不创建沙箱、每个入口代码的映射、超时、输出被拒、中止、忙时重试与重试用完，每条路径都销毁沙箱）；
+- Docker 测试：新增 `tests/sandbox/docker/exportPreview.test.ts`——桌面版样张（正文模板换上打包后的地址）在 3 个系统模板下经 `renderTemplatePreview` 与真实驱动生成，5 张样张配图原样嵌入（与仓库文件 SHA-256 相同）、没有告警，正文中有样张文字，沙箱被销毁；入口失败时只给代码且沙箱被销毁；不合法的样张不创建沙箱。`export.test.ts`：镜像中的样张配图与仓库逐个文件一致；样张拒绝 worker 放入的配图、遮盖样张配图的同名文件、`asset_types` 与 `preview` 目录；原来在样张中放入配图的用例改用镜像中的样张配图（请求不合法的 4 种情况改在 `document` 模式下验证，任务间隔离用例的整本导出仍放入一张配图）；
+- 结果：本机（runc；镜像为正式 Dockerfile 在 scratchpad 中的变体，Debian 软件源不可访问，改用 Ubuntu 24.04 的同名运行库与本机预装的同一 revision 1243 的 chromium-headless-shell，不提交）export 隔离、export 专用与样张共 86 项通过；服务端单元测试 858 项通过。gVisor 下与正式镜像的结果以 CI 为准。
+
+偏离计划：原 7.3b 再拆分（见上）。
 
 ### 第 9 步说明
 
@@ -1063,7 +1656,7 @@ AI 网关加固，做法见 `docs/SERVER_DESIGN.md` 第 10.9 节。`client/` 未
 
 后续事项（本 PR 登记，未做）：
 
-- **CI 新增 .NET 编译与 OpenXmlHelper 测试**：仓库目前没有 C# 测试项目，CI 也不编译 OpenXmlHelper，C# 改动只能靠本地实跑验证。新增测试项目（覆盖受限 HTML 的配图、表格预设、标题编号和页面范围）和 CI 任务，**最迟在第 7 步 Word 导出迁到服务端之前完成**。新增测试框架依赖时按 `CLAUDE.md` 做许可证审计。
+- ~~**CI 新增 .NET 编译与 OpenXmlHelper 测试**~~（已在 #43 完成，见“第 7 步说明”）：仓库目前没有 C# 测试项目，CI 也不编译 OpenXmlHelper，C# 改动只能靠本地实跑验证。新增测试项目（覆盖受限 HTML 的配图、表格预设、标题编号和页面范围）和 CI 任务，**最迟在第 7 步 Word 导出迁到服务端之前完成**。新增测试框架依赖时按 `CLAUDE.md` 做许可证审计。
 
 ## 1. 现状概览
 
@@ -1189,25 +1782,28 @@ AI 网关加固，做法见 `docs/SERVER_DESIGN.md` 第 10.9 节。`client/` 未
 4. **文件上传 / 下载 / 资源协议**：上传接口 + 对象存储 + 带鉴权的资源路由，替换 `getPathForFile`/`filePaths`、`app-asset://`、`openFile`、保存对话框。
 5. **数据层迁移（按业务逐个）**：模板库 → 资信库 → 知识库 → 标书查重 → 废标检查 → 可研报告 → 技术方案，每个 Store 改成异步 Postgres 实现并按 `org_id`（项目级再加 `project_id`）隔离；不做 `app.sqlite` 导入（旧仓库 PR #26 第 18 项）。拆分为 13 个 PR，先做 `projects` 和生成产物存储，见“第 5 步说明”。
 6. **任务队列与 worker**：`taskService` 迁到 BullMQ worker，进度推送、暂停/继续、重启恢复、每用户互斥和两级并发上限。先迁无 Agent 的短任务（查重、废标、招标解析）；目录、全局事实经核实用到 Agent 命令工具，改随第 8 步（见“第 6 步说明”）。解析在断网沙箱中执行，建议提前建 `sandbox-runner` 和只含 `parse` 模板的沙箱基础设施，拆分计划与待决定事项见“第 6 步说明”。文档解析须满足第 4 步说明中“上传白名单补充（#6）”的“第 6 步解析要求”（沙箱完全断网、HTML / MHT / RTF 禁止加载远程资源、XML 类格式禁用 DTD 和外部实体等）。
-7. **OpenXmlHelper 容器化**：Word 导出、模板样张、模板提取改成调用 helper 服务；离屏渲染改成 Playwright。前置：CI 新增 .NET 编译与 OpenXmlHelper 测试（#5 登记）。
+7. **OpenXmlHelper 容器化**：Word 导出、模板样张~~、模板提取~~改成调用 helper 服务；离屏渲染改成 Playwright。前置：CI 新增 .NET 编译与 OpenXmlHelper 测试（#5 登记，#43 完成）。#44 决定助手按任务在 `export` 沙箱中运行、模板提取与小节 Word 预览移到第 8 步、本步的离屏渲染只做页眉页脚装饰转图（Chromium 禁用 JavaScript），见“第 7 步说明”。
 8. **Agent 沙箱**：Pi Runtime 迁到隔离沙箱，最后迁正文生成、原方案还原、格式自检这类最复杂的长任务。
 9. **收尾**：插件下线或重做、开发者工具改管理员页面；不自建 analytics Worker（0.18 决定；客户端埋点、内容服务代码和 `analytics/` 目录已在 0.19 删除）；压测、安全评审，再上线。
    上线检查（对外提供服务前逐项完成）：
    - ~~品牌名替换：旧产品名、旧 bridge 全局名、旧资源协议和数据库文件名等已有命名统一改为本项目名称“智标” / ZhiBiaoTools（第 1 步前决定第 3 项推迟到此）~~ 已完成：第一部分（用户可见文字和文档）见 #1，第二部分（其余全部）见“第 9 步说明”；
    - ~~原产品名缩写前缀改为中性前缀 `app`，完成后把该缩写加入 CI 禁用词检查~~ 已完成：品牌改名第三部分，见 #5 和“第 9 步说明”；
-   - 升级 GitHub 计划，使分支保护在私有仓库上强制生效：`main` 要求 PR 合并，CI 的 `Banned words`、`Client build / syntax / audit`、`Server typecheck / test / audit` 设为必须通过；当前免费版私有仓库的分支保护不生效，`#3`（临时草稿 PR，已关闭）验证时 `Banned words` 失败但 PR 仍显示为可合并（`mergeable_state: unstable`）；升级后用同样方法复测，确认显示为无法合并（`blocked`）；
+   - 升级 GitHub 计划，使分支保护在私有仓库上强制生效：`main` 要求 PR 合并，CI 的 `Banned words`、`Client build / syntax / audit`、`Server typecheck / test / audit`、`OpenXmlHelper build / test`（#43 新增）设为必须通过；当前免费版私有仓库的分支保护不生效，`#3`（临时草稿 PR，已关闭）验证时 `Banned words` 失败但 PR 仍显示为可合并（`mergeable_state: unstable`）；升级后用同样方法复测，确认显示为无法合并（`blocked`）；
    - 把 `SECURITY.md`、`CODE_OF_CONDUCT.md`、`.github/ISSUE_TEMPLATE/问题反馈.md` 中的 `{{CONTACT_EMAIL}}` 占位符（0.20）替换为本项目的联系方式；
-   - 重写 Web 版隐私声明：现有设置页隐私声明按桌面版“数据保存在本机”编写，Web 版需说明服务端存储的数据、API Key 的保管方式、日志与保留期限、删除方式；按 旧仓库 PR #26 决定还要写明服务器位于境外（香港）、调用的第三方模型服务商、用量记录的保留期，以及项目删除后 7 天恢复期、注销后 30 天内删除；
+   - 重写 Web 版隐私声明：现有设置页隐私声明按桌面版“数据保存在本机”编写，Web 版需说明服务端存储的数据、API Key 的保管方式、日志与保留期限、删除方式；按 旧仓库 PR #26 决定还要写明服务器位于境外（香港）、调用的第三方模型服务商、用量记录的保留期，以及项目删除后 7 天恢复期、注销后 30 天内删除；任务记录的保留期（已结束的任务 90 天、任务日志 30 天，决定事项（#23）第 10 项；项目被物理删除时其下的任务记录随之删除，见“清理任务（#33，6.8）”偏离第 4 项）；
    - 完成 `docs/SERVER_DESIGN.md` 第 11 节“合规待确认事项”（旧仓库 PR #26），每项都有律师确认的结论并已落实到设计和界面，未完成不得对外提供服务：
      - 个人信息出境：合规路径、告知与单独同意、个人信息保护影响评估、向模型服务商再转移、备份地域；
      - 生成式 AI 监管：是否适用及所需备案或登记、生成内容标识、内容审核与投诉渠道、用户身份要求；
      - 模型服务商对中国大陆用户的条款限制：逐家确认，确定 `platform_models` 上架清单；
      - 第一版线下收款的主体、方式与币种；
    - 发信服务选定并完成 QQ / 163 等邮箱的送达率实测（`docs/EXTERNAL_SERVICES.md` §7）；**首个真实用户注册前必须完成**（旧仓库 PR #31），不必等到上线；
-   - 数据库角色（#9 汇总）：生产数据库按 `server/db/init/10-provision.sh` 同样的属性创建**全部**角色，写进部署文档：迁移角色 `bidtools_owner`、应用角色 `bidtools_app`，以及全部 `SECURITY DEFINER` 函数属主（定义者角色）`bidtools_auth`（旧仓库 PR #29）、`bidtools_billing`（旧仓库 PR #31）、`bidtools_storage`（#8）、`bidtools_jobs`（#25）。定义者角色一律 `NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS NOINHERIT`，迁移角色以 `INHERIT FALSE, SET TRUE` 加入；缺任何一个，迁移在 `SET ROLE` 时失败。执行迁移前对照 `server/src/db/roles.ts` 逐个核对 `pg_roles` 中的属性和 `pg_auth_members` 中的成员关系；以后新增定义者角色时同步加到本条、`10-provision.sh` 和测试 harness；
-   - 鉴权上线前提（旧仓库 PR #29）：数据库角色见上一条；发信接口换成正式发信服务的实现；登录、注册、找回密码的限流从进程内存换成 Redis（多实例部署前必须完成）；按反向代理拓扑设置 `TRUSTED_PROXIES`（旧仓库 PR #30，只填 Caddy 的固定地址），用两个不同出口的客户端确认限流和会话中的 IP 是真实客户端地址；用 `npm run admin:create` 创建首个平台管理员后，确认平台管理员已开启 TOTP（设计文档第 3.4 节，TOTP 尚未实现）；
+   - 数据库角色（#9 汇总）：生产数据库按 `server/db/init/10-provision.sh` 同样的属性创建**全部**角色，写进部署文档：迁移角色 `bidtools_owner`、应用角色 `bidtools_app`，以及全部 `SECURITY DEFINER` 函数属主（定义者角色）`bidtools_auth`（旧仓库 PR #29）、`bidtools_billing`（旧仓库 PR #31）、`bidtools_storage`（#8）、`bidtools_jobs`（#25）、`bidtools_cleanup`（#33）。定义者角色一律 `NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS NOINHERIT`，迁移角色以 `INHERIT FALSE, SET TRUE` 加入；缺任何一个，迁移在 `SET ROLE` 时失败。执行迁移前对照 `server/src/db/roles.ts` 逐个核对 `pg_roles` 中的属性和 `pg_auth_members` 中的成员关系；以后新增定义者角色时同步加到本条、`10-provision.sh` 和测试 harness；
+   - 鉴权上线前提（旧仓库 PR #29）：数据库角色见上一条；发信接口换成正式发信服务的实现；登录、注册、找回密码的限流从进程内存换成 Redis（已完成 #42；多实例部署时必须配置 `REDIS_URL`，否则仍按进程计数，确认启动日志中没有 `auth rate limits are per process`）；按反向代理拓扑设置 `TRUSTED_PROXIES`（旧仓库 PR #30，只填 Caddy 的固定地址），用两个不同出口的客户端确认限流和会话中的 IP 是真实客户端地址；用 `npm run admin:create` 创建首个平台管理员后，确认平台管理员已开启 TOTP（设计文档第 3.4 节，TOTP 尚未实现）；
    - 计费核对：价格表已录入并公示，计价函数测试通过，余额不足拒绝新任务和运行中耗尽暂停已实测，管理员充值的 TOTP 和双人复核已启用；旧仓库 PR #31 暂用重新输入密码做二次验证并禁用 1,000 元以上的单笔充值，TOTP 和双人复核实现后再用新迁移放开大额充值；`bidtools_billing` 角色见“数据库角色”一条；
-   - AI 网关（旧仓库 PR #32）：主密钥从 `AI_KEK_FILE` 换成云 KMS 的 `KeyWrapper` 实现（第 9 节第 8 项），开启删除保护和调用审计；生产环境 `AI_UPSTREAM_PRIVATE_HOSTS` 为空；确定通义千问使用国内站还是国际站并在管理后台填写对应 Base URL；用真实 Key 在预发环境核对两家服务商流式响应中的用量字段与控制台账单一致；
+   - AI 网关（旧仓库 PR #32）：主密钥从 `AI_KEK_FILE` 换成云 KMS 的 `KeyWrapper` 实现（第 9 节第 8 项），开启删除保护和调用审计；6.4（#27）起 worker 同样解密平台 Key，KMS 的解密权限同时授给 api 和 worker 的身份；按真实服务商的限流设置 `AI_CONCURRENCY_MAX`；生产环境 `AI_UPSTREAM_PRIVATE_HOSTS` 为空；确定通义千问使用国内站还是国际站并在管理后台填写对应 Base URL；用真实 Key 在预发环境核对两家服务商流式响应中的用量字段与控制台账单一致；
+   - 任务计费（#27、6.4a）：平台自身故障（worker 崩溃、租约收回、重启）导致的重复调用不向用户收费，6.4a 已完成（#34）且其“结算后、checkpoint 前崩溃只扣费一次”的测试在 CI 中通过；所有调用 AI 的业务任务都经步骤幂等调用模型（`context.ai.chat` 的 `stepKey` 必填，网关拒绝不带步骤键的任务调用），各业务任务 PR 审查步骤键在续跑时可以重新算出、不同调用不重复；`job_step_results` 存有 AI 输出，随任务记录 90 天保留期删除，写进隐私声明；
+   - 实时推送（#26）：Caddy 对 `/api/events` 关闭响应缓冲和压缩（`flush_interval -1`、`encode` 排除 `text/event-stream`），开启 HTTP/2（每个页面一条长连接，HTTP/1.1 每域名只有 6 条）；Caddy 与 api 的空闲 / 读超时大于 25 秒的心跳间隔；`WebBridge` 在 `GET /api/events` 返回非 200 或连接断开时按退避间隔自己重建连接（浏览器 `EventSource` 遇到 503 不再重连），收到 `ready` 后再拉快照、收到 `resync` 时重新拉快照、收到 `closed`（`session`）时转登录页；在预发环境确认经 Caddy 的推送没有延迟、断线后能补发；**扩展为多个 api 实例前**，把 `GET /api/events` 的单用户连接数上限（目前每个 api 进程各自计数，见“SSE 推送（#26，6.3）”偏离第 4 项）改为跨实例计数（例如 Redis 中按用户计数并带过期时间）；
    - Redis（#24）：生产用与开发相同的 `server/redis/start-valkey.sh`（禁用 `default` 用户、ACL 用户 `bidtools`、禁止 `@admin` 与清空命令、不持久化、`noeviction`），`maxmemory` 按实例内存设置（`REDIS_MAXMEMORY`）；redis 只在 `internal: true` 的 `backend` 网络上、不映射端口；密码走 Docker secret；api 和 worker 都设置 `REDIS_URL`，确认 `/readyz` 在停掉 Redis 后返回 503；
+   - 解析沙箱（#28）：生产主机安装 gVisor 并在 Docker 中登记 `runsc`，`SANDBOX_RUNTIME=runsc`（配置强制）；**限制 sandbox-runner 的 Docker 权限，不得直接挂载有完整权限的 Docker socket**，二选一：(a) 只放行必要接口的 Docker API 代理（只放行“sandbox-runner 的访问控制”中列出的接口，其余一律拒绝；`POST /containers/create` 还要校验请求体：只允许配置的 parse 镜像、`runsc` 运行时、`NetworkMode: none`、`ReadonlyRootfs: true`、`Privileged: false`、`CapDrop: [ALL]`、不带 `Binds` / `Mounts` / `Devices` / `CapAdd`，例如用 Docker 授权插件或自建的校验代理，只按路径放行的代理挡不住被攻破的 sandbox-runner 创建特权容器），或 (b) 在专用的非 root 用户下运行 rootless Docker（或 Podman），使 sandbox-runner 被攻破也拿不到宿主 root；上线前用一个伪造的特权容器创建请求、一个未放行的接口（如 `GET /images/json`、`POST /containers/{id}/attach`）确认被拒绝；parse 镜像在 CI 中构建并做漏洞扫描，`SANDBOX_PARSE_IMAGE` 按摘要引用、部署前预先拉取；`sandbox-control` 为 `internal: true` 且只有 worker 与 sandbox-runner；令牌走 Docker secret；在生产主机上（实际的 gVisor 版本和内核）跑一遍 `npm run test:sandbox`；
    - 从大陆主要省份和运营商实测访问香港服务器的延迟和可用性（`docs/SERVER_DESIGN.md` 第 8.0 节）。
-   - 文件存储（旧仓库 PR #34）：选定云厂商对象存储（与 KMS 同一家、香港地域），bucket 私有、禁止公开读和列目录，开启服务端加密（默认加密或 KMS 密钥），配置生命周期规则清理未完成的分片上传；api 使用只能访问该 bucket 的最小权限访问密钥；用真实服务跑一遍 `tests/db/files.test.ts` 确认 S3 兼容性；过期文件和遗留 `uploading` 记录的物理清理任务已上线（否则对象只增不减）；Caddy 层设置请求体上限（略大于 100 MB）；`S3_ENDPOINT` 为 https。
+   - 文件存储（旧仓库 PR #34）：选定云厂商对象存储（与 KMS 同一家、香港地域），bucket 私有、禁止公开读和列目录，开启服务端加密（默认加密或 KMS 密钥），配置生命周期规则清理未完成的分片上传；api 使用只能访问该 bucket 的最小权限访问密钥；用真实服务跑一遍 `tests/db/files.test.ts` 确认 S3 兼容性；过期文件和遗留 `uploading` 记录的物理清理任务已上线（否则对象只增不减；#33 实现，在 worker 中每小时一批，未配置 `S3_BUCKET` 时不删有对象的行，上线时确认 worker 配置了对象存储并在日志中看到每小时一组 `cleanup batch`）；Caddy 层设置请求体上限（略大于 100 MB）；`S3_ENDPOINT` 为 https。

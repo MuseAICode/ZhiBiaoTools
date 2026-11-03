@@ -108,9 +108,11 @@ export async function registerAuthRoutes(app: FastifyInstance, deps: AuthRouteDe
       const emailKey = email ?? request.body.email.trim().toLowerCase();
       enforce(
         reply,
-        limiters.loginPerIp.consume(request.ip),
-        limiters.loginPerEmail.consume(emailKey),
-        limiters.loginFailures.check(emailKey),
+        ...(await Promise.all([
+          limiters.loginPerIp.consume(request.ip),
+          limiters.loginPerEmail.consume(emailKey),
+          limiters.loginFailures.check(emailKey),
+        ])),
       );
 
       const candidate = email ? await findLoginCandidate(db, email) : null;
@@ -118,10 +120,10 @@ export async function registerAuthRoutes(app: FastifyInstance, deps: AuthRouteDe
         ? await hasher.verify(request.body.password, candidate.passwordHash)
         : await hasher.verifyDummy(request.body.password);
       if (!candidate || !valid) {
-        limiters.loginFailures.recordFailure(emailKey);
+        await limiters.loginFailures.recordFailure(emailKey);
         throw INVALID_CREDENTIALS();
       }
-      limiters.loginFailures.reset(emailKey);
+      await limiters.loginFailures.reset(emailKey);
 
       await revokePrevious(request);
       const context: TenantContext = { orgId: candidate.orgId, userId: candidate.userId, role: candidate.role };
@@ -161,7 +163,7 @@ export async function registerAuthRoutes(app: FastifyInstance, deps: AuthRouteDe
     '/register',
     { config: { access: 'public' }, schema: { body: bodySchema({ token: tokenSchema, password: passwordSchema }) } },
     async (request, reply) => {
-      enforce(reply, limiters.registerPerIp.consume(request.ip));
+      enforce(reply, await limiters.registerPerIp.consume(request.ip));
       const { token, password } = request.body;
       if (!isWellFormedToken(token)) throw new AppError(400, 'INVALID_INVITATION', '邀请链接无效或已过期');
       assertStrongPassword(password);
@@ -199,8 +201,10 @@ export async function registerAuthRoutes(app: FastifyInstance, deps: AuthRouteDe
       const email = normalizeEmail(request.body.email);
       enforce(
         reply,
-        limiters.resetRequestPerIp.consume(request.ip),
-        limiters.resetRequestPerEmail.consume(email ?? request.body.email.trim().toLowerCase()),
+        ...(await Promise.all([
+          limiters.resetRequestPerIp.consume(request.ip),
+          limiters.resetRequestPerEmail.consume(email ?? request.body.email.trim().toLowerCase()),
+        ])),
       );
       if (email) {
         const token = generateToken();
@@ -222,7 +226,7 @@ export async function registerAuthRoutes(app: FastifyInstance, deps: AuthRouteDe
     '/password-reset/confirm',
     { config: { access: 'public' }, schema: { body: bodySchema({ token: tokenSchema, password: passwordSchema }) } },
     async (request, reply) => {
-      enforce(reply, limiters.resetConfirmPerIp.consume(request.ip));
+      enforce(reply, await limiters.resetConfirmPerIp.consume(request.ip));
       const { token, password } = request.body;
       if (!isWellFormedToken(token)) throw new AppError(400, 'INVALID_TOKEN', '重置链接无效或已过期');
       assertStrongPassword(password);
@@ -242,7 +246,7 @@ export async function registerAuthRoutes(app: FastifyInstance, deps: AuthRouteDe
     async (request, reply) => {
       const session = requireSession(request);
       const context = session.context;
-      enforce(reply, limiters.changePasswordPerUser.consume(context.userId));
+      enforce(reply, await limiters.changePasswordPerUser.consume(context.userId));
 
       const user = await withTenant(db, context, (trx) =>
         trx.selectFrom('users').select(['email', 'password_hash']).where('id', '=', context.userId).executeTakeFirst(),

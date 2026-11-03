@@ -7,7 +7,10 @@
 // PATCH  /api/knowledge-base/folders/:folderId                重命名
 // POST   /api/knowledge-base/folders/:folderId/reorder        拖到另一个文件夹之前或之后
 // DELETE /api/knowledge-base/folders/:folderId                删除文件夹，其中文档的原件进回收站
-// POST   /api/knowledge-base/folders/:folderId/documents      挂已上传的 knowledge 文件（状态停在 pending，解析随第 6 步）
+// POST   /api/knowledge-base/folders/:folderId/documents      挂已上传的 knowledge 文件，逐个入队文档准备任务（6.13a）
+// GET    /api/knowledge-base/documents/:documentId            单个文档（含最近的处理任务）
+// POST   /api/knowledge-base/documents/:documentId/retry      重试失败的文档（202，已成功的步骤续用，准备完成后接着匹配）
+// POST   /api/knowledge-base/documents/:documentId/match      开始匹配（202，已处理完成的文档重新匹配，6.13b）
 // POST   /api/knowledge-base/documents/:documentId/move       移到某个文件夹中某个文档之前或之后
 // DELETE /api/knowledge-base/documents/:documentId            删除文档（软删除原件，7 天内可经 /api/files/:fileId/restore 恢复）
 // GET    /api/knowledge-base/search?keyword=&page=             在已处理完成的文档的条目中检索（每页 100 条）
@@ -15,8 +18,11 @@
 // GET    /api/knowledge-base/documents/:documentId/analysis    文档的分析快照
 // GET    /api/knowledge-base/documents/:documentId/markdown    解析出的 Markdown 原文（附件下载，还没有解析时为空）
 //
-// 检索与读取对应桌面版 search / readItems / readAnalysis / readMarkdown（5.7）；重试、匹配、进度推送随第 6 步。
-// 其他组织的 id 与不存在的一样返回 404。
+// 检索与读取对应桌面版 search / readItems / readAnalysis / readMarkdown（5.7）；重试对应 retryDocument（6.13a），开始匹配对应
+// startMatching（6.13b）。
+// 文档带上最近的处理任务（job），处理中而任务已结束或不存在的文档按中断显示（src/knowledgeBase/jobs.ts 的 documentView）；
+// 处理进度经 SSE 的 job / job.progress / job.log 事件推送（取代桌面版的 knowledge-base:event），前端按 job.id 对应到文档。
+// 删除文档、文件夹之后取消其中文档的处理任务。其他组织的 id 与不存在的一样返回 404。
 import type { FastifyInstance } from 'fastify';
 import type { Kysely } from 'kysely';
 import { tenantOf } from '../auth/hooks.ts';
@@ -25,6 +31,8 @@ import type { Database } from '../db/schema.ts';
 import { AppError } from '../errors.ts';
 import { attachmentDisposition } from '../files/filename.ts';
 import type { ObjectStore } from '../files/objectStore.ts';
+import type { JobServiceDependencies } from '../jobs/service.ts';
+import { jobBody } from '../jobs/view.ts';
 import {
   findDocumentMarkdown,
   KNOWLEDGE_SEARCH_KEYWORD_MAX,
@@ -34,10 +42,21 @@ import {
   storageDisabled,
 } from '../knowledgeBase/content.ts';
 import {
+  cancelDocumentJobs,
+  documentView,
+  getDocumentView,
+  latestDocumentJobs,
+  retryDocument,
+  startMatching,
+  startNewDocuments,
+  type KnowledgeDocumentView,
+} from '../knowledgeBase/jobs.ts';
+import {
   addDocuments,
   createFolder,
   deleteDocument,
   deleteFolder,
+  getDocuments,
   listKnowledgeBase,
   moveDocument,
   renameFolder,
@@ -51,6 +70,8 @@ export interface KnowledgeBaseRouteDependencies {
   db: Kysely<Database>;
   /** 读取解析出的 Markdown 用；未配置时读取 Markdown 和分析返回 503（文档还没有 Markdown 时除外）。 */
   objectStore: ObjectStore | null;
+  /** 文档处理任务的入队、取消（6.13a、6.13b）。 */
+  jobs: JobServiceDependencies;
 }
 
 const UUID_PATTERN = '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$';
@@ -118,15 +139,22 @@ function folderBody(folder: KnowledgeFolder) {
   return { ...folder, createdAt: folder.createdAt.toISOString(), updatedAt: folder.updatedAt.toISOString() };
 }
 
-function documentBody(document: KnowledgeDocument) {
-  return { ...document, createdAt: document.createdAt.toISOString(), updatedAt: document.updatedAt.toISOString() };
+function documentBody(document: KnowledgeDocument | KnowledgeDocumentView) {
+  const job = 'job' in document && document.job ? jobBody(document.job) : null;
+  return { ...document, createdAt: document.createdAt.toISOString(), updatedAt: document.updatedAt.toISOString(), job };
 }
 
 type FolderParams = { Params: { folderId: string } };
 type DocumentParams = { Params: { documentId: string } };
 
 export async function registerKnowledgeBaseRoutes(app: FastifyInstance, deps: KnowledgeBaseRouteDependencies): Promise<void> {
-  const { db } = deps;
+  const { db, jobs } = deps;
+
+  /** 文档附上最近的任务（先读任务再读文档，见 documentView）。 */
+  async function withJobs(context: ReturnType<typeof tenantOf>, read: () => Promise<KnowledgeDocument[]>, documentIds?: string[]): Promise<KnowledgeDocumentView[]> {
+    const latest = await latestDocumentJobs(db, context, documentIds);
+    return (await read()).map((document) => documentView(document, latest.get(document.id) ?? null));
+  }
 
   app.addHook('onSend', async (_request, reply, payload) => {
     reply.header('cache-control', 'no-store');
@@ -134,8 +162,14 @@ export async function registerKnowledgeBaseRoutes(app: FastifyInstance, deps: Kn
   });
 
   app.get('/', async (request) => {
-    const index = await listKnowledgeBase(db, tenantOf(request));
-    return { folders: index.folders.map(folderBody), documents: index.documents.map(documentBody) };
+    const context = tenantOf(request);
+    let folders: KnowledgeFolder[] = [];
+    const documents = await withJobs(context, async () => {
+      const index = await listKnowledgeBase(db, context);
+      folders = index.folders;
+      return index.documents;
+    });
+    return { folders: folders.map(folderBody), documents: documents.map(documentBody) };
   });
 
   app.post<{ Body: { name: string } }>('/folders', { schema: { body: NAME_SCHEMA } }, async (request, reply) =>
@@ -164,7 +198,9 @@ export async function registerKnowledgeBaseRoutes(app: FastifyInstance, deps: Kn
   );
 
   app.delete<FolderParams>('/folders/:folderId', { schema: { params: FOLDER_ID_PARAMS } }, async (request) => {
-    const result = await deleteFolder(db, tenantOf(request), request.params.folderId.toLowerCase());
+    const context = tenantOf(request);
+    const result = await deleteFolder(db, context, request.params.folderId.toLowerCase());
+    await cancelDocumentJobs(jobs, context, result.documentIds);
     return { folder: folderBody(result.folder), deletedDocumentCount: result.deletedDocumentCount };
   });
 
@@ -172,8 +208,13 @@ export async function registerKnowledgeBaseRoutes(app: FastifyInstance, deps: Kn
     '/folders/:folderId/documents',
     { schema: { params: FOLDER_ID_PARAMS, body: DOCUMENTS_SCHEMA } },
     async (request, reply) => {
-      const created = await addDocuments(db, tenantOf(request), request.params.folderId.toLowerCase(), request.body.fileIds);
-      return reply.code(201).send({ documents: created.map(documentBody) });
+      const context = tenantOf(request);
+      const created = await addDocuments(db, context, request.params.folderId.toLowerCase(), request.body.fileIds);
+      const ids = created.map((document) => document.id);
+      await startNewDocuments(jobs, context, ids);
+      // 入队之后重新读出（入队失败的文档已标为 error）。
+      const documents = await withJobs(context, () => getDocuments(db, context, ids), ids);
+      return reply.code(201).send({ documents: documents.map(documentBody) });
     },
   );
 
@@ -182,17 +223,35 @@ export async function registerKnowledgeBaseRoutes(app: FastifyInstance, deps: Kn
     { schema: { params: DOCUMENT_ID_PARAMS, body: MOVE_SCHEMA } },
     async (request) => {
       const { targetFolderId, targetDocumentId, position } = request.body;
-      const document = await moveDocument(db, tenantOf(request), request.params.documentId.toLowerCase(), targetFolderId.toLowerCase(), {
+      const context = tenantOf(request);
+      const document = await moveDocument(db, context, request.params.documentId.toLowerCase(), targetFolderId.toLowerCase(), {
         ...(targetDocumentId ? { targetDocumentId: targetDocumentId.toLowerCase() } : {}),
         ...(position ? { position } : {}),
       });
-      return { document: documentBody(document) };
+      return { document: documentBody(await getDocumentView(db, context, document.id)) };
     },
   );
 
-  app.delete<DocumentParams>('/documents/:documentId', { schema: { params: DOCUMENT_ID_PARAMS } }, async (request) => ({
-    document: documentBody(await deleteDocument(db, tenantOf(request), request.params.documentId.toLowerCase())),
+  app.get<DocumentParams>('/documents/:documentId', { schema: { params: DOCUMENT_ID_PARAMS } }, async (request) => ({
+    document: documentBody(await getDocumentView(db, tenantOf(request), request.params.documentId.toLowerCase())),
   }));
+
+  app.post<DocumentParams>('/documents/:documentId/retry', { schema: { params: DOCUMENT_ID_PARAMS } }, async (request, reply) =>
+    reply.code(202).send({ document: documentBody(await retryDocument(jobs, tenantOf(request), request.params.documentId.toLowerCase())) }),
+  );
+
+  app.post<DocumentParams>('/documents/:documentId/match', { schema: { params: DOCUMENT_ID_PARAMS } }, async (request, reply) =>
+    reply.code(202).send({ document: documentBody(await startMatching(jobs, tenantOf(request), request.params.documentId.toLowerCase())) }),
+  );
+
+  app.delete<DocumentParams>('/documents/:documentId', { schema: { params: DOCUMENT_ID_PARAMS } }, async (request) => {
+    const context = tenantOf(request);
+    const documentId = request.params.documentId.toLowerCase();
+    const latest = await latestDocumentJobs(db, context, [documentId]);
+    const document = await deleteDocument(db, context, documentId);
+    await cancelDocumentJobs(jobs, context, [documentId]);
+    return { document: documentBody(documentView(document, latest.get(documentId) ?? null)) };
+  });
 
   app.get<{ Querystring: { keyword: string; page: number } }>('/search', { schema: { querystring: SEARCH_QUERY } }, async (request) => {
     const keyword = request.query.keyword.trim();

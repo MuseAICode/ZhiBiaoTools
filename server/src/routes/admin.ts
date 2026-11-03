@@ -109,7 +109,7 @@ export async function registerAdminRoutes(app: FastifyInstance, deps: AdminRoute
    */
   async function verifyStepUp(request: FastifyRequest, reply: FastifyReply, password: string): Promise<void> {
     const context = tenantOf(request);
-    const decision = limiters.adminStepUpPerUser.consume(context.userId);
+    const decision = await limiters.adminStepUpPerUser.consume(context.userId);
     if (!decision.allowed) {
       reply.header('retry-after', String(Math.max(1, Math.ceil(decision.retryAfterMs / 1000))));
       throw new AppError(429, 'TOO_MANY_REQUESTS', '请求过于频繁，请稍后再试');

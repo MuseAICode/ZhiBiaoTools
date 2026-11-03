@@ -9,10 +9,14 @@ import { tenantOf } from '../auth/hooks.ts';
 import type { Database } from '../db/schema.ts';
 import { AppError } from '../errors.ts';
 import { requireProject } from '../projects/access.ts';
-import { findJob, listJobEvents, listJobs, requestCancel, type JobEventRecord, type JobRecord } from '../jobs/store.ts';
+import type { JobNotifier } from '../jobs/notify.ts';
+import { findJob, listJobEvents, listJobs, requestCancel } from '../jobs/store.ts';
+import { jobBody, jobEventBody } from '../jobs/view.ts';
 
 export interface JobRouteDependencies {
   db: Kysely<Database>;
+  /** 状态变化后的推送（6.3）。 */
+  notifier: JobNotifier;
 }
 
 const UUID_PATTERN = '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$';
@@ -24,28 +28,6 @@ const JOB_ID_PARAMS = {
   required: ['jobId'],
   additionalProperties: false,
 } as const;
-
-export function jobBody(job: JobRecord) {
-  return {
-    id: job.id,
-    type: job.type,
-    projectId: job.projectId,
-    status: job.status,
-    pauseRequested: job.pauseRequested,
-    progress: job.progress,
-    attempt: job.attempt,
-    error: job.errorCode ? { code: job.errorCode, message: job.errorMessage } : null,
-    createdBy: job.userId,
-    createdAt: job.createdAt.toISOString(),
-    updatedAt: job.updatedAt.toISOString(),
-    startedAt: job.startedAt?.toISOString() ?? null,
-    finishedAt: job.finishedAt?.toISOString() ?? null,
-  };
-}
-
-function eventBody(event: JobEventRecord) {
-  return { id: event.id, kind: event.kind, message: event.message, createdAt: event.createdAt.toISOString() };
-}
 
 function jobNotFound(): AppError {
   return new AppError(404, 'JOB_NOT_FOUND', '任务不存在');
@@ -101,11 +83,12 @@ export async function registerJobRoutes(app: FastifyInstance, deps: JobRouteDepe
     const job = await findJob(db, context, jobId);
     if (!job) throw jobNotFound();
     const events = await listJobEvents(db, context, jobId, EVENT_LIMIT);
-    return { ...jobBody(job), events: events.map(eventBody) };
+    return { ...jobBody(job), events: events.map(jobEventBody) };
   });
 
   app.post<JobParams>('/:jobId/cancel', { schema: { params: JOB_ID_PARAMS } }, async (request) => {
     const { job } = await requestCancel(db, tenantOf(request), request.params.jobId.toLowerCase());
+    await deps.notifier.changed(job);
     return jobBody(job);
   });
 }

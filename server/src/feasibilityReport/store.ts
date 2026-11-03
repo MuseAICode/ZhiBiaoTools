@@ -9,8 +9,13 @@
 //
 // 与桌面版 feasibilityReportStore.cjs（经 taskService 调用的版本）相同：保存项目信息、导入或移除资料时清空资料分析、
 // 目录和关键参数；保存资料分析时清空目录和关键参数；保存目录（排序除外）时清空关键参数，并按 reason / idMap /
-// affectedNodeIds 清空受影响章节的正文；保存关键参数时清空全部正文。给第 6 步任务用的写函数只有 saveSourceParse
-// （资料的解析结果）；资料分析、目录、关键参数和正文由任务经与用户相同的函数写入。
+// affectedNodeIds 清空受影响章节的正文；保存关键参数时清空全部正文。
+//
+// 第 6 步（6.12）的任务（src/feasibilityReport/jobs.ts）：资料解析结果经 saveSourceParse 写入；资料分析、关键参数、正文由
+// saveAnalysisResult、saveKeyParametersResult、clearChapterContents、saveChapterResult 写入，下游清空规则与用户保存相同，
+// 并带上任务开始时的输入签名（inputSignature），在写入的同一事务中（项目锁内）核对，不符时不写入。正文生成或审校任务未结束
+// （排队、运行、暂停、取消中）时用户不能保存目录、手工改正文（与桌面版 assertContentUnlocked 相同，409）。
+import { createHash } from 'node:crypto';
 import { sql, type Kysely, type Transaction } from 'kysely';
 import {
   FEASIBILITY_CONTENT_MAX,
@@ -37,8 +42,13 @@ import type {
   FeasibilityReportStep,
   FeasibilitySourceStatus,
 } from '../db/schema.ts';
+import { JOB_ACTIVE_STATUSES } from '../db/migrations/0021_jobs.ts';
 import { withTenant, type TenantContext } from '../db/tenant.ts';
 import { AppError } from '../errors.ts';
+import type { ObjectStore } from '../files/objectStore.ts';
+import { latestProjectJobs } from '../jobs/store.ts';
+import { jobBody, type JobBody } from '../jobs/view.ts';
+import { storageDisabled } from '../knowledgeBase/content.ts';
 
 /** 每个项目最多的可研资料数（与其他模块的招标文件相同）。 */
 export const FEASIBILITY_SOURCES_MAX = 20;
@@ -51,6 +61,28 @@ export const FEASIBILITY_KNOWLEDGE_ITEMS_MAX = 200;
 /** 保存目录的 reason（与桌面版相同）。 */
 export const FEASIBILITY_OUTLINE_SAVE_REASONS = ['sort', 'edit', 'delete', 'add-root', 'add-child', 'replace'] as const;
 export type FeasibilityOutlineSaveReason = (typeof FEASIBILITY_OUTLINE_SAVE_REASONS)[number];
+
+/** 任务读取合并的资料正文时 Markdown 的总大小上限（整份读入内存，与其他模块相同）。 */
+export const FEASIBILITY_MARKDOWN_READ_MAX_BYTES = 32 * 1024 * 1024;
+
+/** 可研报告的任务类型（6.12，src/feasibilityReport/jobs.ts）。目录生成 / 调整随第 8 步。 */
+export const FEASIBILITY_ANALYSIS_JOB_TYPE = 'feasibility-analysis';
+export const FEASIBILITY_PARAMETERS_JOB_TYPE = 'feasibility-parameters';
+export const FEASIBILITY_CONTENT_JOB_TYPE = 'feasibility-content';
+export const FEASIBILITY_HUMAN_WRITING_JOB_TYPE = 'feasibility-human-writing';
+export const FEASIBILITY_JOB_TYPES = [
+  FEASIBILITY_ANALYSIS_JOB_TYPE,
+  FEASIBILITY_PARAMETERS_JOB_TYPE,
+  FEASIBILITY_CONTENT_JOB_TYPE,
+  FEASIBILITY_HUMAN_WRITING_JOB_TYPE,
+] as const;
+/** 持有正文锁的任务类型（与桌面版 assertContentUnlocked 检查的 contentTask、humanWritingTask 相同）。 */
+const CONTENT_LOCK_JOB_TYPES = [FEASIBILITY_CONTENT_JOB_TYPE, FEASIBILITY_HUMAN_WRITING_JOB_TYPE];
+
+/** 可研报告任务的互斥键（与桌面版 feasibility-report 组的 group-exclusive 相同）。 */
+export function feasibilityReportLockKey(projectId: string): string {
+  return `project:${projectId}:feasibility-report`;
+}
 
 const DEFAULT_TARGET_WORDS = 30000;
 const UNTITLED_CHAPTER = '未命名章节';
@@ -115,13 +147,14 @@ export interface FeasibilityReportState {
   referenceDocumentIds: string[];
   keyParametersMarkdown: string;
   outlineData: FeasibilityOutlineData | null;
-  /** 后台任务状态随第 6 步（jobs），本步一律为 null。 */
-  analysisTask: null;
+  /** 本项目最近一次的各类任务（与 GET /api/jobs/:jobId 相同的形式）；没有时为 null。 */
+  analysisTask: JobBody | null;
+  /** 目录生成 / 调整随第 8 步，一律为 null。 */
   outlineTask: null;
   outlineAdjustmentTask: null;
-  parametersTask: null;
-  contentTask: null;
-  humanWritingTask: null;
+  parametersTask: JobBody | null;
+  contentTask: JobBody | null;
+  humanWritingTask: JobBody | null;
 }
 
 // ---- 错误 ----
@@ -149,6 +182,10 @@ function sourceNotFound(): AppError {
 
 function chapterNotFound(): AppError {
   return new AppError(404, 'FEASIBILITY_REPORT_CHAPTER_NOT_FOUND', '未找到要保存的章节');
+}
+
+function markdownTooLarge(): AppError {
+  return new AppError(422, 'FEASIBILITY_REPORT_CONTENT_TOO_LARGE', '资料正文合计超过 32 MiB，无法分析');
 }
 
 // ---- 输入整理 ----
@@ -229,6 +266,22 @@ type Trx = Transaction<Database>;
 /** 同一项目的写操作（用户与任务）串行执行。 */
 async function lockProject(trx: Trx, projectId: string): Promise<void> {
   await sql`SELECT pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtextextended(${`feasibility_report:${projectId}`}, 0))`.execute(trx);
+}
+
+/**
+ * 正文生成或审校任务未结束（排队、运行、暂停、取消中）时不能保存目录、手工改正文（与桌面版 assertContentUnlocked 相同；
+ * 桌面版检查运行、暂停中，这里另含排队与取消中：任务即将开始写入正文，或可能还有一次写入）。
+ */
+async function assertContentUnlocked(trx: Trx, projectId: string): Promise<void> {
+  const job = await trx
+    .selectFrom('jobs')
+    .select('id')
+    .where('project_id', '=', projectId)
+    .where('type', 'in', CONTENT_LOCK_JOB_TYPES)
+    .where('status', 'in', JOB_ACTIVE_STATUSES)
+    .limit(1)
+    .executeTakeFirst();
+  if (job) throw new AppError(409, 'FEASIBILITY_REPORT_CONTENT_LOCKED', '正文生成或审校任务正在运行或已暂停，当前不能修改目录或手工改正文');
 }
 
 // ---- 读取 ----
@@ -316,9 +369,17 @@ async function readOutline(trx: Trx, projectId: string, meta: { outline_project_
   };
 }
 
-/** 在已设置上下文的事务中读取完整状态（与桌面版 loadFeasibilityReport 相同，任务状态先返回 null）。 */
+/**
+ * 在已设置上下文的事务中读取完整状态（与桌面版 loadFeasibilityReport 相同）。任务状态为本项目最近一次的各类任务；可研报告的结果
+ * 没有“进行中”的状态（任务成功时才整体写入），所以不需要像其他模块那样把任务已结束的结果按未完成显示。
+ */
 export async function readState(trx: Trx, projectId: string): Promise<FeasibilityReportState> {
   const meta = await trx.selectFrom('feasibility_report_meta').selectAll().where('project_id', '=', projectId).executeTakeFirst();
+  const jobs = await latestProjectJobs(trx, projectId, FEASIBILITY_JOB_TYPES);
+  const task = (type: string) => {
+    const job = jobs.get(type);
+    return job ? jobBody(job) : null;
+  };
   return {
     step: meta?.step ?? 'materials',
     projectInfo: {
@@ -340,12 +401,12 @@ export async function readState(trx: Trx, projectId: string): Promise<Feasibilit
     referenceDocumentIds: await readReferenceDocumentIds(trx, projectId),
     keyParametersMarkdown: meta?.key_parameters_markdown ?? '',
     outlineData: await readOutline(trx, projectId, meta),
-    analysisTask: null,
+    analysisTask: task(FEASIBILITY_ANALYSIS_JOB_TYPE),
     outlineTask: null,
     outlineAdjustmentTask: null,
-    parametersTask: null,
-    contentTask: null,
-    humanWritingTask: null,
+    parametersTask: task(FEASIBILITY_PARAMETERS_JOB_TYPE),
+    contentTask: task(FEASIBILITY_CONTENT_JOB_TYPE),
+    humanWritingTask: task(FEASIBILITY_HUMAN_WRITING_JOB_TYPE),
   };
 }
 
@@ -448,7 +509,7 @@ export async function saveProjectInfo(
   });
 }
 
-/** 保存资料分析（与桌面版 saveAnalysis 相同）：去掉首尾空白，同时清空目录和关键参数。第 6 步的资料分析任务同样经它写入。 */
+/** 保存资料分析（与桌面版 saveAnalysis 相同）：去掉首尾空白，同时清空目录和关键参数。 */
 export async function saveAnalysis(db: Kysely<Database>, context: TenantContext, projectId: string, markdown: string): Promise<FeasibilityReportState> {
   const analysis = userText(String(markdown ?? '').trim(), FEASIBILITY_MARKDOWN_MAX, '资料分析');
   return withTenant(db, context, async (trx) => {
@@ -590,9 +651,8 @@ export interface SaveOutlineInput {
 /**
  * 保存目录（与桌面版 saveOutline 相同的 reason 协议）：整体替换节点。reason 为 replace 时清空全部正文；其他 reason 中
  * affectedNodeIds 里的节点清空正文，其余节点的正文取请求给出的，未给出时按 idMap 沿用已保存的。reason 不是 sort 时
- * 同时清空关键参数。第 6 步的目录生成任务同样经它写入（reason 为 replace）。
- *
- * 桌面版“正文生成或审校任务运行中不能修改目录”的检查随第 6 步的任务队列（任务持有项目锁或在写入前核对目录）。
+ * 同时清空关键参数。第 8 步的目录生成任务同样经它写入（reason 为 replace）。正文生成或审校任务未结束时返回 409
+ * FEASIBILITY_REPORT_CONTENT_LOCKED。
  */
 export async function saveOutline(db: Kysely<Database>, context: TenantContext, projectId: string, input: SaveOutlineInput): Promise<FeasibilityReportState> {
   const reason = oneOf(input.reason, FEASIBILITY_OUTLINE_SAVE_REASONS, 'replace');
@@ -610,6 +670,7 @@ export async function saveOutline(db: Kysely<Database>, context: TenantContext, 
   const clearAll = reason === 'replace';
   return withTenant(db, context, async (trx) => {
     await lockProject(trx, projectId);
+    await assertContentUnlocked(trx, projectId);
     const previous = new Map(
       (await trx.selectFrom('feasibility_report_outline_nodes').select(['node_id', 'content']).where('project_id', '=', projectId).execute()).map(
         (row) => [row.node_id, row.content],
@@ -640,18 +701,22 @@ export async function saveOutline(db: Kysely<Database>, context: TenantContext, 
   });
 }
 
-/** 保存关键参数（与桌面版 saveKeyParameters 相同）：去掉首尾空白，同时清空全部正文。第 6 步的关键参数任务同样经它写入。 */
+async function clearAllContent(trx: Trx, projectId: string): Promise<void> {
+  await trx.updateTable('feasibility_report_outline_nodes').set({ content: '' }).where('project_id', '=', projectId).where('content', '<>', '').execute();
+}
+
+/** 保存关键参数（与桌面版 saveKeyParameters 相同）：去掉首尾空白，同时清空全部正文。 */
 export async function saveKeyParameters(db: Kysely<Database>, context: TenantContext, projectId: string, markdown: string): Promise<FeasibilityReportState> {
   const keyParameters = userText(String(markdown ?? '').trim(), FEASIBILITY_MARKDOWN_MAX, '关键参数');
   return withTenant(db, context, async (trx) => {
     await lockProject(trx, projectId);
     await writeMeta(trx, context, projectId, { key_parameters_markdown: keyParameters });
-    await trx.updateTable('feasibility_report_outline_nodes').set({ content: '' }).where('project_id', '=', projectId).where('content', '<>', '').execute();
+    await clearAllContent(trx, projectId);
     return readState(trx, projectId);
   });
 }
 
-/** 保存一章正文（与桌面版 saveChapterContent 相同）。章节不存在时 404。第 6 步的正文任务同样经它写入。 */
+/** 手工保存一章正文（与桌面版 saveChapterContent 相同）。章节不存在时 404；正文生成或审校任务未结束时 409。 */
 export async function saveChapterContent(
   db: Kysely<Database>,
   context: TenantContext,
@@ -663,6 +728,7 @@ export async function saveChapterContent(
   const text = userText(String(content ?? ''), FEASIBILITY_CONTENT_MAX, '章节正文');
   return withTenant(db, context, async (trx) => {
     await lockProject(trx, projectId);
+    await assertContentUnlocked(trx, projectId);
     const result = await trx
       .updateTable('feasibility_report_outline_nodes')
       .set({ content: text })
@@ -690,6 +756,8 @@ async function trashFiles(trx: Trx, context: TenantContext, fileIds: string[]): 
 
 export interface ImportSourcesResult {
   addedCount: number;
+  /** 新导入的文件（待解析，由接口入队解析任务）。 */
+  addedFileIds: string[];
   /** 被替换掉的旧资料数（原件进回收站）。 */
   removedCount: number;
   state: FeasibilityReportState;
@@ -697,7 +765,7 @@ export interface ImportSourcesResult {
 
 /**
  * 导入可研资料（取代桌面版 importSourceDocuments）：与桌面版相同整体替换。给出的文件按顺序成为全部资料：新文件挂到本项目
- * （files.project_id）并登记，资料停在待解析（解析随第 6 步）；已登记的保留并按新顺序排列；不在其中的旧资料原件软删除
+ * （files.project_id）并登记，资料停在待解析（由接口入队解析任务，6.6）；已登记的保留并按新顺序排列；不在其中的旧资料原件软删除
  * （进回收站）。同时清空资料分析、目录和关键参数。文件不可用（不存在、其他组织的、未上传完成、已删除、用途不是 tender、
  * 属于其他项目）时整体失败，返回 400。
  */
@@ -749,7 +817,7 @@ export async function importSources(db: Kysely<Database>, context: TenantContext
     }
     const removedCount = await trashFiles(trx, context, removed);
     await clearDownstreamFromMaterials(trx, context, projectId);
-    return { addedCount: added.length, removedCount, state: await readState(trx, projectId) };
+    return { addedCount: added.length, addedFileIds: added, removedCount, state: await readState(trx, projectId) };
   });
 }
 
@@ -877,4 +945,205 @@ export async function saveSourceParse(
     const result = await trx.updateTable('feasibility_report_sources').set(set).where('project_id', '=', projectId).where('file_id', '=', id).executeTakeFirst();
     return Number(result.numUpdatedRows) > 0;
   });
+}
+
+// ---- 任务的输入签名与写入（6.12） ----
+
+const sha256Hex = (text: string) => createHash('sha256').update(text, 'utf8').digest('hex');
+
+/**
+ * 在已设置上下文的事务中算出输入签名：项目信息、资料（顺序、解析状态、产物与正文哈希）、资料分析、目录结构（不含正文）与目录的
+ * 项目名称和概述、关键参数。与桌面版保存这些内容时取消全部可研任务相同，任何一项变化都使进行中的任务的写入失效；不含页面步骤
+ * 与目录配置（桌面版保存它们时不取消任务，任务在开始时读取），也不含正文（正文是正文任务自己的写入）。
+ */
+async function readInputSignature(trx: Trx, projectId: string): Promise<string> {
+  const meta = await trx.selectFrom('feasibility_report_meta').selectAll().where('project_id', '=', projectId).executeTakeFirst();
+  const sources = await trx
+    .selectFrom('feasibility_report_sources')
+    .select(['file_id', 'status', 'markdown_artifact_id', 'content_hash'])
+    .where('project_id', '=', projectId)
+    .orderBy('sort_order')
+    .orderBy('created_at')
+    .orderBy('file_id')
+    .execute();
+  const nodes = await trx
+    .selectFrom('feasibility_report_outline_nodes')
+    .select(['node_id', 'parent_node_id', 'sort_order', 'level', 'title', 'description', 'knowledge_item_ids'])
+    .where('project_id', '=', projectId)
+    .orderBy('level')
+    .orderBy('sort_order')
+    .orderBy('node_id')
+    .execute();
+  return sha256Hex(
+    JSON.stringify([
+      meta
+        ? [
+            meta.project_name,
+            meta.project_type,
+            meta.industry,
+            meta.construction_unit,
+            meta.location,
+            meta.construction_content,
+            meta.construction_period_years,
+            meta.operation_period_years,
+            meta.total_investment,
+            meta.funding_source,
+            meta.analysis_markdown,
+            meta.key_parameters_markdown,
+            meta.outline_project_name,
+            meta.outline_project_overview,
+          ]
+        : null,
+      sources.map((row) => [row.file_id, row.status, row.markdown_artifact_id, row.content_hash]),
+      nodes.map((row) => [row.node_id, row.parent_node_id, row.sort_order, row.level, row.title, row.description, row.knowledge_item_ids]),
+    ]),
+  );
+}
+
+/** 当前的输入签名（任务开始时读取，写入时传回）。 */
+export async function inputSignature(db: Kysely<Database>, context: TenantContext, projectId: string): Promise<string> {
+  return withTenant(db, context, (trx) => readInputSignature(trx, projectId));
+}
+
+/** 加项目锁并核对签名，相符时执行写入；不符时不写入，返回 false。 */
+async function guardedWrite(
+  db: Kysely<Database>,
+  context: TenantContext,
+  projectId: string,
+  expectedSignature: string,
+  write: (trx: Trx) => Promise<boolean | void>,
+): Promise<boolean> {
+  return withTenant(db, context, async (trx) => {
+    await lockProject(trx, projectId);
+    if ((await readInputSignature(trx, projectId)) !== expectedSignature) return false;
+    return (await write(trx)) !== false;
+  });
+}
+
+/** 资料分析任务的结果：与 saveAnalysis 相同去掉首尾空白并清空目录和关键参数；超长时截短。签名不符时返回 false。 */
+export async function saveAnalysisResult(
+  db: Kysely<Database>,
+  context: TenantContext,
+  projectId: string,
+  markdown: string,
+  expectedSignature: string,
+): Promise<boolean> {
+  const analysis = taskText(String(markdown ?? '').trim(), FEASIBILITY_MARKDOWN_MAX);
+  return guardedWrite(db, context, projectId, expectedSignature, (trx) => clearDownstreamFromAnalysis(trx, context, projectId, { analysis_markdown: analysis }));
+}
+
+/** 关键参数任务的结果：与 saveKeyParameters 相同去掉首尾空白并清空全部正文；超长时截短。签名不符时返回 false。 */
+export async function saveKeyParametersResult(
+  db: Kysely<Database>,
+  context: TenantContext,
+  projectId: string,
+  markdown: string,
+  expectedSignature: string,
+): Promise<boolean> {
+  const keyParameters = taskText(String(markdown ?? '').trim(), FEASIBILITY_MARKDOWN_MAX);
+  return guardedWrite(db, context, projectId, expectedSignature, async (trx) => {
+    await writeMeta(trx, context, projectId, { key_parameters_markdown: keyParameters });
+    await clearAllContent(trx, projectId);
+  });
+}
+
+/** 正文生成任务开始时清空全部正文（与桌面版 startFeasibilityContent 的 clearContent 相同）。签名不符时返回 false。 */
+export async function clearChapterContents(db: Kysely<Database>, context: TenantContext, projectId: string, expectedSignature: string): Promise<boolean> {
+  return guardedWrite(db, context, projectId, expectedSignature, (trx) => clearAllContent(trx, projectId));
+}
+
+/**
+ * 正文任务写入一章正文（生成或审校的结果，超长时截短）。任务自己持有正文锁，不检查锁；签名不符或章节不存在时不写入，返回 false。
+ */
+export async function saveChapterResult(
+  db: Kysely<Database>,
+  context: TenantContext,
+  projectId: string,
+  nodeId: string,
+  content: string,
+  expectedSignature: string,
+): Promise<boolean> {
+  const text = taskText(content, FEASIBILITY_CONTENT_MAX);
+  return guardedWrite(db, context, projectId, expectedSignature, async (trx) => {
+    const result = await trx
+      .updateTable('feasibility_report_outline_nodes')
+      .set({ content: text })
+      .where('project_id', '=', projectId)
+      .where('node_id', '=', nodeId)
+      .executeTakeFirst();
+    return Number(result.numUpdatedRows) > 0;
+  });
+}
+
+/**
+ * 合并的资料正文（取代桌面版 readCombinedSourceMarkdown，不开放为接口）：各资料已解析出的 Markdown 按导入顺序、去掉首尾空白后
+ * 以“## 文件名”开头，以空行连接；没有内容的资料跳过。总大小超过 32 MiB 时返回 422，不整体读入；对象存储未配置时 503。
+ */
+export async function readCombinedSourceMarkdown(db: Kysely<Database>, context: TenantContext, projectId: string, objectStore: ObjectStore | null): Promise<string> {
+  const rows = await withTenant(db, context, (trx) =>
+    trx
+      .selectFrom('feasibility_report_sources as s')
+      .innerJoin('files as f', 'f.id', 's.file_id')
+      .innerJoin('artifacts as a', 'a.id', 's.markdown_artifact_id')
+      .select(['f.display_name', 'a.storage_key', 'a.size_bytes'])
+      .where('s.project_id', '=', projectId)
+      .where('a.status', '=', 'ready')
+      .orderBy('s.sort_order')
+      .orderBy('s.created_at')
+      .orderBy('s.file_id')
+      .execute(),
+  );
+  if (rows.length === 0) return '';
+  if (!objectStore) throw storageDisabled();
+  let total = rows.reduce((sum, row) => sum + Number(row.size_bytes ?? 0), 0);
+  if (total > FEASIBILITY_MARKDOWN_READ_MAX_BYTES) throw markdownTooLarge();
+  total = 0;
+  const parts: string[] = [];
+  for (const row of rows) {
+    const object = await objectStore.get(row.storage_key);
+    if (!object) continue;
+    const chunks: Buffer[] = [];
+    for await (const chunk of object.body) {
+      const buffer = Buffer.from(chunk as Uint8Array);
+      total += buffer.length;
+      if (total > FEASIBILITY_MARKDOWN_READ_MAX_BYTES) {
+        object.body.destroy();
+        throw markdownTooLarge();
+      }
+      chunks.push(buffer);
+    }
+    const markdown = Buffer.concat(chunks).toString('utf8').trim();
+    if (markdown) parts.push(`## ${row.display_name}\n\n${markdown}`);
+  }
+  return parts.join('\n\n');
+}
+
+/** 目录配置引用的知识库文档中的最终条目（桌面版 knowledgeBaseService.readReferences 的结果中任务用到的字段）。 */
+export interface ReferenceKnowledgeItem {
+  documentId: string;
+  itemId: string;
+  title: string;
+  resume: string;
+  content: string;
+}
+
+/**
+ * 引用的知识库文档中已处理成功的文档的最终条目：按引用顺序、文档内按条目顺序。原件已删除的文档由 RLS 隐藏（引用行与文档都不可见）。
+ */
+export async function readReferenceKnowledgeItems(db: Kysely<Database>, context: TenantContext, projectId: string): Promise<ReferenceKnowledgeItem[]> {
+  const rows = await withTenant(db, context, (trx) =>
+    trx
+      .selectFrom('feasibility_report_reference_docs as r')
+      .innerJoin('knowledge_documents as d', 'd.id', 'r.document_id')
+      .innerJoin('knowledge_items as i', 'i.document_id', 'd.id')
+      .select(['r.document_id', 'i.item_id', 'i.title', 'i.resume', 'i.content'])
+      .where('r.project_id', '=', projectId)
+      .where('d.status', '=', 'success')
+      .orderBy('r.sort_order')
+      .orderBy('r.document_id')
+      .orderBy('i.sort_order')
+      .orderBy('i.item_id')
+      .execute(),
+  );
+  return rows.map((row) => ({ documentId: row.document_id, itemId: row.item_id, title: row.title, resume: row.resume, content: row.content }));
 }

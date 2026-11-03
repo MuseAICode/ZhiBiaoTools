@@ -78,10 +78,43 @@ jobs:
       - name: npm audit (fail on critical)
         run: npm audit --audit-level=critical
 
+  openxmlhelper-checks:
+    name: OpenXmlHelper build / test
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    defaults:
+      run:
+        working-directory: openxmlhelper
+        shell: bash
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # SDK 版本按 openxmlhelper/global.json（10.0.1xx，rollForward latestFeature）。
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: openxmlhelper/global.json
+
+      # 按测试项目的 packages.lock.json 还原（含助手本身的传递依赖）；
+      # NuGetAudit 在还原时检查已知漏洞，high / critical（NU1903 / NU1904）视为错误。
+      - name: Restore (locked mode, NuGet audit)
+        run: dotnet restore tests/OpenXmlHelper.Tests/OpenXmlHelper.Tests.csproj --locked-mode
+
+      - name: Build (Release)
+        run: dotnet build tests/OpenXmlHelper.Tests/OpenXmlHelper.Tests.csproj --configuration Release --no-restore
+
+      - name: Unit tests (xUnit)
+        run: dotnet test tests/OpenXmlHelper.Tests/OpenXmlHelper.Tests.csproj --configuration Release --no-build --logger "console;verbosity=normal"
+
   server-checks:
     name: Server typecheck / test / audit
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # 6.5 起含 parse 沙箱镜像（LibreOffice）的构建和 gVisor 下的隔离测试；7.1 起另含 export 沙箱镜像（.NET 助手 + Chromium）
+    # 的构建和两个 export 模板的同一套隔离测试。
+    timeout-minutes: 50
 
     # 数据库集成测试（npm run test:db）用的 PostgreSQL，与 docker-compose.yml 使用同一镜像 digest。
     # 只在 CI 的一次性容器中使用，超级用户密码不是密钥。
@@ -168,7 +201,7 @@ jobs:
       - name: Unit tests (Vitest)
         run: npm run test
 
-      - name: Database tests (migrations, RLS, /readyz, file storage, redis, job queue)
+      - name: Database tests (migrations, RLS, /readyz, file storage, redis, job queue, events)
         run: npm run test:db
         env:
           TEST_DATABASE_ADMIN_URL: postgres://postgres:postgres@127.0.0.1:5432/postgres
@@ -180,8 +213,73 @@ jobs:
           # 任务队列测试中真实重启 Valkey（不持久化，重启即清空），验证任务从 jobs 表恢复、不丢失、不重复执行。
           TEST_REDIS_RESTART_COMMAND: docker restart valkey
 
+      # 解析沙箱的隔离测试（路线图 6.5）在 gVisor 下运行（第 6 步决定事项第 2 项）。runsc 按版本固定、按写死的 SHA-512 校验
+      # （gVisor 官方发布，Apache-2.0）；登记为 Docker 的运行时后 reload（不重启 Docker，已启动的服务容器不受影响）。
+      - name: Install gVisor (runsc)
+        run: |
+          set -euo pipefail
+          version=20260810.0
+          sha512=4463ce276e207f5a516a08ec627a768a19cf7bed0094d522b0810bee3424585caa8d344e093204012b974f5c508ab2362dcb0d7236f0c1992fccc426beeb7ffc
+          curl -fsSL -o "$RUNNER_TEMP/runsc" "https://storage.googleapis.com/gvisor/releases/release/${version}/x86_64/runsc"
+          echo "${sha512}  $RUNNER_TEMP/runsc" | sha512sum -c -
+          sudo install -m 0755 "$RUNNER_TEMP/runsc" /usr/local/bin/runsc
+          sudo /usr/local/bin/runsc install
+          sudo systemctl reload docker
+          for attempt in $(seq 1 10); do
+            if docker info --format '{{json .Runtimes}}' | grep -q '"runsc"'; then runsc --version; exit 0; fi
+            sleep 1
+          done
+          docker info
+          exit 1
+
+      # 6.6 起镜像含解析入口与其 npm 依赖（按 sandbox/parse/package-lock.json 在构建阶段安装）和 LibreOffice 的安全设置。
+      - name: Build parse sandbox image
+        run: docker build -t zhibiao-parse:ci sandbox/parse
+
+      # 宏安全测试的对照镜像：同一镜像只去掉 LibreOffice 的安全设置（zhibiao-security.xcd），证明测试能发现设置被去掉。只用于测试，不发布。
+      - name: Build control image without the LibreOffice security settings
+        run: |
+          docker build -t zhibiao-parse:ci-control - <<'EOF'
+          FROM zhibiao-parse:ci
+          USER root
+          RUN rm /usr/lib/libreoffice/share/registry/zhibiao-security.xcd
+          USER 10001:10001
+          EOF
+
+      # 7.1：export 沙箱镜像。助手源码与装饰生成器经具名构建上下文取自 openxmlhelper/ 与 client/electron/shared/chrome（与桌面版同一份代码）；
+      # 7.3b 起另有模板样张的固定配图，取自 client/assets/content-template-preview（与桌面版同一份文件）。
+      # .NET SDK 只在构建阶段，chromium-headless-shell 由镜像中的 playwright-core（按 sandbox/export/package-lock.json 安装）下载对应版本。
+      - name: Build export sandbox image
+        run: |
+          docker build -t zhibiao-export:ci \
+            --build-context openxmlhelper=../openxmlhelper \
+            --build-context chrome=../client/electron/shared/chrome \
+            --build-context preview-assets=../client/assets/content-template-preview \
+            sandbox/export
+
+      - name: Sandbox isolation, parse and export tests (gVisor)
+        run: npm run test:sandbox
+        env:
+          TEST_SANDBOX_IMAGE: zhibiao-parse:ci
+          TEST_SANDBOX_RUNTIME: runsc
+          TEST_SANDBOX_OFFICE: '1'
+          TEST_SANDBOX_CONTROL_IMAGE: zhibiao-parse:ci-control
+          TEST_SANDBOX_EXPORT_IMAGE: zhibiao-export:ci
+          # 解析卡住时的解析任务测试（tests/sandbox/docker/parseJob.test.ts）在真实沙箱和数据库上执行任务。
+          TEST_DATABASE_ADMIN_URL: postgres://postgres:postgres@127.0.0.1:5432/postgres
+
       - name: Shell script syntax (bash -n)
         run: bash -n db/init/10-provision.sh && bash -n scripts/init-dev-secrets.sh && sh -n redis/start-valkey.sh
 
       - name: npm audit (fail on high)
+        run: npm audit --audit-level=high
+
+      # parse 沙箱镜像中的解析依赖（mammoth、pdfjs、SheetJS 等）单独一份 lockfile。
+      - name: npm audit parse sandbox dependencies (fail on high)
+        working-directory: server/sandbox/parse
+        run: npm audit --audit-level=high
+
+      # export 沙箱镜像中的入口依赖（playwright-core）单独一份 lockfile。
+      - name: npm audit export sandbox dependencies (fail on high)
+        working-directory: server/sandbox/export
         run: npm audit --audit-level=high

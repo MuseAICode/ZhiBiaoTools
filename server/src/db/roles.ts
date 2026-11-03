@@ -29,3 +29,10 @@ export const STORAGE_ROLE = 'bidtools_storage';
  * 迁移角色以 SET（不继承）加入它。
  */
 export const JOBS_ROLE = 'bidtools_jobs';
+/**
+ * 清理函数（迁移 0024）的 SECURITY DEFINER 属主：worker 每小时跨组织物理删除超过保留期的文件、产物、项目、遗留的上传中记录
+ * 和任务记录（路线图 6.8，决定事项第 9、10 项）。删除条件写在函数和只对它生效的 DELETE 策略中，调用方不能传入时间绕过。
+ * 与 bidtools_auth 相同：NOLOGIN、非超级用户、无 BYPASSRLS；只对 files、artifacts、projects、jobs、job_events 有列级 SELECT
+ * 和 DELETE，对计费账本、余额、价格表、用量记录等其他表没有任何授权。迁移角色以 SET（不继承）加入它。
+ */
+export const CLEANUP_ROLE = 'bidtools_cleanup';

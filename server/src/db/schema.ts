@@ -56,6 +56,7 @@ import type {
 } from './migrations/0018_technical_plan.ts';
 import type { TECHNICAL_PLAN_CONTENT_MODES } from './migrations/0019_technical_plan_outline.ts';
 import type { JOB_EVENT_KINDS, JOB_STATUSES } from './migrations/0021_jobs.ts';
+import type { JOB_PAUSE_REASONS } from './migrations/0022_job_billing.ts';
 import type { ProjectKind } from '../projects/store.ts';
 
 type Timestamp = ColumnType<Date, Date | string, Date | string>;
@@ -339,6 +340,8 @@ export interface ArtifactsTable {
   created_by: ColumnType<string, string, never>;
   created_at: ColumnType<Date, never, never>;
   completed_at: ColumnType<Date | null, never, never>;
+  /** 重新解析后被替换的时间（迁移 0023，触发器写入 now()）；之后由清理任务删除。 */
+  superseded_at: ColumnType<Date | null, never, Date>;
 }
 
 /**
@@ -999,6 +1002,8 @@ export interface TechnicalPlanDocumentsTable {
   content_hash: ColumnType<string | null, never, string | null>;
   parser_label: ColumnType<string | null, never, string | null>;
   error: ColumnType<string | null, never, string | null>;
+  /** 疑似多标段检测摘要（迁移 0026，src/technicalPlan/bidSectionDetector.ts），由解析任务写入。 */
+  bid_section_detection: ColumnType<Record<string, unknown> | null, never, string | null>;
   created_at: ColumnType<Date, never, never>;
   updated_at: ColumnType<Date, never, never>;
 }
@@ -1123,6 +1128,7 @@ export interface TechnicalPlanBidItemsTable {
 
 export type JobStatus = (typeof JOB_STATUSES)[number];
 export type JobEventKind = (typeof JOB_EVENT_KINDS)[number];
+export type JobPauseReason = (typeof JOB_PAUSE_REASONS)[number];
 
 /** 任务（迁移 0021_jobs）：任务状态的唯一权威。jsonb 列写入时传 JSON 字符串。 */
 export interface JobsTable {
@@ -1146,6 +1152,10 @@ export interface JobsTable {
   updated_at: ColumnType<Date, never, never>;
   started_at: ColumnType<Date | null, never, Date | string | null>;
   finished_at: ColumnType<Date | null, never, Date | string | null>;
+  /** 本任务已扣费的合计（计费单位，bigint 读出为字符串），只由 ai_usage_settle 累加（迁移 0022_job_billing）。 */
+  billed_amount: ColumnType<string, never, never>;
+  /** 暂停原因（迁移 0022_job_billing），只在 paused 时可以有值。 */
+  pause_reason: ColumnType<JobPauseReason | null, never, JobPauseReason | null>;
 }
 
 /** 任务事件（迁移 0021_jobs），只追加。 */
@@ -1156,6 +1166,26 @@ export interface JobEventsTable {
   kind: Fixed<JobEventKind>;
   message: ColumnType<string | null, string | null | undefined, never>;
   data: ColumnType<Record<string, unknown> | null, string | null | undefined, never>;
+  created_at: ColumnType<Date, never, never>;
+}
+
+/**
+ * 任务步骤的调用结果（迁移 0025_job_step_results）：与结算在同一事务中写入，续跑时同一步骤、同一请求直接取回，
+ * 不再调用服务商、不再扣费。只追加（应用角色没有 UPDATE、DELETE），随任务记录删除。
+ */
+export interface JobStepResultsTable {
+  org_id: Fixed<string>;
+  job_id: Fixed<string>;
+  step_key: Fixed<string>;
+  request_hash: Fixed<Buffer>;
+  usage_id: Fixed<string>;
+  content: Fixed<string>;
+  reasoning_content: Fixed<string>;
+  finish_reason: Fixed<string | null>;
+  input_tokens: ColumnType<string, number, never>;
+  cached_input_tokens: ColumnType<string, number, never>;
+  output_tokens: ColumnType<string, number, never>;
+  usage_source: Fixed<'provider' | 'estimated'>;
   created_at: ColumnType<Date, never, never>;
 }
 
@@ -1230,4 +1260,5 @@ export interface Database {
   technical_plan_content_plans: TechnicalPlanContentPlansTable;
   jobs: JobsTable;
   job_events: JobEventsTable;
+  job_step_results: JobStepResultsTable;
 }

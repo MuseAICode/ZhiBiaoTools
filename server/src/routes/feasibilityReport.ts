@@ -4,7 +4,7 @@
 // saveOutlineConfig / saveOutline / saveKeyParameters / saveChapterContent / importSourceDocuments / removeSourceDocument /
 // readSourceMarkdown / clear。
 //
-// GET    /api/projects/:projectId/feasibility-report                              完整状态（任务状态随第 6 步）
+// GET    /api/projects/:projectId/feasibility-report                              完整状态（含最近一次的各类任务）
 // PATCH  /api/projects/:projectId/feasibility-report/step                         切换页面步骤
 // PUT    /api/projects/:projectId/feasibility-report/project-info                 保存项目信息（清空资料分析、目录和关键参数）
 // PUT    /api/projects/:projectId/feasibility-report/analysis                     保存资料分析（清空目录和关键参数）
@@ -16,8 +16,14 @@
 // DELETE /api/projects/:projectId/feasibility-report/sources/:fileId              移除一份资料（原件进回收站）
 // GET    /api/projects/:projectId/feasibility-report/sources/:fileId/markdown     资料解析出的 Markdown 原文（附件下载，还没有解析时为空）
 // DELETE /api/projects/:projectId/feasibility-report                              清空（资料进回收站）
+// POST   /api/projects/:projectId/feasibility-report/analysis-job                 开始资料分析（入队 feasibility-analysis）
+// POST   /api/projects/:projectId/feasibility-report/key-parameters-job           开始生成关键参数（入队 feasibility-parameters）
+// POST   /api/projects/:projectId/feasibility-report/content-job                  开始正文生成与审校（入队 feasibility-content，{ onlyMissing? }）
+// POST   /api/projects/:projectId/feasibility-report/human-writing-job            开始自然化审校（入队 feasibility-human-writing）
 //
-// 资料解析、资料分析、关键参数随第 6 步的任务队列，目录生成 / 调整第 6 步核实（可能第 8 步），正文生成随第 8 步；
+// 导入资料后自动入队资料解析（6.6，src/parse/）。资料分析、关键参数、正文生成与审校是任务（6.12，src/feasibilityReport/jobs.ts），结果由任务
+// 经 Store 函数写入，进度、取消、暂停、继续经 /api/jobs 与 SSE；与桌面版相同，保存项目信息、资料分析、目录、关键参数，导入、移除资料和清空时
+// 取消本项目进行中的可研任务；正文生成或审校任务未结束时不能保存目录、手工改正文（409）。目录生成 / 调整随第 8 步；
 // readCombinedSourceMarkdown（Renderer 未调用）由任务在服务端合并，不开放为接口；Word 导出随第 7 步。
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import type { Kysely } from 'kysely';
@@ -34,6 +40,13 @@ import {
   FEASIBILITY_TEXT_MAX,
 } from '../db/migrations/0017_feasibility_report.ts';
 import type { Database, FeasibilityReportStep } from '../db/schema.ts';
+import {
+  cancelFeasibilityReportJobs,
+  startFeasibilityAnalysis,
+  startFeasibilityContent,
+  startFeasibilityHumanWriting,
+  startFeasibilityParameters,
+} from '../feasibilityReport/jobs.ts';
 import {
   clearFeasibilityReport,
   FEASIBILITY_OUTLINE_NODES_MAX,
@@ -58,12 +71,17 @@ import {
 import { attachmentDisposition } from '../files/filename.ts';
 import type { ObjectStore } from '../files/objectStore.ts';
 import { storageDisabled } from '../knowledgeBase/content.ts';
+import type { JobServiceDependencies } from '../jobs/service.ts';
+import { jobBody } from '../jobs/view.ts';
+import { enqueueDocumentParses } from '../parse/enqueue.ts';
 import { PROJECT_ID_PARAMS, requireProject } from '../projects/access.ts';
 
 export interface FeasibilityReportRouteDependencies {
   db: Kysely<Database>;
   /** 读取资料的 Markdown 用；未配置时读取已解析的资料返回 503（还没有 Markdown 时除外）。 */
   objectStore: ObjectStore | null;
+  /** 导入后入队文档解析任务（6.6）。 */
+  jobs: JobServiceDependencies;
 }
 
 const UUID = { type: 'string', pattern: '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$' } as const;
@@ -167,6 +185,13 @@ const SOURCES_SCHEMA = {
   additionalProperties: false,
 } as const;
 
+// 只补充生成还没有正文的章节；请求体可以省略。
+const CONTENT_JOB_SCHEMA = {
+  type: 'object',
+  properties: { onlyMissing: { type: 'boolean' } },
+  additionalProperties: false,
+} as const;
+
 type ProjectParams = { Params: { projectId: string } };
 type SourceParams = { Params: { projectId: string; fileId: string } };
 type ChapterParams = { Params: { projectId: string; nodeId: string } };
@@ -184,6 +209,15 @@ export async function registerFeasibilityReportRoutes(app: FastifyInstance, deps
     return (await requireProject(db, tenantOf(request), request.params.projectId, 'feasibility-report')).id;
   }
 
+  /**
+   * 保存上游内容、资料变化和清空后取消进行中的可研任务。桌面版在提交前取消；这里在提交后取消，提交与取消之间旧任务的写入因签名不符
+   * 被拒绝，响应中的状态在取消后重新读取。
+   */
+  async function cancelJobsAndReload(request: FastifyRequest, projectId: string) {
+    await cancelFeasibilityReportJobs(deps.jobs, tenantOf(request), projectId);
+    return loadFeasibilityReport(db, tenantOf(request), projectId);
+  }
+
   app.get<ProjectParams>('/:projectId/feasibility-report', { schema: { params: PROJECT_ID_PARAMS } }, async (request) =>
     loadFeasibilityReport(db, tenantOf(request), await project(request)),
   );
@@ -197,13 +231,21 @@ export async function registerFeasibilityReportRoutes(app: FastifyInstance, deps
   app.put<ProjectParams & { Body: { projectInfo: ProjectInfoInput } }>(
     '/:projectId/feasibility-report/project-info',
     { schema: { params: PROJECT_ID_PARAMS, body: PROJECT_INFO_SCHEMA } },
-    async (request) => saveProjectInfo(db, tenantOf(request), await project(request), request.body.projectInfo),
+    async (request) => {
+      const projectId = await project(request);
+      await saveProjectInfo(db, tenantOf(request), projectId, request.body.projectInfo);
+      return cancelJobsAndReload(request, projectId);
+    },
   );
 
   app.put<ProjectParams & { Body: { markdown: string } }>(
     '/:projectId/feasibility-report/analysis',
     { schema: { params: PROJECT_ID_PARAMS, body: MARKDOWN_SCHEMA }, bodyLimit: MARKDOWN_BODY_LIMIT },
-    async (request) => saveAnalysis(db, tenantOf(request), await project(request), request.body.markdown),
+    async (request) => {
+      const projectId = await project(request);
+      await saveAnalysis(db, tenantOf(request), projectId, request.body.markdown);
+      return cancelJobsAndReload(request, projectId);
+    },
   );
 
   app.put<ProjectParams & { Body: OutlineConfigInput }>(
@@ -215,13 +257,21 @@ export async function registerFeasibilityReportRoutes(app: FastifyInstance, deps
   app.put<ProjectParams & { Body: SaveOutlineInput }>(
     '/:projectId/feasibility-report/outline',
     { schema: { params: PROJECT_ID_PARAMS, body: OUTLINE_SCHEMA }, bodyLimit: OUTLINE_BODY_LIMIT },
-    async (request) => saveOutline(db, tenantOf(request), await project(request), request.body),
+    async (request) => {
+      const projectId = await project(request);
+      await saveOutline(db, tenantOf(request), projectId, request.body);
+      return cancelJobsAndReload(request, projectId);
+    },
   );
 
   app.put<ProjectParams & { Body: { markdown: string } }>(
     '/:projectId/feasibility-report/key-parameters',
     { schema: { params: PROJECT_ID_PARAMS, body: MARKDOWN_SCHEMA }, bodyLimit: MARKDOWN_BODY_LIMIT },
-    async (request) => saveKeyParameters(db, tenantOf(request), await project(request), request.body.markdown),
+    async (request) => {
+      const projectId = await project(request);
+      await saveKeyParameters(db, tenantOf(request), projectId, request.body.markdown);
+      return cancelJobsAndReload(request, projectId);
+    },
   );
 
   app.put<ChapterParams & { Body: { content: string } }>(
@@ -233,12 +283,19 @@ export async function registerFeasibilityReportRoutes(app: FastifyInstance, deps
   app.put<ProjectParams & { Body: { fileIds: string[] } }>(
     '/:projectId/feasibility-report/sources',
     { schema: { params: PROJECT_ID_PARAMS, body: SOURCES_SCHEMA } },
-    async (request) => importSources(db, tenantOf(request), await project(request), request.body.fileIds),
+    async (request) => {
+      const projectId = await project(request);
+      const result = await importSources(db, tenantOf(request), projectId, request.body.fileIds);
+      await enqueueDocumentParses(deps.jobs, tenantOf(request), projectId, 'feasibility-report', result.addedFileIds);
+      return { ...result, state: await cancelJobsAndReload(request, projectId) };
+    },
   );
 
-  app.delete<SourceParams>('/:projectId/feasibility-report/sources/:fileId', { schema: { params: SOURCE_PARAMS } }, async (request) =>
-    removeSource(db, tenantOf(request), await project(request), request.params.fileId),
-  );
+  app.delete<SourceParams>('/:projectId/feasibility-report/sources/:fileId', { schema: { params: SOURCE_PARAMS } }, async (request) => {
+    const projectId = await project(request);
+    await removeSource(db, tenantOf(request), projectId, request.params.fileId);
+    return cancelJobsAndReload(request, projectId);
+  });
 
   // 与 /api/artifacts/:artifactId/content 相同：一律附件、nosniff、sandbox CSP，Markdown 原文不会在本站内被当作页面渲染。
   app.get<SourceParams>('/:projectId/feasibility-report/sources/:fileId/markdown', { schema: { params: SOURCE_PARAMS } }, async (request, reply) => {
@@ -259,7 +316,39 @@ export async function registerFeasibilityReportRoutes(app: FastifyInstance, deps
     return reply.header('content-length', String(artifact.size)).send(object.body);
   });
 
-  app.delete<ProjectParams>('/:projectId/feasibility-report', { schema: { params: PROJECT_ID_PARAMS } }, async (request) =>
-    clearFeasibilityReport(db, tenantOf(request), await project(request)),
+  app.delete<ProjectParams>('/:projectId/feasibility-report', { schema: { params: PROJECT_ID_PARAMS } }, async (request) => {
+    const projectId = await project(request);
+    const result = await clearFeasibilityReport(db, tenantOf(request), projectId);
+    await cancelFeasibilityReportJobs(deps.jobs, tenantOf(request), projectId);
+    return result;
+  });
+
+  app.post<ProjectParams>('/:projectId/feasibility-report/analysis-job', { schema: { params: PROJECT_ID_PARAMS } }, async (request, reply) => {
+    const job = await startFeasibilityAnalysis(deps.jobs, tenantOf(request), await project(request));
+    return reply.code(202).send({ job: jobBody(job) });
+  });
+
+  app.post<ProjectParams>('/:projectId/feasibility-report/key-parameters-job', { schema: { params: PROJECT_ID_PARAMS } }, async (request, reply) => {
+    const job = await startFeasibilityParameters(deps.jobs, tenantOf(request), await project(request));
+    return reply.code(202).send({ job: jobBody(job) });
+  });
+
+  app.post<ProjectParams & { Body: { onlyMissing?: boolean } }>(
+    '/:projectId/feasibility-report/content-job',
+    {
+      schema: { params: PROJECT_ID_PARAMS, body: CONTENT_JOB_SCHEMA },
+      preValidation: async (request) => {
+        request.body ??= {};
+      },
+    },
+    async (request, reply) => {
+      const job = await startFeasibilityContent(deps.jobs, tenantOf(request), await project(request), request.body);
+      return reply.code(202).send({ job: jobBody(job) });
+    },
   );
+
+  app.post<ProjectParams>('/:projectId/feasibility-report/human-writing-job', { schema: { params: PROJECT_ID_PARAMS } }, async (request, reply) => {
+    const job = await startFeasibilityHumanWriting(deps.jobs, tenantOf(request), await project(request));
+    return reply.code(202).send({ job: jobBody(job) });
+  });
 }

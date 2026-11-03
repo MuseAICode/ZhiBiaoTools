@@ -21,6 +21,7 @@ import { AppError } from '../../src/errors.ts';
 import {
   countQueueKeys,
   createTestJobTypes,
+  queueKeysReferencing,
   rawRedis,
   redisConfig,
   testLogger,
@@ -298,9 +299,14 @@ describe('Redis 不持久化：重启或清空后从 jobs 表恢复', () => {
     await new Promise((resolve) => setTimeout(resolve, 300));
     expect(await countQueueKeys(redis, prefix)).toBeGreaterThan(0);
 
-    // 清空：BullMQ 中的等待、延后、执行中的记录和锁全部丢失。
+    // 清空：BullMQ 中的等待、延后、执行中的记录和锁全部丢失。worker 仍在运行，之后会重建与任务无关的通用键（delayed、meta、
+    // events 等），所以不断言键数为 0，只断言这些任务不再被任何键引用。
     expect(await wipeQueueKeys(redis, prefix)).toBeGreaterThan(0);
-    expect(await countQueueKeys(redis, prefix)).toBe(0);
+    const wiped = [running.id, ...waiting.map((job) => job.id)];
+    expect(await queueKeysReferencing(redis, prefix, wiped)).toEqual([]);
+    // 运行中的 worker（续锁、延后派发）也不会把它们写回：这些脚本都先检查任务是否存在。
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(await queueKeysReferencing(redis, prefix, wiped)).toEqual([]);
     for (const job of waiting) expect((await statusOf(job.id)).status).toBe('queued');
 
     // 对账从 jobs 重新放入；执行中的任务租约仍有效（执行者在续租），不会被收回、不会再派发一次。

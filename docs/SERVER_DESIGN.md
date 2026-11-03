@@ -36,8 +36,8 @@
 | 实时推送 | **SSE**（Server-Sent Events），命令仍走 HTTP POST | 现有 19 个 `onXxx` 全是服务端→浏览器的单向推送，SSE 足够；走普通 HTTP，Cookie 鉴权、反向代理、断线重连（`Last-Event-ID`）都是标准行为。比较见第 5.4 节 | 路线图写 WebSocket，**偏离** |
 | 对象存储 | **云厂商对象存储**（S3 兼容接口），与 KMS 同一云厂商、同一地域（优先香港） | 已决定（第 9 节第 13、14 项）。服务端只依赖 S3 API，存储后端可替换；开发环境和 CI 用本地 S3 兼容实现（MinIO 社区版 2025 年起进入维护状态，需核实现状，备选 Garage、SeaweedFS） | 一致 |
 | 文档解析 | 现有 `doc2markdown/`（mammoth、pdfjs、SheetJS、turndown）+ LibreOffice headless | 原样搬运，放进 worker 镜像，在沙箱内执行（第 7 节） | 一致 |
-| Word 助手 | 现有 `openxmlhelper/`（.NET 10）独立容器 | 保留“任务目录 + 一行 JSON 信号”协议，与 worker 共享临时卷 | 一致 |
-| 离屏渲染 | Playwright + Chromium headless | 替代隐藏 `BrowserWindow`（Mermaid/HTML 转图、docx-editor 分页测量） | 一致 |
+| Word 助手 | 现有 `openxmlhelper/`（.NET 10），每个导出任务一个 `export` 沙箱，沙箱内一次性运行（`--run`） | 任务目录与 `request.json` / `result.json` 的约定不变；不做常驻容器、不与 worker 共享卷（第 1.1、7.9 节） | 原写独立容器 + 共享临时卷，**偏离**（路线图第 7 步决定事项第 1 项） |
+| 离屏渲染 | Playwright（`playwright-core`）+ chromium-headless-shell，在 `export` 沙箱中禁用 JavaScript 运行 | 替代隐藏 `BrowserWindow`。第 7 步只做页眉页脚装饰转图（第 7.9 节）；Mermaid/HTML 转图、docx-editor 分页测量需要执行脚本，随第 8 步由用户逐项决定 | 一致 |
 | Agent 沙箱 | **gVisor（runsc）容器**，起步方案 | 见第 7 节三个选项的对比 | 路线图写 gVisor 或 Firecracker，**gVisor 起步**（已决定，第 9 节第 12 项） |
 | 密码哈希 | argon2id（`@node-rs/argon2`） | OWASP 推荐首选；预编译二进制，无需本地编译 | 新增 |
 | 加密 | Node 内置 `crypto`（AES-256-GCM）+ **云 KMS** 包装数据密钥 | 不引入额外原生依赖，见第 4 节；KMS 与对象存储同一云厂商（第 9 节第 8 项）；开发环境用本地密钥文件 | 路线图写 KMS 或 libsodium，**内置 crypto + 云 KMS** |
@@ -54,8 +54,7 @@
                                  │   └────> 对象存储
                                  └─ SSE 推送
 worker（BullMQ 消费者，复用 taskService / aiService 等）
-   ├─> openxml（.NET helper 容器，共享临时卷）
-   ├─> sandbox-runner ──> 沙箱容器（Agent / LibreOffice / Chromium）
+   ├─> sandbox-runner ──> 沙箱容器（parse：LibreOffice 与解析库；export：OpenXmlHelper + Chromium；第 8 步：Agent）
    └─> AI 网关（worker 内模块，计量计费）──> 平台签约的模型服务
 ```
 
@@ -63,6 +62,7 @@ worker（BullMQ 消费者，复用 taskService / aiService 等）
 - **worker**：执行全部长任务。可以起多个副本；Agent 类和解析类任务用不同队列，分别设置并发。
 - **AI 网关**：worker 内的模块（不是独立服务），由现有 `aiService.cjs` 改造而来，是**唯一解密和使用 API Key 的地方**（第 4 节），也是**唯一的计量点**：每次模型调用都在这里记账、扣费（第 10 节）。沙箱内的 Agent 通过它访问模型（第 7 节）。
 - **sandbox-runner**：唯一持有容器运行时权限的进程，只接受“用固定镜像、固定参数启动一个沙箱”这类受限请求，worker 不直接接触 Docker socket（第 7.4 节）。
+- **OpenXmlHelper（.NET）不是常驻服务**：它解析的受限 HTML、模板配置和（第 8 步起）上传的 Word 都是不可信输入，所以与文档解析一样按任务进沙箱——每次导出一个 `export` 沙箱，沙箱内一次性运行助手（`--run`）后销毁，不与 worker 共享卷、不跨任务保留缓存（路线图第 7 步决定事项第 1 项，第 7.9 节）。原方案“常驻 `openxml` 容器 + 与 worker 共享临时卷”已放弃。
 
 ## 2. 多用户数据模型
 
@@ -239,7 +239,7 @@ organizations（组织，数据隔离的边界）
 - 登录失败不提示“邮箱不存在”还是“密码错误”；
 - 每个组织的任务并发、每日 Agent 运行时长、存储容量都有配额（第 5、6 节），AI 用量受余额约束（第 10 节）。
 
-**实现（旧仓库 PR #29）**：限流先用进程内存实现（每个限流器的键数有上限），Redis 在第 6 步接入后替换，多实例部署前必须完成；参数见 `server/src/auth/rateLimit.ts`。登录失败一律返回“邮箱或密码错误”，邮箱不存在时用同参数的假哈希做一次完整校验，耗时一致；找回密码不论邮箱是否存在都返回 202，邮件在响应后异步发送。发信服务未选定，`src/mail/mailer.ts` 只有日志实现：开发环境输出完整邮件，其他环境不输出正文（令牌）。
+**实现（旧仓库 PR #29）**：限流先用进程内存实现（每个限流器的键数有上限），参数见 `server/src/auth/rateLimit.ts`。**6.14（#42）起**计数存在 Redis（`server/src/auth/rateLimitStore.ts`，Lua 脚本，算法不变，未用 `@fastify/rate-limit`），api 各实例共用；键中的邮箱、IP 取 SHA-256，键都带过期时间；Redis 不可用时退回进程内存计数并写日志，未配置 `REDIS_URL` 时只用进程内存。登录失败一律返回“邮箱或密码错误”，邮箱不存在时用同参数的假哈希做一次完整校验，耗时一致；找回密码不论邮箱是否存在都返回 202，邮件在响应后异步发送。发信服务未选定，`src/mail/mailer.ts` 只有日志实现：开发环境输出完整邮件，其他环境不输出正文（令牌）。
 
 **客户端 IP（旧仓库 PR #30）**：按 IP 的限流键和会话的 IP 摘要都取 `request.ip`。配置 `TRUSTED_PROXIES`（逗号分隔的 IP 或 CIDR，前缀不能为 0）列出可信反向代理，默认空，即不信任任何代理：`request.ip` 是 TCP 连接的对端地址，客户端自带的 `X-Forwarded-For` 一律忽略。配置后交给 Fastify 的 `trustProxy`（`@fastify/proxy-addr`）：只有对端地址在列表中时才读 `X-Forwarded-For`，从右往左跳过可信地址，取第一个不可信的地址，所以客户端在左侧伪造的值不会被采信；绕过代理直连时按对端地址计数。部署方式见第 8.1 节。
 
@@ -318,8 +318,8 @@ Markdown 中远程图片的下载（`docs/EXTERNAL_SERVICES.md` §2.9）URL 来�
 
 | 队列 | 任务 | worker 并发（单实例起步值） |
 |---|---|---|
-| `parse` | 文档导入解析、知识库文档准备、招标文件 Markdown 转换 | 4 |
-| `ai` | 不带 Agent 的 AI 任务：查重、废标检查、标书分析、知识库匹配 | 8 |
+| `parse` | 文档导入解析、招标文件 Markdown 转换 | 4 |
+| `ai` | 不带 Agent 的 AI 任务：查重、废标检查、标书分析、知识库文档准备（解析在沙箱中，6.13a）与匹配 | 8 |
 | `agent` | Pi Agent 任务：目录、全局事实、正文生成、原方案还原、格式自检 | 2（受沙箱资源限制） |
 | `export` | Word / Excel 导出、模板样张、模板提取（调 OpenXmlHelper） | 2 |
 
@@ -328,10 +328,10 @@ Markdown 中远程图片的下载（`docs/EXTERNAL_SERVICES.md` §2.9）URL 来�
 - **互斥**：现有 `lockPolicy: 'group-exclusive'` 是“全机同组只能跑一个”。Web 版改为按通用的互斥键 `lock_key` 互斥（例如 `project:{projectId}:technical-plan` 即“同一项目内同组只能跑一个”，知识库按文档 `knowledge-document:{documentId}`，`lock_key` 为空的任务不互斥）：部分唯一索引 `UNIQUE (org_id, lock_key) WHERE status IN ('queued','running','paused','cancelling')` 保证并发入队也只有一个成功（6.2 实现，路线图第 6 步“任务模型的细化”）。
 - **两级并发**（路线图第 4 节）：
   - 组织级：同时运行的任务数（如 3）、同时运行的 Agent 任务数（如 1）；
-  - 全局：队列并发 + AI 网关对每个模型服务商的并发上限（`aiService` 现有并发设置改成 Redis 分布式信号量，键为 `org_id + provider`）。
+  - 全局：队列并发 + AI 网关对每个模型服务商的并发上限（`aiService` 现有并发设置改成 Redis 分布式信号量，键为 `org_id + provider`；6.4 实现，上限取 `org_settings.concurrency_limit` 与平台上限 `AI_CONCURRENCY_MAX` 的较小值，见第 10.10 节）。
   - 超出组织级上限的任务留在 `queued`，按入队时间排队，前端显示“排队中（前面还有 N 个）”。
 - **配额**：每组织每日 Agent 运行时长（8 小时，第 9 节第 15 项）、每任务最长时长（如正文生成 2 小时）、超时即取消并保留 checkpoint。
-- **余额**：入队前检查组织余额，余额不足时拒绝新任务；运行中的任务余额耗尽后的处理见第 10.3 节。
+- **余额**：入队前检查组织余额，余额不足时拒绝新任务；运行中的任务余额耗尽后的处理见第 10.3 节（6.4 实现，第 10.10 节）。
 
 ### 5.4 推送通道：SSE 与 WebSocket
 
@@ -348,18 +348,20 @@ Markdown 中远程图片的下载（`docs/EXTERNAL_SERVICES.md` §2.9）URL 来�
 
 ### 5.5 推送链路
 
-1. worker 产生事件（进度、日志、Agent 提问、任务结束）→ 写 `jobs` / `job_events`（需要持久化的）→ 向 Redis 发布到 `events:org:{orgId}`；
-2. 同时追加到 Redis Stream `stream:org:{orgId}`（只保留最近 10 分钟或 1000 条），每条带单调递增 ID；
-3. api 进程订阅 Redis，按连接的 `org_id` 和用户在该组织的权限过滤后写入 SSE，`id:` 字段即 Stream ID；
-4. 浏览器断线重连时带 `Last-Event-ID`，api 从 Stream 补发；超出保留窗口的，推一条 `resync` 事件，前端重新调用 `getActiveTasks` / `loadState` 拉快照（现有页面本来就会在挂载时拉快照，“页面卸载不取消任务”的语义不变）；
-5. 每 25 秒发一条注释行做心跳；Caddy 对 `/api/events` 关闭缓冲和压缩；
-6. `WebBridge` 中每个 `onXxx(callback)` 只是在这条连接上按事件名注册监听，返回取消函数，与 `AppBridge` 的签名一致。
+1. worker 产生事件（进度、日志、Agent 提问、任务结束）→ 写 `jobs` / `job_events`（需要持久化的）→ 事务提交后向 Redis 发布到 `events:org:{orgId}`；api 中改变任务状态的操作（入队、取消、暂停、继续）同样在提交后发布；
+2. 同时追加到 Redis Stream `stream:org:{orgId}`（只保留最近 10 分钟或 1000 条），每条带单调递增 ID；追加、裁剪、发布在同一个 Lua 脚本中原子完成（6.3，`src/events/stream.ts`）。发布尽力而为，Redis 不可用时丢弃并写日志，由第 4 条的 `resync` 兜底；
+3. api 进程用一条订阅连接按组织引用计数订阅，按连接的 `org_id` 过滤（事件可另指定只推给某个用户；任务事件在组织内共享，不按用户过滤）后写入 SSE，`id:` 字段即 Stream ID。新连接先订阅、再补发、最后按 ID 去重放出订阅期间缓存的实时事件，补发与实时之间不漏不重；
+4. 浏览器断线重连时带 `Last-Event-ID`，api 从 Stream 补发；超出保留窗口（上次的 ID 比 Stream 第一条还小）、Stream 不存在（过期、Redis 重启或被清空）或 ID 不认识的，推一条 `resync` 事件，前端重新调用 `getActiveTasks` / `loadState` 拉快照（现有页面本来就会在挂载时拉快照，“页面卸载不取消任务”的语义不变）。补发完成后推一条不带 id 的 `ready`，前端先等 `ready` 再拉快照；
+5. 每 25 秒发一条注释行做心跳；Caddy 对 `/api/events` 关闭缓冲和压缩；每 60 秒重新校验会话，会话失效或用户被移出组织后推 `closed` 并断开；Redis 订阅连接断开、服务关闭时同样推 `closed` 断开，由前端重连补发；每个用户在每个 api 进程中最多 10 条连接；
+6. `WebBridge` 中每个 `onXxx(callback)` 只是在这条连接上按事件名注册监听，返回取消函数，与 `AppBridge` 的签名一致。`GET /api/events` 返回非 200 时浏览器的 `EventSource` 不再自动重连，`WebBridge` 自己按退避间隔重建连接。
+
+任务事件（6.3，`src/jobs/notify.ts`）：`job`（任务当前状态，与 `GET /api/jobs/:jobId` 的任务部分相同；并发变化时到达顺序可能与提交顺序不同，按 `updatedAt` 取较新的一条）、`job.progress`、`job.log`；都不含任务参数、checkpoint 和事件数据。
 
 ### 5.6 取消、暂停与恢复
 
-- 取消 / 暂停：api 把 `jobs.status` 改为 `cancelling` / `paused` 并发布 `cancel:{jobId}`；worker 内每个任务持有 `AbortController`，收到信号后在下一个检查点退出（现有 `agentInterruption.cjs`、`pauseContentGeneration` 的语义保留）；
+- 取消 / 暂停：api 把 `jobs.status` 改为 `cancelling` / `paused`（执行中的暂停记为 `pause_requested`）并向控制频道 `{BullMQ 前缀}:jobs:control` 发布任务 id（6.3；原设计为每个任务一个 `cancel:{jobId}`）；worker 收到后对正在执行的该任务立即续租一次，从 `jobs` 读到请求，消息本身不被信任；worker 内每个任务持有 `AbortController`，收到信号后在下一个检查点退出（现有 `agentInterruption.cjs`、`pauseContentGeneration` 的语义保留）；
 - Agent 正在等用户回答（`ask-user`）时，任务状态为 `running` 并带 `waiting_for_user`，问题经 SSE 推送，回答经 `POST /api/jobs/:id/answer` 写入后通知 worker；等待超时按现有 `suppressQuestionAutoAnswer` / 自动确认规则处理；
-- 恢复：worker 崩溃后租约过期，由对账收回并交给其他 worker，任务从 `jobs.checkpoint` 继续（现有“重启恢复”逻辑改成读 `jobs` 表；不依赖 BullMQ 的 stalled 检测，它在 Redis 被清空后无从发现）。6.2 中取消、暂停由执行者续租时从 `jobs` 读到，`cancel:{jobId}` 发布随 6.3 接入。Agent 任务的会话文件和工作区在对象存储中有快照（第 7.3 节），可以从最近一次快照恢复。
+- 恢复：worker 崩溃后租约过期，由对账收回并交给其他 worker，任务从 `jobs.checkpoint` 继续（现有“重启恢复”逻辑改成读 `jobs` 表；不依赖 BullMQ 的 stalled 检测，它在 Redis 被清空后无从发现）。6.2 中取消、暂停由执行者续租时从 `jobs` 读到；6.3 接入控制频道后立即送达，错过消息时仍在下一次续租时发现。Agent 任务的会话文件和工作区在对象存储中有快照（第 7.3 节），可以从最近一次快照恢复。
 
 ## 6. 文件上传、存储与下载
 
@@ -429,7 +431,7 @@ Markdown 中远程图片的下载（`docs/EXTERNAL_SERVICES.md` §2.9）URL 来�
 - **配额**：每组织 20 GiB，常量写在迁移中，改配额需要新迁移。计入的是已上传、未删除或仍在 7 天恢复期内的文件（回收站中的文件仍占配额，防止“上传—删除”循环无限占用存储）；`uploading` 行（含进程崩溃遗留的）不计入。触发器用事务级 advisory lock 串行同一组织的检查，并发上传合计不会越过配额。
 - **下载**：`GET /api/files/:fileId/content` 由 api 从对象存储**流式转发，不签发预签名链接**（无法撤销）；**一律** `Content-Disposition: attachment`（第 6.4 节原计划图片预览用 `inline`，改为一律附件，图片预览等需要时再单独设计），另加 `X-Content-Type-Options: nosniff`、`Content-Security-Policy: default-src 'none'; sandbox`、`Cache-Control: private, no-store`。其他组织的 `fileId` 与不存在的一样返回 404。
 - **删除**：`DELETE /api/files/:fileId` 软删除（`deleted_at`），7 天内可经 `POST /api/files/:fileId/restore` 恢复（第 9 节第 17 项），过期后不可访问、不可恢复、不计入配额；恢复期由触发器保证（过期恢复抛 `FS002`）。组织内成员都可以上传、删除（组织内共享，第 9 节第 2 项）。另有 `GET /api/files`（`?deleted=true` 为回收站）、`GET /api/files/:fileId`、`GET /api/files/usage`。
-- **留给后续**：过期文件和遗留 `uploading` 行的物理清理（跨组织的后台任务，第 6 步 worker 建成后实现）；`project_id`（已由 #7 加上）；ZIP 炸弹、PDF 页数等解析阶段的防护（第 6.2 节，在沙箱中解析时实现）；生成产物（`artifacts`，已由 #8 实现，见路线图第 5 步）；前端接入。
+- **留给后续**：过期文件和遗留 `uploading` 行的物理清理（跨组织的后台任务，已由路线图 6.8 实现：worker 每小时一批，定义者角色 `bidtools_cleanup`，见路线图第 6 步“清理任务”）；`project_id`（已由 #7 加上）；ZIP 炸弹、PDF 页数等解析阶段的防护（第 6.2 节，在沙箱中解析时实现）；生成产物（`artifacts`，已由 #8 实现，见路线图第 5 步）；前端接入。
 
 ## 7. Agent 执行命令的沙箱隔离
 
@@ -501,6 +503,69 @@ AI 网关（worker 内）── 解密 Key ──> 模型服务商
 
 **sandbox-runner**：创建容器需要容器运行时权限，等同于宿主 root，所以只给一个独立的小服务。它只暴露“按预定义模板创建 / 销毁沙箱”的接口，模板（镜像、资源、网络、只读）写死在代码中，调用方只能选模板名和传入任务令牌，不能传任意 Docker 参数。worker 和 api 都不挂载 Docker socket。优先使用 rootless Docker 或 Podman 进一步降低风险。
 
+### 7.5 实现（路线图 6.5）：解析沙箱
+
+第 6 步先建本节的公共部分和断网的 `parse` 模板（路线图第 6 步“文件解析的隔离”方案 B），第 8 步在同一套机制上加 `agent` 模板（`sandbox-gw` 网络、任务令牌、业务工具 RPC）。
+
+- **接口**：`SandboxDriver`（`server/src/sandbox/driver.ts`）的 `create / copyIn / exec / copyOut / destroy`。worker 用 HTTP 客户端（`client.ts`），sandbox-runner 用 Docker 实现（`docker.ts`）；换成微虚拟机时只换后者。
+- **模板**（`templates.ts`）：镜像、网络、用户、只读、资源、可写目录、命令、取回规则都写死在代码中，调用方只选模板名；`parse` 的参数见第 7.4 节的表，取值为路线图第 6 步决定事项第 5 项的起步值。容器的主进程只是 `sleep`，命令经 exec 执行，超时或调用方中止时终止整个容器。
+- **sandbox-runner**（`src/sandbox-runner.ts`）：唯一能访问容器运行时的服务，只在 internal 网络 `sandbox-control` 上监听（只有 worker 能连到；沙箱是 `--network none`，连不到它，有测试），每个请求在路由之前校验共享令牌（SHA-256 后 `timingSafeEqual`，缺失或不符 401）；生产环境不直接挂载完整权限的 Docker socket，经只放行必要接口并校验创建参数的 Docker API 代理或 rootless Docker（路线图第 9 步上线检查）；沙箱的模板、任务 id、到期时间写在容器标签中，每次操作核对标签，不是它创建的容器一律按不存在处理；到期的沙箱定期删除。生产环境只允许 `runsc`、镜像必须按摘要固定，启动时检查运行时已登记。
+- **输入输出**：经 exec 中的 `tar` 传送（gVisor 下 `docker cp` 不能写入只读根文件系统上的 tmpfs）。取回的归档按第 7.3 节“工作区取回”的规则在 worker 中逐项校验（`archive.ts`），任一项不符整体拒绝；sandbox-runner 只转出并限制字节数，不解析沙箱的输出。
+- **镜像**：`server/sandbox/parse/Dockerfile`，Node 24 + LibreOffice（Writer、Calc，无图形界面）+ 中文字体，删除包管理器和 setuid 位；解析入口和其 npm 依赖随 6.6 加入。
+- **测试**：`npm run test:sandbox`（CI 中在 gVisor 下运行，含 LibreOffice 转换）逐项验证断网、只读、无能力、资源上限、超时、取回校验和沙箱之间不共享，并用去掉加固的对照组证明测试有效；LibreOffice 在 gVisor 下的耗时记录在 CI 日志中。
+
+### 7.6 实现（路线图 6.6）：文档解析任务
+
+- **任务**：`document-parse`（`server/src/parse/job.ts`），`parse` 队列。技术方案、废标检查、可研报告导入文件后每个新文件入队一个任务（`src/parse/enqueue.ts`），互斥键 `document-parse:{fileId}`。worker 只取原件、调用 sandbox-runner、校验结果、写产物，不运行任何文档解析器；
+- **分派**：按 `files.mime`（上传时按内容决定）选择解析入口的 `format`（`src/parse/dispatch.ts`），不重新嗅探；只有 `text/html` 与 `application/xml` 按登记的扩展名区分 Word（`.doc` / `.wps`）与表格（`.xls`）；文本类格式见第 7.7 节；
+- **解析入口**：`server/sandbox/parse/entry.mjs`，输入固定为 `/input/source`，输出 `/output/content.md`、`/output/images/*`、`/output/manifest.json`；docx / xlsx（含 LibreOffice 转出的 docx）先做 ZIP 炸弹检查（`zipGuard.mjs`：条目数、声明的总大小与压缩比，并按实际解压大小核对），PDF 先检查页数；失败只给错误代码；
+- **结果校验**（`src/parse/output.ts`）：清单与文件一一对应、图片文件头与 MIME 一致、Markdown 为 UTF-8；图片引用只保留本次输出中的图片并改写为 `/api/artifacts/{id}/content`，引用缺失的图片整体拒绝，其他图片去掉；
+- **写入**：图片和 Markdown 经 `writeArtifact`（配额检查），文档经各模块的 `saveDocumentParse` / `saveSourceParse` 写回；之前的产物经 `supersedeArtifacts` 标为已被替换（迁移 0023 的 `artifacts.superseded_at`），读取时不再返回，由清理任务删除；
+- **沙箱生命周期**：每个任务一个沙箱，`finally` 中销毁；`SANDBOX_BUSY` 与 sandbox-runner 不可用按退避重试。时限：LibreOffice 转换 8 分钟（对整个进程组 SIGKILL）、解析命令 10 分钟（终止整个沙箱）、worker 请求 10 分 30 秒、沙箱最长存活 15 分钟（到期清理兜底）；
+- **LibreOffice**：镜像中 `share/registry/zhibiao-security.xcd` 以 finalized 设置禁止宏、链接与域不在加载时更新、阻止不受信任的外部资源，用户配置不能覆盖。
+
+### 7.7 实现（路线图 6.7）：文本类格式
+
+RTF、HTML、MHT、Word 2003 XML、SpreadsheetML 在沙箱中先检查或清理，再交给解析器（`server/sandbox/parse/markupGuard.mjs`、`htmlSanitize.mjs`），细节与实测见路线图第 6 步“解析任务（二）”：
+
+- **Office 2003 XML**：严格 UTF-8、必须有 XML 声明且编码为 UTF-8；除注释与 CDATA 外出现任何 `<!` 声明（DTD、实体等）即拒绝，含 XInclude 或 `xml-stylesheet` 即拒绝。不解析 DTD，因而不存在外部实体与实体膨胀；
+- **RTF**：按组结构去掉域指令（`fldinst`）、OLE 对象（只留显示结果）、附加模板、子文档、字体文件、超链接目标、链接图片的形状属性；结构不合法或切分有歧义的写法拒绝；
+- **HTML**：识别字符集后按元素与属性白名单重新生成，图片只留 `data:` 位图；任何远程或本地地址都不进入交给 LibreOffice / SheetJS 的文档（超链接只留 http / https / mailto，不会被加载）。实测 LibreOffice 在镜像的安全设置下仍会请求 HTML 中的样式表与 CSS 背景图片，所以清理是必需的，不是可选的纵深；
+- **MHT**：自写的 MIME 解析（嵌套 8 层、部分 2,000 个、头部 64 KiB 的上限），取 HTML 部分按其编码与字符集解码，图片只在包内查找，地址从不跟随；之后按 HTML 处理；
+- **转换**：Word 类由 LibreOffice 按指定的导入过滤器转成 docx（与 OLE Word 同一函数：独立进程组、8 分钟后对整个进程组 SIGKILL），表格类由 SheetJS 读取；
+- **纵深**：沙箱完全断网（第 7.5 节）是兜底；远程资源测试在正式镜像中断言解析过程没有任何连接，对照组证明同一镜像中的 LibreOffice 对未经清理的 HTML 确实会发出请求。
+
+### 7.8 实现（路线图 6.10a、6.10b）：标书查重任务
+
+`duplicate-analysis`（`server/src/duplicateCheck/job.ts`），`ai` 队列（第 5.2 节），不调用模型，互斥键 `project:{projectId}:duplicate-check`：
+
+- **提取在沙箱中**：每份招标、投标文件一个 parse 沙箱，解析入口加参数 `analysis=duplicate-check`（保留图片），除正文与图片外另写 `analysis.json`：逐文档的目录、句子（HTML 表格经 cheerio 读取）与图片位置（`server/sandbox/parse/duplicateText.mjs`、`duplicateTables.mjs`）。表格类格式的文件名由 worker 放入 `/input/title`，提取时作一级标题；
+- **文档格式的元数据也在沙箱中**（6.10b）：每份投标文件先在一个只提取元数据的 parse 沙箱中读取（解析入口参数 `metadata=duplicate-check`，不转换正文，只写 `metadata.json`，`server/sandbox/parse/duplicateMetadata.mjs`）：docx 的 core / app / custom 属性与 rsid，老式 Word 的 OLE 属性集、存储结构、疑似账号痕迹与经 LibreOffice 转成 docx 后的属性，PDF 的 Info / XMP / 原始记录 / 结构 / 签名与附件。OLE 用镜像中 SheetJS 自带的 CFB、PDF 用已有的 pdf-parse，没有新增依赖。文档本身读取失败记为固定文字的 `metadata_error` 字段；worker 按不可信输入校验 `metadata.json`（键的规则、不能冒充文件基本信息或 Base64 解码项、字段数与长度上限、`metadata_error` 只能是固定文字），再并入文件基本信息之后。表格、纯文本类文件不开这个沙箱；
+- **比对在 worker 中**（`src/duplicateCheck/analysis.ts`）：先按不可信输入校验 `analysis.json`（结构、数量、目录编号与父子关系、图片只能引用本次输出），再做招标原文白名单、目录重复 / 相似组与两两相似度、重复句、重复图片（按写入的图片产物内容的 SHA-256）。worker 不运行 HTML 解析器；
+- **写入**：正文与图片经第 7.6 节的同一流程写为产物（`src/parse/run.ts`，两类任务共用），分析结果经 `saveAnalysisSection` 带任务开始时的文件选择签名写入，选择变化后写入被拒绝；重新选择文件、清空时取消进行中的任务。
+
+### 7.9 实现（路线图 7.1）：导出沙箱
+
+Word 导出与模板样张由 OpenXmlHelper 生成 docx，页眉页脚装饰 SVG 由 Chromium 栅格化成 PNG；两者处理的都是不可信输入，所以与文档解析复用同一套沙箱机制（第 7.5 节），每次导出一个 `export` 沙箱（路线图第 7 步决定事项第 1、2 项）。7.1 只建沙箱、镜像和入口；样张（7.3b 起）与整本导出任务（7.4）在其上接入。
+
+- **模板**（`templates.ts`）：一个 export 镜像、按决定事项第 5 项的两档资源上限分成两个模板名。隔离参数与 `parse` 完全相同（`--network none`、gVisor、只读根文件系统、用户 10001、`cap-drop ALL`、`no-new-privileges`、`pids` 256、不挂载任何宿主目录、不注入宿主环境变量、不保留容器日志），有单元测试逐项核对：
+
+  | 模板 | 内存（无 swap） | CPU | 命令墙钟 | 沙箱最长存活 | 输入（`/work`） | 可写目录（tmpfs） |
+  |---|---|---|---|---|---|---|
+  | `export-preview`（样张） | 1 GiB | 1 核 | 60 秒 | 5 分钟 | 至多 32 个文件、合计 64 MiB | `/tmp` 256 MiB、`/work` 192 MiB、`/output` 128 MiB |
+  | `export-document`（整本导出） | 2 GiB | 1 核 | 20 分钟 | 35 分钟 | 配图至多 2,000 张 + 请求，单个 100 MiB、合计 1 GiB | `/tmp` 512 MiB、`/work` 1.25 GiB、`/output` 128 MiB |
+
+  可执行的命令只有 `export`（`node /opt/export/entry.mjs preview|document`，模式由模板写死，不能追加参数）；取回只收 `document.docx` 和 `result.json` 两个普通文件，docx 不超过 100 MiB。
+- **镜像**（`server/sandbox/export/Dockerfile`）：Node 24 + `playwright-core` 与其对应版本的 chromium-headless-shell + OpenXmlHelper 的 linux-x64 自包含发布（不裁剪；不打成单文件，单文件要把原生库解压到可写目录再加载，而 `/tmp` 是 noexec）+ Noto CJK 字体与 fontconfig 映射（模板可选的中文字体名按衬线 / 无衬线映射到 Noto Serif / Sans CJK SC，决定事项第 3 项）。装饰生成器与助手源码经具名构建上下文取自 `client/electron/shared/chrome` 与 `openxmlhelper/`，与桌面版同一份代码（测试逐个文件核对）。.NET SDK 只在构建阶段；删除包管理器和 setuid 位，与 parse 镜像、第 8 步的 Agent 镜像分开。
+- **入口**（`entry.mjs`）：读 `/work/request.json`（受限 HTML、已规范化的 `export_format`、可选的 `asset_types`）与 `/work/assets/` 中的配图（只有一层，文件名就是 `data-app-asset-ref`；样张不接受，见下方 7.3b）→ 用装饰生成器生成页眉页脚 SVG → Chromium 栅格化（`render.mjs`）→ 运行助手一次（`openxmlhelper --workspace /work --run export`，独立进程组，超时对整个进程组 SIGKILL）→ 只把 docx 与只含已知字段的 `result.json` 写到 `/output`。失败时输出目录为空，只在标准输出给错误代码（参数不合法 64，导出失败 65），助手与浏览器的错误文字不外传。
+- **Chromium**：**禁用 JavaScript**（浏览器上下文 `javaScriptEnabled: false`），关闭 Chromium 自身的沙箱（`--no-sandbox`，外层是本节的沙箱），每次截图一个新的浏览器上下文；页面固定尺寸、加载后直接截图，与桌面版 `renderExactHtmlToPng` 相同。第 8 步中必须执行脚本的渲染届时逐项由用户决定（决定事项第 9 项）。
+- **助手的一次性运行模式**：`--run <任务编号>` 执行一个任务目录、写 `result.json` 后退出（0 成功、1 任务失败、2 参数不合法），与桌面版的常驻 stdin / stdout 模式共用 `JobRunner`，桌面版行为不变。
+- **配置**：sandbox-runner 的 `SANDBOX_EXPORT_IMAGE`（生产必须按摘要固定）；在导出任务上线（7.3）之前可以不配置，未配置时创建 export 沙箱返回 `SANDBOX_UNAVAILABLE`。
+- **字体与装饰（7.2）**：`GET /api/fonts`（需要登录）返回模板可选字体名的固定清单 `{ fonts: string[] }`（`src/templates/fonts.ts`，与前端 `FONT_OPTIONS` 逐项相同，单元测试核对），取代桌面版枚举本机字体的 `systemFonts.list`；它不是服务器上安装的字体，导出的 docx 保留模板选择的原字体名（决定事项第 3 项）。装饰与桌面版逐项核对：同一页面配置（8 种样式 × 10 种变体、系统模板、未规范化的配置）在沙箱中由 `buildChrome` 生成的 SVG、几何、配色与文字层与宿主上的桌面版生成器相同；入口交给 Chromium 的 SVG 与尺寸、交给助手的 `chrome_assets` 与桌面版相同（Docker 测试经完整导出流程记录；源码级的字段对应关系另有不需要 Docker 的单元测试）。
+- **样张的输入校验（7.3a）**：前端传来的样张 HTML 入队前经 `validatePreviewHtml`（`src/templates/previewHtml.ts`）校验：按与前端同一套白名单的 `parseRestrictedHtml`（`src/templates/restrictedHtml.ts`，parse5 实现，常量、提示文字与共用用例 `client/tests/fixtures/restrictedHtmlCases.json` 由两端测试核对）解析，不能有任何错误或警告，`data-app-asset-ref` 只能引用固定样张配图；只把重新序列化、不含 `src` 的 HTML 交给沙箱。`export_format` 入队前经 `normalizeExportFormat`（`src/templates/exportFormat.ts`，与桌面版逐项相同）补齐字段。
+- **样张在沙箱中生成（7.3b）**：样张的固定配图（`client/assets/content-template-preview`，与桌面版同一份文件）打进镜像的 `/opt/export/preview-assets/`；`preview` 模式下 `/work` 中只能有 `request.json`、请求中不能有 `asset_types`，入口把样张配图复制到 `/work/preview/assets/`、助手的 `asset_root` 为 `preview`，样张中的 `data-app-asset-ref="assets/<文件名>"` 与桌面版相同。worker 端 `renderTemplatePreview`（`src/export/preview.ts`）：重新校验与规范化 → 新建 `export-preview` 沙箱（忙或不可用时短间隔重试）→ 只放 `request.json` → 执行 `export` → 取回 → 校验输出（`src/export/output.ts`：`result.json` 只取 `blockCount` 与告警的 `assetRef`；`src/export/docxGuard.ts`：docx 的 ZIP 结构检查，上限与 parse 的 zipGuard 相同、逐个条目实际解压核对声明大小、条目名必须是相对路径且不重复、必须有 `[Content_Types].xml` 与 `word/document.xml`）→ 销毁沙箱。失败只给按入口错误代码决定的 `EXPORT_*` 代码与提示。任务、产物与接口随 7.3c、7.3d。
+- **测试**：`tests/sandbox/docker/isolationSuite.ts` 是按模板参数化的同一套隔离用例（断网、只读、无能力、内存 / 进程数 / fork 炸弹 / 可写目录写满 / CPU / 超时 / 中止、取回校验、沙箱之间不共享，每项有去掉加固的对照组），parse 与两个 export 模板都跑；`export.test.ts` 另验证：恶意装饰中 7 种执行脚本的方式经完整导出流程都没有执行（对照组只把浏览器上下文改为允许 JavaScript，7 种都执行了）、装饰与受限 HTML 中的外部引用在沙箱中不被请求（对照组去掉 `--network none` 后装饰的外部引用确实被请求）、一次导出之后新的沙箱中看不到上一次的任何文件、导出结果中没有上一次的内容，以及错误代码与输出为空。CI 在 gVisor 下运行，样张与整本导出的耗时写在日志中。
+
 ## 8. 部署架构
 
 ### 8.0 部署位置（已决定，第 9 节第 13、14 项）
@@ -516,13 +581,12 @@ AI 网关（worker 内）── 解密 Key ──> 模型服务商
 |---|---|---|
 | `caddy` | 反向代理、TLS、静态文件 | `edge` |
 | `api` | Fastify | `edge`、`backend` |
-| `worker` | BullMQ 消费者 + AI 网关（可多副本） | `backend`、`sandbox-gw`、`egress` |
-| `openxml` | `openxmlhelper/` .NET 10 | `backend`（与 worker 共享临时卷） |
-| `sandbox-runner` | 唯一能访问容器运行时 | `backend` |
+| `worker` | BullMQ 消费者 + AI 网关（可多副本） | `backend`、`sandbox-control`、`sandbox-gw`、`egress` |
+| `sandbox-runner` | 唯一能访问容器运行时（6.5 实现，见第 7.5 节）；按模板创建 parse、export（7.1，见第 7.9 节）沙箱 | `sandbox-control`（`internal: true`，只有 worker 能访问） |
 | `postgres` | PostgreSQL 17，数据卷 | `backend` |
 | `redis` | Valkey 8（第 6 步决定替代 Redis 7，协议兼容），开启密码和 ACL，不持久化；启动脚本 `server/redis/start-valkey.sh`（6.1） | `backend` |
 | （云对象存储） | 生产环境用云厂商对象存储，不在本机；开发环境才在 Compose 中起本地 S3 兼容存储 | 经 `egress`，用实例角色访问 |
-| 沙箱容器 | 由 sandbox-runner 动态创建 | `none` 或 `sandbox-gw`（`internal: true`） |
+| 沙箱容器 | 由 sandbox-runner 动态创建：parse（文档解析）、export（OpenXmlHelper 与 Chromium，一次导出一个，用完即毁）、第 8 步的 Agent | `none` 或 `sandbox-gw`（`internal: true`） |
 
 - `backend` 为 `internal: true`，数据库、Redis、对象存储不暴露端口到宿主；
 - 只有 `worker` 在 `egress` 网络上能访问外网（调用模型服务商、MinerU、KMS、对象存储），并经第 4.4 节的出站校验；api 发邮件和签发预签名 URL 所需的出站访问只放行到发信服务和云厂商接口；
@@ -665,8 +729,8 @@ AI 网关（worker 内）── 解密 Key ──> 模型服务商
 - **不收费**：服务商返回错误（含 4xx、5xx、限流）、超时、连接失败、流中途断开或响应不合法时**不向用户收费**，冻结全额释放；用户主动断开时按已产生的用量结算（第 10.1 节），服务商没有返回用量时本地估算并标 `estimated`；
 - **冻结超时自动释放**：冻结有到期时间（`AI_HOLD_TTL_SECONDS`，默认 15 分钟，必须比上游超时至少长 30 秒）。可用余额只计算未到期的冻结，进程中途崩溃、没有结算的冻结到期后**立即**不再占用余额，不依赖任何后台任务；到期后才到达的结算一律不收费。后台每分钟把到期未结算的记录标为 `abandoned`，只是收尾；
 - **并发**：同一组织的冻结在余额行锁下串行，并发调用不会冻结超过余额；不经冻结的直接扣费（`chargeUsage`）的余额检查同样扣除进行中的冻结。余额因此**不会为负**，原设计中“透支上界”一条不再需要；
-- **入队检查**：创建任务前要求组织余额 ≥ 该任务类型的最低启动额度（价格表中按任务类型配置，默认 1 元），余额不足时拒绝新任务（`INSUFFICIENT_BALANCE`），前端提示充值；现有 `onBalanceInsufficient` 事件改为推送这一状态（第 6 步实现）；
-- **运行中耗尽**：任务执行中某次调用冻结失败时，任务走现有暂停路径保存 checkpoint，状态为 `paused`、原因为 `insufficient_balance`，经 SSE 通知用户；充值后用户点“继续”从 checkpoint 恢复，不重复扣费（第 6 步实现）；
+- **入队检查**：创建会调用模型的任务前要求组织可用余额 ≥ 最低启动额度（第一版全局 1 元，写在迁移 `0022_job_billing` 中；按任务类型配置有需要时再加），余额不足时拒绝新任务（`INSUFFICIENT_BALANCE`），前端提示充值；从暂停继续前同样检查（6.4 实现，第 10.10 节）；
+- **运行中耗尽**：任务执行中某次调用冻结失败时，任务退出、保留上次的 checkpoint，状态为 `paused`、原因为 `insufficient_balance`，经 SSE 的 `job` 事件（`pauseReason`）通知用户，取代 `onBalanceInsufficient`；充值后用户点“继续”从 checkpoint 恢复，不重复扣费（6.4 实现，第 10.10 节）；
 - **可选消费上限**：组织 owner 可以设置每日消费上限，达到后效果同余额不足（防止误操作或 Agent 失控烧钱）；平台管理员可以对单个组织设置每日上限的上界（未实现）；
 - 交互式调用和任务调用共用同一余额，不另设额度池。
 
@@ -740,10 +804,10 @@ AI 网关（worker 内）── 解密 Key ──> 模型服务商
 - **测试**：全部对本机模拟服务商（`server/tests/ai/mockProvider.ts`），CI 不使用真实 Key、不访问外网。覆盖冻结与结算（调用中可用余额减少、结束后释放、按冻结时的价格版本、以冻结额封顶、用量缺失时估算、缓存 token）、余额不足以冻结时不调用服务商、12 个并发调用恰好成功可冻结的 5 个、直接扣费不占用他人冻结、结算与释放互斥、子进程在调用中途被 `SIGKILL` 后冻结到期自动释放、上游各类失败不收费、用户中途断开按估算结算、Key 不进入响应 / 日志 / 错误 / 数据库明文、AAD 被改动时拒绝解密、跨组织隔离和应用角色权限，以及出站地址校验。去掉冻结检查中的“进行中的冻结”、冻结到期条件、结算封顶、上游失败不收费、按冻结时价格结算、直接扣费扣除冻结，或把上游错误体带进错误信息，分别有 2、1、1、12、1、1、2 个用例失败；
 - **与设计的偏离 / 未做**：
   - `platform_models`（对用户展示的模型清单、上架状态）尚未建：请求直接给出服务商和模型名，只要价格表中有该模型、平台配置了该服务商的凭据即可调用。设置页的“选择模型 + 查看单价”在建 `platform_models` 时一并实现。**旧仓库 PR #33 已改为白名单，见第 10.9 节**；
-  - 第 10.1 节的 `jobs.billed_amount` 要等第 6 步建 `jobs` 表，目前 `usage_records.job_id` 不设外键；
-  - `cached_input_price_per_mtok` 未加：缓存命中 token 已记录，但暂按普通输入单价计费；生图、MinerU、`min_charge`、每日消费上限、按组织 + 服务商的并发信号量（第 5.3 节，依赖 Redis）未做；
+  - 第 10.1 节的 `jobs.billed_amount` 要等第 6 步建 `jobs` 表，目前 `usage_records.job_id` 不设外键（6.4 已加 `billed_amount`；`job_id` 按路线图决定事项第 10 项永久不加外键，见第 10.10 节）；
+  - `cached_input_price_per_mtok` 未加：缓存命中 token 已记录，但暂按普通输入单价计费；生图、MinerU、`min_charge`、每日消费上限、按组织 + 服务商的并发信号量（第 5.3 节，依赖 Redis；6.4 已实现，见第 10.10 节）未做；
   - `provider_credentials.last_used_at`、DEK 缓存未做（文件 KEK 解包几乎没有开销，换成 KMS 时再加缓存）；管理后台的“模型列表 / 连通性测试”未做；
-  - 网关目前在 `api` 进程中运行（交互式的 `ai.chat`），第 6 步 worker 建成后任务调用在 worker 中使用同一模块；
+  - 网关目前在 `api` 进程中运行（交互式的 `ai.chat`），第 6 步 worker 建成后任务调用在 worker 中使用同一模块（6.4 已接入，见第 10.10 节）；
   - 函数属主沿用 `bidtools_billing`，没有新增集群级角色。
 
 ### 10.9 实现（旧仓库 PR #33）：平台模型白名单
@@ -762,6 +826,16 @@ AI 网关（worker 内）── 解密 Key ──> 模型服务商
   - 免费标记登记后不能修改，要改需要后续提供专门的接口；登记、启用、停用暂只记在表的操作人字段和日志中，`audit_logs` 建好后补；
   - 不经冻结的直接扣费 `chargeUsage`（旧仓库 PR #31）不调用服务商，没有接入白名单；
   - 已有的开发数据库迁移后，所有模型都需要管理员登记并启用才能调用。
+
+### 10.10 实现（路线图 6.4）：worker 中的任务调用与余额
+
+- **网关在 worker 中运行**：worker 与 api 使用同一个 `src/ai/gateway.ts`，各自加载主密钥；任务经 `context.ai.chat()` 调用，`source = 'job'`、`job_id`、`job_type` 由执行者填写，任务代码不能指定。冻结时（`ai_usage_begin`）任务必须属于本组织且状态为 `running`，`job_type` 以任务记录为准；
+- **按任务聚合**：`jobs.billed_amount` 由 `ai_usage_settle` 在扣费的同一事务中累加，只增不减，应用角色不能写；任务结束后才到达的结算照常累加。`usage_records.job_id` 不加外键（任务记录有保留期，用量记录永久保留），任务删除后按任务的费用仍可从用量记录汇总；
+- **入队门槛**：会调用模型的任务类型（`billable`）入队和从暂停继续前，经 `billing_job_start_check()` 要求可用余额（余额 − 未到期的冻结）≥ 1 元，否则 402 `INSUFFICIENT_BALANCE`；
+- **运行中耗尽**：冻结失败时网关返回 402，执行者把任务改为 `paused`、`pause_reason = 'insufficient_balance'`，写带原因的 `paused` 事件并推送 `job` 事件；之后本次执行中的调用直接失败。充值后继续，从 checkpoint 开始，已扣费的调用不重做；
+- **并发信号量**（`src/ai/concurrency.ts`）：键 `ai:concurrency:{orgId}:{provider}` 的有序集合，Lua 脚本原子地清掉到期名额、判断上限、加入令牌；名额最长占用一个冻结时长，崩溃时到期自动收回。上限 = min(`org_settings.concurrency_limit`，`AI_CONCURRENCY_MAX`)；网关在白名单检查之后、解密 Key 和冻结之前取得名额。交互式调用最多等 `AI_CONCURRENCY_WAIT_MS` 后 429 `AI_CONCURRENCY_LIMITED`，任务中的调用一直等到被取消；Redis 不可用时不放行（503 `AI_CONCURRENCY_UNAVAILABLE`），api 未配置 Redis 时不限制。Redis 被清空时名额一起消失，短时间内可能超出上限，不影响计费；
+- **步骤幂等（路线图 6.4a，#34）**：平台自身故障导致的重复调用不向用户收费。任务的每次模型调用带步骤键，完整的调用结果与结算在同一事务中写入 `job_step_results`（迁移 0025），续跑时同一步骤、同一请求内容（SHA-256）的调用直接取回结果，不冻结、不调用服务商、不扣费；两个执行者并发完成同一步骤时后提交的不收费（`duplicate_step`）；worker 关闭、租约丢失中止的调用不收费（`platform_interrupted`），用户取消、暂停中止的照旧按已产生的用量收费；
+- 细节与偏离见路线图“worker 接入 AI 网关与余额（#27，6.4）”。
 
 ## 11. 合规待确认事项
 

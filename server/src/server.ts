@@ -1,15 +1,18 @@
 // 进程入口：校验配置 → 启动 → 收到 SIGTERM / SIGINT 时优雅退出。
+import { createAiConcurrencyLimiter } from './ai/concurrency.ts';
 import { KeyringError, loadFileKeyWrapper, type KeyWrapper } from './ai/keyring.ts';
 import { buildApp } from './app.ts';
-import { expireStaleHolds } from './billing/usage.ts';
+import { createRedisRateLimitStore } from './auth/rateLimitStore.ts';
 import { ConfigError, loadConfig, type AppConfig } from './config.ts';
 import { createDatabase } from './db/database.ts';
+import { createEventHub } from './events/hub.ts';
+import { createEventPublisher } from './events/publisher.ts';
 import { createS3ObjectStore } from './files/objectStore.ts';
-import { createRedis } from './redis.ts';
+import { createJobNotifier } from './jobs/notify.ts';
+import { createJobDispatcher } from './jobs/queue.ts';
+import { bullmqConnection, createRedis } from './redis.ts';
 
 const SHUTDOWN_TIMEOUT_MS = 10_000;
-/** 清理到期冻结的间隔。到期的冻结本来就不占用余额，这里只把记录标为 abandoned。 */
-const HOLD_SWEEP_INTERVAL_MS = 60_000;
 
 function failStartup(message: string, extra: Record<string, unknown> = {}): never {
   // 此时日志器尚未创建，直接输出一行结构化 JSON 到 stderr。
@@ -44,24 +47,27 @@ const objectStore = config.storage ? createS3ObjectStore(config.storage) : null;
 const redis = config.redis
   ? createRedis(config.redis, { onError: (error) => app.log.warn({ err: error }, 'redis connection error') })
   : null;
-const app = await buildApp(config, { database, keyWrapper, objectStore, redis });
+// 事件推送（GET /api/events 与任务状态变化的推送）同样只在配置了 Redis 时开启；日志器在 buildApp 之后才有，先转一层。
+const eventLog = { warn: (obj: unknown, msg?: string) => app.log.warn(obj, msg) };
+const publisher = config.redis ? createEventPublisher(config.redis, { log: eventLog, connectionName: 'bidtools-api-publisher' }) : null;
+const hub = config.redis ? createEventHub(config.redis, { log: eventLog }) : null;
+const events = publisher && hub ? { hub, notifier: createJobNotifier({ db: database.db, publisher, log: eventLog }) } : null;
+// AI 网关的并发信号量（名额最长占用一个冻结时长）。未配置 Redis 时不限制并发。
+const aiLimiter = config.redis
+  ? createAiConcurrencyLimiter(config.redis, { leaseMs: config.ai.holdTtlSeconds * 1000, log: eventLog })
+  : null;
+// 登录、注册、找回密码的限流计数（6.14）：所有实例共用；Redis 不可用时退回进程内存计数。未配置 Redis 时只用进程内存。
+const rateLimitStore = config.redis ? createRedisRateLimitStore(config.redis, { log: eventLog }) : null;
+// 任务派发（6.6 起导入文档后入队解析）。未配置 Redis 时只写 jobs，由 worker 的对账派发。
+const dispatcher = config.redis ? createJobDispatcher({ connection: bullmqConnection(config.redis, 'producer', 'bidtools-api-dispatch') }) : null;
+const app = await buildApp(config, { database, keyWrapper, objectStore, redis, events, aiLimiter, dispatcher, rateLimitStore });
 if (!keyWrapper) app.log.warn('AI_KEK_FILE is not set, AI gateway disabled');
 if (!objectStore) app.log.warn('S3_BUCKET is not set, file storage disabled');
-if (!redis) app.log.warn('REDIS_URL is not set, redis readiness check disabled');
+if (!redis) app.log.warn('REDIS_URL is not set, redis readiness check and event stream disabled, auth rate limits are per process');
 
-const sweeper = setInterval(() => {
-  expireStaleHolds(database.db).then(
-    (expired) => {
-      if (expired > 0) app.log.warn({ expired }, 'expired abandoned ai usage holds');
-    },
-    (error: unknown) => app.log.warn({ err: error }, 'ai usage hold sweep failed'),
-  );
-}, HOLD_SWEEP_INTERVAL_MS);
-sweeper.unref();
-
+// 到期冻结的收尾（ai_usage_expire_holds）由 worker 的清理任务执行（6.8，src/cleanup/）。
 app.addHook('onClose', async () => {
-  clearInterval(sweeper);
-  await Promise.all([database.destroy(), redis?.destroy()]);
+  await Promise.all([database.destroy(), redis?.destroy(), hub?.close(), publisher?.close(), aiLimiter?.close(), dispatcher?.close(), rateLimitStore?.close()]);
 });
 
 let shuttingDown = false;
