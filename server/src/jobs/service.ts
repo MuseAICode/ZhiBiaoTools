@@ -7,7 +7,7 @@ import type { TenantContext } from '../db/tenant.ts';
 import type { JobTypeRegistry } from './definitions.ts';
 import { NULL_JOB_NOTIFIER, type JobNotifier } from './notify.ts';
 import type { JobDispatcher } from './queue.ts';
-import { insertJob, requestCancel, requestPause, requestResume, type JobRecord, type NewJob } from './store.ts';
+import { insertJobSuperseding, requestCancel, requestPause, requestResume, type InsertedJob, type JobRecord, type NewJob } from './store.ts';
 
 export interface JobServiceDependencies {
   db: Kysely<Database>;
@@ -34,13 +34,20 @@ async function dispatchBestEffort(deps: JobServiceDependencies, job: JobRecord):
  * 可用余额低于最低启动余额时抛 402 INSUFFICIENT_BALANCE（与写入在同一事务）。
  */
 export async function enqueueJob(deps: JobServiceDependencies, context: TenantContext, input: NewJob): Promise<JobRecord> {
+  return (await enqueueJobSuperseding(deps, context, input)).job;
+}
+
+/** 同 enqueueJob，另返回被取代的排队中任务（NewJob.supersedeQueued），并推送它们的状态。 */
+export async function enqueueJobSuperseding(deps: JobServiceDependencies, context: TenantContext, input: NewJob): Promise<InsertedJob> {
   const definition = deps.registry.get(input.type);
   if (!definition) throw new TypeError(`任务类型未登记：${input.type}`);
   definition.parseParams(input.params);
-  const job = await insertJob(deps.db, context, { ...input, checkBalance: definition.billable === true });
-  await (deps.notifier ?? NULL_JOB_NOTIFIER).changed(job);
-  await dispatchBestEffort(deps, job);
-  return job;
+  const inserted = await insertJobSuperseding(deps.db, context, { ...input, checkBalance: definition.billable === true });
+  const notifier = deps.notifier ?? NULL_JOB_NOTIFIER;
+  for (const cancelled of inserted.superseded) await notifier.changed(cancelled);
+  await notifier.changed(inserted.job);
+  await dispatchBestEffort(deps, inserted.job);
+  return inserted;
 }
 
 export async function cancelJob(deps: JobServiceDependencies, context: TenantContext, jobId: string): Promise<JobRecord> {

@@ -147,6 +147,18 @@ export interface NewJob {
   params: Record<string, unknown>;
   /** 入队前检查最低启动余额（会调用模型的任务类型，见 JobTypeDefinition.billable）。 */
   checkBalance?: boolean;
+  /**
+   * 取代排队中的旧任务（模板样张 7.3d，对应桌面版“新请求取代旧请求”）：在新建的同一事务中，把本用户同一类型、仍是 queued 的
+   * 任务改为 cancelled；运行中（running / cancelling）与暂停的不动。同一组织、用户、类型的这类入队用事务级 advisory lock 串行，
+   * 并发入队时每个事务都看得到之前提交的任务，结果总是只有最后提交的一个仍在排队。不用 lock_key（运行中的旧任务会使新请求 409）。
+   */
+  supersedeQueued?: boolean;
+}
+
+export interface InsertedJob {
+  job: JobRecord;
+  /** 被取代（改为 cancelled）的排队中任务。 */
+  superseded: JobRecord[];
 }
 
 /**
@@ -154,6 +166,11 @@ export interface NewJob {
  * （部分唯一索引兜底，并发入队也只有一个成功）。只写数据库，不放进 BullMQ（见 src/jobs/service.ts 的 enqueueJob）。
  */
 export async function insertJob(db: Kysely<Database>, context: TenantContext, input: NewJob): Promise<JobRecord> {
+  return (await insertJobSuperseding(db, context, input)).job;
+}
+
+/** 同 insertJob，另返回被取代的排队中任务（NewJob.supersedeQueued）。 */
+export async function insertJobSuperseding(db: Kysely<Database>, context: TenantContext, input: NewJob): Promise<InsertedJob> {
   if (input.lockKey !== undefined && input.lockKey !== null && (input.lockKey.length === 0 || input.lockKey.length > JOB_LOCK_KEY_MAX_LENGTH)) {
     throw new TypeError('lockKey 长度不合法');
   }
@@ -161,6 +178,9 @@ export async function insertJob(db: Kysely<Database>, context: TenantContext, in
   try {
     return await withTenant(db, context, async (trx) => {
       if (input.checkBalance) await assertJobStartBalance(trx);
+      if (input.supersedeQueued) {
+        await sql`SELECT pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtextextended(${`jobs_supersede:${context.orgId}:${context.userId}:${input.type}`}, 0))`.execute(trx);
+      }
       const row = await trx
         .insertInto('jobs')
         .values({
@@ -175,7 +195,24 @@ export async function insertJob(db: Kysely<Database>, context: TenantContext, in
         .executeTakeFirstOrThrow();
       const job = toRecord(row);
       await appendEvent(trx, job, 'queued', null, { userId: context.userId });
-      return job;
+      const superseded: JobRecord[] = [];
+      if (input.supersedeQueued) {
+        const rows = await trx
+          .updateTable('jobs')
+          .set({ status: 'cancelled', pause_reason: null, finished_at: sql<Date>`now()` })
+          .where('user_id', '=', context.userId)
+          .where('type', '=', input.type)
+          .where('status', '=', 'queued')
+          .where('id', '!=', job.id)
+          .returningAll()
+          .execute();
+        for (const cancelled of rows) {
+          const record = toRecord(cancelled);
+          await appendEvent(trx, record, 'cancelled', null, { userId: context.userId, supersededBy: job.id });
+          superseded.push(record);
+        }
+      }
+      return { job, superseded };
     });
   } catch (error) {
     const pgError = error as { code?: unknown; constraint?: unknown } | null;
