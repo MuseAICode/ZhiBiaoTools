@@ -342,6 +342,26 @@ export interface ArtifactsTable {
   completed_at: ColumnType<Date | null, never, never>;
   /** 重新解析后被替换的时间（迁移 0023，触发器写入 now()）；之后由清理任务删除。 */
   superseded_at: ColumnType<Date | null, never, Date>;
+  /** 样张输入的哈希（迁移 0027）：只有 template-preview 有，用于在组织内复用最近的结果。 */
+  preview_sha256: ColumnType<Buffer | null, Buffer | null | undefined, never>;
+}
+
+/**
+ * 样张请求（迁移 0027_template_preview）：校验、规范化之后的样张 HTML 与配置，任务参数只放 id。强制 RLS，应用角色只能看到、
+ * 写入本组织中自己创建的请求；内容写入后不能改，artifact_id 只能由空设为一个值一次（TP001），completed_at 由触发器写入；
+ * 创建 24 小时后由清理任务删除。
+ */
+export interface TemplatePreviewRequestsTable {
+  id: ColumnType<string, never, never>;
+  org_id: ColumnType<string, string, never>;
+  created_by: ColumnType<string, string, never>;
+  input_sha256: ColumnType<Buffer, Buffer, never>;
+  html: ColumnType<string, string, never>;
+  /** jsonb 对象（规范化后的 export_format），写入时传 JSON 文本。 */
+  export_format: ColumnType<Record<string, unknown>, string, never>;
+  artifact_id: ColumnType<string | null, never, string>;
+  created_at: ColumnType<Date, never, never>;
+  completed_at: ColumnType<Date | null, never, never>;
 }
 
 /**
@@ -1205,6 +1225,7 @@ export interface Database {
   files: FilesTable;
   projects: ProjectsTable;
   artifacts: ArtifactsTable;
+  template_preview_requests: TemplatePreviewRequestsTable;
   org_settings: OrgSettingsTable;
   user_settings: UserSettingsTable;
   export_templates: ExportTemplatesTable;

@@ -71,7 +71,7 @@ function fileExpired(f: string): RawBuilder<unknown> {
     OR (${c('status')} = 'uploading' AND ${c('created_at')} <= now() - ${STALE_WINDOW}))`;
 }
 
-function artifactExpired(a: string): RawBuilder<unknown> {
+export function artifactExpired(a: string): RawBuilder<unknown> {
   const c = (column: string) => sql.ref(`${a}.${column}`);
   return sql`((${c('status')} = 'writing' AND ${c('created_at')} <= now() - ${STALE_WINDOW})
     OR ${c('superseded_at')} <= now() - ${SUPERSEDED_WINDOW}

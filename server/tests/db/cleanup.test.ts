@@ -24,6 +24,7 @@ import {
   type CleanupCategoryResult,
 } from '../../src/cleanup/cleanup.ts';
 import { CLEANUP_BATCH_MAX } from '../../src/db/migrations/0024_cleanup.ts';
+import { DOCX_MIME } from '../../src/db/migrations/0027_template_preview.ts';
 import { migrateToLatest } from '../../src/db/migrator.ts';
 import { APP_ROLE, BILLING_ROLE, CLEANUP_ROLE, OWNER_ROLE } from '../../src/db/roles.ts';
 import type { Database } from '../../src/db/schema.ts';
@@ -40,7 +41,7 @@ const MARKDOWN = 'text/markdown; charset=utf-8';
 /** 计费相关的表：清理角色对它们不能有任何权限（决定事项第 9 项）。 */
 const BILLING_TABLES = ['billing_ledger', 'org_balances', 'model_prices', 'usage_records', 'provider_credentials', 'platform_models'];
 /** 清理角色有权限的表（其余一律没有）。 */
-const CLEANUP_TABLES = ['artifacts', 'files', 'job_events', 'jobs', 'projects'];
+const CLEANUP_TABLES = ['artifacts', 'files', 'job_events', 'jobs', 'projects', 'template_preview_requests'];
 const TABLE_PRIVILEGES = ['SELECT', 'INSERT', 'UPDATE', 'DELETE', 'TRUNCATE', 'REFERENCES', 'TRIGGER'];
 const COLUMN_PRIVILEGES = ['SELECT', 'INSERT', 'UPDATE', 'REFERENCES'];
 const CLEANUP_FUNCTIONS = [
@@ -50,6 +51,7 @@ const CLEANUP_FUNCTIONS = [
   'cleanup_delete_job_events',
   'cleanup_delete_jobs',
   'cleanup_delete_projects',
+  'cleanup_delete_template_preview_requests',
   'cleanup_file_candidates',
   'cleanup_unreferenced_keys',
 ];
@@ -162,18 +164,20 @@ async function insertFile(
 
 async function insertArtifact(
   ctx: TenantContext,
-  options: { projectId?: string; sourceFileId?: string; supersededAgo?: number; writing?: boolean; createdAgo?: number } = {},
+  options: { projectId?: string; sourceFileId?: string; supersededAgo?: number; writing?: boolean; createdAgo?: number; preview?: boolean } = {},
 ): Promise<{ id: string; key: string }> {
   const writing = options.writing ?? false;
+  const preview = options.preview ?? false;
   const row = await superuser
     .insertInto('artifacts')
     .values({
       org_id: ctx.orgId,
       project_id: options.projectId ?? null,
       source_file_id: options.sourceFileId ?? null,
-      kind: 'markdown',
-      name: 'content.md',
-      mime: MARKDOWN,
+      kind: preview ? 'template-preview' : 'markdown',
+      name: preview ? 'template-preview.docx' : 'content.md',
+      mime: preview ? DOCX_MIME : MARKDOWN,
+      preview_sha256: preview ? randomBytes(32) : null,
       status: writing ? 'writing' : 'ready',
       size_bytes: writing ? null : 10,
       sha256: writing ? null : Buffer.alloc(32),
@@ -186,6 +190,19 @@ async function insertArtifact(
     .executeTakeFirstOrThrow();
   await store.put(row.storage_key, Readable.from(Buffer.from('# md')), { contentType: MARKDOWN });
   return { id: row.id, key: row.storage_key };
+}
+
+/** 超级用户直接写入样张请求（时间可回拨）。 */
+async function insertPreviewRequest(ctx: TenantContext, createdAgo: number): Promise<string> {
+  const row = await superuser
+    .insertInto('template_preview_requests')
+    .values({
+      org_id: ctx.orgId, created_by: ctx.userId, input_sha256: randomBytes(32), html: '<p>样张</p>', export_format: '{}',
+      created_at: ago(createdAgo),
+    })
+    .returning('id')
+    .executeTakeFirstOrThrow();
+  return row.id;
 }
 
 async function insertJob(
@@ -318,7 +335,7 @@ describe('角色与权限', () => {
     expect([...new Set(policies.rows.map((row) => row.tablename))]).toEqual(CLEANUP_TABLES);
   });
 
-  it('除 files、artifacts、projects、jobs、job_events 外，对任何表都没有权限；对这五张表只有 SELECT（列级）和 DELETE', async () => {
+  it('除 files、artifacts、projects、jobs、job_events、template_preview_requests 外，对任何表都没有权限；对这六张表只有 SELECT（列级）和 DELETE', async () => {
     const { rows } = await sql<{ relname: string; privileges: string[] }>`
       SELECT c.relname,
         array(SELECT p FROM unnest(${TABLE_PRIVILEGES}::text[]) p WHERE has_table_privilege(${CLEANUP_ROLE}, c.oid, p)
@@ -459,6 +476,31 @@ describe('只删除超过保留期的数据', () => {
     expect(await exists('files', restorable.id)).toBe(true);
   });
 
+  it('模板样张（迁移 0027）：创建超过 24 小时的样张产物连同对象删除、样张请求删除，未满 24 小时的不动；其他种类的产物不按 24 小时删除', async () => {
+    const ctx = await newOrg();
+    const oldPreview = await insertArtifact(ctx, { preview: true, createdAgo: 24 * HOUR + 60_000 });
+    const oldWriting = await insertArtifact(ctx, { preview: true, writing: true, createdAgo: 24 * HOUR + 60_000 });
+    const freshPreview = await insertArtifact(ctx, { preview: true, createdAgo: 23 * HOUR });
+    const oldMarkdown = await insertArtifact(ctx, { sourceFileId: (await insertFile(ctx, { createdAgo: 30 * DAY })).id, createdAgo: 30 * DAY });
+    const oldRequest = await insertPreviewRequest(ctx, 24 * HOUR + 60_000);
+    const freshRequest = await insertPreviewRequest(ctx, 23 * HOUR);
+
+    const results = byCategory(await newCleaner().cleaner.runBatch());
+    expect(results.artifacts).toMatchObject({ deleted: 1, objects: 1, failed: 0 });
+    expect(results.uploading).toMatchObject({ deleted: 1, objects: 1, failed: 0 });
+    expect(results.template_preview_requests).toMatchObject({ deleted: 1, objects: 0, failed: 0 });
+    for (const gone of [oldPreview, oldWriting]) {
+      expect(await exists('artifacts', gone.id)).toBe(false);
+      expect(store.objects.has(gone.key)).toBe(false);
+    }
+    for (const kept of [freshPreview, oldMarkdown]) {
+      expect(await exists('artifacts', kept.id)).toBe(true);
+      expect(store.objects.has(kept.key)).toBe(true);
+    }
+    expect(await exists('template_preview_requests', oldRequest)).toBe(false);
+    expect(await exists('template_preview_requests', freshRequest)).toBe(true);
+  });
+
   it('遗留的 uploading 文件、writing 产物：登记超过 24 小时的删除（计入 uploading 类），未满 24 小时的不动；过期后不能再完成上传或写入', async () => {
     const ctx = await newOrg();
     const staleUpload = await insertFile(ctx, { uploading: true, createdAgo: 24 * HOUR + 60_000 });
@@ -528,7 +570,7 @@ describe('只删除超过保留期的数据', () => {
 describe('调用方不能绕过删除条件', () => {
   beforeEach(drain);
 
-  it('按 id 删除未过期的文件、产物一律影响 0 行（含恢复期内、未删除、上传中未超时、项目在恢复期内的）', async () => {
+  it('按 id 删除未过期的文件、产物一律影响 0 行（含恢复期内、未删除、上传中未超时、项目在恢复期内的、未满 24 小时的样张）', async () => {
     const ctx = await newOrg();
     const recentProject = await insertProject(ctx, 6 * DAY);
     const files = [
@@ -543,6 +585,7 @@ describe('调用方不能绕过删除条件', () => {
       await insertArtifact(ctx, { projectId: recentProject }),
       await insertArtifact(ctx, { sourceFileId: files[0]!.id, supersededAgo: 7 * DAY - HOUR }),
       await insertArtifact(ctx, { sourceFileId: files[0]!.id, writing: true, createdAgo: 23 * HOUR }),
+      await insertArtifact(ctx, { preview: true, createdAgo: 23 * HOUR }),
     ];
     for (const artifact of artifacts) {
       const { rows } = await sql<{ ok: boolean }>`SELECT cleanup_delete_artifact(${artifact.id}::uuid) AS ok`.execute(appDb);
@@ -600,15 +643,21 @@ describe('调用方不能绕过删除条件', () => {
     const job = await insertJob(ctx, { finishedAgo: 10 * DAY });
     const event = await insertEvent(ctx, job, DAY);
     const artifact = await insertArtifact(ctx, { projectId: project });
+    const preview = await insertArtifact(ctx, { preview: true, createdAgo: 23 * HOUR });
+    const request = await insertPreviewRequest(ctx, 23 * HOUR);
     const counts = await asCleanupRole(async (trx) => ({
+      template_preview_requests: Number((await trx.deleteFrom('template_preview_requests').executeTakeFirst()).numDeletedRows),
       artifacts: Number((await trx.deleteFrom('artifacts').executeTakeFirst()).numDeletedRows),
       files: Number((await trx.deleteFrom('files').executeTakeFirst()).numDeletedRows),
       projects: Number((await trx.deleteFrom('projects').executeTakeFirst()).numDeletedRows),
       job_events: Number((await trx.deleteFrom('job_events').executeTakeFirst()).numDeletedRows),
       jobs: Number((await trx.deleteFrom('jobs').executeTakeFirst()).numDeletedRows),
     }));
-    expect(counts).toEqual({ artifacts: 0, files: 0, projects: 0, job_events: 0, jobs: 0 });
-    for (const [table, id] of [['projects', project], ['files', file.id], ['jobs', job], ['job_events', event], ['artifacts', artifact.id]] as const) {
+    expect(counts).toEqual({ template_preview_requests: 0, artifacts: 0, files: 0, projects: 0, job_events: 0, jobs: 0 });
+    for (const [table, id] of [
+      ['projects', project], ['files', file.id], ['jobs', job], ['job_events', event], ['artifacts', artifact.id], ['artifacts', preview.id],
+      ['template_preview_requests', request],
+    ] as const) {
       expect(await exists(table, id), table).toBe(true);
     }
   });
@@ -723,7 +772,7 @@ describe('对象存储：先删对象，成功后再删行', () => {
 describe('日志', () => {
   beforeEach(drain);
 
-  it('每批按八个类别各记一行结构化日志：删除条数、对象数、失败数、耗时，不含对象键、文件名和 id', async () => {
+  it('每批按九个类别各记一行结构化日志：删除条数、对象数、失败数、耗时，不含对象键、文件名和 id', async () => {
     const ctx = await newOrg();
     const secretName = `机密投标-${randomBytes(4).toString('hex')}.pdf`;
     const file = await insertFile(ctx, { deletedAgo: 8 * DAY, name: secretName });

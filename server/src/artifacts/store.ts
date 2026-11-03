@@ -4,10 +4,12 @@
 // 写入方是第 6 步的解析任务：writeArtifact 一次完成“登记 → 写对象 → 完成（检查配额）”，失败时删除对象和登记行。
 // 重新解析时旧产物经 supersedeArtifacts 标为已被替换（迁移 0023），读取时不再返回，由清理任务（6.8）删除。
 // 项目或来源文件已删除时产物不可访问，由 RLS 保证（迁移 0008_artifacts），这里不再重复判断。
+// 模板样张（template-preview，迁移 0027）不属于项目或来源文件，带样张输入的哈希，创建 24 小时后由清理任务删除。
 import { createHash } from 'node:crypto';
 import { Readable } from 'node:stream';
 import type { Kysely, Selectable } from 'kysely';
-import { ARTIFACT_KINDS, ARTIFACT_MIMES, ARTIFACT_NAME_PATTERN, MAX_ARTIFACT_BYTES } from '../db/migrations/0008_artifacts.ts';
+import { ARTIFACT_NAME_PATTERN, MAX_ARTIFACT_BYTES } from '../db/migrations/0008_artifacts.ts';
+import { ARTIFACT_KINDS, ARTIFACT_MIMES, TEMPLATE_PREVIEW_KIND } from '../db/migrations/0027_template_preview.ts';
 import type { ArtifactsTable, Database } from '../db/schema.ts';
 import { withTenant, type TenantContext } from '../db/tenant.ts';
 import { AppError } from '../errors.ts';
@@ -40,6 +42,8 @@ export interface NewArtifact {
   mime: string;
   projectId?: string | null;
   sourceFileId?: string | null;
+  /** 样张输入的 SHA-256（32 字节）：template-preview 必填（且不能有项目和来源文件），其他种类不能有。 */
+  previewSha256?: Buffer | null;
 }
 
 export interface PendingArtifact {
@@ -71,6 +75,12 @@ function assertNewArtifact(input: NewArtifact): void {
   if (!(ARTIFACT_KINDS as readonly string[]).includes(input.kind)) throw new TypeError('产物种类不合法');
   if (!(ARTIFACT_MIMES[input.kind] as readonly string[]).includes(input.mime)) throw new TypeError('产物 MIME 与种类不符');
   if (!NAME_PATTERN.test(input.name)) throw new TypeError('产物名称只能由字母、数字和 ._- 组成');
+  if (input.kind === TEMPLATE_PREVIEW_KIND) {
+    if (input.projectId || input.sourceFileId) throw new TypeError('样张产物不属于项目或来源文件');
+    if (!input.previewSha256 || input.previewSha256.length !== 32) throw new TypeError('样张产物必须有 32 字节的输入哈希');
+    return;
+  }
+  if (input.previewSha256) throw new TypeError('只有样张产物有输入哈希');
   if (!input.projectId && !input.sourceFileId) throw new TypeError('产物必须属于一个项目或一个来源文件');
 }
 
@@ -92,6 +102,7 @@ export async function beginArtifact(db: Kysely<Database>, context: TenantContext
         org_id: context.orgId,
         project_id: input.projectId ?? null,
         source_file_id: input.sourceFileId ?? null,
+        preview_sha256: input.previewSha256 ?? null,
         kind: input.kind,
         name: input.name,
         mime: input.mime,
@@ -136,7 +147,7 @@ export async function abandonArtifact(db: Kysely<Database>, context: TenantConte
 
 /**
  * 写入一个产物：登记 → 写对象 → 完成。任何一步失败都删除对象和登记行，不占配额，再把错误抛给调用方。
- * 产物是解析结果（Markdown、图片），在内存中生成，所以只接受 Buffer。
+ * 产物是解析结果（Markdown、图片）或样张 docx，在内存中生成，所以只接受 Buffer。
  */
 export async function writeArtifact(
   db: Kysely<Database>,

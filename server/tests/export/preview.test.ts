@@ -1,9 +1,10 @@
 // 样张在 export-preview 沙箱中的生成流程（src/export/preview.ts，路线图 7.3b），用记录调用的假 SandboxDriver 验证：
 // 只放 request.json（重新序列化的 HTML 与规范化的配置），不放任何配图；入队前校验不通过时不创建沙箱；
 // 失败只按错误代码给出原因；不论成败都销毁沙箱；沙箱忙时按间隔重试。真实沙箱中的端到端测试见 tests/sandbox/docker/exportPreview.test.ts。
+import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
-import { renderTemplatePreview, buildPreviewRequest, type PreviewContext } from '../../src/export/preview.ts';
+import { renderTemplatePreview, buildPreviewRequest, preparePreviewRequest, type PreviewContext } from '../../src/export/preview.ts';
 import { JobError, JobInterruptedError } from '../../src/jobs/definitions.ts';
 import type { SandboxFile } from '../../src/sandbox/archive.ts';
 import { SandboxError, type SandboxDriver, type SandboxExecResult, type SandboxRef } from '../../src/sandbox/driver.ts';
@@ -78,6 +79,38 @@ async function failure(promise: Promise<unknown>): Promise<JobError> {
   }
   throw new Error('expected a JobError');
 }
+
+/** 递归按键名倒序重排对象（模拟 jsonb 读回后键的顺序变化）。 */
+function reorder(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(reorder);
+  if (value === null || typeof value !== 'object') return value;
+  return Object.fromEntries(Object.keys(value).sort().reverse().map((key) => [key, reorder((value as Record<string, unknown>)[key])]));
+}
+
+describe('preparePreviewRequest', () => {
+  it('returns the request body with its SHA-256, and the same hash when prepared again from its own (reordered) output', () => {
+    const format = { ...defaultExportFormat(), template_name: '哈希' };
+    const first = preparePreviewRequest({ html: SAMPLE, exportFormat: format });
+    expect(first.body.equals(buildPreviewRequest({ html: SAMPLE, exportFormat: format }))).toBe(true);
+    expect(first.sha256.equals(createHash('sha256').update(first.body).digest())).toBe(true);
+    expect(JSON.parse(first.body.toString('utf8'))).toEqual({ html: first.html, export_format: first.exportFormat });
+    const again = preparePreviewRequest({ html: first.html, exportFormat: reorder(first.exportFormat) });
+    expect(again.body.equals(first.body)).toBe(true);
+    expect(again.sha256.equals(first.sha256)).toBe(true);
+  });
+
+  it('gives a different hash when the HTML or the format changes', () => {
+    const base = preparePreviewRequest({ html: SAMPLE, exportFormat: defaultExportFormat() });
+    const html = preparePreviewRequest({ html: SAMPLE.replace('。', '！'), exportFormat: defaultExportFormat() });
+    const format = preparePreviewRequest({ html: SAMPLE, exportFormat: { ...defaultExportFormat(), template_name: '另一个' } });
+    expect(html.sha256.equals(base.sha256)).toBe(false);
+    expect(format.sha256.equals(base.sha256)).toBe(false);
+  });
+
+  it('rejects an invalid sample before hashing', () => {
+    expect(() => preparePreviewRequest({ html: '<script>alert(1)</script><p>x</p>', exportFormat: {} })).toThrow(JobError);
+  });
+});
 
 describe('renderTemplatePreview', () => {
   it('sends only request.json with the re-serialized HTML and the normalized format, and destroys the sandbox', async () => {
