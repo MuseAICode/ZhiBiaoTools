@@ -8,7 +8,7 @@
 
 | 步骤 | 内容 | 状态 | PR |
 |---|---|---|---|
-| 0 | 前置：处理高危依赖漏洞，确定 AGPL 第 13 条源码链接方案，新增 PR CI，移除原作者的发布与镜像 workflow，梳理外部服务 | 已完成 | 旧仓库 PR #3、旧仓库 PR #4、旧仓库 PR #5、旧仓库 PR #6、旧仓库 PR #7、旧仓库 PR #8、旧仓库 PR #9、旧仓库 PR #10、旧仓库 PR #11、旧仓库 PR #12、旧仓库 PR #13、旧仓库 PR #14、旧仓库 PR #15、旧仓库 PR #16、旧仓库 PR #17、旧仓库 PR #18、旧仓库 PR #19、旧仓库 PR #20 |
+| 0 | 前置：处理高危依赖漏洞，确定 AGPL 第 13 条源码链接方案，新增 PR CI，移除原作者的发布与镜像 workflow，梳理外部服务 | 已完成 | 旧仓库 PR #3、旧仓库 PR #4、旧仓库 PR #5、旧仓库 PR #6、旧仓库 PR #7、旧仓库 PR #8、旧仓库 PR #9、旧仓库 PR #10、旧仓库 PR #11、旧仓库 PR #12、旧仓库 PR #13、旧仓库 PR #14、旧仓库 PR #15、旧仓库 PR #16、旧仓库 PR #17、旧仓库 PR #18、旧仓库 PR #19、旧仓库 PR #20、#15、#49 |
 | 1 | 抽象 bridge | 进行中 | 旧仓库 PR #21（决定记录）、旧仓库 PR #22（Vitest）、旧仓库 PR #23（修复 output_token_limit）、旧仓库 PR #24（新建 `src/shared/bridge`） |
 | 2 | 服务端骨架 | 进行中 | 旧仓库 PR #25（设计文档 `docs/SERVER_DESIGN.md`）、旧仓库 PR #26（决定 18 项事项，新增计费与合规章节）、旧仓库 PR #27（`server/` 基础设施：配置、日志、`/healthz`、错误处理、安全响应头、Docker、CI）、旧仓库 PR #28（数据库层：PostgreSQL 17、Kysely 迁移、身份与租户表、RLS、`TenantContext`、`/readyz`）、旧仓库 PR #29（鉴权：登录前查询的 `SECURITY DEFINER` 函数、argon2id、服务端会话与 CSRF、邀请注册、找回密码、限流、平台管理员命令行）、旧仓库 PR #30（限流的客户端 IP：新增 `TRUSTED_PROXIES`，只采信可信代理附加的 `X-Forwarded-For`）、#13（测试 harness：删除测试库前等连接全部断开，修复收尾时偶发的 57P01；同 PR 在 `CLAUDE.md` 新增自动合并规则） |
 | 3 | 配置与 AI 网关 | 进行中 | 旧仓库 PR #31（计费账本：组织余额、只追加的账本、带版本的价格表、幂等扣费、管理员手动充值与冲正，不调用 AI）、旧仓库 PR #32（AI 网关：调用前预扣冻结、按实际用量结算、冻结超时自动释放、`usage_records`、平台 Key 信封加密、DeepSeek / 通义千问流式适配、`POST /api/ai/chat`）、旧仓库 PR #33（平台模型白名单 `platform_models`：只有登记且启用、并有生效价格的模型能调用，免费须显式标记；管理员登记 / 启用 / 停用接口；用户断开时中止上游请求的端到端测试） |
@@ -46,6 +46,7 @@
 | 0.19 清理原作者的非归属类信息（`LICENSE`、`NOTICE`、署名和原仓库链接不动）：删除 `analytics/` 目录和客户端中只为它服务的埋点、安装标识与内容服务代码（公告、更新日志、资源页、模型信息）；删除原作者的历史更新日志、使用说明中的原作者内容和 `screenshots/` 中的赞助商图片；README 改写为中性说明；删除 `configStore` 中“官方”“金龙”旧配置的迁移代码；删除失效的 `check:docx`（连同同样失效的 `check:chrome`、`check`）；全局搜索剩余引用并分类 | 已完成 | 旧仓库 PR #19 |
 | 0.20 继续清理原作者的非归属类信息（`LICENSE`、`NOTICE`、署名和原仓库链接不动）：删除 `.github/FUNDING.yml` 和 AtomGit 发布工具；删除 原用户手册技能目录 `.agents/skills/`、`assets/star-history/` 和 `screenshots/`；删除打赏功能；“给作者点 star”提示改为“功能开发中”；删除 `html图片.md` 中的 `mt.agnet.top` 一段；问题反馈模板、`SECURITY.md`、`CODE_OF_CONDUCT.md` 的联系邮箱改为占位符，`CONTRIBUTING.md` 改写；隐私声明第 01、02 条改为中性表述 | 已完成 | 旧仓库 PR #20 |
 | 0.21 依赖漏洞（2026-10 新公告，lockfile 内升级、不改 `package.json`）：`server/` 的 `vite` 8.3.2 → 8.3.3（vitest 的开发依赖，launch-editor 命令注入，CI 的 `--audit-level=high` 因此失败），`client/` 的 `follow-redirects` 1.16.0 → 1.16.1（开发依赖 `wait-on` → `axios` 传递引入，跨域时凭据头未剥离）；两个版本都按依赖规则发布满两周 | 已完成 | #15 |
+| 0.22 依赖漏洞（`client/` 2026-10 新公告的 3 个 high）：`zod` 4.4.3 → 4.6.6（lockfile 内，AI SDK 传递引入）；pi-coding-agent 内的 `undici` 8.10.2 → 8.12.3（改 `package.json` 的 `overrides`，同一大版本）；`electron` 41.10.7 → 42.11.16（改 `package.json`，跨大版本，41.x 没有修复版），随之 `better-sqlite3` 12.10.0 → 12.11.1（lockfile 内，12.10.0 没有 Electron 42 的预编译包）；所有版本都按依赖规则发布满两周，见下方说明 | 已完成 | #49 |
 
 0.2 的实际做法与原方案 B 的差异：没有另起 worker 线程，也没有调整调用顺序（Electron 主进程里多次转换时，只调顺序不够），而是在 `convert.mjs` 加载时用 pdfjs 6 自己的 worker 建一个专用 `PDFWorker` 传给 `getDocument`，然后清掉 `globalThis.pdfjsWorker`，让 pdf-parse 照常加载自己的 5.4.296。同一 PR 还补了 `cMapUrl` / `standardFontDataUrl`（非嵌入中文字体），并修了 `constructPath` 遇到空路径（`null`）时抛错的问题。之前因为版本冲突，这条路径从来没有跑到，所以这个问题一直没暴露。
 
@@ -127,6 +128,13 @@
 - 0.4 `patch-package`：接受风险，视为完成。理由：`patch-package` 只在开发机和 CI 的 `npm install` / `npm ci` 时由 `postinstall` 运行，它带进来的 `braces` / `micromatch` 只处理仓库内固定的补丁文件路径，不接收用户输入；它是 `devDependencies`，不在 electron-builder 的 `files` 中，不进入安装包，也不会进入 Web 版服务端镜像。`npm audit` 的这两条 high 继续由 CI 的 `--audit-level=critical` 放行；
 - 0.5 AGPL 第 13 条源码链接：上线前决定，视为第 0 步完成。开发期间本仓库保持公开，对外提供网络服务前（第 9 步）确定 Web 版界面中源码链接的位置和指向，并加入第 9 步的上线检查。迁移到新仓库后本项目改为闭源商业授权，不再提供源码链接，第 9 步的对应上线检查已删除；
 - analytics Worker：**不自建**。客户端的埋点（`analytics.ts`、`trackAiRequest`、`trackAgentRuntime`）和内容服务代码（公告、更新日志、资源页、模型信息，及 `remote-services.json` 中对应的键）目前默认为空、不发请求，在第 9 步删除；`analytics/` 目录暂时保留，删除时机另行决定。本文第 5 节部署行和第 9 步已同步改写。
+
+0.22 的说明：
+- 三个修复版本发布时间：`zod` 4.6.6 为 2026-10-11，`undici` 8.12.3 为 2026-10-19，`electron` 42.11.16 为 2026-10-20。Electron 的 high（GHSA-jr5w-w6x2-84p9，吊销被盗用的 eMudhra 中间证书）在 41.x 上没有修复版，42.11.16 / 43.8.1 / 44.9.1 同日发布，选跨度最小的 42；为满足两周规则，本 PR 推迟到 2026-11-03 才提交（zod 的 lockfile 改动先提交在分支上）；
+- `undici` 原计划升到 8.12.2，8.12.3 同样满两周、没有新公告，pi-coding-agent 要求 `^8.5.0`，一并取 8.12.3；
+- Electron 42 的不兼容改动与本项目的关系：Worker / 子框架的 Node 集成、DevTools 扩展框架的 preload、`clearStorageData` 的 `quotas` 都没有使用；macOS 通知改用 `UNNotification`，代码没有使用 `Notification`；离屏渲染的默认缩放改为 1.0，只有 `localImageRenderService.cjs` 用离屏窗口，它通过 `Emulation.setDeviceMetricsOverride` 显式设置缩放、截图 `scale: 1`，预期不受影响，列入待测清单第 20 项；`electron` 包不再在 `postinstall` 中下载二进制，改为第一次运行 `electron` 时下载，`npm run dev` / `start` 首次启动会先下载，CI 不运行 Electron，不受影响；仓库中没有使用 `ELECTRON_SKIP_BINARY_DOWNLOAD`；
+- Electron 42 的 Node 模块 ABI 为 146，`better-sqlite3` 12.10.0 只有 ABI 145 的预编译包，`electron-builder install-app-deps` 会改为从源码编译（Windows 需要 VS 构建工具），因此在 lockfile 内升到 12.11.1（2026-06-15 发布，有 win32 / darwin / linux 的 electron-v146 预编译包）；
+- 本次开发环境首次能下载 Electron 二进制，在 Linux + Xvfb 下验证过：`smoke:electron-native`（electron 42.11.16、node 24.19.0、modules 146，better-sqlite3 加载并查询成功），以及 `electron .` 加载构建产物后持续运行、没有新的报错。Windows / macOS 上的运行和打包仍按待测清单第 20 项验证。
 
 0.19 按本次需求一次清理，偏离如下：
 - 多项合并为一个 PR（按本次需求一并处理）：都是删除原作者的非归属类内容，不新增功能。原计划在第 9 步删除的客户端埋点和内容服务代码提前到本 PR 删除；`analytics/` 目录的去留（0.18 待定）定为删除；
@@ -841,6 +849,7 @@ AI 网关加固，做法见 `docs/SERVER_DESIGN.md` 第 10.9 节。`client/` 未
 | 17 | 旧仓库 PR #19 | 全新 userData 启动：侧栏底部只有“设置”（未配置使用文档时），没有“日志”“公告”，不弹公告；“资源下载”分组不显示；设置-文本模型“高级参数”没有“自动填充高级参数”按钮，思考强度为输入框，离开设置时的上下文长度提醒不提“自动填充”；隐私声明第 03 条为“不上报使用统计”；`user_config.json` 中没有 `analytics_client_id` / `analytics_created_at`；全程（含 AI 文本请求、生图测试、Agent 任务）没有埋点请求，开发者模式下 Token 统计仍正常累计；新版更新检查（未配置更新源时）和插件停用状态不变 | 未测 |
 | 18 | #5 | 全局样式变量和公共类名改用 `--app-*` / `app-*` 后，逐页检查界面外观无变化：主色、文字层级、边框、圆角、阴影、动画时长，开关（`app-switch`）、进度条（`app-progress-track`）、空状态（`app-empty-state`）、对话框弹出动画、Toast 与 Agent 提问浮层的层级，以及受限 HTML 预览中配图画框比例、图片类型角标和图片表格布局 | 未测 |
 | 19 | #5 | 新生成一份含 AI 图片 / HTML 图片 / Mermaid 图、图片表格（imageText、threeImages、fourImages）和数据表格的技术方案，整本导出 Word：图片正常嵌入，`data-app-size` 画框比例和 `data-app-fit` 适配方式生效；数据表格按 `data-app-preset` 应用表头行 / 表头列样式；目录标题编号与目录一致（`data-app-outline-number`）；模板范围与页面范围切换正确（`data-app-export-template` / `data-app-export-page-template`）；再跑一次格式自检，定位书签（`app_layout_`）能对应回小节 | 未测 |
+| 20 | #49 | Electron 41 → 42.11.16、`better-sqlite3` 12.11.1 后：全新克隆 `npm ci` 时 `postinstall` 能下载 better-sqlite3 的 electron-v146 预编译包、不从源码编译；`npm run smoke:electron-native` 通过；`npm run dev` 首次启动会先下载 Electron 二进制，之后正常启动，已有功能（项目、导入招标文件、正文生成、导出 Word）可用；用到离屏渲染的本地配图（HTML 图片 / Mermaid 图转 PNG）尺寸和清晰度与升级前一致，在高 DPI 屏（缩放 150%）上也不变；`npm run dist:win`（必要时 `dist:mac`）能出包，安装后启动正常、能打开已有 `app.sqlite` | 未测 |
 
 0.2 回归时发现两个既有问题，留给后续 PR：
 - `hasInformativeText` 要求连续 10 个字母、数字或汉字。如果 PDF 只有表格、单元格又都很短，`|` 会把文字切断，整份文件被误判为 `pdf_text_layer_missing`。
