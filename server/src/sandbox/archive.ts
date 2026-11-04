@@ -119,22 +119,32 @@ class ByteReader {
     this.maxBytes = maxBytes;
   }
 
-  /** 读取正好 length 字节；数据不够（流已结束）时返回 null。 */
-  async read(length: number): Promise<Buffer | null> {
-    while (this.bufferedBytes < length && !this.done) {
+  /** 再从源流读入一块；流已结束时返回 false。累计读入超过 maxBytes 即拒绝。 */
+  private async fill(): Promise<boolean> {
+    let chunk: Buffer;
+    do {
+      if (this.done) return false;
       const next = await this.iterator.next();
       if (next.done) {
         this.done = true;
-        break;
+        return false;
       }
-      const chunk = Buffer.from(next.value.buffer, next.value.byteOffset, next.value.byteLength);
-      this.consumed += chunk.length;
-      if (this.consumed > this.maxBytes) {
-        await this.close();
-        throw new SandboxArchiveError('archive too large');
-      }
-      this.buffered.push(chunk);
-      this.bufferedBytes += chunk.length;
+      chunk = Buffer.from(next.value.buffer, next.value.byteOffset, next.value.byteLength);
+    } while (chunk.length === 0);
+    this.consumed += chunk.length;
+    if (this.consumed > this.maxBytes) {
+      await this.close();
+      throw new SandboxArchiveError('archive too large');
+    }
+    this.buffered.push(chunk);
+    this.bufferedBytes += chunk.length;
+    return true;
+  }
+
+  /** 读取正好 length 字节；数据不够（流已结束）时返回 null。 */
+  async read(length: number): Promise<Buffer | null> {
+    while (this.bufferedBytes < length && (await this.fill())) {
+      // 继续读入。
     }
     if (this.bufferedBytes < length) return null;
     const all = this.buffered.length === 1 ? this.buffered[0]! : Buffer.concat(this.buffered);
@@ -142,6 +152,17 @@ class ByteReader {
     const rest = all.subarray(length);
     this.buffered = rest.length > 0 ? [rest] : [];
     this.bufferedBytes = rest.length;
+    return result;
+  }
+
+  /** 读取至多 length 字节（至少 1 字节）；流已结束且没有剩余数据时返回 null。不为凑满 length 而合并缓冲区。 */
+  async readSome(length: number): Promise<Buffer | null> {
+    if (this.bufferedBytes === 0 && !(await this.fill())) return null;
+    const first = this.buffered[0]!;
+    const result = first.length > length ? first.subarray(0, length) : first;
+    if (result.length === first.length) this.buffered.shift();
+    else this.buffered[0] = first.subarray(length);
+    this.bufferedBytes -= result.length;
     return result;
   }
 
@@ -203,11 +224,107 @@ function parsePaxPath(data: Buffer): string | null {
   return path;
 }
 
-async function readPadded(reader: ByteReader, size: number): Promise<Buffer> {
-  const padded = Math.ceil(size / BLOCK) * BLOCK;
-  const data = await reader.read(padded);
-  if (!data) throw new SandboxArchiveError('archive truncated');
-  return data.subarray(0, size);
+/** 一个文件的内容按这个大小分块读出（流式转发时不在内存中缓存整个文件）。 */
+const DATA_CHUNK_BYTES = 64 * 1024;
+
+/**
+ * 逐项校验归档时产出的片段：meta 是已校验的头部（含之前的扩展头）、目录条目、对齐与结束块，file 宣告一个普通文件，
+ * 其后紧跟总长为 size 的 data。一个条目的头部只在校验通过后产出，扩展头与它所修饰的条目头部一起产出。
+ */
+type ArchivePart = { kind: 'meta'; bytes: Buffer } | { kind: 'file'; path: string; size: number } | { kind: 'data'; bytes: Buffer };
+
+async function* scanArchive(reader: ByteReader, limits: SandboxTransferLimits): AsyncGenerator<ArchivePart> {
+  const seen = new Set<string>();
+  let total = 0;
+  let entries = 0;
+  let files = 0;
+  let pendingPath: string | null = null;
+  /** 扩展头（头部与内容）：等它修饰的条目通过校验后再一起产出。 */
+  let pendingMeta: Buffer[] = [];
+  for (;;) {
+    const header = await reader.read(BLOCK);
+    if (!header) throw new SandboxArchiveError('archive truncated');
+    if (header.every((byte) => byte === 0)) {
+      if (pendingPath !== null) throw new SandboxArchiveError('extended header without entry');
+      yield { kind: 'meta', bytes: Buffer.alloc(BLOCK * 2) };
+      return;
+    }
+    verifyChecksum(header);
+    entries += 1;
+    // 目录、扩展头也计数，防止用大量空条目拖延读取。
+    if (entries > limits.maxFiles * 4 + 16) throw new SandboxArchiveError('too many entries');
+
+    const type = String.fromCharCode(header[156]!);
+    const size = readOctal(header, 124, 12);
+
+    if (type === 'x' || type === 'L') {
+      if (pendingPath !== null) throw new SandboxArchiveError('extended header without entry');
+      if (size > MAX_EXTENDED_HEADER_BYTES) throw new SandboxArchiveError('extended header too large');
+      const padded = Math.ceil(size / BLOCK) * BLOCK;
+      const block = await reader.read(padded);
+      if (!block) throw new SandboxArchiveError('archive truncated');
+      const data = block.subarray(0, size);
+      if (type === 'x') {
+        pendingPath = parsePaxPath(data);
+        // 没有 path 的 PAX 头（只有时间等）按无扩展处理，但下一个头必须是条目本身。
+        pendingPath ??= '';
+      } else {
+        const end = data.indexOf(0);
+        pendingPath = data.subarray(0, end === -1 ? data.length : end).toString('utf8');
+      }
+      pendingMeta = [Buffer.from(header), Buffer.from(block)];
+      continue;
+    }
+
+    const magic = header.subarray(257, 263).toString('ascii');
+    let name = readString(header, 0, 100);
+    // POSIX ustar 的 prefix 字段；GNU 格式（magic 为 "ustar  "）的同一位置是其他字段，不能拼接。
+    if (magic === 'ustar\0') {
+      const prefix = readString(header, 345, 155);
+      if (prefix) name = `${prefix}/${name}`;
+    }
+    if (pendingPath) name = pendingPath;
+    pendingPath = null;
+    if (name.includes('\\') || /[\0-\x1f\x7f]/.test(name)) throw new SandboxArchiveError('path segment not allowed');
+    if (name.startsWith('/')) throw new SandboxArchiveError('absolute path');
+
+    if (type === '5') {
+      if (size !== 0) throw new SandboxArchiveError('malformed header');
+      validateRelativePath(name.endsWith('/') ? name : `${name}/`, limits, true);
+      yield { kind: 'meta', bytes: Buffer.concat([...pendingMeta, header]) };
+      pendingMeta = [];
+      continue;
+    }
+    if (type !== '0' && type !== '\0' && type !== '7') {
+      throw new SandboxArchiveError(
+        type === '1' ? 'hard link not allowed' : type === '2' ? 'symbolic link not allowed' : type === '3' || type === '4' ? 'device file not allowed' : type === '6' ? 'fifo not allowed' : 'entry type not allowed',
+      );
+    }
+    const path = validateRelativePath(name, limits, false);
+    if (seen.has(path)) throw new SandboxArchiveError('duplicate path');
+    seen.add(path);
+    files += 1;
+    if (files > limits.maxFiles) throw new SandboxArchiveError('too many files');
+    if (size > limits.maxFileBytes) throw new SandboxArchiveError('file too large');
+    total += size;
+    if (total > limits.maxTotalBytes) throw new SandboxArchiveError('archive too large');
+    yield { kind: 'meta', bytes: Buffer.concat([...pendingMeta, header]) };
+    pendingMeta = [];
+    yield { kind: 'file', path, size };
+    let remaining = size;
+    while (remaining > 0) {
+      const chunk = await reader.readSome(Math.min(remaining, DATA_CHUNK_BYTES));
+      if (!chunk) throw new SandboxArchiveError('archive truncated');
+      remaining -= chunk.length;
+      yield { kind: 'data', bytes: chunk };
+    }
+    const padding = (BLOCK - (size % BLOCK)) % BLOCK;
+    if (padding > 0) {
+      const block = await reader.read(padding);
+      if (!block) throw new SandboxArchiveError('archive truncated');
+      yield { kind: 'meta', bytes: block };
+    }
+  }
 }
 
 /**
@@ -217,78 +334,49 @@ async function readPadded(reader: ByteReader, size: number): Promise<Buffer> {
 export async function readArchive(source: AsyncIterable<Uint8Array>, limits: SandboxTransferLimits): Promise<SandboxFile[]> {
   const reader = new ByteReader(source, maxArchiveBytes(limits));
   const files: SandboxFile[] = [];
-  const seen = new Set<string>();
-  let total = 0;
-  let entries = 0;
-  let pendingPath: string | null = null;
+  let current: { path: string; data: Buffer; filled: number } | null = null;
+  const finish = () => {
+    if (current) files.push(Object.freeze({ path: current.path, data: current.data }));
+    current = null;
+  };
   try {
-    for (;;) {
-      const header = await reader.read(BLOCK);
-      if (!header) throw new SandboxArchiveError('archive truncated');
-      if (header.every((byte) => byte === 0)) {
-        if (pendingPath !== null) throw new SandboxArchiveError('extended header without entry');
-        break;
+    for await (const part of scanArchive(reader, limits)) {
+      if (part.kind === 'file') {
+        finish();
+        current = { path: part.path, data: Buffer.alloc(part.size), filled: 0 };
+      } else if (part.kind === 'data') {
+        // 复制出来，不持有读取缓冲区的引用。
+        part.bytes.copy(current!.data, current!.filled);
+        current!.filled += part.bytes.length;
+      } else {
+        finish();
       }
-      verifyChecksum(header);
-      entries += 1;
-      // 目录、扩展头也计数，防止用大量空条目拖延读取。
-      if (entries > limits.maxFiles * 4 + 16) throw new SandboxArchiveError('too many entries');
-
-      const type = String.fromCharCode(header[156]!);
-      const size = readOctal(header, 124, 12);
-
-      if (type === 'x' || type === 'L') {
-        if (pendingPath !== null) throw new SandboxArchiveError('extended header without entry');
-        if (size > MAX_EXTENDED_HEADER_BYTES) throw new SandboxArchiveError('extended header too large');
-        const data = await readPadded(reader, size);
-        if (type === 'x') {
-          pendingPath = parsePaxPath(data);
-          // 没有 path 的 PAX 头（只有时间等）按无扩展处理，但下一个头必须是条目本身。
-          pendingPath ??= '';
-        } else {
-          const end = data.indexOf(0);
-          pendingPath = data.subarray(0, end === -1 ? data.length : end).toString('utf8');
-        }
-        continue;
-      }
-
-      const magic = header.subarray(257, 263).toString('ascii');
-      let name = readString(header, 0, 100);
-      // POSIX ustar 的 prefix 字段；GNU 格式（magic 为 "ustar  "）的同一位置是其他字段，不能拼接。
-      if (magic === 'ustar\0') {
-        const prefix = readString(header, 345, 155);
-        if (prefix) name = `${prefix}/${name}`;
-      }
-      if (pendingPath) name = pendingPath;
-      pendingPath = null;
-      if (name.includes('\\') || /[\0-\x1f\x7f]/.test(name)) throw new SandboxArchiveError('path segment not allowed');
-      if (name.startsWith('/')) throw new SandboxArchiveError('absolute path');
-
-      if (type === '5') {
-        if (size !== 0) throw new SandboxArchiveError('malformed header');
-        validateRelativePath(name.endsWith('/') ? name : `${name}/`, limits, true);
-        continue;
-      }
-      if (type !== '0' && type !== '\0' && type !== '7') {
-        throw new SandboxArchiveError(
-          type === '1' ? 'hard link not allowed' : type === '2' ? 'symbolic link not allowed' : type === '3' || type === '4' ? 'device file not allowed' : type === '6' ? 'fifo not allowed' : 'entry type not allowed',
-        );
-      }
-      const path = validateRelativePath(name, limits, false);
-      if (seen.has(path)) throw new SandboxArchiveError('duplicate path');
-      seen.add(path);
-      if (files.length + 1 > limits.maxFiles) throw new SandboxArchiveError('too many files');
-      if (size > limits.maxFileBytes) throw new SandboxArchiveError('file too large');
-      total += size;
-      if (total > limits.maxTotalBytes) throw new SandboxArchiveError('archive too large');
-      const data = await readPadded(reader, size);
-      // 复制出来，不持有整块读取缓冲区的引用。
-      files.push(Object.freeze({ path, data: Buffer.from(data) }));
     }
+    finish();
   } finally {
     await reader.close();
   }
   return files;
+}
+
+/**
+ * 边读边校验 tar 归档（copyIn，sandbox-runner 收到的请求体），按原样产出已通过校验的字节，不在内存中缓存整个归档或整个文件：
+ * 规则与 readArchive 相同；一个条目的头部只在它通过校验后产出，所以下游（沙箱内的 tar）收不到不合规的条目。
+ * 中途不符时抛 SandboxArchiveError——此时之前的条目可能已交给下游，调用方必须丢弃整个沙箱。
+ * 结束块之后的数据（tar 的记录对齐）计入字节上限，读完后丢弃；源流读完才结束，失败时不销毁源流（由调用方决定）。
+ */
+export async function* validateArchiveStream(source: AsyncIterable<Uint8Array>, limits: SandboxTransferLimits): AsyncGenerator<Buffer> {
+  const reader = new ByteReader(source, maxArchiveBytes(limits));
+  try {
+    for await (const part of scanArchive(reader, limits)) {
+      if (part.kind !== 'file') yield part.bytes;
+    }
+    while (await reader.readSome(DATA_CHUNK_BYTES)) {
+      // 结束块之后的数据不转发。
+    }
+  } finally {
+    await reader.close();
+  }
 }
 
 /** 归档流的字节上限：文件总大小加上每个条目的头部、扩展头和对齐，再加结束块和 tar 的记录对齐（10 KiB）。 */

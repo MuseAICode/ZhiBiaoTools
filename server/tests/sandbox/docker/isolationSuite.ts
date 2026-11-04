@@ -2,12 +2,13 @@
 // 在真实的 Docker（CI 中为 gVisor）中按模板创建沙箱，在沙箱内运行探测脚本。每项加固都有对照组：去掉该项（网络、只读根文件系统、
 // 内存 / pids / CPU 上限、取回校验）后同一个探测会得到相反的结果，证明测试确实能发现加固被去掉。
 // parse 模板在 isolation.test.ts、export 模板在 exportIsolation.test.ts 中调用 defineIsolationSuite。
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { statfs } from 'node:fs/promises';
 import { availableParallelism } from 'node:os';
 import { createServer, type Server } from 'node:net';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
+import { createArchive } from '../../../src/sandbox/archive.ts';
 import { createDockerSandboxDriver, type DockerSandboxDriver } from '../../../src/sandbox/docker.ts';
 import type { SandboxRef } from '../../../src/sandbox/driver.ts';
 import { buildContainerSpec, SANDBOX_TEMPLATES, type SandboxImageName, type SandboxTemplateName } from '../../../src/sandbox/templates.ts';
@@ -502,6 +503,59 @@ export function defineIsolationSuite(target: IsolationTarget, harness: Isolation
         offset += 512 + Math.ceil(size / 512) * 512;
       }
       expect(types).toContain('2');
+    });
+
+    /** 一个文件的归档流：内容由同一块缓冲区重复组成，不在测试进程中生成整个归档。 */
+    function streamedArchive(name: string, size: number, tail: Buffer[] = [Buffer.alloc(1024)]) {
+      const header = createArchive([{ path: name, data: Buffer.alloc(0) }], template.input).subarray(0, 512);
+      header.write(`${size.toString(8).padStart(11, '0')}\0`, 124, 12, 'ascii');
+      header.fill(0x20, 148, 156);
+      let sum = 0;
+      for (const byte of header) sum += byte;
+      header.write(`${sum.toString(8).padStart(6, '0')}\0 `, 148, 8, 'ascii');
+      const block = Buffer.alloc(MIB);
+      for (let index = 0; index < block.length; index += 1) block[index] = (index * 31 + 7) & 0xff;
+      const hash = createHash('sha256');
+      async function* source() {
+        yield header;
+        for (let sent = 0; sent < size; sent += MIB) {
+          const chunk = block.subarray(0, Math.min(MIB, size - sent));
+          hash.update(chunk);
+          yield chunk;
+        }
+        yield Buffer.alloc((512 - (size % 512)) % 512);
+        yield* tail;
+      }
+      return { source, sha256: () => hash.digest('hex') };
+    }
+
+    it(`streams a large input archive into ${inputDirectory} intact`, async () => {
+      const ref = await createSandbox();
+      // 不超过模板的单个文件与总大小上限（export-preview 为 32 MiB / 64 MiB）。
+      const archive = streamedArchive('large.bin', Math.min(96 * MIB, template.input.maxFileBytes, template.input.maxTotalBytes) - 4096 + 123);
+      await driver.copyInArchive(ref, archive.source());
+      const result = await sh(ref, `sha256sum ${inputDirectory}/large.bin`);
+      expect(result.stdout.split(' ')[0]).toBe(archive.sha256());
+    });
+
+    it('terminates the sandbox when the input archive turns invalid midway', async () => {
+      const ref = await createSandbox();
+      // 第一个文件合规（已交给沙箱内的 tar），之后是一个符号链接：校验在转出它的头部之前拒绝，整个沙箱被终止。
+      const link = Buffer.alloc(512);
+      link.write('link.bin', 0, 100, 'utf8');
+      for (const [offset, value] of [[100, '0000644\0'], [108, '0000000\0'], [116, '0000000\0'], [124, '00000000000\0'], [136, '00000000000\0']] as const) link.write(value, offset, 'ascii');
+      link.write('2', 156, 1, 'ascii');
+      link.write('/etc/passwd', 157, 100, 'utf8');
+      link.write('ustar\0', 257, 6, 'ascii');
+      link.write('00', 263, 2, 'ascii');
+      link.fill(0x20, 148, 156);
+      let sum = 0;
+      for (const byte of link) sum += byte;
+      link.write(`${sum.toString(8).padStart(6, '0')}\0 `, 148, 8, 'ascii');
+      const archive = streamedArchive('first.bin', 8 * MIB, [link, Buffer.alloc(1024)]);
+      await expect(driver.copyInArchive(ref, archive.source())).rejects.toMatchObject({ code: 'SANDBOX_BAD_REQUEST' });
+      await expect(driver.lookup(ref.id, ref.jobId)).rejects.toMatchObject({ code: 'SANDBOX_NOT_FOUND' });
+      await expect(driver.execArgv(ref, ['true'], { timeoutMs: 10_000 })).rejects.toMatchObject({ code: 'SANDBOX_NOT_FOUND' });
     });
 
     it('does not share anything between sandboxes', async () => {

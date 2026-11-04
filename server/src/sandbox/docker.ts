@@ -11,7 +11,7 @@
 import { randomUUID } from 'node:crypto';
 import { Readable, Transform } from 'node:stream';
 import type { FastifyBaseLogger } from 'fastify';
-import { createArchive, maxArchiveBytes, readArchive, SandboxArchiveError, type SandboxFile } from './archive.ts';
+import { createArchive, maxArchiveBytes, readArchive, SandboxArchiveError, validateArchiveStream, type SandboxFile } from './archive.ts';
 import { DockerApiError, type DockerApi } from './dockerApi.ts';
 import {
   SandboxError,
@@ -58,12 +58,16 @@ export interface DockerSandboxDriverOptions {
 
 export interface ExecArgvOptions extends SandboxOperationOptions {
   timeoutMs: number;
-  stdin?: Buffer;
+  /** 流出错时终止整个沙箱，exec 以该错误失败。 */
+  stdin?: Buffer | Readable;
 }
 
 export interface DockerSandboxDriver extends SandboxDriver {
-  /** 放入已生成的归档（sandbox-runner 收到的请求体），先按模板的输入规则校验。 */
-  copyInArchive(sandbox: SandboxRef, archive: Buffer, options?: SandboxOperationOptions): Promise<void>;
+  /**
+   * 放入归档（sandbox-runner 收到的请求体，可以是流）：边读边按模板的输入规则校验，只把通过校验的条目转给沙箱内的 tar，
+   * 不在内存中缓存整个归档。中途不符时终止整个沙箱（之前的条目可能已放入），以 SANDBOX_BAD_REQUEST 失败，之后只能 destroy。
+   */
+  copyInArchive(sandbox: SandboxRef, archive: Buffer | AsyncIterable<Uint8Array>, options?: SandboxOperationOptions): Promise<void>;
   /**
    * 取回输出目录的原始归档（sandbox-runner 原样转给 worker，由 worker 校验）。超过模板上限即中止；
    * 沙箱内的 tar 失败时流以错误结束。
@@ -157,66 +161,92 @@ export function createDockerSandboxDriver(options: DockerSandboxDriverOptions): 
     if (execOptions.signal?.aborted) throw new SandboxError('SANDBOX_ABORTED', '沙箱操作已中止');
     const stdoutPreview = new OutputPreview();
     const stderrPreview = new OutputPreview();
-    const execId = await docker.createExec(containerId, { argv, stdin: execOptions.stdin !== undefined });
-    const stream = await docker.startExec(execId, {
-      ...(execOptions.stdin !== undefined ? { stdin: execOptions.stdin } : {}),
-      onStderr: (chunk) => stderrPreview.push(chunk),
-    });
+    const stdin = execOptions.stdin;
+    const stdinStream = stdin && !Buffer.isBuffer(stdin) ? stdin : null;
     let timedOut = false;
     let aborted = false;
+    let stdinError: unknown = null;
     let killed: Promise<void> | null = null;
+    let stream: Awaited<ReturnType<DockerApi['startExec']>> | null = null;
     const terminate = () => {
-      stream.abort();
+      stream?.abort();
       killed ??= docker.killContainer(containerId).catch((error: unknown) => log.warn({ err: error }, 'failed to kill sandbox'));
     };
-    const timer = setTimeout(() => {
-      timedOut = true;
-      terminate();
-    }, execOptions.timeoutMs);
-    const onAbort = () => {
-      aborted = true;
+    // 标准输入的流出错（例如放入的归档中途不符合规则）：已写入的部分不可信，终止整个沙箱。在开始读取之前接上。
+    const onStdinError = (error: unknown) => {
+      stdinError ??= error;
       terminate();
     };
-    execOptions.signal?.addEventListener('abort', onAbort, { once: true });
+    stdinStream?.once('error', onStdinError);
     try {
-      const consume = sink
-        ? sink(stream.stdout)
-        : (async () => {
-            for await (const chunk of stream.stdout) stdoutPreview.push(chunk as Buffer);
-          })();
-      await Promise.allSettled([consume, stream.done]);
-      // 超时、中止时等容器确实被终止后再返回，之后的操作一律查不到这个沙箱。
-      if (killed) await killed;
-      if (aborted) throw new SandboxError('SANDBOX_ABORTED', '沙箱操作已中止');
-      if (timedOut) {
-        return { exitCode: null, timedOut: true, stdout: stdoutPreview.text(), stderr: stderrPreview.text(), stdoutTruncated: stdoutPreview.truncated, stderrTruncated: stderrPreview.truncated };
-      }
-      await consume;
-      const info = await docker.inspectExec(execId);
-      return {
-        exitCode: info.Running ? null : info.ExitCode,
-        timedOut: false,
-        stdout: stdoutPreview.text(),
-        stderr: stderrPreview.text(),
-        stdoutTruncated: stdoutPreview.truncated,
-        stderrTruncated: stderrPreview.truncated,
-      };
+      const execId = await docker.createExec(containerId, { argv, stdin: stdin !== undefined });
+      stream = await docker.startExec(execId, {
+        ...(stdin !== undefined ? { stdin } : {}),
+        onStderr: (chunk) => stderrPreview.push(chunk),
+      });
+      // startExec 返回之前标准输入已出错：此时 terminate 还没能断开连接。
+      if (stdinError !== null) terminate();
+      return await waitExec(execId, stream);
     } finally {
-      clearTimeout(timer);
-      execOptions.signal?.removeEventListener('abort', onAbort);
+      if (stdinStream) {
+        stdinStream.off('error', onStdinError);
+        // 进程提前退出（没有读完）、被终止或 exec 没能启动时，不再读取上游。
+        stdinStream.destroy();
+      }
+    }
+
+    async function waitExec(execId: string, started: NonNullable<typeof stream>): Promise<SandboxExecResult> {
+      const timer = setTimeout(() => {
+        timedOut = true;
+        terminate();
+      }, execOptions.timeoutMs);
+      const onAbort = () => {
+        aborted = true;
+        terminate();
+      };
+      execOptions.signal?.addEventListener('abort', onAbort, { once: true });
+      if (execOptions.signal?.aborted) onAbort();
+      try {
+        const consume = sink
+          ? sink(started.stdout)
+          : (async () => {
+              for await (const chunk of started.stdout) stdoutPreview.push(chunk as Buffer);
+            })();
+        await Promise.allSettled([consume, started.done]);
+        // 超时、中止时等容器确实被终止后再返回，之后的操作一律查不到这个沙箱。
+        if (killed) await killed;
+        if (aborted) throw new SandboxError('SANDBOX_ABORTED', '沙箱操作已中止');
+        if (stdinError !== null) throw stdinError;
+        if (timedOut) {
+          return { exitCode: null, timedOut: true, stdout: stdoutPreview.text(), stderr: stderrPreview.text(), stdoutTruncated: stdoutPreview.truncated, stderrTruncated: stderrPreview.truncated };
+        }
+        await consume;
+        const info = await docker.inspectExec(execId);
+        return {
+          exitCode: info.Running ? null : info.ExitCode,
+          timedOut: false,
+          stdout: stdoutPreview.text(),
+          stderr: stderrPreview.text(),
+          stdoutTruncated: stdoutPreview.truncated,
+          stderrTruncated: stderrPreview.truncated,
+        };
+      } finally {
+        clearTimeout(timer);
+        execOptions.signal?.removeEventListener('abort', onAbort);
+      }
     }
   }
 
-  async function copyInArchive(sandbox: SandboxRef, archive: Buffer, operationOptions: SandboxOperationOptions = {}) {
+  async function copyInArchive(sandbox: SandboxRef, archive: Buffer | AsyncIterable<Uint8Array>, operationOptions: SandboxOperationOptions = {}) {
     try {
       const template = templateOf(sandbox);
-      // 请求体来自 worker，仍按模板规则检查一遍：只有普通文件、路径和大小在上限内。
-      await readArchive(Readable.from([archive]), template.input);
       const { containerId } = await resolveContainer(sandbox.id, sandbox.jobId);
+      // 请求体来自 worker，仍按模板规则检查：只有普通文件、路径和大小在上限内。边读边校验，只转发通过校验的条目。
+      const stdin = Readable.from(validateArchiveStream(Buffer.isBuffer(archive) ? Readable.from([archive]) : archive, template.input), { objectMode: false });
       const result = await runExec(
         containerId,
         ['tar', '-x', '-f', '-', '-C', template.input.directory, '--no-same-owner', '--no-same-permissions', '--no-overwrite-dir'],
-        { timeoutMs: template.transferTimeoutMs, stdin: archive, ...operationOptions },
+        { timeoutMs: template.transferTimeoutMs, stdin, ...operationOptions },
         null,
       );
       if (result.timedOut || result.exitCode !== 0) {
@@ -224,6 +254,7 @@ export function createDockerSandboxDriver(options: DockerSandboxDriverOptions): 
         throw new SandboxError('SANDBOX_FAILED', '向沙箱放入文件失败');
       }
     } catch (error) {
+      if (error instanceof SandboxArchiveError) log.warn({ reason: error.reason, sandboxId: sandbox.id }, 'sandbox input rejected, sandbox terminated');
       throw wrap(error, 'copy-in');
     }
   }

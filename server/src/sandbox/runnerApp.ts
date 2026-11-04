@@ -3,12 +3,13 @@
 //
 // 接口只接受“模板名 + 任务 id”和模板中登记的命令名与参数，不接受镜像、挂载、网络、环境变量或任意 Docker 参数：
 //   POST   /v1/sandboxes                 { template, jobId }        → 201 { id, template, jobId, expiresAt }
-//   PUT    /v1/sandboxes/:id/input       tar（只含普通文件）           → 204
+//   PUT    /v1/sandboxes/:id/input       tar（只含普通文件，流式校验转发） → 204
 //   POST   /v1/sandboxes/:id/exec        { command, args }          → 200 执行结果
 //   GET    /v1/sandboxes/:id/output                                  → 200 tar（原样转出，由 worker 校验）
 //   DELETE /v1/sandboxes/:id                                         → 204
 // 后四个接口用 X-Sandbox-Job 头带任务 id，与创建时不符按不存在处理。
 import { createHash, timingSafeEqual } from 'node:crypto';
+import { Readable } from 'node:stream';
 import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from 'fastify';
 import { maxArchiveBytes } from './archive.ts';
 import type { DockerApi } from './dockerApi.ts';
@@ -20,6 +21,7 @@ import type { LogLevel } from '../config.ts';
 import { createLoggerOptions } from '../logger.ts';
 
 export const SANDBOX_JOB_HEADER = 'x-sandbox-job';
+const JSON_BODY_LIMIT = 1024 * 1024;
 const UUID_PATTERN = '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$';
 
 export interface SandboxRunnerAppOptions {
@@ -82,11 +84,13 @@ export async function buildSandboxRunnerApp(options: SandboxRunnerAppOptions): P
     // 与 api 相同：请求体中多余的字段一律拒绝（400），而不是悄悄删掉后继续处理。
     ajv: { customOptions: { removeAdditional: false } },
     logger: createLoggerOptions({ level: options.logLevel, ...(options.logStream ? { stream: options.logStream } : {}) }),
-    // 输入归档的上限：模板中最大的输入（含 tar 头部和对齐）。
-    bodyLimit: Math.max(1024 * 1024, ...SANDBOX_TEMPLATE_NAMES.map((name) => maxArchiveBytes(SANDBOX_TEMPLATES[name].input))),
+    // JSON 请求体的上限。输入归档不经 Fastify 缓冲（见下面的 tar 解析器），上限按沙箱的模板在读取时检查。
+    bodyLimit: JSON_BODY_LIMIT,
   });
   registerErrorHandlers(app);
-  app.addContentTypeParser('application/x-tar', { parseAs: 'buffer' }, (_request, body, done) => done(null, body));
+  // 输入归档（export-document 至多约 1.1 GiB）不在内存中整体缓存：把请求流原样交给路由，由 driver 边读边校验、
+  // 只把通过校验的条目转给沙箱内的 tar（src/sandbox/archive.ts 的 validateArchiveStream），超过模板上限即中止。
+  app.addContentTypeParser('application/x-tar', (_request, payload, done) => done(null, payload));
 
   app.addHook('onRequest', async (request: FastifyRequest) => {
     if (request.routeOptions.config?.access === 'public') return;
@@ -150,11 +154,21 @@ export async function buildSandboxRunnerApp(options: SandboxRunnerAppOptions): P
   }
 
   app.put('/v1/sandboxes/:id/input', { schema: { params: idParams, headers: jobHeaders } }, async (request, reply) => {
-    if (!Buffer.isBuffer(request.body)) throw new AppError(415, 'UNSUPPORTED_MEDIA_TYPE', '请求体必须是 tar 归档');
+    const body = request.body;
+    if (!(body instanceof Readable)) throw new AppError(415, 'UNSUPPORTED_MEDIA_TYPE', '请求体必须是 tar 归档');
     const ref = await lookup(request);
+    const limit = maxArchiveBytes(SANDBOX_TEMPLATES[ref.template].input);
+    const declared = Number(request.headers['content-length']);
+    // 声明的长度已超过模板上限：不碰沙箱，直接拒绝（没有声明长度时在读取中检查）。
+    if (Number.isFinite(declared) && declared > limit) {
+      reply.header('connection', 'close');
+      throw new AppError(400, 'SANDBOX_BAD_REQUEST', '输入文件不符合沙箱规则');
+    }
     try {
-      await driver.copyInArchive(ref, request.body, { signal: abortOnDisconnect(reply) });
+      // 校验失败时不销毁请求流：先把 400 发出去，剩余的请求体由 Node 丢弃或随连接关闭。
+      await driver.copyInArchive(ref, body.iterator({ destroyOnReturn: false }), { signal: abortOnDisconnect(reply) });
     } catch (error) {
+      if (error instanceof SandboxError && error.code === 'SANDBOX_BAD_REQUEST') reply.header('connection', 'close');
       throw toAppError(error);
     }
     return reply.code(204).send();
