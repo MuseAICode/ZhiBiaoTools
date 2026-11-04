@@ -118,8 +118,9 @@ describe('export templates', () => {
 
 describe('loadSandboxRunnerConfig', () => {
   const token = 't'.repeat(40);
-  const base = { NODE_ENV: 'development', SANDBOX_PARSE_IMAGE: 'zhibiao-parse:dev', SANDBOX_RUNNER_TOKEN: token };
+  const base = { NODE_ENV: 'development', SANDBOX_PARSE_IMAGE: 'zhibiao-parse:dev', SANDBOX_EXPORT_IMAGE: 'zhibiao-export:dev', SANDBOX_RUNNER_TOKEN: token };
   const pinned = `registry.example.com/zhibiao-parse@sha256:${'b'.repeat(64)}`;
+  const exportPinned = `registry.example.com/zhibiao-export@sha256:${'d'.repeat(64)}`;
 
   it('defaults to runc in development and listens on 3100', () => {
     const config = loadSandboxRunnerConfig(base);
@@ -130,19 +131,19 @@ describe('loadSandboxRunnerConfig', () => {
   });
 
   it('only allows gVisor and digest-pinned images in production', () => {
-    const production = { ...base, NODE_ENV: 'production', SANDBOX_PARSE_IMAGE: pinned };
+    const production = { ...base, NODE_ENV: 'production', SANDBOX_PARSE_IMAGE: pinned, SANDBOX_EXPORT_IMAGE: exportPinned };
     expect(loadSandboxRunnerConfig({ ...production, SANDBOX_RUNTIME: 'runsc' }).runtime).toBe('runsc');
     expect(() => loadSandboxRunnerConfig(production)).toThrow(ConfigError);
     expect(() => loadSandboxRunnerConfig({ ...production, SANDBOX_RUNTIME: 'runc' })).toThrow(/SANDBOX_RUNTIME/);
     expect(() => loadSandboxRunnerConfig({ ...production, SANDBOX_RUNTIME: 'runsc', SANDBOX_PARSE_IMAGE: 'zhibiao-parse:latest' })).toThrow(/SANDBOX_PARSE_IMAGE/);
   });
 
-  it('treats the export image as optional until export jobs ship, and pins it in production', () => {
-    expect(loadSandboxRunnerConfig(base).images).toEqual({ parse: 'zhibiao-parse:dev', export: null });
-    expect(loadSandboxRunnerConfig({ ...base, SANDBOX_EXPORT_IMAGE: 'zhibiao-export:dev' }).images.export).toBe('zhibiao-export:dev');
+  it('requires the export image since the preview endpoint ships (7.3e), and pins it in production', () => {
+    expect(loadSandboxRunnerConfig(base).images).toEqual({ parse: 'zhibiao-parse:dev', export: 'zhibiao-export:dev' });
+    expect(() => loadSandboxRunnerConfig({ ...base, SANDBOX_EXPORT_IMAGE: undefined })).toThrow(/SANDBOX_EXPORT_IMAGE/);
+    expect(() => loadSandboxRunnerConfig({ ...base, SANDBOX_EXPORT_IMAGE: '' })).toThrow(/SANDBOX_EXPORT_IMAGE/);
     const production = { ...base, NODE_ENV: 'production', SANDBOX_RUNTIME: 'runsc', SANDBOX_PARSE_IMAGE: pinned };
     expect(() => loadSandboxRunnerConfig({ ...production, SANDBOX_EXPORT_IMAGE: 'zhibiao-export:latest' })).toThrow(/SANDBOX_EXPORT_IMAGE/);
-    const exportPinned = `registry.example.com/zhibiao-export@sha256:${'d'.repeat(64)}`;
     expect(loadSandboxRunnerConfig({ ...production, SANDBOX_EXPORT_IMAGE: exportPinned }).images.export).toBe(exportPinned);
   });
 
