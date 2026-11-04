@@ -1,5 +1,11 @@
 // 模板样张任务（路线图第 7 步 7.3d；取代桌面版 templateIpc → openXmlHelperService 的样张预览队列），export 队列，
-// 不调用模型（决定事项第 7 项：不计费、不检查余额），组织级（没有项目）。接口（7.3e）调用 enqueueTemplatePreview 入队。
+// 不调用模型（决定事项第 7 项：不计费、不检查余额），组织级（没有项目）。接口（7.3e，POST /api/export-templates/preview）
+// 调用 enqueueTemplatePreview 入队。
+//
+// 两个任务类型，执行完全相同（同一个 createTemplatePreviewJob）：
+// - template-preview：页面上的样张预览，参与“新请求取代旧请求”；
+// - template-word-export（7.3e）：样张导出 Word（桌面版 export.word 的 template_html），“固定使用本次导出的设置、不参与预览请求合并”：
+//   不取消别的请求，也不会被之后的样张预览取消（取代只按同一任务类型）。按输入哈希复用时与样张共用结果。
 //
 // - 入队：样张 HTML 经 validatePreviewHtml 校验、配置经 normalizeExportFormat 规范化（preparePreviewRequest），不通过返回 400、
 //   不入队；样张请求存进 template_preview_requests（只有创建者可见），任务参数只有请求 id（0021 的约定）；
@@ -27,6 +33,11 @@ import {
 } from './previewStore.ts';
 
 export const TEMPLATE_PREVIEW_JOB_TYPE = 'template-preview';
+export const TEMPLATE_WORD_EXPORT_JOB_TYPE = 'template-word-export';
+
+/** 样张请求的用途：preview 为页面预览（新请求取代排队中的旧请求），word 为导出 Word（不参与取代）。 */
+export type TemplatePreviewPurpose = 'preview' | 'word';
+export const TEMPLATE_PREVIEW_PURPOSES: readonly TemplatePreviewPurpose[] = Object.freeze(['preview', 'word']);
 
 export interface TemplatePreviewParams {
   requestId: string;
@@ -46,13 +57,15 @@ function requestMissing(): JobError {
 }
 
 export interface TemplatePreviewJobOptions {
+  /** 任务类型，默认 template-preview；样张导出 Word 为 template-word-export。 */
+  type?: typeof TEMPLATE_PREVIEW_JOB_TYPE | typeof TEMPLATE_WORD_EXPORT_JOB_TYPE;
   /** 沙箱数已达上限时重试创建前的等待（毫秒），见 src/export/preview.ts。 */
   createRetryDelaysMs?: readonly number[];
 }
 
 export function createTemplatePreviewJob(options: TemplatePreviewJobOptions = {}): JobTypeDefinition<TemplatePreviewParams> {
   return {
-    type: TEMPLATE_PREVIEW_JOB_TYPE,
+    type: options.type ?? TEMPLATE_PREVIEW_JOB_TYPE,
     queue: 'export',
     resumable: true,
     parseParams,
@@ -104,6 +117,7 @@ async function complete(db: Kysely<Database>, tenant: TenantContext, request: Te
 }
 
 export const templatePreviewJob = createTemplatePreviewJob();
+export const templateWordExportJob = createTemplatePreviewJob({ type: TEMPLATE_WORD_EXPORT_JOB_TYPE });
 
 export interface EnqueuedTemplatePreview {
   job: JobRecord;
@@ -114,12 +128,14 @@ export interface EnqueuedTemplatePreview {
 
 /**
  * 校验样张并入队（7.3e 的接口调用）：不合法时抛 400 PREVIEW_HTML_INVALID，不保存、不入队；内容超过存储上限时抛 413
- * PREVIEW_TOO_LARGE。同一事务中取消本用户排队中的样张任务。
+ * PREVIEW_TOO_LARGE。用途为 preview（默认）时同一事务中取消本用户排队中的样张任务；为 word 时入队 template-word-export，
+ * 不取消任何任务。
  */
 export async function enqueueTemplatePreview(
   deps: JobServiceDependencies,
   context: TenantContext,
   input: TemplatePreviewInput,
+  purpose: TemplatePreviewPurpose = 'preview',
 ): Promise<EnqueuedTemplatePreview> {
   let prepared;
   try {
@@ -130,11 +146,11 @@ export async function enqueueTemplatePreview(
   }
   const request = await saveTemplatePreviewRequest(deps.db, context, prepared);
   const { job, superseded } = await enqueueJobSuperseding(deps, context, {
-    type: TEMPLATE_PREVIEW_JOB_TYPE,
+    type: purpose === 'word' ? TEMPLATE_WORD_EXPORT_JOB_TYPE : TEMPLATE_PREVIEW_JOB_TYPE,
     projectId: null,
     lockKey: null,
     params: { requestId: request.id },
-    supersedeQueued: true,
+    supersedeQueued: purpose !== 'word',
   });
   return { job, request, superseded };
 }

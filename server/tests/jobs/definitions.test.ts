@@ -40,6 +40,7 @@ describe('任务类型登记', () => {
       'knowledge-document-prepare',
       'knowledge-document-match',
       'template-preview',
+      'template-word-export',
     ]);
     const parse = jobTypeRegistry.get('document-parse')!;
     expect(parse.queue).toBe('parse');
@@ -70,5 +71,9 @@ describe('任务类型登记', () => {
     expect(preview.queue).toBe('export');
     expect(preview.resumable).toBe(true);
     expect(preview.billable).toBeFalsy();
+    const wordExport = jobTypeRegistry.get('template-word-export')!;
+    expect(wordExport.queue).toBe('export');
+    expect(wordExport.resumable).toBe(true);
+    expect(wordExport.billable).toBeFalsy();
   });
 });

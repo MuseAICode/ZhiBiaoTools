@@ -140,6 +140,11 @@ export interface AuthRateLimitSettings {
   changePasswordPerUser: FixedWindowOptions;
   /** 平台管理员资金操作（充值、冲正、定价）前的密码二次验证。 */
   adminStepUpPerUser: FixedWindowOptions;
+  /**
+   * 模板样张与样张导出 Word 的请求（路线图 7.3e，决定事项第 7 项：导出不计费，靠并发、取代与请求频率控制用量）。
+   * 不属于登录类限流，与它们共用同一套计数实现（Redis 共享、不可用时退回进程内存）。
+   */
+  templatePreviewPerUser: FixedWindowOptions;
 }
 
 export const DEFAULT_AUTH_RATE_LIMITS: Readonly<AuthRateLimitSettings> = Object.freeze({
@@ -152,6 +157,7 @@ export const DEFAULT_AUTH_RATE_LIMITS: Readonly<AuthRateLimitSettings> = Object.
   resetConfirmPerIp: { limit: 10, windowMs: 15 * MINUTE },
   changePasswordPerUser: { limit: 5, windowMs: 15 * MINUTE },
   adminStepUpPerUser: { limit: 10, windowMs: 15 * MINUTE },
+  templatePreviewPerUser: { limit: 120, windowMs: 10 * MINUTE },
 });
 
 /** 固定窗口限流器：每次请求计一次。 */
@@ -257,6 +263,7 @@ export function createAuthRateLimiters(settings: AuthRateLimitSettings, options:
     resetConfirmPerIp: window('resetConfirmPerIp', settings.resetConfirmPerIp),
     changePasswordPerUser: window('changePasswordPerUser', settings.changePasswordPerUser),
     adminStepUpPerUser: window('adminStepUpPerUser', settings.adminStepUpPerUser),
+    templatePreviewPerUser: window('templatePreviewPerUser', settings.templatePreviewPerUser),
   };
 }
 

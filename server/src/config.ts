@@ -114,11 +114,8 @@ export interface SandboxRunnerConfig {
   dockerSocket: string;
   /** 容器运行时：生产只允许 runsc（gVisor）；开发、测试可用参数相同的 runc（第 6 步决定事项第 2 项）。 */
   runtime: SandboxRuntime;
-  /**
-   * 各镜像的引用；生产必须按摘要固定（name@sha256:...）。export 镜像（路线图 7.1）在导出任务上线（7.3）之前可以不配置，
-   * 未配置时不能创建 export 模板的沙箱（SANDBOX_UNAVAILABLE）。
-   */
-  images: { parse: string; export: string | null };
+  /** 各镜像的引用，都必须配置；生产必须按摘要固定（name@sha256:...）。export 镜像随样张接口上线（7.3e）改为必需。 */
+  images: { parse: string; export: string };
   /** 同时存在的沙箱数上限。 */
   maxActive: number;
   /** worker 调用 sandbox-runner 的共享令牌（至少 32 个字符）。 */
@@ -523,7 +520,7 @@ export function loadSandboxRunnerConfig(env: Env, options: LoadConfigOptions = {
     runtime,
     images: Object.freeze({
       parse: read('SANDBOX_PARSE_IMAGE', imageSpec),
-      export: env.SANDBOX_EXPORT_IMAGE?.trim() ? read('SANDBOX_EXPORT_IMAGE', imageSpec) : null,
+      export: read('SANDBOX_EXPORT_IMAGE', imageSpec),
     }),
     maxActive: read('SANDBOX_MAX_ACTIVE', intSpec(8, 1, 256)),
     token,

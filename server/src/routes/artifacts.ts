@@ -3,7 +3,7 @@
 //
 // GET /api/artifacts?projectId=… 或 ?sourceFileId=…（二选一，可加 kind、limit）、GET /api/artifacts/:artifactId、
 // GET /api/artifacts/:artifactId/content。下载与文件相同：由 api 从对象存储流式转发，一律附件，
-// Content-Type 用登记的值（只有 Markdown 和位图），另加 nosniff 和 sandbox CSP。
+// Content-Type 用登记的值（Markdown、位图与样张 docx），另加 nosniff 和 sandbox CSP。
 import type { FastifyInstance } from 'fastify';
 import type { Kysely } from 'kysely';
 import { ARTIFACT_KINDS, findArtifact, listArtifacts, type ArtifactKind, type ArtifactRecord } from '../artifacts/store.ts';
