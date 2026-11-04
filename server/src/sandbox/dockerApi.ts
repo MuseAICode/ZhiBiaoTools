@@ -52,8 +52,11 @@ export interface DockerApi {
   /** 按标签列出容器（含已停止的），返回 id、名称和标签。 */
   listContainers(label: string): Promise<Array<{ Id: string; Names: string[]; Labels: Record<string, string> }>>;
   createExec(containerId: string, options: { argv: readonly string[]; stdin: boolean }): Promise<string>;
-  /** 启动 exec 并接上标准输入输出：stdin 写完后半关闭连接（进程读到 EOF）；onStderr 收到标准错误的数据块。 */
-  startExec(execId: string, options: { stdin?: Buffer; onStderr?: (chunk: Buffer) => void }): Promise<DockerExecStream>;
+  /**
+   * 启动 exec 并接上标准输入输出：stdin 写完后半关闭连接（进程读到 EOF）；onStderr 收到标准错误的数据块。
+   * stdin 为流时按背压逐块写入，不整体缓存；流出错时不半关闭（调用方负责终止）。
+   */
+  startExec(execId: string, options: { stdin?: Buffer | Readable; onStderr?: (chunk: Buffer) => void }): Promise<DockerExecStream>;
   inspectExec(execId: string): Promise<{ Running: boolean; ExitCode: number | null }>;
 }
 
@@ -220,8 +223,15 @@ export function createDockerApi(socketPath: string): DockerApi {
           const stdout = new PassThrough();
           const done = demultiplex(socket, head, stdout, options.onStderr);
           // 标准输入写完后半关闭：Docker 对 unix socket 上的升级连接执行 CloseWrite，进程读到 EOF。
-          if (options.stdin) socket.write(options.stdin);
-          socket.end();
+          const stdin = options.stdin;
+          if (stdin === undefined || Buffer.isBuffer(stdin)) {
+            if (stdin) socket.write(stdin);
+            socket.end();
+          } else {
+            // pipe 按 socket 的背压暂停读取 stdin，读完后半关闭；连接先断开时不再写入。
+            stdin.pipe(socket);
+            socket.once('close', () => stdin.unpipe(socket));
+          }
           resolve({ stdout, done, abort: () => socket.destroy() });
         });
         req.on('response', (response) => {
