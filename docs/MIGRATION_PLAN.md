@@ -15,7 +15,7 @@
 | 4 | 文件上传 / 下载 / 资源协议 | 进行中 | 旧仓库 PR #34（文件存储：S3 兼容对象存储、本地 SeaweedFS、`files` 表与强制 RLS、按内容校验类型、大小上限与组织配额、附件方式下载、7 天恢复期）、#6（上传白名单补齐桌面版能导入的内容：OLE 内容的 `.docx`，`.doc/.wps` 的 RTF / HTML / MHT / Word 2003 XML，`.xls` 的 HTML 表格 / SpreadsheetML，`%PDF-` 前有多余字节的 PDF） |
 | 5 | 数据层迁移（按业务逐个） | 已完成 | 旧仓库 PR #35（拆分计划，见“第 5 步说明”；记录上传白名单与桌面版的差距）、#7（5.1 项目：`projects` 表、`files.project_id`、项目接口、路由层归属校验、项目级表的迁移与测试模板）、#8（5.2 生成产物存储：`artifacts` 表、Store、只读接口；项目软删除与其下文件、产物联动，由 RLS 强制）、#9（5.3 配置：`org_settings`、`user_settings`、`GET/PATCH /api/settings`；写权限与删除可见性由 RLS 强制）、#10（5.4 导出模板：`export_templates`、`/api/export-templates` 增删改查与复制；系统模板只读、修改删除权限由 RLS 强制，迁移命令同步系统模板）、#11（5.5 资信库：6 张表、`/api/credential-library`；权限与删除可见性由 RLS 强制，图片随所引用文件的生命周期）、#12（5.6 知识库（一）：`knowledge_folders`、`_documents`、`_document_steps`、`/api/knowledge-base` 文件夹与文档管理；权限与删除可见性由 RLS 强制，文档随原件的生命周期）、#14（5.7 知识库（二）：切块、条目、匹配结果等 7 张表，检索与读取条目 / 分析 / Markdown 接口；删除可见性与写权限由 RLS 强制，随文档可见）、#16（5.8 标书查重：13 张项目级表、`/api/projects/:projectId/duplicate-check` 状态 / 文件选择 / 页面状态 / 清空 / Excel 导出；删除可见性与写权限由 RLS 强制，随项目和所选原件可见）、#17（5.8 后续：`files.project_id` 设置后不能再改，由触发器强制；xlsx 写出器防公式注入，回车按原样写出）、#18（5.9 废标检查：7 张项目级表、`/api/projects/:projectId/rejection-check` 状态 / 导入与移除文档 / 页面状态 / 切换与删除问题 / 清空 / Excel 导出；删除可见性与写权限由 RLS 强制，文档随原件可见，签名由服务端现算）、#19（5.10 可研报告：4 张项目级表、`/api/projects/:projectId/feasibility-report` 状态 / 步骤 / 项目信息 / 资料分析 / 目录配置 / 目录（`reason` 协议）/ 关键参数 / 正文 / 资料导入与移除 / 资料 Markdown / 清空；删除可见性与写权限由 RLS 强制，资料随原件、引用随知识库文档可见）、#20（5.11 技术方案（一）：6 张项目级表、`/api/projects/:projectId/technical-plan` 状态 / 步骤 / 生成配置 / 招标解析配置 / 正文生成选项 / 招标文件导入与移除 / 招标文件与合并正文的 Markdown / 原方案 / 投标范围选择 / 清空；删除可见性与写权限由 RLS 强制，文档随原件、引用随知识库文档可见，导出模板只能是本组织的或系统模板）、#21（5.12 技术方案（二）：目录与全局事实 2 张项目级表、`PUT .../outline`（`reason` 协议，节点 UUID 稳定、编号现算）与 `PUT .../global-facts`，下游清空扩展到目录与全局事实；删除可见性与写权限由 RLS 强制））、#22（5.13 技术方案（三）：正文生成状态与编排 2 张项目级表、`PUT .../chapters/:nodeId`、`DELETE .../content-generation`，目录保存与全局事实、下游清空扩展到正文生成状态、编排与运行进度；废标检查 `POST .../tender-from-technical-plan` 复制原件与 Markdown；删除可见性与写权限由 RLS 强制） |
 | 6 | 任务队列与 worker | 已完成 | #23（拆分计划，见“第 6 步说明”）、#24（6.1 Redis 接入：Valkey 8 开启 ACL、`REDIS_URL` / `REDIS_PASSWORD[_FILE]`、`/readyz` 检查 Redis、CI 起 Valkey）、#25（6.2 `jobs` / `job_events` 表与 worker 骨架：BullMQ 只派发、`jobs` 为唯一权威，认领加 `run_id` 隔离令牌与数据库租约，Redis 重启或清空后从 `jobs` 对账恢复入队；新增定义者角色 `bidtools_jobs`）、#26（6.3 SSE 推送 `GET /api/events`：每组织一条 Stream + 频道，`Last-Event-ID` 补发与 `resync`、心跳、会话定期重新校验、单用户连接数上限；任务状态、进度、日志经 worker 推送，取消 / 暂停经控制频道立即送达 worker）、#27（6.4 worker 接入 AI 网关与余额：任务调用记 `job_id` / `job_type`，`jobs.billed_amount` 在结算的同一事务中累加，入队和继续前检查最低启动余额 1 元，运行中余额不足暂停为 `paused` / `insufficient_balance` 并推送，按“组织 + 服务商”的 Redis 分布式信号量）、#28（6.5 解析沙箱基础设施：`sandbox-runner` 服务、`SandboxDriver` 接口、断网的 `parse` 模板与镜像，取回归档逐项校验，gVisor 下的隔离测试）、#29（测试修复：`jobQueue.test.ts` 中模拟清空 Redis 的 `wipeQueueKeys` 改为原子的 Lua 脚本，清空后的断言改为“被清空的任务不再被任何键引用”，消除与运行中 worker 的竞态）、#30（6.6 解析任务（一）：`document-parse` 任务在断网沙箱中按记录的 MIME 解析二进制与纯文本格式，ZIP 炸弹与 PDF 页数检查，产物经 `writeArtifact` 写入、重新解析时旧产物标为已被替换（迁移 0023），三个模块导入后自动入队；parse 镜像加入解析入口与 LibreOffice 安全设置；沙箱总数上限的测试）、#31（6.6 补充：LibreOffice 转换超时改为对整个进程组 SIGKILL，补“解析卡住时任务按时结束并销毁沙箱”的测试）、#32（6.7 解析任务（二）文本类格式：Office 2003 XML 含 DTD 即拒绝，RTF 去掉域指令与 OLE 链接，HTML 按白名单重新生成、不留任何远程资源，MHT 先解开 MIME；恶意样本与对照组测试，远程资源测试在沙箱内监听所有连接）、#33（6.8 清理任务：新增定义者角色 `bidtools_cleanup`（迁移 0024），worker 每小时跨组织删除超过保留期的文件、产物、项目、遗留上传与任务记录，先删对象后删行，孤儿对象，冻结到期收尾移到 worker；清理角色对计费表没有任何权限）、#34（6.4a 步骤幂等：迁移 0025 新建 `job_step_results`，任务调用必须带步骤键，结果与结算同一事务提交，续跑时同一步骤取回结果、不再调用服务商、不再扣费；worker 关闭、租约丢失中止的调用不收费）、#35（6.9 废标检查任务：`rejection-items-extraction`、`rejection-check-run`，招标文件按导入顺序合并正文，结果带开始时的签名写入、文档变化后旧任务的写入被拒绝，状态中返回最近的任务；第一个调用 AI 的业务任务，按步骤键续跑不重复扣费）、#36（6.10a 标书查重任务 `duplicate-analysis`：正文在 parse 沙箱中解析并做逐文档提取（目录、句子、图片位置，`analysis.json`）、#37（6.10b 标书查重的文档格式元数据：每份投标文件在只提取元数据的 parse 沙箱中读取 docx / OLE / PDF 的属性与结构，worker 校验 `metadata.json` 后并入），目录 / 正文 / 图片比对在 worker 中进行；元数据先只有文件基本信息，文档格式的元数据随 6.10b）、#38（6.11 技术方案任务（一）：多标段识别 `bid-section-extraction`、招标解析 `bid-analysis`，结果带开始时的输入签名写入；疑似多标段检测改为线性扫描，由解析任务在 worker 中按文件算出摘要（迁移 0026），读取时合并）、#39（6.12 可研报告任务：资料分析、关键参数、正文生成与自然化审校四类任务，结果带开始时的输入签名写入；正文任务未结束时不能改目录与正文，保存上游内容时取消任务）、#40（6.13a 知识库文档准备任务 `knowledge-document-prepare`：在 parse 沙箱中解析、切块、首轮与补充提取候选条目，按步骤续用，文档带上最近的任务、中断按状态显示，重试，删除文档 / 文件夹后取消任务）、#41（6.13b 知识库段落匹配：文档准备完成后接着匹配、遗漏补漏、保存最终条目与报告，已完成的段与步骤续用；新增 `knowledge-document-match` 与 `POST .../documents/:documentId/match` 重新匹配）、#42（6.14 登录、注册、找回密码等限流的计数改存 Redis，api 各实例共用；Redis 不可用时退回进程内存计数） |
-| 7 | OpenXmlHelper 容器化与离屏渲染（前置：CI 新增 .NET 编译与 OpenXmlHelper 测试，见“第 9 步说明”的品牌改名第三部分） | 进行中 | #43（前置：CI 新增 .NET 编译与 OpenXmlHelper 测试，见“第 7 步说明”）、#44（拆分计划与 9 项决定事项，见“第 7 步说明”）、#45（7.1 export 沙箱：助手一次性运行模式、镜像、模板与隔离测试，见“第 7 步说明”）、#46（7.2 字体与装饰：`GET /api/fonts`，装饰生成器在沙箱中的输出与桌面版逐项核对，见“第 7 步说明”）、#47（7.3a 样张的服务端输入校验：受限 HTML 与前端同一套白名单、`export_format` 与桌面版相同的规范化，两端用同一份用例核对，见“第 7 步说明”）、#48（7.3b 样张在沙箱中生成：固定样张配图打进 export 镜像、样张不接受 worker 放入的配图，worker 端 `renderTemplatePreview` 与输出校验（docx 的 ZIP 结构检查），见“第 7 步说明”）、#50（7.3c 样张的存储：迁移 0027 新增不属于项目的样张产物与样张请求、按输入哈希复用、24 小时后清理，见“第 7 步说明”）、#51（7.3d 样张任务：`template-preview` 任务，按输入哈希复用或在沙箱中生成并存为产物，新请求在同一事务中取消本用户排队中的样张，见“第 7 步说明”）、#52（7.3e 样张接口与下载：`POST /api/export-templates/preview` 校验后入队、状态与附件下载，样张导出 Word 为不参与取代的 `template-word-export`，按用户限流，`SANDBOX_EXPORT_IMAGE` 改为必需，见“第 7 步说明”）、#53（7.4a sandbox-runner 流式放入：放入的归档边读边校验、只转发通过校验的条目，不在内存中整体缓存，中途不符时终止沙箱；7.4 拆成 7.4a～7.4f，见“第 7 步说明”） |
+| 7 | OpenXmlHelper 容器化与离屏渲染（前置：CI 新增 .NET 编译与 OpenXmlHelper 测试，见“第 9 步说明”的品牌改名第三部分） | 进行中 | #43（前置：CI 新增 .NET 编译与 OpenXmlHelper 测试，见“第 7 步说明”）、#44（拆分计划与 9 项决定事项，见“第 7 步说明”）、#45（7.1 export 沙箱：助手一次性运行模式、镜像、模板与隔离测试，见“第 7 步说明”）、#46（7.2 字体与装饰：`GET /api/fonts`，装饰生成器在沙箱中的输出与桌面版逐项核对，见“第 7 步说明”）、#47（7.3a 样张的服务端输入校验：受限 HTML 与前端同一套白名单、`export_format` 与桌面版相同的规范化，两端用同一份用例核对，见“第 7 步说明”）、#48（7.3b 样张在沙箱中生成：固定样张配图打进 export 镜像、样张不接受 worker 放入的配图，worker 端 `renderTemplatePreview` 与输出校验（docx 的 ZIP 结构检查），见“第 7 步说明”）、#50（7.3c 样张的存储：迁移 0027 新增不属于项目的样张产物与样张请求、按输入哈希复用、24 小时后清理，见“第 7 步说明”）、#51（7.3d 样张任务：`template-preview` 任务，按输入哈希复用或在沙箱中生成并存为产物，新请求在同一事务中取消本用户排队中的样张，见“第 7 步说明”）、#52（7.3e 样张接口与下载：`POST /api/export-templates/preview` 校验后入队、状态与附件下载，样张导出 Word 为不参与取代的 `template-word-export`，按用户限流，`SANDBOX_EXPORT_IMAGE` 改为必需，见“第 7 步说明”）、#53（7.4a sandbox-runner 流式放入：放入的归档边读边校验、只转发通过校验的条目，不在内存中整体缓存，中途不符时终止沙箱；7.4 拆成 7.4a～7.4f，见“第 7 步说明”）、#54（7.4b export-document 的 tmpfs 与内存：实测后由用户选定方案 A，输入合计上限从 1 GiB 降为 128 MiB、`/work` 从 1.25 GiB 降为 384 MiB，见“第 7 步说明”） |
 | 8 | Agent 沙箱 | 未开始 | — |
 | 9 | 收尾与上线 | 进行中 | #1（品牌改名第一部分：用户可见文字和文档）、#2（品牌改名第二部分：代码标识符、数据与协议、打包，新增 CI 禁用词检查）、#5（品牌改名第三部分：原产品名缩写前缀改为中性前缀 `app`，禁用词检查加入该缩写） |
 
@@ -1508,10 +1508,10 @@ AI 网关加固，做法见 `docs/SERVER_DESIGN.md` 第 10.9 节。`client/` 未
 | 7.3d | 样张任务：`template-preview` 任务（`export` 队列）读样张请求、按输入哈希复用或调用 7.3b 的 `renderTemplatePreview` 并存为产物、写回结果；同一用户的新请求取消排队中的旧请求（对应桌面版“新请求取代旧请求”）：#50 确认时决定**不用 `lock_key`**，新建样张任务时在同一事务中取消该用户排队中的样张任务，运行中的继续；必须有并发测试证明同一用户不会出现两个排队中的样张、也不会全部被取消 | 7.3c | 已完成 | #51 |
 | 7.3e | 样张接口与下载：`POST /api/export-templates/preview`（请求为样张 HTML 与配置）经 7.3a 的 `validatePreviewHtml` 校验，不通过返回 400、不入队；结果经 SSE 通知，以附件方式下载给前端的 docx-editor 预览；样张导出 Word 复用同一任务（固定使用本次设置、不参与合并）；WebBridge 的 `templates.renderPreview` 接上（或随 WebBridge 的通用机制，届时说明） | 7.3d | 已完成 | #52 |
 | 7.4a | sandbox-runner 流式放入（从 7.4 拆出，见“sandbox-runner 流式放入”；#45 确认时登记的必做 ①）：放入的归档不在内存中整体缓存，按模板的输入规则边读边校验、只把通过校验的条目转给沙箱内的 tar，中途不符时终止整个沙箱；测试多个大请求并发时 runner 的内存保持稳定 | 7.3e | 已完成 | #53 |
-| 7.4b | export-document 的 tmpfs 与内存（从 7.4 拆出；#45 确认时登记的必做 ②）：tmpfs 计入沙箱内存，输入接近 1 GiB 时 OpenXmlHelper 内存不足。提出方案（例如按输入大小拒绝、调整上限或改变输入的存放方式）并实测，**由用户决定** | 7.4a | 未开始 | — |
+| 7.4b | export-document 的 tmpfs 与内存（从 7.4 拆出；#45 确认时登记的必做 ②）：tmpfs 计入沙箱内存，输入接近 1 GiB 时 OpenXmlHelper 内存不足。提出方案（例如按输入大小拒绝、调整上限或改变输入的存放方式）并实测，**由用户决定**——用户选定方案 A：输入合计上限降为 128 MiB（与输出 docx 的 100 MiB 对齐），`/work` 降为 384 MiB，内存仍为 2 GiB | 7.4a | 已完成 | #54 |
 | 7.4c | 整本 HTML 的组装（从 7.4 拆出）：按桌面版 `technicalPlanExport` 组装整本 HTML（目录编号、范围标记 `data-app-export-template` / `data-app-export-page-template`），`data-app-asset-ref` 统一为产物引用（如 `artifact:<uuid>`），`ai-generate` 小节在第 8 步之前按桌面版“正文未生成”的提示处理；纯函数与测试，与桌面版逐项核对，不接任务 | 7.4b | 未开始 | — |
 | 7.4d | 整本导出的存储（从 7.4 拆出）：迁移新增整本导出的 docx 产物种类，每个项目只保留最近一次、7 天后由清理任务删除，计入组织存储配额（决定事项第 6 项）；Store 函数与数据库测试，不接任务 | 7.4c | 未开始 | — |
-| 7.4e | 整本导出任务（从 7.4 拆出）：`technical-plan-export` 任务（`export` 队列，`lock_key` 按项目），入队时取快照（目录、人工正文、所选模板），worker 只解析本项目可见的图片产物并放入 export-document 沙箱（worker 端按需从对象存储读取、流式生成归档，不在内存中整体缓存），进度经 SSE，超出配额时导出失败并提示 | 7.4d | 未开始 | — |
+| 7.4e | 整本导出任务（从 7.4 拆出）：`technical-plan-export` 任务（`export` 队列，`lock_key` 按项目），入队时取快照（目录、人工正文、所选模板），worker 只解析本项目可见的图片产物并放入 export-document 沙箱（worker 端按需从对象存储读取、流式生成归档，不在内存中整体缓存），**新建沙箱之前按所引用配图的合计大小拒绝**（超过模板的输入上限 128 MiB 时直接失败并提示配图过大，不创建沙箱；7.4b），进度经 SSE，超出配额时导出失败并提示 | 7.4d | 未开始 | — |
 | 7.4f | 整本导出的接口与下载（从 7.4 拆出）：入队接口、状态与附件下载，`export.word`、`export.openFile` 改为下载（WebBridge 随第 9 步的通用机制） | 7.4e | 未开始 | — |
 
 7.2 与 7.3 没有合并（#46 单独完成 7.2）。7.3 拆成 7.3a（输入校验）与 7.3b（任务、接口与产物），理由见“样张的输入校验（#47，7.3a）”；原 7.3b 再拆成 7.3b（沙箱中生成）、7.3c（任务与产物）、7.3d（接口与下载），理由见“样张在沙箱中生成（#48，7.3b）”；原 7.3c 再拆成 7.3c（存储）、7.3d（任务），原 7.3d 改为 7.3e，理由见“样张的存储（#50，7.3c）”。7.4 拆成 7.4a～7.4f（范围合计不变，另把 worker 端放入配图时的流式生成写进 7.4e），理由见“sandbox-runner 流式放入（#53，7.4a）”。
@@ -1531,7 +1531,7 @@ AI 网关加固，做法见 `docs/SERVER_DESIGN.md` 第 10.9 节。`client/` 未
 2. **镜像与模板的划分**：**一个 `export` 模板**（Node + Chromium + 助手），一次导出只启动一个沙箱。
 3. **字体**：镜像只装开源字体 Noto CJK（SIL OFL 1.1），用 fontconfig 把宋体、仿宋映射到衬线体，黑体映射到无衬线体。**服务端字体只影响排版测量和装饰 PNG 中的文字**，导出的 docx 保留模板选择的原字体名，由用户的 Word 用本机字体显示。`GET /api/fonts` 返回模板可选字体名的固定清单，不是服务器上实际安装的字体。
 4. **范围调整**：模板提取、小节 Word 预览、HTML / Mermaid 转图与分页测量**随第 8 步**（偏离第 2~4 项）。
-5. **资源上限**：**采用起步值**。样张：内存 1 GiB、CPU 1 核、墙钟 60 秒。整本导出：内存 2 GiB、CPU 1 核、墙钟 20 分钟。输入不超过 1 GiB，配图不超过 2,000 张，输出 docx 不超过 100 MiB。`export` 队列全局并发 2，组织级任务并发 3。
+5. **资源上限**：**采用起步值**。样张：内存 1 GiB、CPU 1 核、墙钟 60 秒。整本导出：内存 2 GiB、CPU 1 核、墙钟 20 分钟。输入不超过 1 GiB（7.4b 由用户改为 **128 MiB**，见“export-document 的 tmpfs 与内存”），配图不超过 2,000 张，输出 docx 不超过 100 MiB。`export` 队列全局并发 2，组织级任务并发 3。
 6. **导出产物的保存**：整本导出的 docx 每个项目只保留最近一次，7 天后由清理任务删除；样张结果 1 天后删除。**两者都计入组织存储配额**。
 7. **计费**：导出和样张**不计费、不检查余额**，只靠队列并发、互斥和请求频率限制控制用量。
 8. **样张 HTML 的来源**：**接受前端传来的 HTML**，但服务端必须用与 `restrictedHtml` 同一套白名单重新校验，不通过即拒绝；不能只做大小和结构检查（7.3）。
@@ -1574,7 +1574,7 @@ AI 网关加固，做法见 `docs/SERVER_DESIGN.md` 第 10.9 节。`client/` 未
 
 1. **整本模式下配图要在范围标记内**：`whole_document: true` 时不在 `section[data-app-export-template]` 内的 figure 报“img 必须位于 figure 内”，7.4 由 worker 组装带范围标记的整本 HTML（同桌面版 `technicalPlanExport`），测试中的整本导出暂不带配图；
 2. **sandbox-runner 的请求体上限随 export-document 提高到约 1.1 GiB**：放入的归档在 sandbox-runner 中整体缓冲后校验，export 队列并发 2 时最坏占用约 2.2 GiB 内存。#45 确认时定为 **7.4 必做**：改为流式转发，不在内存中整体缓存，并测试多个大请求并发时 runner 内存稳定。**已由 7.4a（#53）完成**；
-3. **tmpfs 计入沙箱内存**：export-document 的 `/work`（1.25 GiB）与 `/tmp` 都在 2 GiB 内存上限之内，输入接近 1 GiB 时留给助手的内存不足 1 GiB。#45 确认时定为 **7.4 必做**：方案由 7.4 提出（例如按输入大小拒绝、调整上限或改变输入的存放方式），用户决定。
+3. **tmpfs 计入沙箱内存**：export-document 的 `/work`（1.25 GiB）与 `/tmp` 都在 2 GiB 内存上限之内，输入接近 1 GiB 时留给助手的内存不足 1 GiB。#45 确认时定为 **7.4 必做**：方案由 7.4 提出（例如按输入大小拒绝、调整上限或改变输入的存放方式），用户决定。**已由 7.4b（#54）决定并完成**：输入合计上限降为 128 MiB。
 
 #45 确认时的其他决定：libdbus-1-3（AFL-2.1 或 GPL-2.0+ 双许可证）按 AFL-2.1 使用；样张耗时（本机 gVisor 6–8 秒）在 7.3 再评估；`client/` 新出现的 `follow-redirects`、`joi` 两个 high（经开发依赖 `wait-on`，main 上已有）修复版本发布满两周则另开 PR 修复，否则并入 11-03 的统一升级——修复版本 `follow-redirects` 1.16.2（10-25 发布）、`joi` 18.3.1（10-28 发布）在 10-31 都不满两周，并入 11-03 那批（两周分别在 11-08、11-11 满）。
 
@@ -1695,7 +1695,7 @@ AI 网关加固，做法见 `docs/SERVER_DESIGN.md` 第 10.9 节。`client/` 未
 
 按拆分计划 7.4（#45 确认时登记的必做 ①）实现。没有迁移、接口、数据库角色与 RLS 策略的改动，没有新增依赖，`client/` 未改动，export 与 parse 镜像不变，worker 与 sandbox-runner 之间的 HTTP 协议不变。
 
-**拆分（偏离拆分计划）**：7.4 原为一行，包含 sandbox-runner 的流式放入、tmpfs 与内存的方案（须用户决定）、整本 HTML 组装、产物迁移与清理、任务（快照、配图解析、进度）、接口与下载，一个 PR 难以审查，其中 tmpfs 的方案要等用户决定。按 `CLAUDE.md`“每个 PR 只做一件事”拆成 7.4a（本节）、7.4b（tmpfs 与内存，由用户决定）、7.4c（整本 HTML 组装）、7.4d（存储）、7.4e（任务）、7.4f（接口与下载），范围合计不变。另在 7.4e 写明 worker 端放入配图时也要流式生成归档：本 PR 只解决 sandbox-runner 一侧，worker 的 `copyIn` 仍接收内存中的文件，整本导出的配图（至多 1 GiB）要在 7.4e 改为按需从对象存储读取、边读边生成归档。
+**拆分（偏离拆分计划）**：7.4 原为一行，包含 sandbox-runner 的流式放入、tmpfs 与内存的方案（须用户决定）、整本 HTML 组装、产物迁移与清理、任务（快照、配图解析、进度）、接口与下载，一个 PR 难以审查，其中 tmpfs 的方案要等用户决定。按 `CLAUDE.md`“每个 PR 只做一件事”拆成 7.4a（本节）、7.4b（tmpfs 与内存，由用户决定）、7.4c（整本 HTML 组装）、7.4d（存储）、7.4e（任务）、7.4f（接口与下载），范围合计不变。另在 7.4e 写明 worker 端放入配图时也要流式生成归档：本 PR 只解决 sandbox-runner 一侧，worker 的 `copyIn` 仍接收内存中的文件，整本导出的配图（至多 1 GiB，7.4b 起为 128 MiB）要在 7.4e 改为按需从对象存储读取、边读边生成归档。
 
 要点：
 
@@ -1712,6 +1712,56 @@ AI 网关加固，做法见 `docs/SERVER_DESIGN.md` 第 10.9 节。`client/` 未
 偏离计划：拆分见上。
 
 已知限制：本机网络不能访问 Debian 软件源，本机的真实沙箱测试用的是 scratchpad 中的等价 parse 镜像（同一份 Dockerfile 去掉 LibreOffice 与字体、依赖在宿主机按 lockfile 安装，不提交），runc 下运行（LibreOffice 用例跳过）；export 模板的用例与 gVisor 下的结果以 CI 为准。
+
+#### export-document 的 tmpfs 与内存（#54，7.4b）
+
+按拆分计划 7.4b（#45 确认时登记的必做 ②）先实测、提出方案，**由用户选定方案 A** 后实现。没有迁移、接口、数据库角色与 RLS 策略的改动，没有新增依赖，`client/`、export 与 parse 镜像、OpenXmlHelper 均未改动。
+
+**实测**（本机 runc、cgroup v1，经真实的 Docker 驱动按 export-document 模板创建沙箱、放入配图、执行模板登记的 `export` 命令；镜像是 scratchpad 中的测量变体，见下方“已知限制”；内存峰值取自 cgroup 的 `memory.max_usage_in_bytes`，tmpfs 计入其中的 shmem）。配图为 8 MiB 一张（另有 4 MiB、50 KiB 一张的对照）的 PNG，“不可压缩”为随机像素（docx 中的 deflate 压不动，docx 与输入几乎一样大），“可压缩”为纯灰像素（docx 不到 2 MiB，代表 BMP / TIFF 这类未压缩格式）：
+
+| 配图合计 | 类型 | 内存上限 | `/work` | 结果 | 峰值 | 其中助手等进程（rss） | 其中 tmpfs |
+|---|---|---|---|---|---|---|---|
+| 64 MiB | 不可压缩 | 2 GiB | 1.25 GiB | 成功（docx 64 MiB） | 377 MiB | 230 MiB | 157 MiB |
+| 96 MiB | 不可压缩 | 2 GiB | 1.25 GiB | 成功（docx 96 MiB） | 507 MiB | 295 MiB | 203 MiB |
+| 128 MiB | 不可压缩 | 2 GiB | 1.25 GiB | `output_too_large`（docx 超过 100 MiB） | 635 MiB | 360 MiB | 268 MiB |
+| 256 MiB | 不可压缩 | 2 GiB | 1.25 GiB | `output_too_large` | 1,149 MiB | 616 MiB | 524 MiB |
+| 512 / 768 / 1,000 MiB | 不可压缩 | 2 GiB | 1.25 GiB | 内存不足，助手被杀（`helper_failed`） | 2,048 MiB | — | — |
+| 256 / 512 MiB | 可压缩 | 2 GiB | 1.25 GiB | 成功（docx 0.3 / 0.6 MiB） | 892 / 1,666 MiB | 616 / 1,132 MiB | 269 / 526 MiB |
+| 1,000 MiB | 可压缩 | 2 GiB / 3 GiB | 1.25 GiB | 内存不足 | 上限 | — | — |
+| 1,000 MiB | 可压缩 | 4 GiB | 1.25 GiB | 成功（docx 1.2 MiB） | 3,140 MiB | 2,112 MiB | 1,016 MiB |
+| 1,000 MiB | 不可压缩 | 4 GiB | 1.25 GiB | 失败（`/work` 写满：输入 1 GiB 加 docx） | 3,420 MiB | — | — |
+| 100 MiB | 不可压缩 | 2 GiB / 1 GiB | 384 MiB | 成功（docx 100 MiB） | 523 / 524 MiB | 303 MiB | 214 MiB |
+| 100 MiB（2,000 张 50 KiB） | 不可压缩 | 2 GiB | 384 MiB | `output_too_large`（每张的 ZIP 开销使 docx 略超 100 MiB） | 717 MiB | 492 MiB | 214 MiB |
+| 128 MiB | 不可压缩 / 可压缩 | 2 GiB | 384 MiB | `output_too_large` / 成功 | 636 / 507 MiB | 360 MiB | 268 / 141 MiB |
+
+结论：
+
+1. **助手写 docx 时的内存约为配图字节数的 2 倍**（另有约 100 MiB 的基线，含入口的 Node 进程），推测是 Open XML SDK 以读写方式创建包时把各部件缓存在内存中，到关闭时才写出；
+2. **tmpfs 中同时有输入、`/work` 任务目录中的 docx 和复制到 `/output` 的 docx**，三者都计入内存；
+3. 原上限下，**512 MiB 以上的输入在 2 GiB 内必然内存不足**；
+4. PNG / JPEG / WebP / GIF 本身已压缩，**超过约 100 MiB 时本来就会因 docx 超过 100 MiB 的上限而失败**（而且要等助手做完才知道）。只有 BMP / TIFF 这类未压缩格式才可能“输入大、docx 小”，1 GiB 这样的输入要 4 GiB 内存才能成功。
+
+**候选方案**（用户在本 PR 中选定 A）：
+
+- **A. 下调输入上限（采用）**：输入合计从 1 GiB 降为 128 MiB，与输出 docx 的 100 MiB 上限对齐并留出余量；`/work` 从 1.25 GiB 降为 384 MiB；内存仍为 2 GiB、配图仍至多 2,000 张、单张仍至多 100 MiB。7.4e 的 worker 在新建沙箱之前按所引用配图的合计大小拒绝并提示。代价：超过 128 MiB 的可压缩配图（BMP / TIFF）不能导出；
+- B. 保留 1 GiB 输入，内存提到 4 GiB：只对可压缩配图有用（已压缩的超过 100 MiB 仍失败，600 MiB 以上还会写满 `/work`），export 队列并发 2 时宿主最坏占用 8 GiB；
+- C. 改变输入的存放方式：助手改为流式写出 docx（ZIP 的 Create 模式），`/work` 改为磁盘卷。改动最大：要改桌面版共用的助手，并打破“沙箱不挂载任何卷”的隔离约定。
+
+**实现**（方案 A）：
+
+- `src/sandbox/templates.ts`：export-document 的 `input.maxTotalBytes` 为 128 MiB，`/work` 为 384 MiB（`/tmp` 512 MiB、`/output` 128 MiB 不变）。sandbox-runner 的流式放入按模板上限检查（7.4a），声明长度超过约 128 MiB 的放入直接 400；
+- `docs/SERVER_DESIGN.md` 第 7.9 节的模板表与说明同步修改；决定事项第 5 项的“输入不超过 1 GiB”改为 128 MiB（见上方决定事项），7.4e 一行写明 worker 的前置拒绝。
+
+**测试**：
+
+- `tests/sandbox/templates.test.ts`：输入合计为 128 MiB；写满全部 tmpfs、再加上 2 倍输入（助手的内存）之后仍比内存上限少 512 MiB 以上；
+- `tests/sandbox/runnerApp.test.ts`：并发放入的内存用例改为 4 个、每个约 120 MiB（在新的输入上限内，合计约 480 MiB，整体缓存时的增长仍远超 200 MiB 的阈值）；
+- `tests/sandbox/docker/export.test.ts`（新增 1 项）：24 张、合计约 96 MiB 的不可压缩配图在 export-document 中经模板登记的命令导出成功，24 张都嵌入、没有告警（CI 在 gVisor 下核对内存预算）。`exportFixtures.ts` 新增 `noisePng`，PNG 的块拼接从 `grayPng` 中抽出、CRC 改用 `zlib.crc32`（结果相同）；
+- 结果：本机测量镜像（runc）中新增用例通过，export-document 的隔离用例 26 项通过，另 2 项因测量镜像本身（.NET 基础镜像自带的环境变量、未去掉 setuid 位）失败，与本 PR 无关、正式镜像以 CI 为准；带装饰的整本导出用例需要 Chromium，测量镜像中没有。服务端单元测试（Node 24 容器）871 项通过。
+
+偏离计划：无（方案由用户决定，决定事项第 5 项的输入上限随之修改）。
+
+已知限制：本机网络不能访问 Debian 软件源（代理返回 403），测量镜像以 .NET `runtime-deps:10.0`（含 ICU）为基础，复制 Node 24、同一份入口与装饰生成器和按正式 Dockerfile 参数发布的助手，不含 Chromium 与字体（测量的导出不带页眉页脚装饰，不启动 Chromium），不提交。gVisor 下的内存行为以 CI 为准。
 
 ### 第 9 步说明
 

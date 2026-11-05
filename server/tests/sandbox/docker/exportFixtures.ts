@@ -1,5 +1,6 @@
 // export 沙箱测试用的读取工具：读 docx（ZIP）中的条目、解码 Chromium 截出的 PNG，不依赖第三方库。
-import { deflateSync, inflateRawSync, inflateSync } from 'node:zlib';
+import { randomBytes } from 'node:crypto';
+import { crc32, deflateSync, inflateRawSync, inflateSync } from 'node:zlib';
 
 /** 读出 ZIP 中的全部条目（只支持存储与 deflate，够读 Open XML SDK 写出的 docx）。 */
 export function readZipEntries(zip: Buffer): Map<string, Buffer> {
@@ -99,17 +100,19 @@ export function decodePng(png: Buffer): DecodedPng {
 
 /** 生成纯灰的 RGB PNG（作为配图放进 /work/assets）。 */
 export function grayPng(width: number, height: number): Buffer {
+  const rows = Buffer.alloc(height * (width * 3 + 1), 0x80);
+  for (let y = 0; y < height; y += 1) rows[y * (width * 3 + 1)] = 0;
+  return withPngChunks(width, height, deflateSync(rows));
+}
+
+/** 按宽高与已压缩的像素数据拼出 8 位 RGB 的 PNG（IHDR、IDAT、IEND，带 CRC）。 */
+function withPngChunks(width: number, height: number, idat: Buffer): Buffer {
   const chunk = (type: string, data: Buffer) => {
     const length = Buffer.alloc(4);
     length.writeUInt32BE(data.length);
     const body = Buffer.concat([Buffer.from(type, 'ascii'), data]);
-    let crc = 0xffffffff;
-    for (const byte of body) {
-      crc ^= byte;
-      for (let bit = 0; bit < 8; bit += 1) crc = crc & 1 ? (crc >>> 1) ^ 0xedb88320 : crc >>> 1;
-    }
     const checksum = Buffer.alloc(4);
-    checksum.writeUInt32BE((crc ^ 0xffffffff) >>> 0);
+    checksum.writeUInt32BE(crc32(body));
     return Buffer.concat([length, body, checksum]);
   };
   const header = Buffer.alloc(13);
@@ -117,7 +120,19 @@ export function grayPng(width: number, height: number): Buffer {
   header.writeUInt32BE(height, 4);
   header[8] = 8;
   header[9] = 2;
-  const rows = Buffer.alloc(height * (width * 3 + 1), 0x80);
-  for (let y = 0; y < height; y += 1) rows[y * (width * 3 + 1)] = 0;
-  return Buffer.concat([Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]), chunk('IHDR', header), chunk('IDAT', deflateSync(rows)), chunk('IEND', Buffer.alloc(0))]);
+  return Buffer.concat([Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]), chunk('IHDR', header), chunk('IDAT', idat), chunk('IEND', Buffer.alloc(0))]);
 }
+
+/**
+ * 约 bytes 字节、像素随机的 RGB PNG（IDAT 用 deflate 的不压缩块，docx 的 deflate 也压不动），用于按体积检查导出的内存预算
+ * （路线图 7.4b）。助手只读文件头取格式与宽高，不解码像素。
+ */
+export function noisePng(bytes: number): Buffer {
+  const width = 1024;
+  const rowBytes = width * 3 + 1;
+  const height = Math.max(1, Math.floor(bytes / rowBytes));
+  const rows = randomBytes(height * rowBytes);
+  for (let y = 0; y < height; y += 1) rows[y * rowBytes] = 0;
+  return withPngChunks(width, height, deflateSync(rows, { level: 0 }));
+}
+
