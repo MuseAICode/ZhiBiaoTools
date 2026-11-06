@@ -28,7 +28,7 @@
 | 0.1 `npm audit fix`（不加 `--force`）+ 零代码升级：lockfile 内升级、`brace-expansion` 升到 5.0.12、`overrides` 把 pi-coding-agent 内的 `undici` 升到 8.10.2 | 已完成 | 旧仓库 PR #3 |
 | 0.2 `pdfjs-dist` 升到 6.x：改 `doc2markdown/convert.mjs` 的销毁调用，并解决与 `pdf-parse` 内置 pdfjs 5.4.296 的版本冲突（实际做法：升到 6.4.299，表格提取用本模块专用的 `PDFWorker`，见下方说明） | 已完成 | 旧仓库 PR #4 |
 | 0.3 `xlsx` 换成 SheetJS 0.20.3：`convert.mjs` 的 ESM 读取改成 `XLSX.read(buffer)`（实际做法：官方 CDN 的 tarball 存入 `client/vendor/xlsx-0.20.3.tgz`，`package.json` 用 `file:` 引用，见下方说明） | 已完成 | 旧仓库 PR #5 |
-| 0.4 `patch-package`（`braces` / `micromatch` 没有修复版，仅开发期 postinstall 使用）：**接受风险**，见下方说明；后续升级 `@docx-editor.dev/core` 时顺带评估去掉补丁 | 已完成（接受风险） | 旧仓库 PR #18 |
+| 0.4 `patch-package`（`braces` / `micromatch` 没有修复版，仅开发期 postinstall 使用）：**接受风险**，见下方说明；后续升级 `@docx-editor.dev/core` 时顺带评估去掉补丁。2026-11-06（#54）复核：`npm audit` 已不再报告这条链（链上为 `braces` 3.0.3、`micromatch` 4.0.8），`CLAUDE.md` 中的已接受风险记录随之删除 | 已完成（接受风险） | 旧仓库 PR #18 |
 | 0.5 AGPL 第 13 条源码链接方案：**上线前决定**，开发期间仓库保持公开，见下方说明（迁移到新仓库后改为闭源商业授权，已不再需要） | 已完成（不再需要） | 旧仓库 PR #18 |
 | 0.6 PR CI：`.github/workflows/ci.yml`，每个 PR 和推送到 `main` 时在 `client/` 下跑 `npm ci`、`npm run build`、`electron/` 下全部 `.cjs`/`.mjs` 的 `node --check`、`npm audit --audit-level=critical` | 已完成 | 旧仓库 PR #6 |
 | 0.7 删除原作者的发布与镜像 workflow：`sync-mirrors.yml`、`sync-releases.yml`、`star-history.yml`、`release.yml`，以及 `.github/scripts/` 中只被它们调用的脚本；保留 `ci.yml` | 已完成 | 旧仓库 PR #7 |
