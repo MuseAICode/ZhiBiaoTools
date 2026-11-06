@@ -2,7 +2,7 @@
 // 两个实现：sandbox-runner 进程内直接操作 Docker 的 createDockerSandboxDriver（src/sandbox/docker.ts），
 // 和 worker 中经 HTTP 调用 sandbox-runner 的 createSandboxRunnerClient（src/sandbox/client.ts）。
 // 以后换成微虚拟机等实现时，上层（解析任务）不变。
-import type { SandboxFile } from './archive.ts';
+import type { SandboxFile, SandboxInputFile } from './archive.ts';
 import type { SandboxTemplateName } from './templates.ts';
 
 export interface SandboxRef {
@@ -33,8 +33,13 @@ export interface SandboxOperationOptions {
 export interface SandboxDriver {
   /** 按模板新建一个沙箱（一个任务一个，用完即毁）。 */
   create(template: SandboxTemplateName, options: { jobId: string } & SandboxOperationOptions): Promise<SandboxRef>;
-  /** 把文件放进模板的输入目录（parse 为 /input）。路径、数量、大小按模板校验。 */
-  copyIn(sandbox: SandboxRef, files: readonly SandboxFile[], options?: SandboxOperationOptions): Promise<void>;
+  /**
+   * 把文件放进模板的输入目录（parse 为 /input）。路径、数量、大小按模板校验，不合法时一个字节都不放入（SANDBOX_BAD_REQUEST）。
+   * 按需读取的文件（SandboxStreamFile）边读边放入，不在内存中整体缓存；读取中途失败（源出错、字节数与声明不符）时
+   * 之前的条目可能已放入，沙箱被终止，调用方只能 destroy：源出错为 SANDBOX_INPUT_FAILED（cause 是源的错误），字节数不符为
+   * SANDBOX_BAD_REQUEST。
+   */
+  copyIn(sandbox: SandboxRef, files: readonly SandboxInputFile[], options?: SandboxOperationOptions): Promise<void>;
   /** 执行模板中登记的命令（如 parse），只能追加符合模板规则的参数。 */
   exec(sandbox: SandboxRef, command: string, args: readonly string[], options?: SandboxOperationOptions): Promise<SandboxExecResult>;
   /** 取回模板输出目录（parse 为 /output）中的文件，按模板逐项校验（src/sandbox/archive.ts），不符即整体拒绝。 */
@@ -56,6 +61,8 @@ export const SANDBOX_ERROR_CODES = [
   'SANDBOX_UNAVAILABLE',
   /** 操作被调用方中止。 */
   'SANDBOX_ABORTED',
+  /** 放入时读取调用方给出的文件失败（例如对象存储出错），cause 是源的错误；沙箱已不可用。只在 worker 端产生，不经 HTTP 传递。 */
+  'SANDBOX_INPUT_FAILED',
   /** 其他错误。 */
   'SANDBOX_FAILED',
 ] as const;

@@ -116,7 +116,9 @@ function fakeSandbox(behaviors: Record<string, Behavior>): FakeSandbox {
       fake.calls.push('create');
       return { id: randomUUID(), template, jobId: options.jobId, expiresAt: new Date(Date.now() + 60_000) };
     },
-    async copyIn(sandbox, files) {
+    async copyIn(sandbox, input) {
+      // 解析只放入内存中的文件。
+      const files = input as readonly SandboxFile[];
       fake.calls.push('copyIn');
       fake.inputs.push([...files]);
       sources.set(sandbox.id, files.find((file) => file.path === 'source')!.data.toString('utf8'));

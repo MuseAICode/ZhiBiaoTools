@@ -1,6 +1,6 @@
 import { Readable } from 'node:stream';
 import { describe, expect, it } from 'vitest';
-import { createArchive, maxArchiveBytes, readArchive, SandboxArchiveError, validateArchiveStream } from '../../src/sandbox/archive.ts';
+import { createArchive, createArchiveStream, maxArchiveBytes, readArchive, SandboxArchiveError, validateArchiveStream } from '../../src/sandbox/archive.ts';
 import { SANDBOX_TEMPLATES, type SandboxTransferLimits } from '../../src/sandbox/templates.ts';
 import { END_OF_ARCHIVE, paxEntry, tarEntry, tarStream } from './tarFixtures.ts';
 
@@ -264,5 +264,145 @@ describe('createArchive', () => {
     expect(() => createArchive([{ path: 'dir/x.docx', data: Buffer.alloc(1) }], input)).toThrow(SandboxArchiveError);
     expect(() => createArchive([{ path: 'a', data: Buffer.alloc(1) }, { path: 'a', data: Buffer.alloc(1) }], input)).toThrow(SandboxArchiveError);
     expect(() => createArchive(Array.from({ length: 5 }, (_, index) => ({ path: `f${index}`, data: Buffer.alloc(1) })), input)).toThrow(SandboxArchiveError);
+  });
+});
+
+describe('createArchiveStream', () => {
+  const exportInput = SANDBOX_TEMPLATES['export-document'].input;
+  const collect = async (chunks: AsyncIterable<Buffer>) => {
+    const parts: Buffer[] = [];
+    for await (const chunk of chunks) parts.push(chunk);
+    return Buffer.concat(parts);
+  };
+  /** 按需读取的文件：内容按 chunk 字节分块产出，记录打开与释放。 */
+  function onDemand(path: string, data: Buffer, log: string[], chunk = 1000) {
+    return {
+      path,
+      size: data.length,
+      async open() {
+        log.push(`open:${path}`);
+        async function* source() {
+          try {
+            for (let offset = 0; offset < data.length; offset += chunk) yield data.subarray(offset, offset + chunk);
+          } finally {
+            log.push(`release:${path}`);
+          }
+        }
+        return source();
+      },
+    };
+  }
+
+  it('produces exactly the bytes createArchive produces, with the declared length, opening sources lazily and in order', async () => {
+    const memory = [
+      { path: 'request.json', data: Buffer.from('{"html":"<p>正文</p>"}') },
+      { path: 'assets/a', data: Buffer.alloc(1500, 1) },
+      { path: 'assets/empty', data: Buffer.alloc(0) },
+      { path: 'assets/b', data: Buffer.alloc(512, 2) },
+      { path: 'assets/c', data: Buffer.alloc(70_001, 3) },
+    ];
+    const expected = createArchive(memory, exportInput);
+    const log: string[] = [];
+    const mixed = [memory[0]!, ...memory.slice(1).map((file) => onDemand(file.path, file.data, log))];
+    const stream = createArchiveStream(mixed, exportInput);
+    expect(stream.byteLength).toBe(expected.length);
+    expect(log).toEqual([]);
+
+    const seen: string[] = [];
+    const parts: Buffer[] = [];
+    for await (const chunk of stream.chunks) {
+      seen.push(log.join(','));
+      parts.push(chunk);
+    }
+    expect(Buffer.concat(parts).equals(expected)).toBe(true);
+    // 每个源读完、释放之后才打开下一个。
+    expect(log).toEqual(['assets/a', 'assets/empty', 'assets/b', 'assets/c'].flatMap((path) => [`open:${path}`, `release:${path}`]));
+    expect(seen[0]).toBe('');
+    expect(stream.failure).toBeUndefined();
+
+    // 只有内存中的文件时与 createArchive 相同；结果能被 readArchive 与 validateArchiveStream 原样接受。
+    expect((await collect(createArchiveStream(memory, exportInput).chunks)).equals(expected)).toBe(true);
+    const files = await readArchive(Readable.from([expected]), exportInput);
+    expect(files.map((file) => [file.path, file.data.length])).toEqual(memory.map((file) => [file.path, file.data.length]));
+    expect((await collect(validateArchiveStream(Readable.from([expected]), exportInput))).equals(expected)).toBe(true);
+  });
+
+  it('validates every entry before producing a byte or opening a source', () => {
+    const log: string[] = [];
+    const cases: [unknown[], string][] = [
+      [[onDemand('assets/a', Buffer.alloc(1), log), onDemand('assets/a', Buffer.alloc(1), log)], 'duplicate path'],
+      [[onDemand('../a', Buffer.alloc(1), log)], 'path traversal'],
+      [[onDemand('a/b/c', Buffer.alloc(1), log)], 'path too deep'],
+      [[{ path: 'assets/a', size: -1, open: async () => [] }], 'file size invalid'],
+      [[{ path: 'assets/a', size: Number.NaN, open: async () => [] }], 'file size invalid'],
+      [[{ path: 'assets/a', size: exportInput.maxFileBytes + 1, open: async () => [] }], 'file too large'],
+      [[{ path: 'assets/a', size: exportInput.maxFileBytes, open: async () => [] }, { path: 'assets/b', size: exportInput.maxTotalBytes - exportInput.maxFileBytes + 1, open: async () => [] }], 'archive too large'],
+      [Array.from({ length: exportInput.maxFiles + 1 }, (_, index) => ({ path: `assets/${index}`, size: 0, open: async () => [] })), 'too many files'],
+    ];
+    for (const [files, reason] of cases) {
+      let error: unknown;
+      try {
+        createArchiveStream(files as never, exportInput);
+      } catch (caught) {
+        error = caught;
+      }
+      expect(error).toBeInstanceOf(SandboxArchiveError);
+      expect((error as SandboxArchiveError).reason).toBe(reason);
+    }
+    expect(log).toEqual([]);
+  });
+
+  it('fails with file size mismatch when a source yields more or fewer bytes than declared, releasing it', async () => {
+    for (const actual of [999, 1001, 0, 5000]) {
+      const log: string[] = [];
+      const file = { ...onDemand('assets/a', Buffer.alloc(actual, 1), log), size: 1000 };
+      const stream = createArchiveStream([file], exportInput);
+      const error = await collect(stream.chunks).then(
+        () => null,
+        (caught: unknown) => caught,
+      );
+      expect(error).toBeInstanceOf(SandboxArchiveError);
+      expect((error as SandboxArchiveError).reason).toBe('file size mismatch');
+      expect(stream.failure).toBe(error);
+      expect(log).toEqual(['open:assets/a', 'release:assets/a']);
+    }
+  });
+
+  it('passes source errors through, records them, and releases the source when the consumer stops early', async () => {
+    const broken = createArchiveStream([{ path: 'assets/a', size: 10, open: async () => Promise.reject(new Error('missing object')) }], exportInput);
+    await expect(collect(broken.chunks)).rejects.toThrow('missing object');
+    expect((broken.failure as Error).message).toBe('missing object');
+
+    const log: string[] = [];
+    const stream = createArchiveStream([onDemand('assets/a', Buffer.alloc(10_000, 1), log), onDemand('assets/b', Buffer.alloc(10, 1), log)], exportInput);
+    let chunks = 0;
+    for await (const _chunk of stream.chunks) {
+      chunks += 1;
+      if (chunks === 3) break;
+    }
+    expect(log).toEqual(['open:assets/a', 'release:assets/a']);
+    expect(stream.failure).toBeUndefined();
+    // 只能迭代一次。
+    await expect(collect(stream.chunks)).rejects.toThrow('only be consumed once');
+  });
+
+  it('stops before opening anything when aborted, and destroys a Readable source that is waiting for data', async () => {
+    const log: string[] = [];
+    const aborted = createArchiveStream([onDemand('assets/a', Buffer.alloc(10), log)], exportInput, { signal: AbortSignal.abort() });
+    await expect(collect(aborted.chunks)).rejects.toMatchObject({ name: 'AbortError' });
+    expect(log).toEqual([]);
+
+    const controller = new AbortController();
+    const stalled = new Readable({ read() {} });
+    stalled.push(Buffer.alloc(100));
+    const stream = createArchiveStream([{ path: 'assets/a', size: 1000, open: async () => stalled }], exportInput, { signal: controller.signal });
+    const consumed = collect(stream.chunks).then(
+      () => null,
+      (error: unknown) => error,
+    );
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    controller.abort();
+    expect(await consumed).not.toBeNull();
+    expect(stalled.destroyed).toBe(true);
   });
 });

@@ -8,7 +8,7 @@ import { statfs } from 'node:fs/promises';
 import { availableParallelism } from 'node:os';
 import { createServer, type Server } from 'node:net';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
-import { createArchive } from '../../../src/sandbox/archive.ts';
+import { createArchive, type SandboxStreamFile } from '../../../src/sandbox/archive.ts';
 import { createDockerSandboxDriver, type DockerSandboxDriver } from '../../../src/sandbox/docker.ts';
 import type { SandboxRef } from '../../../src/sandbox/driver.ts';
 import { buildContainerSpec, SANDBOX_TEMPLATES, type SandboxImageName, type SandboxTemplateName } from '../../../src/sandbox/templates.ts';
@@ -556,6 +556,46 @@ export function defineIsolationSuite(target: IsolationTarget, harness: Isolation
       await expect(driver.copyInArchive(ref, archive.source())).rejects.toMatchObject({ code: 'SANDBOX_BAD_REQUEST' });
       await expect(driver.lookup(ref.id, ref.jobId)).rejects.toMatchObject({ code: 'SANDBOX_NOT_FOUND' });
       await expect(driver.execArgv(ref, ['true'], { timeoutMs: 10_000 })).rejects.toMatchObject({ code: 'SANDBOX_NOT_FOUND' });
+    });
+
+    /** 按需读取的文件（7.4e）：内容由同一块缓冲区重复组成；failAfter 字节之后源出错。 */
+    function onDemandFile(path: string, size: number, fill: number, failAfter?: number): SandboxStreamFile & { sha256: () => string } {
+      const block = Buffer.alloc(MIB, fill);
+      const hash = createHash('sha256');
+      return {
+        path,
+        size,
+        async open() {
+          async function* source() {
+            for (let sent = 0; sent < size; sent += MIB) {
+              if (failAfter !== undefined && sent >= failAfter) throw new Error('object store connection reset');
+              const chunk = block.subarray(0, Math.min(MIB, size - sent));
+              hash.update(chunk);
+              yield chunk;
+            }
+          }
+          return source();
+        },
+        sha256: () => hash.digest('hex'),
+      };
+    }
+
+    it(`copyIn streams files read on demand into ${inputDirectory} intact`, async () => {
+      const ref = await createSandbox();
+      const first = onDemandFile('first.bin', 8 * MIB + 123, 1);
+      const second = onDemandFile('second.bin', 3 * MIB, 2);
+      const small = Buffer.from('内存中的文件', 'utf8');
+      await driver.copyIn(ref, [{ path: 'small.bin', data: small }, first, second]);
+      const result = await sh(ref, `cd ${inputDirectory} && sha256sum small.bin first.bin second.bin`);
+      expect(result.stdout.trim().split('\n').map((line) => line.split(' ')[0])).toEqual([createHash('sha256').update(small).digest('hex'), first.sha256(), second.sha256()]);
+    });
+
+    it('copyIn terminates the sandbox with SANDBOX_INPUT_FAILED when a source fails midway', async () => {
+      const ref = await createSandbox();
+      // 第一个文件已交给沙箱内的 tar，第二个读到一半时源出错：归档被截断，整个沙箱被终止。
+      const files = [onDemandFile('first.bin', 2 * MIB, 1), onDemandFile('second.bin', 4 * MIB, 2, 2 * MIB)];
+      await expect(driver.copyIn(ref, files)).rejects.toMatchObject({ code: 'SANDBOX_INPUT_FAILED', cause: { message: 'object store connection reset' } });
+      await expect(driver.lookup(ref.id, ref.jobId)).rejects.toMatchObject({ code: 'SANDBOX_NOT_FOUND' });
     });
 
     it('does not share anything between sandboxes', async () => {

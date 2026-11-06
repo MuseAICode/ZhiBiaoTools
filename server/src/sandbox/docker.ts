@@ -11,7 +11,7 @@
 import { randomUUID } from 'node:crypto';
 import { Readable, Transform } from 'node:stream';
 import type { FastifyBaseLogger } from 'fastify';
-import { createArchive, maxArchiveBytes, readArchive, SandboxArchiveError, validateArchiveStream, type SandboxFile } from './archive.ts';
+import { createArchive, createArchiveStream, hasStreamFiles, maxArchiveBytes, readArchive, SandboxArchiveError, validateArchiveStream, type ArchiveStream, type SandboxFile } from './archive.ts';
 import { DockerApiError, type DockerApi } from './dockerApi.ts';
 import {
   SandboxError,
@@ -121,6 +121,15 @@ export function createDockerSandboxDriver(options: DockerSandboxDriverOptions): 
       return new SandboxError('SANDBOX_UNAVAILABLE', '沙箱服务暂不可用', { cause: error });
     }
     return new SandboxError('SANDBOX_FAILED', '沙箱操作失败', { cause: error });
+  }
+
+  /** 流式放入失败：读取调用方给出的文件出错时为 SANDBOX_INPUT_FAILED（cause 是源的错误），其他按原样。 */
+  function inputFailure(sandbox: SandboxRef, archive: ArchiveStream, error: unknown, signal: AbortSignal | undefined): unknown {
+    const failure = archive.failure;
+    if (failure === undefined || failure instanceof SandboxArchiveError || signal?.aborted) return error;
+    // 源的错误可能带对象键等信息，只写错误名。
+    log.warn({ sandboxId: sandbox.id, source: failure instanceof Error ? failure.name : typeof failure }, 'sandbox input source failed, sandbox terminated');
+    return new SandboxError('SANDBOX_INPUT_FAILED', '读取放入沙箱的文件失败', { cause: failure });
   }
 
   function templateOf(sandbox: SandboxRef): SandboxTemplate {
@@ -350,14 +359,21 @@ export function createDockerSandboxDriver(options: DockerSandboxDriverOptions): 
       }
     },
 
-    async copyIn(sandbox, files, operationOptions) {
-      let archive: Buffer;
+    async copyIn(sandbox, files, operationOptions = {}) {
+      let archive: Buffer | ArchiveStream;
       try {
-        archive = createArchive(files, templateOf(sandbox).input);
+        archive = hasStreamFiles(files)
+          ? createArchiveStream(files, templateOf(sandbox).input, operationOptions.signal ? { signal: operationOptions.signal } : {})
+          : createArchive(files as readonly SandboxFile[], templateOf(sandbox).input);
       } catch (error) {
         throw wrap(error, 'copy-in');
       }
-      await copyInArchive(sandbox, archive, operationOptions);
+      if (Buffer.isBuffer(archive)) return copyInArchive(sandbox, archive, operationOptions);
+      try {
+        await copyInArchive(sandbox, archive.chunks, operationOptions);
+      } catch (error) {
+        throw inputFailure(sandbox, archive, error, operationOptions.signal);
+      }
     },
 
     copyInArchive,
