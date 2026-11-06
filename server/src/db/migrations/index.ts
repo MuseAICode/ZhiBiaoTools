@@ -28,6 +28,7 @@ import * as cleanup from './0024_cleanup.ts';
 import * as jobStepResults from './0025_job_step_results.ts';
 import * as technicalPlanBidSectionDetection from './0026_technical_plan_bid_section_detection.ts';
 import * as templatePreview from './0027_template_preview.ts';
+import * as technicalPlanExport from './0028_technical_plan_export.ts';
 
 export const migrations: Readonly<Record<string, Migration>> = Object.freeze({
   '0001_identity': identity,
@@ -57,4 +58,5 @@ export const migrations: Readonly<Record<string, Migration>> = Object.freeze({
   '0025_job_step_results': jobStepResults,
   '0026_technical_plan_bid_section_detection': technicalPlanBidSectionDetection,
   '0027_template_preview': templatePreview,
+  '0028_technical_plan_export': technicalPlanExport,
 });

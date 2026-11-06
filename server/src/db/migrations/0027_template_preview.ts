@@ -52,7 +52,8 @@ export const TEMPLATE_PREVIEW_EXPORT_FORMAT_MAX_BYTES = 128 * 1024;
 const RETENTION = sql.raw(`interval '${TEMPLATE_PREVIEW_RETENTION_HOURS} hours'`);
 const PREVIEW = sql.lit(TEMPLATE_PREVIEW_KIND);
 
-function kindMimeCheck(mimes: Readonly<Record<string, readonly string[]>>): RawBuilder<unknown> {
+/** artifacts_kind_mime 的表达式（0028 复用）。 */
+export function kindMimeCheck(mimes: Readonly<Record<string, readonly string[]>>): RawBuilder<unknown> {
   return sql.join(
     Object.entries(mimes).map(([kind, list]) => sql`(kind = ${sql.lit(kind)} AND mime IN (${sql.join(list.map((mime) => sql.lit(mime)))}))`),
     sql` OR `,
@@ -69,12 +70,15 @@ function previewRequestExpired(r: string): RawBuilder<unknown> {
   return sql`(${sql.ref(`${r}.created_at`)} <= now() - ${RETENTION})`;
 }
 
-/** 清理角色的产物 DELETE 策略与两个产物清理函数（与 0024 的写法相同，只换过期条件）。须在 SET ROLE 清理角色之前与之后分别执行。 */
-function artifactCleanupPolicy(expired: (a: string) => RawBuilder<unknown>): RawBuilder<unknown> {
+/**
+ * 清理角色的产物 DELETE 策略与两个产物清理函数（与 0024 的写法相同，只换过期条件）。须在 SET ROLE 清理角色之前与之后分别执行。
+ * 0028 复用。
+ */
+export function artifactCleanupPolicy(expired: (a: string) => RawBuilder<unknown>): RawBuilder<unknown> {
   return sql`ALTER POLICY artifacts_cleanup_delete ON artifacts USING (${expired('artifacts')})`;
 }
 
-function artifactCleanupFunctions(expired: (a: string) => RawBuilder<unknown>): RawBuilder<unknown>[] {
+export function artifactCleanupFunctions(expired: (a: string) => RawBuilder<unknown>): RawBuilder<unknown>[] {
   return [
     sql`CREATE OR REPLACE FUNCTION cleanup_artifact_candidates(p_limit integer)
           RETURNS TABLE (id uuid, storage_key text, stale boolean)
@@ -96,6 +100,11 @@ function artifactCleanupFunctions(expired: (a: string) => RawBuilder<unknown>): 
 }
 
 const OWNER_PRESENT_0008 = sql`CHECK (project_id IS NOT NULL OR source_file_id IS NOT NULL)`;
+/** 本迁移的归属约束（0028 回滚时恢复）。 */
+export const OWNER_PRESENT_0027 = sql`CHECK (CASE WHEN kind = ${PREVIEW}
+          THEN project_id IS NULL AND source_file_id IS NULL AND preview_sha256 IS NOT NULL
+          ELSE (project_id IS NOT NULL OR source_file_id IS NOT NULL) AND preview_sha256 IS NULL
+        END)`;
 
 export async function up(db: Kysely<unknown>): Promise<void> {
   await run(db, [
@@ -104,10 +113,7 @@ export async function up(db: Kysely<unknown>): Promise<void> {
     sql`ALTER TABLE artifacts DROP CONSTRAINT artifacts_kind_mime`,
     sql`ALTER TABLE artifacts ADD CONSTRAINT artifacts_kind_mime CHECK (${kindMimeCheck(ARTIFACT_MIMES)})`,
     sql`ALTER TABLE artifacts DROP CONSTRAINT artifacts_owner_present`,
-    sql`ALTER TABLE artifacts ADD CONSTRAINT artifacts_owner_present CHECK (CASE WHEN kind = ${PREVIEW}
-          THEN project_id IS NULL AND source_file_id IS NULL AND preview_sha256 IS NOT NULL
-          ELSE (project_id IS NOT NULL OR source_file_id IS NOT NULL) AND preview_sha256 IS NULL
-        END)`,
+    sql`ALTER TABLE artifacts ADD CONSTRAINT artifacts_owner_present ${OWNER_PRESENT_0027}`,
     // 按样张输入的哈希查找最近的结果；清理按 created_at 扫描时也用得上。
     sql`CREATE INDEX artifacts_org_id_preview_sha256_idx ON artifacts (org_id, preview_sha256, created_at DESC)
           WHERE kind = ${PREVIEW}`,
