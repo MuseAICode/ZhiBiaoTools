@@ -1,5 +1,6 @@
 // 清理任务（路线图 6.8，迁移 0024_cleanup、src/cleanup/）的数据库测试，按“决定事项（#23）”第 9、10 项逐条验证：
-// 1. 只删除超过保留期的数据（文件、产物、项目 7 天恢复期，遗留 uploading / writing 24 小时，jobs 90 天、job_events 30 天），
+// 1. 只删除超过保留期的数据（文件、产物、项目 7 天恢复期，遗留 uploading / writing 24 小时，jobs 90 天、job_events 30 天，
+//    样张 24 小时，整本导出被替换即删、否则 7 天），
 //    恢复期内的行一律不动；删除条件在 SECURITY DEFINER 函数和策略中，调用方传入 id 删不掉未过期的行，也不能传入时间；
 // 2. 先删对象、成功后再删行；对象删除失败的行保留、下一批重试；孤儿对象只删除超过保留期、没有对应行的；
 // 3. 每批按类别各记一行结构化日志（条数、对象数、失败数、耗时），不含对象键和文件名；
@@ -164,19 +165,24 @@ async function insertFile(
 
 async function insertArtifact(
   ctx: TenantContext,
-  options: { projectId?: string; sourceFileId?: string; supersededAgo?: number; writing?: boolean; createdAgo?: number; preview?: boolean } = {},
+  options: {
+    projectId?: string; sourceFileId?: string; supersededAgo?: number; writing?: boolean; createdAgo?: number; preview?: boolean;
+    /** 整本导出（迁移 0028）：必须同时给 projectId。 */
+    documentExport?: boolean;
+  } = {},
 ): Promise<{ id: string; key: string }> {
   const writing = options.writing ?? false;
   const preview = options.preview ?? false;
+  const docx = preview || (options.documentExport ?? false);
   const row = await superuser
     .insertInto('artifacts')
     .values({
       org_id: ctx.orgId,
       project_id: options.projectId ?? null,
       source_file_id: options.sourceFileId ?? null,
-      kind: preview ? 'template-preview' : 'markdown',
-      name: preview ? 'template-preview.docx' : 'content.md',
-      mime: preview ? DOCX_MIME : MARKDOWN,
+      kind: preview ? 'template-preview' : options.documentExport ? 'technical-plan-export' : 'markdown',
+      name: docx ? 'export.docx' : 'content.md',
+      mime: docx ? DOCX_MIME : MARKDOWN,
       preview_sha256: preview ? randomBytes(32) : null,
       status: writing ? 'writing' : 'ready',
       size_bytes: writing ? null : 10,
@@ -501,6 +507,27 @@ describe('只删除超过保留期的数据', () => {
     expect(await exists('template_preview_requests', freshRequest)).toBe(true);
   });
 
+  it('整本导出（迁移 0028）：被替换的立即连同对象删除，未被替换的创建超过 7 天删除，未满 7 天的不动；其他种类的产物不按 7 天删除', async () => {
+    const ctx = await newOrg();
+    const project = await insertProject(ctx);
+    const other = await insertProject(ctx);
+    const superseded = await insertArtifact(ctx, { projectId: project, documentExport: true, createdAgo: HOUR, supersededAgo: 60_000 });
+    const old = await insertArtifact(ctx, { projectId: other, documentExport: true, createdAgo: 7 * DAY + 60_000 });
+    const current = await insertArtifact(ctx, { projectId: project, documentExport: true, createdAgo: 7 * DAY - HOUR });
+    const oldMarkdown = await insertArtifact(ctx, { projectId: project, createdAgo: 30 * DAY });
+
+    const results = byCategory(await newCleaner().cleaner.runBatch());
+    expect(results.artifacts).toMatchObject({ deleted: 2, objects: 2, failed: 0 });
+    for (const gone of [superseded, old]) {
+      expect(await exists('artifacts', gone.id)).toBe(false);
+      expect(store.objects.has(gone.key)).toBe(false);
+    }
+    for (const kept of [current, oldMarkdown]) {
+      expect(await exists('artifacts', kept.id)).toBe(true);
+      expect(store.objects.has(kept.key)).toBe(true);
+    }
+  });
+
   it('遗留的 uploading 文件、writing 产物：登记超过 24 小时的删除（计入 uploading 类），未满 24 小时的不动；过期后不能再完成上传或写入', async () => {
     const ctx = await newOrg();
     const staleUpload = await insertFile(ctx, { uploading: true, createdAgo: 24 * HOUR + 60_000 });
@@ -570,7 +597,7 @@ describe('只删除超过保留期的数据', () => {
 describe('调用方不能绕过删除条件', () => {
   beforeEach(drain);
 
-  it('按 id 删除未过期的文件、产物一律影响 0 行（含恢复期内、未删除、上传中未超时、项目在恢复期内的、未满 24 小时的样张）', async () => {
+  it('按 id 删除未过期的文件、产物一律影响 0 行（含恢复期内、未删除、上传中未超时、项目在恢复期内的、未满 24 小时的样张、未满 7 天且未被替换的整本导出）', async () => {
     const ctx = await newOrg();
     const recentProject = await insertProject(ctx, 6 * DAY);
     const files = [
@@ -586,6 +613,7 @@ describe('调用方不能绕过删除条件', () => {
       await insertArtifact(ctx, { sourceFileId: files[0]!.id, supersededAgo: 7 * DAY - HOUR }),
       await insertArtifact(ctx, { sourceFileId: files[0]!.id, writing: true, createdAgo: 23 * HOUR }),
       await insertArtifact(ctx, { preview: true, createdAgo: 23 * HOUR }),
+      await insertArtifact(ctx, { projectId: recentProject, documentExport: true, createdAgo: 7 * DAY - HOUR }),
     ];
     for (const artifact of artifacts) {
       const { rows } = await sql<{ ok: boolean }>`SELECT cleanup_delete_artifact(${artifact.id}::uuid) AS ok`.execute(appDb);
@@ -647,6 +675,7 @@ describe('调用方不能绕过删除条件', () => {
     const event = await insertEvent(ctx, job, DAY);
     const artifact = await insertArtifact(ctx, { projectId: project });
     const preview = await insertArtifact(ctx, { preview: true, createdAgo: 23 * HOUR });
+    const documentExport = await insertArtifact(ctx, { projectId: project, documentExport: true, createdAgo: 7 * DAY - HOUR });
     const request = await insertPreviewRequest(ctx, 23 * HOUR);
     const counts = await asCleanupRole(async (trx) => ({
       template_preview_requests: Number((await trx.deleteFrom('template_preview_requests').executeTakeFirst()).numDeletedRows),
@@ -659,6 +688,7 @@ describe('调用方不能绕过删除条件', () => {
     expect(counts).toEqual({ template_preview_requests: 0, artifacts: 0, files: 0, projects: 0, job_events: 0, jobs: 0 });
     for (const [table, id] of [
       ['projects', project], ['files', file.id], ['jobs', job], ['job_events', event], ['artifacts', artifact.id], ['artifacts', preview.id],
+      ['artifacts', documentExport.id],
       ['template_preview_requests', request],
     ] as const) {
       expect(await exists(table, id), table).toBe(true);

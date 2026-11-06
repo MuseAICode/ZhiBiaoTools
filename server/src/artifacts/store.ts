@@ -5,11 +5,14 @@
 // 重新解析时旧产物经 supersedeArtifacts 标为已被替换（迁移 0023），读取时不再返回，由清理任务（6.8）删除。
 // 项目或来源文件已删除时产物不可访问，由 RLS 保证（迁移 0008_artifacts），这里不再重复判断。
 // 模板样张（template-preview，迁移 0027）不属于项目或来源文件，带样张输入的哈希，创建 24 小时后由清理任务删除。
+// 整本导出（technical-plan-export，迁移 0028）必须属于项目、每个项目只保留最近一个：完成时在同一事务中替换旧的，
+// 被替换的立即过期、未被替换的 7 天后过期，由清理任务删除。
 import { createHash } from 'node:crypto';
 import { Readable } from 'node:stream';
-import type { Kysely, Selectable } from 'kysely';
+import { sql, type Kysely, type Selectable } from 'kysely';
 import { ARTIFACT_NAME_PATTERN, MAX_ARTIFACT_BYTES } from '../db/migrations/0008_artifacts.ts';
-import { ARTIFACT_KINDS, ARTIFACT_MIMES, TEMPLATE_PREVIEW_KIND } from '../db/migrations/0027_template_preview.ts';
+import { TEMPLATE_PREVIEW_KIND } from '../db/migrations/0027_template_preview.ts';
+import { ARTIFACT_KINDS, ARTIFACT_MIMES, PROJECT_SINGLETON_KINDS, TECHNICAL_PLAN_EXPORT_KIND } from '../db/migrations/0028_technical_plan_export.ts';
 import type { ArtifactsTable, Database } from '../db/schema.ts';
 import { withTenant, type TenantContext } from '../db/tenant.ts';
 import { AppError } from '../errors.ts';
@@ -81,6 +84,10 @@ function assertNewArtifact(input: NewArtifact): void {
     return;
   }
   if (input.previewSha256) throw new TypeError('只有样张产物有输入哈希');
+  if (input.kind === TECHNICAL_PLAN_EXPORT_KIND) {
+    if (!input.projectId || input.sourceFileId) throw new TypeError('整本导出必须属于一个项目、不能有来源文件');
+    return;
+  }
   if (!input.projectId && !input.sourceFileId) throw new TypeError('产物必须属于一个项目或一个来源文件');
 }
 
@@ -114,7 +121,14 @@ export async function beginArtifact(db: Kysely<Database>, context: TenantContext
   });
 }
 
-/** 写完对象后标记完成：触发器在此检查配额（超出抛 413 STORAGE_QUOTA_EXCEEDED）。 */
+const SINGLETON_KINDS: readonly string[] = PROJECT_SINGLETON_KINDS;
+
+/**
+ * 写完对象后标记完成：触发器在此检查配额（超出抛 413 STORAGE_QUOTA_EXCEEDED）。
+ * 每个项目只保留最近一个的种类（整本导出）在同一事务中先把同一项目中当前的同种产物标为已被替换，再标记完成；
+ * 同一项目、同一种类的完成按 advisory lock 串行（先于配额的锁取得，顺序固定），后完成的替换先完成的。
+ * 完成失败（例如超出配额）时整个事务回滚，旧的产物原样保留。
+ */
 export async function completeArtifact(
   db: Kysely<Database>,
   context: TenantContext,
@@ -123,6 +137,25 @@ export async function completeArtifact(
 ): Promise<ArtifactRecord> {
   try {
     return await withTenant(db, context, async (trx) => {
+      const pending = await trx
+        .selectFrom('artifacts')
+        .select(['project_id', 'kind'])
+        .where('id', '=', artifactId)
+        .where('status', '=', 'writing')
+        .executeTakeFirst();
+      if (!pending) throw new Error('artifact is not pending');
+      if (SINGLETON_KINDS.includes(pending.kind)) {
+        const lockKey = `artifact_current:${context.orgId}:${pending.project_id}:${pending.kind}`;
+        await sql`SELECT pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtextextended(${lockKey}, 0))`.execute(trx);
+        await trx
+          .updateTable('artifacts')
+          .set({ superseded_at: new Date() })
+          .where('project_id', '=', pending.project_id)
+          .where('kind', '=', pending.kind)
+          .where('status', '=', 'ready')
+          .where('superseded_at', 'is', null)
+          .execute();
+      }
       const row = await trx
         .updateTable('artifacts')
         .set({ status: 'ready', size_bytes: content.size, sha256: content.sha256 })
@@ -147,7 +180,7 @@ export async function abandonArtifact(db: Kysely<Database>, context: TenantConte
 
 /**
  * 写入一个产物：登记 → 写对象 → 完成。任何一步失败都删除对象和登记行，不占配额，再把错误抛给调用方。
- * 产物是解析结果（Markdown、图片）或样张 docx，在内存中生成，所以只接受 Buffer。
+ * 产物是解析结果（Markdown、图片）或导出的 docx，在内存中生成，所以只接受 Buffer。
  */
 export async function writeArtifact(
   db: Kysely<Database>,
