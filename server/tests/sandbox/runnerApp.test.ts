@@ -18,7 +18,7 @@ const TOKEN = 'runner-token-'.padEnd(48, 'x');
 const JOB_ID = '7d3c9b0e-1f2a-4b5c-8d6e-0f1a2b3c4d5e';
 const OTHER_JOB = '00000000-0000-4000-8000-000000000001';
 const SANDBOX_ID = '11111111-2222-4333-8444-555555555555';
-/** export-document 模板的沙箱（输入至多 1 GiB），用于大请求体。 */
+/** export-document 模板的沙箱（输入至多 128 MiB），用于大请求体。 */
 const EXPORT_IDS = Array.from({ length: 4 }, (_, index) => `22222222-2222-4333-8444-55555555555${index}`);
 
 /** 不访问 Docker 的 driver 桩：只认 SANDBOX_ID + JOB_ID，记录调用。 */
@@ -297,9 +297,10 @@ describe('sandbox-runner http api', () => {
   });
 
   it('keeps its memory flat while several large archives stream in concurrently', async () => {
-    // 4 个并发请求、每个约 240 MiB（合计约 960 MiB），“tar”写得比网络慢。整体缓存时内存至少增长约 1 GiB。
+    // 4 个并发请求、每个约 120 MiB（export-document 的输入上限 128 MiB 以内，合计约 480 MiB），“tar”写得比网络慢。
+    // 整体缓存时内存至少增长约 480 MiB。
     fake.setConsumeDelay(4 * MIB);
-    const uploads = EXPORT_IDS.map((_, index) => generatedArchive(3, 80 * MIB, index + 1));
+    const uploads = EXPORT_IDS.map((_, index) => generatedArchive(3, 40 * MIB, index + 1));
     const baseline = process.memoryUsage().rss;
     let peak = baseline;
     const sampler = setInterval(() => {

@@ -95,15 +95,18 @@ describe('export templates', () => {
     expect(preview.lifetimeMs).toBeGreaterThan(preview.commands.export!.timeoutMs + 2 * preview.transferTimeoutMs);
   });
 
-  it('applies the whole-document limits of step 7 decision 5 (2 GiB memory, 1 CPU, 20 minutes, 1 GiB input, 2,000 images)', () => {
+  it('applies the whole-document limits of step 7 decision 5 and 7.4b (2 GiB memory, 1 CPU, 20 minutes, 128 MiB input, 2,000 images)', () => {
     const document = SANDBOX_TEMPLATES['export-document'];
     expect(document.memoryBytes).toBe(2 * GIB);
     expect(document.commands.export!.timeoutMs).toBe(20 * 60_000);
-    expect(document.input.maxTotalBytes).toBe(1 * GIB);
+    expect(document.input.maxTotalBytes).toBe(128 * MIB);
     expect(document.input.maxFiles).toBe(2_001);
     expect(document.lifetimeMs).toBeGreaterThan(document.commands.export!.timeoutMs + 2 * document.transferTimeoutMs);
     // 输入、装饰与助手写出的 docx 都在 /work 中。
     expect(document.tmpfs['/work']!.bytes).toBeGreaterThanOrEqual(document.input.maxTotalBytes + 100 * MIB);
+    // 7.4b：tmpfs 计入内存上限。写满全部 tmpfs，再加上助手约为输入 2 倍的内存（实测），仍在内存上限之内。
+    const tmpfsBytes = Object.values(document.tmpfs).reduce((sum, item) => sum + item.bytes, 0);
+    expect(tmpfsBytes + 2 * document.input.maxTotalBytes).toBeLessThanOrEqual(document.memoryBytes - 512 * MIB);
   });
 
   it('only runs the export entry with the mode fixed by the template', () => {

@@ -173,7 +173,10 @@ const EXPORT_PREVIEW_TEMPLATE: SandboxTemplate = Object.freeze({
 
 /**
  * export-document：技术方案整本导出 Word（7.4 起）。资源上限为第 7 步决定事项第 5 项的整本导出起步值：
- * 内存 2 GiB（无 swap）、CPU 1 核、墙钟 20 分钟；输入不超过 1 GiB、配图不超过 2,000 张，输出 docx 不超过 100 MiB。
+ * 内存 2 GiB（无 swap）、CPU 1 核、墙钟 20 分钟；配图不超过 2,000 张，输出 docx 不超过 100 MiB。
+ * 输入合计不超过 128 MiB（7.4b 由用户决定，原为 1 GiB）：tmpfs 计入内存上限，助手写 docx 时的内存约为配图字节数的
+ * 2 倍，2 GiB 下 512 MiB 以上的输入必然内存不足；而 PNG / JPEG 等已压缩的配图在 docx 中几乎压不动，超过约 100 MiB
+ * 本来就会因 docx 超过 100 MiB 而失败。实测见路线图“export-document 的 tmpfs 与内存”。
  */
 const EXPORT_DOCUMENT_TEMPLATE: SandboxTemplate = Object.freeze({
   name: 'export-document',
@@ -186,8 +189,9 @@ const EXPORT_DOCUMENT_TEMPLATE: SandboxTemplate = Object.freeze({
   openFilesLimit: 1024,
   tmpfs: Object.freeze({
     '/tmp': { bytes: 512 * MIB, owner: 'root' as const },
-    // 输入 1 GiB，另留出装饰 PNG 与助手写出的 docx（不超过 100 MiB）的空间。
-    '/work': { bytes: 1 * GIB + 256 * MIB, owner: 'sandbox' as const },
+    // 输入 128 MiB，另留出装饰 PNG 与助手写出的 docx（不超过 100 MiB，助手写完才检查大小）的空间。
+    // 输入、/work 中的 docx 与复制到 /output 的 docx 都计入内存：实测 100 MiB 不可压缩配图的导出峰值约 520 MiB。
+    '/work': { bytes: 384 * MIB, owner: 'sandbox' as const },
     '/output': { bytes: 128 * MIB, owner: 'sandbox' as const },
   }),
   input: Object.freeze({
@@ -197,7 +201,8 @@ const EXPORT_DOCUMENT_TEMPLATE: SandboxTemplate = Object.freeze({
     maxFiles: 2_001,
     // 单张配图不超过产物的大小上限（迁移 0008 的 MAX_ARTIFACT_BYTES）。
     maxFileBytes: 100 * MIB,
-    maxTotalBytes: 1 * GIB,
+    // 与输出 docx 的 100 MiB 上限对齐并留出余量（含 request.json）；worker 在新建沙箱之前按所引用配图的合计大小拒绝（7.4e）。
+    maxTotalBytes: 128 * MIB,
     extensions: null,
   }),
   output: EXPORT_OUTPUT,

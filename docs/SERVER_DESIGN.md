@@ -510,7 +510,7 @@ AI 网关（worker 内）── 解密 Key ──> 模型服务商
 - **接口**：`SandboxDriver`（`server/src/sandbox/driver.ts`）的 `create / copyIn / exec / copyOut / destroy`。worker 用 HTTP 客户端（`client.ts`），sandbox-runner 用 Docker 实现（`docker.ts`）；换成微虚拟机时只换后者。
 - **模板**（`templates.ts`）：镜像、网络、用户、只读、资源、可写目录、命令、取回规则都写死在代码中，调用方只选模板名；`parse` 的参数见第 7.4 节的表，取值为路线图第 6 步决定事项第 5 项的起步值。容器的主进程只是 `sleep`，命令经 exec 执行，超时或调用方中止时终止整个容器。
 - **sandbox-runner**（`src/sandbox-runner.ts`）：唯一能访问容器运行时的服务，只在 internal 网络 `sandbox-control` 上监听（只有 worker 能连到；沙箱是 `--network none`，连不到它，有测试），每个请求在路由之前校验共享令牌（SHA-256 后 `timingSafeEqual`，缺失或不符 401）；生产环境不直接挂载完整权限的 Docker socket，经只放行必要接口并校验创建参数的 Docker API 代理或 rootless Docker（路线图第 9 步上线检查）；沙箱的模板、任务 id、到期时间写在容器标签中，每次操作核对标签，不是它创建的容器一律按不存在处理；到期的沙箱定期删除。生产环境只允许 `runsc`、镜像必须按摘要固定，启动时检查运行时已登记。
-- **输入输出**：经 exec 中的 `tar` 传送（gVisor 下 `docker cp` 不能写入只读根文件系统上的 tmpfs）。取回的归档按第 7.3 节“工作区取回”的规则在 worker 中逐项校验（`archive.ts`），任一项不符整体拒绝；sandbox-runner 只转出并限制字节数，不解析沙箱的输出。放入的归档（worker 生成）在 sandbox-runner 中**流式**校验与转发（路线图 7.4a）：请求体不经 Fastify 缓冲，按模板的输入规则边读边校验，一个条目的头部只在通过校验后才转给沙箱内的 `tar`，文件内容按 64 KiB 分块转发，读入的字节数超过模板上限即中止；声明的 `Content-Length` 已超上限时不碰沙箱、直接 400；中途不符时之前的条目可能已放入，整个沙箱被终止（之后只能 destroy），返回 `SANDBOX_BAD_REQUEST`。sandbox-runner 的内存因此与放入的归档大小无关（export-document 的输入至多约 1.1 GiB，export 队列并发 2）。
+- **输入输出**：经 exec 中的 `tar` 传送（gVisor 下 `docker cp` 不能写入只读根文件系统上的 tmpfs）。取回的归档按第 7.3 节“工作区取回”的规则在 worker 中逐项校验（`archive.ts`），任一项不符整体拒绝；sandbox-runner 只转出并限制字节数，不解析沙箱的输出。放入的归档（worker 生成）在 sandbox-runner 中**流式**校验与转发（路线图 7.4a）：请求体不经 Fastify 缓冲，按模板的输入规则边读边校验，一个条目的头部只在通过校验后才转给沙箱内的 `tar`，文件内容按 64 KiB 分块转发，读入的字节数超过模板上限即中止；声明的 `Content-Length` 已超上限时不碰沙箱、直接 400；中途不符时之前的条目可能已放入，整个沙箱被终止（之后只能 destroy），返回 `SANDBOX_BAD_REQUEST`。sandbox-runner 的内存因此与放入的归档大小无关（parse 的输入至多约 192 MiB、export-document 至多约 128 MiB，export 队列并发 2）。
 - **镜像**：`server/sandbox/parse/Dockerfile`，Node 24 + LibreOffice（Writer、Calc，无图形界面）+ 中文字体，删除包管理器和 setuid 位；解析入口和其 npm 依赖随 6.6 加入。
 - **测试**：`npm run test:sandbox`（CI 中在 gVisor 下运行，含 LibreOffice 转换）逐项验证断网、只读、无能力、资源上限、超时、取回校验和沙箱之间不共享，并用去掉加固的对照组证明测试有效；LibreOffice 在 gVisor 下的耗时记录在 CI 日志中。
 
@@ -553,9 +553,11 @@ Word 导出与模板样张由 OpenXmlHelper 生成 docx，页眉页脚装饰 SVG
   | 模板 | 内存（无 swap） | CPU | 命令墙钟 | 沙箱最长存活 | 输入（`/work`） | 可写目录（tmpfs） |
   |---|---|---|---|---|---|---|
   | `export-preview`（样张） | 1 GiB | 1 核 | 60 秒 | 5 分钟 | 至多 32 个文件、合计 64 MiB | `/tmp` 256 MiB、`/work` 192 MiB、`/output` 128 MiB |
-  | `export-document`（整本导出） | 2 GiB | 1 核 | 20 分钟 | 35 分钟 | 配图至多 2,000 张 + 请求，单个 100 MiB、合计 1 GiB | `/tmp` 512 MiB、`/work` 1.25 GiB、`/output` 128 MiB |
+  | `export-document`（整本导出） | 2 GiB | 1 核 | 20 分钟 | 35 分钟 | 配图至多 2,000 张 + 请求，单个 100 MiB、合计 128 MiB（7.4b） | `/tmp` 512 MiB、`/work` 384 MiB、`/output` 128 MiB |
 
   可执行的命令只有 `export`（`node /opt/export/entry.mjs preview|document`，模式由模板写死，不能追加参数）；取回只收 `document.docx` 和 `result.json` 两个普通文件，docx 不超过 100 MiB。
+
+  tmpfs 计入内存上限（路线图 7.4b）：输入在 `/work`，助手写出的 docx 在 `/work` 的任务目录，入口再复制一份到 `/output`，助手写 docx 时的内存约为配图字节数的 2 倍（实测）。export-document 的输入合计因此定为 128 MiB（原为 1 GiB，2 GiB 内存下 512 MiB 以上的输入必然内存不足），与输出 docx 的 100 MiB 上限对齐——PNG / JPEG 等已压缩的配图在 docx 中几乎压不动，超过约 100 MiB 本来就会因 docx 过大而失败。worker 在新建沙箱之前按所引用配图的合计大小拒绝（7.4e）。
 - **镜像**（`server/sandbox/export/Dockerfile`）：Node 24 + `playwright-core` 与其对应版本的 chromium-headless-shell + OpenXmlHelper 的 linux-x64 自包含发布（不裁剪；不打成单文件，单文件要把原生库解压到可写目录再加载，而 `/tmp` 是 noexec）+ Noto CJK 字体与 fontconfig 映射（模板可选的中文字体名按衬线 / 无衬线映射到 Noto Serif / Sans CJK SC，决定事项第 3 项）。装饰生成器与助手源码经具名构建上下文取自 `client/electron/shared/chrome` 与 `openxmlhelper/`，与桌面版同一份代码（测试逐个文件核对）。.NET SDK 只在构建阶段；删除包管理器和 setuid 位，与 parse 镜像、第 8 步的 Agent 镜像分开。
 - **入口**（`entry.mjs`）：读 `/work/request.json`（受限 HTML、已规范化的 `export_format`、可选的 `asset_types`）与 `/work/assets/` 中的配图（只有一层，文件名就是 `data-app-asset-ref`；样张不接受，见下方 7.3b）→ 用装饰生成器生成页眉页脚 SVG → Chromium 栅格化（`render.mjs`）→ 运行助手一次（`openxmlhelper --workspace /work --run export`，独立进程组，超时对整个进程组 SIGKILL）→ 只把 docx 与只含已知字段的 `result.json` 写到 `/output`。失败时输出目录为空，只在标准输出给错误代码（参数不合法 64，导出失败 65），助手与浏览器的错误文字不外传。
 - **Chromium**：**禁用 JavaScript**（浏览器上下文 `javaScriptEnabled: false`），关闭 Chromium 自身的沙箱（`--no-sandbox`，外层是本节的沙箱），每次截图一个新的浏览器上下文；页面固定尺寸、加载后直接截图，与桌面版 `renderExactHtmlToPng` 相同。第 8 步中必须执行脚本的渲染届时逐项由用户决定（决定事项第 9 项）。

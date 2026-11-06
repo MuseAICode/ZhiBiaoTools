@@ -18,7 +18,8 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { SandboxFile } from '../../../src/sandbox/archive.ts';
 import type { DockerSandboxDriver } from '../../../src/sandbox/docker.ts';
 import type { SandboxRef } from '../../../src/sandbox/driver.ts';
-import type { SandboxTemplateName } from '../../../src/sandbox/templates.ts';
+import { SANDBOX_TEMPLATES, type SandboxTemplateName } from '../../../src/sandbox/templates.ts';
+import { normalizeExportFormat } from '../../../src/templates/exportFormat.ts';
 import { sandboxEnv } from './env.ts';
 import {
   DECORATION_STYLES,
@@ -29,7 +30,7 @@ import {
   digestChrome,
   type ChromeDigest,
 } from './exportDecorationCases.ts';
-import { decodePng, grayPng, readZipEntries } from './exportFixtures.ts';
+import { decodePng, grayPng, noisePng, readZipEntries } from './exportFixtures.ts';
 import { bridgeGateway, createIsolationHarness } from './isolationSuite.ts';
 
 const exportImage = sandboxEnv.exportImage ?? '';
@@ -308,6 +309,36 @@ describe.runIf(sandboxEnv.exportImage)('export entry', () => {
     expect(docxText(docx)).toContain('整本正文');
     console.info(JSON.stringify({ runtime: sandboxEnv.runtime, template: 'export-document', ...run.timings }));
   });
+
+  // 7.4b：tmpfs 计入内存上限。接近输出上限的不可压缩配图（docx 与输入几乎一样大）在 2 GiB 下导出成功——
+  // 输入、/work 中的 docx、复制到 /output 的 docx 都在 tmpfs 中，助手写 docx 时的内存约为配图字节数的 2 倍。
+  it('exports about 96 MiB of incompressible images within the whole-document memory limit (7.4b)', async () => {
+    const MIB = 1024 * 1024;
+    const assets: Record<string, Buffer> = {};
+    let figures = '';
+    for (let index = 0; index < 24; index += 1) {
+      const name = `noise-${String(index).padStart(2, '0')}.png`;
+      assets[name] = noisePng(4 * MIB);
+      figures += `<figure data-app-size="wide"><img data-app-asset-ref="${name}" alt="配图 ${index}"><figcaption>图 ${index}</figcaption></figure>`;
+    }
+    const total = Object.values(assets).reduce((sum, data) => sum + data.length, 0);
+    expect(total).toBeLessThan(SANDBOX_TEMPLATES['export-document'].input.maxTotalBytes);
+    const run = await exportIn(
+      'export-document',
+      requestFiles(
+        {
+          html: `<section data-app-export-template="true" data-app-export-page-template="true"><h1 data-app-outline-number="1">配图</h1><p>整本正文。</p>${figures}</section>`,
+          export_format: normalizeExportFormat({}),
+        },
+        assets,
+      ),
+    );
+    const { docx, result } = outputOf(run);
+    expect(result.imageWarnings).toEqual([]);
+    const embedded = [...docx.keys()].filter((name) => name.endsWith('.png'));
+    expect(embedded).toHaveLength(24);
+    console.info(JSON.stringify({ runtime: sandboxEnv.runtime, template: 'export-document', inputMiB: Math.round(total / MIB), ...run.timings }));
+  }, 300_000);
 
   it.each([
     ['malformed request.json', () => requestFiles(Buffer.from('{not json'))],

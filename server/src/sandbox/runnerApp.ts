@@ -88,7 +88,7 @@ export async function buildSandboxRunnerApp(options: SandboxRunnerAppOptions): P
     bodyLimit: JSON_BODY_LIMIT,
   });
   registerErrorHandlers(app);
-  // 输入归档（export-document 至多约 1.1 GiB）不在内存中整体缓存：把请求流原样交给路由，由 driver 边读边校验、
+  // 输入归档（parse 至多约 192 MiB、export-document 至多约 128 MiB，另加头部）不在内存中整体缓存：把请求流原样交给路由，由 driver 边读边校验、
   // 只把通过校验的条目转给沙箱内的 tar（src/sandbox/archive.ts 的 validateArchiveStream），超过模板上限即中止。
   app.addContentTypeParser('application/x-tar', (_request, payload, done) => done(null, payload));
 
