@@ -1,6 +1,7 @@
 // 进出沙箱的 tar 归档（docs/SERVER_DESIGN.md 第 7.3、7.5 节）。不依赖第三方库。
 //
-// 写（copyIn）：只写普通文件，ustar 格式，路径由调用方给出、先按同样的规则校验。
+// 写（copyIn）：只写普通文件，ustar 格式，路径由调用方给出、先按同样的规则校验。内存中的文件可以一次生成（createArchive），
+// 按需读取的文件（对象存储中的配图等）边读边生成（createArchiveStream），不在内存中缓存整个归档。
 // 读（copyOut）：归档由沙箱内的 tar 生成，沙箱内的代码可以控制它的全部内容（例如 ptrace 同一用户的 tar 进程），
 // 所以按不可信输入逐项校验，任何一项不符即整体拒绝：
 // - 只收普通文件（和目录，目录本身不产出），拒绝符号链接、硬链接、设备文件、FIFO、稀疏文件和其他类型；
@@ -19,6 +20,19 @@ export interface SandboxFile {
   readonly path: string;
   readonly data: Buffer;
 }
+
+/**
+ * 放入沙箱时按需读取的文件（7.4e 起，例如整本导出的配图从对象存储读取）：size 必须事先知道（写进 tar 头部），
+ * open 在归档生成到这个条目时才调用，返回的源必须正好产出 size 字节。
+ */
+export interface SandboxStreamFile {
+  readonly path: string;
+  readonly size: number;
+  open(signal?: AbortSignal): Promise<AsyncIterable<Uint8Array>>;
+}
+
+/** copyIn 的输入：内存中的文件或按需读取的文件。 */
+export type SandboxInputFile = SandboxFile | SandboxStreamFile;
 
 /** 归档不符合规则。reason 是固定的英文短语，不含归档中的文件名和内容。 */
 export class SandboxArchiveError extends Error {
@@ -68,10 +82,20 @@ function writeOctal(header: Buffer, offset: number, length: number, value: numbe
   header.write(`${value.toString(8).padStart(length - 1, '0')}\0`, offset, length, 'ascii');
 }
 
-/** 生成只含普通文件的 ustar 归档（copyIn）。路径按 limits 校验，不合法时抛 SandboxArchiveError。 */
-export function createArchive(files: readonly SandboxFile[], limits: SandboxTransferLimits): Buffer {
+/** 一个已校验、待写入归档的条目。 */
+interface PlannedEntry {
+  readonly path: string;
+  readonly file: SandboxInputFile;
+  readonly size: number;
+}
+
+/**
+ * 写入前一次校验全部条目（数量、路径、重复、单个与合计大小），不合法时抛 SandboxArchiveError。
+ * 流式条目只看声明的 size，不打开它：任何一项不符时一个字节都不产出、一个对象都不读取。
+ */
+function planArchive(files: readonly SandboxInputFile[], limits: SandboxTransferLimits): PlannedEntry[] {
   if (files.length > limits.maxFiles) throw new SandboxArchiveError('too many files');
-  const parts: Buffer[] = [];
+  const planned: PlannedEntry[] = [];
   const seen = new Set<string>();
   let total = 0;
   for (const file of files) {
@@ -79,30 +103,144 @@ export function createArchive(files: readonly SandboxFile[], limits: SandboxTran
     if (path.length > 100) throw new SandboxArchiveError('path too long');
     if (seen.has(path)) throw new SandboxArchiveError('duplicate path');
     seen.add(path);
-    if (file.data.length > limits.maxFileBytes) throw new SandboxArchiveError('file too large');
-    total += file.data.length;
+    const size = isStreamFile(file) ? file.size : file.data.length;
+    if (!Number.isSafeInteger(size) || size < 0) throw new SandboxArchiveError('file size invalid');
+    if (size > limits.maxFileBytes) throw new SandboxArchiveError('file too large');
+    total += size;
     if (total > limits.maxTotalBytes) throw new SandboxArchiveError('archive too large');
+    planned.push({ path, file, size });
+  }
+  return planned;
+}
 
-    const header = Buffer.alloc(BLOCK);
-    writeString(header, 0, 100, path);
-    writeOctal(header, 100, 8, 0o600);
-    writeOctal(header, 108, 8, 0);
-    writeOctal(header, 116, 8, 0);
-    writeOctal(header, 124, 12, file.data.length);
-    writeOctal(header, 136, 12, 0);
-    header.fill(0x20, 148, 156);
-    header.write('0', 156, 1, 'ascii');
-    header.write('ustar\0', 257, 6, 'ascii');
-    header.write('00', 263, 2, 'ascii');
-    let sum = 0;
-    for (const byte of header) sum += byte;
-    header.write(`${sum.toString(8).padStart(6, '0')}\0 `, 148, 8, 'ascii');
-    parts.push(header, file.data);
-    const padding = (BLOCK - (file.data.length % BLOCK)) % BLOCK;
+function isStreamFile(file: SandboxInputFile): file is SandboxStreamFile {
+  return typeof (file as Partial<SandboxStreamFile>).open === 'function';
+}
+
+function entryHeader(path: string, size: number): Buffer {
+  const header = Buffer.alloc(BLOCK);
+  writeString(header, 0, 100, path);
+  writeOctal(header, 100, 8, 0o600);
+  writeOctal(header, 108, 8, 0);
+  writeOctal(header, 116, 8, 0);
+  writeOctal(header, 124, 12, size);
+  writeOctal(header, 136, 12, 0);
+  header.fill(0x20, 148, 156);
+  header.write('0', 156, 1, 'ascii');
+  header.write('ustar\0', 257, 6, 'ascii');
+  header.write('00', 263, 2, 'ascii');
+  let sum = 0;
+  for (const byte of header) sum += byte;
+  header.write(`${sum.toString(8).padStart(6, '0')}\0 `, 148, 8, 'ascii');
+  return header;
+}
+
+function paddingFor(size: number): number {
+  return (BLOCK - (size % BLOCK)) % BLOCK;
+}
+
+/** 生成只含普通文件的 ustar 归档（copyIn）。路径按 limits 校验，不合法时抛 SandboxArchiveError。只接受内存中的文件。 */
+export function createArchive(files: readonly SandboxFile[], limits: SandboxTransferLimits): Buffer {
+  const parts: Buffer[] = [];
+  for (const entry of planArchive(files, limits)) {
+    const data = (entry.file as SandboxFile).data;
+    parts.push(entryHeader(entry.path, entry.size), data);
+    const padding = paddingFor(entry.size);
     if (padding > 0) parts.push(Buffer.alloc(padding));
   }
   parts.push(Buffer.alloc(BLOCK * 2));
   return Buffer.concat(parts);
+}
+
+/** 文件列表中是否有需要流式读取的条目。 */
+export function hasStreamFiles(files: readonly SandboxInputFile[]): boolean {
+  return files.some(isStreamFile);
+}
+
+export interface ArchiveStream {
+  /** 归档的确切字节数（头部、内容、对齐与结束块），可作为 Content-Length。 */
+  readonly byteLength: number;
+  /** 归档的字节；只能迭代一次。 */
+  readonly chunks: AsyncIterable<Buffer>;
+  /**
+   * 使生成中止的错误（字节数不符的 SandboxArchiveError、源的 open 或读取错误、中止）；没有时为 undefined。
+   * 消费方（fetch、Readable）往往把它包成自己的错误，调用方据此判断失败是否来自输入本身。
+   */
+  readonly failure: unknown;
+}
+
+/**
+ * 边读边生成只含普通文件的 ustar 归档（copyIn，worker 端），不在内存中缓存整个归档或整个文件：
+ * - 生成之前一次校验全部条目（与 createArchive 相同的规则），不合法时同步抛 SandboxArchiveError，不打开任何流式条目；
+ * - 流式条目按顺序、轮到它时才 open，同一时刻至多一个打开；它的内容原样（按源的分块）转出；
+ * - 源产出的字节数必须正好等于声明的 size：多了立即停止读取，少了在源结束时，都抛 SandboxArchiveError('file size mismatch')；
+ *   此时之前的条目可能已交给下游，下游（sandbox-runner）收到的是被截断的归档，调用方必须丢弃整个沙箱；
+ * - 源的 open 或读取出错时原样抛出；消费方提前结束、出错或 signal 中止时关闭当前的源。
+ */
+export function createArchiveStream(files: readonly SandboxInputFile[], limits: SandboxTransferLimits, options: { signal?: AbortSignal } = {}): ArchiveStream {
+  const planned = planArchive(files, limits);
+  let byteLength = BLOCK * 2;
+  for (const entry of planned) byteLength += BLOCK + entry.size + paddingFor(entry.size);
+  let started = false;
+  let failure: unknown;
+  async function* generate(): AsyncGenerator<Buffer> {
+    if (started) throw new Error('archive stream can only be consumed once');
+    started = true;
+    try {
+      yield* entries();
+    } catch (error) {
+      failure = error;
+      throw error;
+    }
+  }
+  async function* entries(): AsyncGenerator<Buffer> {
+    for (const entry of planned) {
+      options.signal?.throwIfAborted();
+      yield entryHeader(entry.path, entry.size);
+      if (isStreamFile(entry.file)) {
+        let remaining = entry.size;
+        const source = await entry.file.open(options.signal);
+        const iterator = source[Symbol.asyncIterator]();
+        // 中止时立即释放源：读取可能正停在等待对象存储的下一块数据上。异步迭代器的 return 要排在未完成的 next 之后，
+        // 不能打断它，所以可销毁的源（Readable，例如对象存储的响应体）直接销毁。
+        const release = () => {
+          const destroyable = source as { destroy?: unknown };
+          if (typeof destroyable.destroy === 'function') (destroyable.destroy as () => void).call(source);
+          else void Promise.resolve(iterator.return?.()).catch(() => {});
+        };
+        options.signal?.addEventListener('abort', release, { once: true });
+        try {
+          for (;;) {
+            const next = await iterator.next();
+            if (next.done) break;
+            const chunk = Buffer.from(next.value.buffer, next.value.byteOffset, next.value.byteLength);
+            if (chunk.length === 0) continue;
+            if (chunk.length > remaining) throw new SandboxArchiveError('file size mismatch');
+            remaining -= chunk.length;
+            yield chunk;
+          }
+        } finally {
+          options.signal?.removeEventListener('abort', release);
+          // 正常读完时 return 是空操作；提前结束或出错时释放源（例如中止对象存储的响应）。
+          await iterator.return?.();
+        }
+        options.signal?.throwIfAborted();
+        if (remaining !== 0) throw new SandboxArchiveError('file size mismatch');
+      } else if (entry.size > 0) {
+        yield entry.file.data;
+      }
+      const padding = paddingFor(entry.size);
+      if (padding > 0) yield Buffer.alloc(padding);
+    }
+    yield Buffer.alloc(BLOCK * 2);
+  }
+  return {
+    byteLength,
+    chunks: { [Symbol.asyncIterator]: () => generate() },
+    get failure() {
+      return failure;
+    },
+  };
 }
 
 /** 按需读取固定字节数的流式读取器；超过 maxBytes 即拒绝（不再读入更多数据）。 */

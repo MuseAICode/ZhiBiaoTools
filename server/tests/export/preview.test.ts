@@ -47,7 +47,8 @@ function fakeDriver(options: FakeOptions = {}) {
     },
     async copyIn(_sandbox, files) {
       calls.push('copyIn');
-      copied.push([...files]);
+      // 样张只放入内存中的 request.json。
+      copied.push([...(files as readonly SandboxFile[])]);
     },
     async exec(_sandbox, command, args) {
       calls.push(`exec:${command}:${args.length}`);

@@ -108,7 +108,8 @@ function fakeSandbox(behavior: ExecBehavior): FakeSandbox {
     },
     async copyIn(_sandbox, files) {
       fake.calls.push('copyIn');
-      fake.inputs.push([...files]);
+      // 解析只放入内存中的文件。
+      fake.inputs.push([...(files as readonly SandboxFile[])]);
     },
     async exec(_sandbox, command, args, options = {}): Promise<SandboxExecResult> {
       fake.calls.push(`exec:${command} ${args.join(' ')}`);

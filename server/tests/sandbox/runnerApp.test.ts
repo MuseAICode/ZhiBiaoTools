@@ -8,7 +8,7 @@ import { SandboxError, type SandboxDriver, type SandboxRef } from '../../src/san
 import { createHash } from 'node:crypto';
 import { request as httpRequest } from 'node:http';
 import { setTimeout as sleep } from 'node:timers/promises';
-import { createArchive, maxArchiveBytes, validateArchiveStream } from '../../src/sandbox/archive.ts';
+import { createArchive, createArchiveStream, maxArchiveBytes, validateArchiveStream, type SandboxStreamFile } from '../../src/sandbox/archive.ts';
 import { buildSandboxRunnerApp } from '../../src/sandbox/runnerApp.ts';
 import { resolveCommand, SANDBOX_TEMPLATES } from '../../src/sandbox/templates.ts';
 import { createLogCapture } from '../helpers.ts';
@@ -315,6 +315,140 @@ describe('sandbox-runner http api', () => {
     uploads.forEach((upload, index) => expect(fake.received.get(EXPORT_IDS[index]!)).toEqual(upload.expected()));
     expect(peak - baseline).toBeLessThan(200 * MIB);
   }, 120_000);
+
+  /** 按需读取的文件：内容由同一块缓冲区重复组成，记录打开、读完与释放；fail / extra 模拟源出错与字节数不符。 */
+  function streamFile(path: string, size: number, fill: number, state: { open: number; maxOpen: number; opened: string[]; released: string[] }, options: { failAfter?: number; extra?: number; stall?: boolean } = {}): SandboxStreamFile {
+    const block = Buffer.alloc(MIB, fill);
+    return {
+      path,
+      size,
+      async open() {
+        state.open += 1;
+        state.maxOpen = Math.max(state.maxOpen, state.open);
+        state.opened.push(path);
+        const total = size + (options.extra ?? 0);
+        if (options.stall) {
+          // 与对象存储的响应体相同是 Readable：给出第一块后不再有数据，销毁时释放。
+          const stalled = new Readable({ read() {} });
+          stalled.push(block);
+          stalled.once('close', () => {
+            state.open -= 1;
+            state.released.push(path);
+          });
+          return stalled;
+        }
+        async function* source() {
+          try {
+            for (let sent = 0; sent < total; sent += MIB) {
+              if (options.failAfter !== undefined && sent >= options.failAfter) throw new Error('object store connection reset');
+              yield block.subarray(0, Math.min(MIB, total - sent));
+            }
+          } finally {
+            state.open -= 1;
+            state.released.push(path);
+          }
+        }
+        return source();
+      },
+    };
+  }
+  const openState = () => ({ open: 0, maxOpen: 0, opened: [] as string[], released: [] as string[] });
+  const exportRef = (index: number): SandboxRef => ({ id: EXPORT_IDS[index]!, template: 'export-document', jobId: JOB_ID, expiresAt: new Date('2030-01-01T00:00:00Z') });
+
+  it('streams files read on demand through the client, opening one source at a time', async () => {
+    const state = openState();
+    const request = { path: 'request.json', data: Buffer.from('{"html":"<p>x</p>"}') };
+    const sizes = [5 * MIB + 3, 0, 2 * MIB, 513];
+    const files = [request, ...sizes.map((size, index) => streamFile(`assets/image-${index}`, size, index + 1, state))];
+    const inMemory = [request, ...sizes.map((size, index) => ({ path: `assets/image-${index}`, data: Buffer.alloc(size, index + 1) }))];
+    const archive = createArchive(inMemory, SANDBOX_TEMPLATES['export-document'].input);
+    expect(createArchiveStream(files, SANDBOX_TEMPLATES['export-document'].input).byteLength).toBe(archive.length);
+
+    await client.copyIn(exportRef(0), files);
+    expect(fake.received.get(EXPORT_IDS[0]!)).toEqual({ bytes: archive.length, sha256: createHash('sha256').update(archive).digest('hex') });
+    expect(state.opened).toEqual(sizes.map((_, index) => `assets/image-${index}`));
+    expect(state.released).toEqual(state.opened);
+    expect(state.maxOpen).toBe(1);
+  });
+
+  it('keeps the worker and the runner memory flat while several on-demand uploads stream concurrently', async () => {
+    // 4 个并发放入、每个 3 张 40 MiB 的配图（合计约 480 MiB），worker 端按需读取、runner 端“tar”写得比网络慢。
+    // 任何一端整体缓存时内存至少增长约 480 MiB。
+    fake.setConsumeDelay(4 * MIB);
+    const states = EXPORT_IDS.map(() => openState());
+    const uploads = EXPORT_IDS.map((_, index) => [0, 1, 2].map((image) => streamFile(`assets/image-${image}`, 40 * MIB, index + 1, states[index]!)));
+    const expected = EXPORT_IDS.map((_, index) => {
+      const hash = createHash('sha256');
+      const block = Buffer.alloc(40 * MIB, index + 1);
+      let bytes = 0;
+      for (let image = 0; image < 3; image += 1) {
+        const header = createArchive([{ path: `assets/image-${image}`, data: block }], SANDBOX_TEMPLATES['export-document'].input).subarray(0, 512);
+        hash.update(header).update(block);
+        bytes += 512 + block.length;
+      }
+      hash.update(END_OF_ARCHIVE);
+      return { bytes: bytes + END_OF_ARCHIVE.length, sha256: hash.digest('hex') };
+    });
+    global.gc?.();
+    const baseline = process.memoryUsage().rss;
+    let peak = baseline;
+    const sampler = setInterval(() => {
+      peak = Math.max(peak, process.memoryUsage().rss);
+    }, 10);
+    try {
+      await Promise.all(uploads.map((files, index) => client.copyIn(exportRef(index), files)));
+    } finally {
+      clearInterval(sampler);
+    }
+    EXPORT_IDS.forEach((id, index) => expect(fake.received.get(id)).toEqual(expected[index]));
+    states.forEach((state) => expect(state.maxOpen).toBe(1));
+    expect(peak - baseline).toBeLessThan(200 * MIB);
+  }, 120_000);
+
+  it('rejects invalid on-demand files before opening any of them or contacting the runner', async () => {
+    const state = openState();
+    const limits = SANDBOX_TEMPLATES['export-document'].input;
+    for (const files of [
+      [streamFile('assets/a', limits.maxFileBytes, 1, state), streamFile('assets/b', limits.maxTotalBytes - limits.maxFileBytes + 1, 1, state)],
+      [streamFile('../a', 1, 1, state)],
+      [streamFile('assets/a', 1, 1, state), streamFile('assets/a', 1, 1, state)],
+      [streamFile('assets/a', -1, 1, state)],
+      [streamFile('assets/a', 1.5, 1, state)],
+      [streamFile('assets/a', limits.maxFileBytes + 1, 1, state)],
+    ]) {
+      await expect(client.copyIn(exportRef(0), files)).rejects.toMatchObject({ code: 'SANDBOX_BAD_REQUEST' });
+    }
+    expect(state.opened).toEqual([]);
+    expect(fake.calls).toEqual([]);
+  });
+
+  it('fails as input-failed when a source errors midway, and as a bad request when it yields the wrong number of bytes', async () => {
+    const state = openState();
+    const request = { path: 'request.json', data: Buffer.from('{}') };
+    const failing = client.copyIn(exportRef(0), [request, streamFile('assets/a', 8 * MIB, 1, state, { failAfter: 3 * MIB })]);
+    await expect(failing).rejects.toMatchObject({ code: 'SANDBOX_INPUT_FAILED', cause: { message: 'object store connection reset' } });
+    for (const options of [{ extra: 1 }, { extra: -1 }, { extra: -(2 * MIB) }]) {
+      await expect(client.copyIn(exportRef(0), [request, streamFile('assets/a', 4 * MIB, 1, state, options)])).rejects.toMatchObject({ code: 'SANDBOX_BAD_REQUEST', cause: { reason: 'file size mismatch' } });
+    }
+    // runner 收到的都是被截断的归档：没有一次放入成功（真实 driver 此时终止整个沙箱）。
+    await sleep(50);
+    expect(fake.received.has(EXPORT_IDS[0]!)).toBe(false);
+    expect(state.released).toEqual(state.opened);
+    expect(state.open).toBe(0);
+  });
+
+  it('aborts an on-demand upload and releases the source that is being read', async () => {
+    const state = openState();
+    const controller = new AbortController();
+    const upload = client.copyIn(exportRef(0), [streamFile('assets/a', 8 * MIB, 1, state, { stall: true })], { signal: controller.signal });
+    while (state.opened.length === 0) await sleep(5);
+    await sleep(20);
+    controller.abort();
+    await expect(upload).rejects.toMatchObject({ code: 'SANDBOX_ABORTED' });
+    while (state.open > 0) await sleep(5);
+    expect(state.released).toEqual(['assets/a']);
+    expect(fake.received.has(EXPORT_IDS[0]!)).toBe(false);
+  });
 
   it('round-trips through the client', async () => {
     const ref = await client.create('parse', { jobId: JOB_ID });
