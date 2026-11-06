@@ -1,0 +1,766 @@
+[
+  {
+    "name": "全部套用模板：人工正文的段落与强调",
+    "snapshot": {
+      "project_name": "某市智慧园区项目",
+      "export_template_scope": "document",
+      "outline": [
+        {
+          "id": "a",
+          "title": "总体方案",
+          "children": [
+            {
+              "id": "a1",
+              "title": "建设目标",
+              "content_mode": "manual-fill",
+              "content": "本项目**建设目标**如下。\n\n第二段，含 *斜体* 与 `代码`。"
+            }
+          ]
+        }
+      ]
+    },
+    "expected": {
+      "html": "<section data-app-export-template=\"true\" data-app-export-page-template=\"true\"><p style=\"text-align:center\"><em>内容由 AI 生成</em></p><p style=\"text-align:center\"><strong>某市智慧园区项目</strong></p>\n<h1 data-app-outline-number=\"1\">总体方案</h1>\n\n<h2 data-app-outline-number=\"1.1\">建设目标</h2>\n<p>本项目<strong>建设目标</strong>如下。</p>\n<p>第二段，含 <em>斜体</em> 与 <code>代码</code>。</p>\n</section>",
+      "warnings": [],
+      "message": "Word 已导出，请打开文档核对图片、表格和版式。"
+    }
+  },
+  {
+    "name": "项目名称为空时用默认名称",
+    "snapshot": {
+      "project_name": "",
+      "export_template_scope": "document",
+      "outline": [
+        {
+          "id": "a",
+          "title": "概述",
+          "content_mode": "manual-fill",
+          "content": "正文"
+        }
+      ]
+    },
+    "expected": {
+      "html": "<section data-app-export-template=\"true\" data-app-export-page-template=\"true\"><p style=\"text-align:center\"><em>内容由 AI 生成</em></p><p style=\"text-align:center\"><strong>投标技术文件</strong></p>\n<h1 data-app-outline-number=\"1\">概述</h1>\n<p>正文</p>\n</section>",
+      "warnings": [],
+      "message": "Word 已导出，请打开文档核对图片、表格和版式。"
+    }
+  },
+  {
+    "name": "没有项目名称字段",
+    "snapshot": {
+      "export_template_scope": "document",
+      "outline": [
+        {
+          "id": "a",
+          "title": "概述",
+          "content_mode": "manual-fill",
+          "content": "正文"
+        }
+      ]
+    },
+    "expected": {
+      "html": "<section data-app-export-template=\"true\" data-app-export-page-template=\"true\"><p style=\"text-align:center\"><em>内容由 AI 生成</em></p><p style=\"text-align:center\"><strong>投标技术文件</strong></p>\n<h1 data-app-outline-number=\"1\">概述</h1>\n<p>正文</p>\n</section>",
+      "warnings": [],
+      "message": "Word 已导出，请打开文档核对图片、表格和版式。"
+    }
+  },
+  {
+    "name": "项目名称与标题中的特殊字符被转义",
+    "snapshot": {
+      "project_name": "<A&B> \"项目\"",
+      "export_template_scope": "document",
+      "outline": [
+        {
+          "id": "a",
+          "title": "标题 <b>&amp; \"引号\" '单引号'",
+          "content_mode": "manual-fill",
+          "content": "正文"
+        }
+      ]
+    },
+    "expected": {
+      "html": "<section data-app-export-template=\"true\" data-app-export-page-template=\"true\"><p style=\"text-align:center\"><em>内容由 AI 生成</em></p><p style=\"text-align:center\"><strong>&lt;A&amp;B&gt; &quot;项目&quot;</strong></p>\n<h1 data-app-outline-number=\"1\">标题 &lt;b&gt;&amp;amp; &quot;引号&quot; '单引号'</h1>\n<p>正文</p>\n</section>",
+      "warnings": [],
+      "message": "Word 已导出，请打开文档核对图片、表格和版式。"
+    }
+  },
+  {
+    "name": "仅 AI 范围：全部人工节点使用基础样式",
+    "snapshot": {
+      "project_name": "项目",
+      "export_template_scope": "ai-only",
+      "outline": [
+        {
+          "id": "a",
+          "title": "一",
+          "children": [
+            {
+              "id": "a1",
+              "title": "一一",
+              "content_mode": "manual-fill",
+              "content": "甲"
+            },
+            {
+              "id": "a2",
+              "title": "一二",
+              "content_mode": "manual-fill",
+              "content": "乙"
+            }
+          ]
+        }
+      ]
+    },
+    "expected": {
+      "html": "<section data-app-export-template=\"false\" data-app-export-page-template=\"false\"><p style=\"text-align:center\"><em>内容由 AI 生成</em></p><p style=\"text-align:center\"><strong>项目</strong></p>\n<h1 data-app-outline-number=\"1\">一</h1>\n\n<h2 data-app-outline-number=\"1.1\">一一</h2>\n<p>甲</p>\n\n<h2 data-app-outline-number=\"1.2\">一二</h2>\n<p>乙</p>\n</section>",
+      "warnings": [],
+      "message": "Word 已导出，请打开文档核对图片、表格和版式。"
+    }
+  },
+  {
+    "name": "仅 AI 范围：AI 小节未生成时仅保留标题并提示",
+    "snapshot": {
+      "project_name": "项目",
+      "export_template_scope": "ai-only",
+      "outline": [
+        {
+          "id": "a",
+          "title": "技术方案",
+          "children": [
+            {
+              "id": "a1",
+              "title": "系统架构",
+              "content_mode": "ai-generate"
+            },
+            {
+              "id": "a2",
+              "title": "实施计划",
+              "content_mode": "ai-generate"
+            }
+          ]
+        }
+      ]
+    },
+    "expected": {
+      "html": "<section data-app-export-template=\"false\" data-app-export-page-template=\"true\"><p style=\"text-align:center\"><em>内容由 AI 生成</em></p><p style=\"text-align:center\"><strong>项目</strong></p></section>\n<section data-app-export-template=\"true\" data-app-export-page-template=\"true\"><h1 data-app-outline-number=\"1\">技术方案</h1>\n\n<h2 data-app-outline-number=\"1.1\">系统架构</h2>\n<p><em>[本小节未完成，未导出正文]</em></p>\n<h2 data-app-outline-number=\"1.2\">实施计划</h2>\n<p><em>[本小节未完成，未导出正文]</em></p></section>",
+      "warnings": [
+        "小节 1.1 系统架构 未导出正文：正文未生成",
+        "小节 1.2 实施计划 未导出正文：正文未生成"
+      ],
+      "message": "Word 已导出，其中 2 个 AI 小节未完成，仅保留标题，请完成后重新导出。"
+    }
+  },
+  {
+    "name": "仅 AI 范围：混合目录的父标题跟随首个子节点的页面",
+    "snapshot": {
+      "project_name": "项目",
+      "export_template_scope": "ai-only",
+      "outline": [
+        {
+          "id": "a",
+          "title": "混合章",
+          "children": [
+            {
+              "id": "a1",
+              "title": "AI 节",
+              "content_mode": "ai-generate"
+            },
+            {
+              "id": "a2",
+              "title": "人工节",
+              "content_mode": "manual-fill",
+              "content": "人工正文"
+            }
+          ]
+        },
+        {
+          "id": "b",
+          "title": "人工章",
+          "children": [
+            {
+              "id": "b1",
+              "title": "人工节二",
+              "content_mode": "manual-fill",
+              "content": "正文二"
+            }
+          ]
+        },
+        {
+          "id": "c",
+          "title": "AI 章",
+          "children": [
+            {
+              "id": "c1",
+              "title": "AI 节二",
+              "content_mode": "ai-generate"
+            },
+            {
+              "id": "c2",
+              "title": "AI 子章",
+              "children": [
+                {
+                  "id": "c21",
+                  "title": "AI 节三",
+                  "content_mode": "ai-generate"
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    "expected": {
+      "html": "<section data-app-export-template=\"false\" data-app-export-page-template=\"true\"><p style=\"text-align:center\"><em>内容由 AI 生成</em></p><p style=\"text-align:center\"><strong>项目</strong></p>\n<h1 data-app-outline-number=\"1\">混合章</h1>\n</section>\n<section data-app-export-template=\"true\" data-app-export-page-template=\"true\"><h2 data-app-outline-number=\"1.1\">AI 节</h2>\n<p><em>[本小节未完成，未导出正文]</em></p></section>\n<section data-app-export-template=\"false\" data-app-export-page-template=\"false\"><h2 data-app-outline-number=\"1.2\">人工节</h2>\n<p>人工正文</p>\n\n<h1 data-app-outline-number=\"2\">人工章</h1>\n\n<h2 data-app-outline-number=\"2.1\">人工节二</h2>\n<p>正文二</p>\n</section>\n<section data-app-export-template=\"true\" data-app-export-page-template=\"true\"><h1 data-app-outline-number=\"3\">AI 章</h1>\n\n<h2 data-app-outline-number=\"3.1\">AI 节二</h2>\n<p><em>[本小节未完成，未导出正文]</em></p>\n<h2 data-app-outline-number=\"3.2\">AI 子章</h2>\n\n<h3 data-app-outline-number=\"3.2.1\">AI 节三</h3>\n<p><em>[本小节未完成，未导出正文]</em></p></section>",
+      "warnings": [
+        "小节 1.1 AI 节 未导出正文：正文未生成",
+        "小节 3.1 AI 节二 未导出正文：正文未生成",
+        "小节 3.2.1 AI 节三 未导出正文：正文未生成"
+      ],
+      "message": "Word 已导出，其中 3 个 AI 小节未完成，仅保留标题，请完成后重新导出。"
+    }
+  },
+  {
+    "name": "仅 AI 范围：混合父标题首个子节点为人工节点",
+    "snapshot": {
+      "project_name": "项目",
+      "export_template_scope": "ai-only",
+      "outline": [
+        {
+          "id": "a",
+          "title": "混合章",
+          "children": [
+            {
+              "id": "a1",
+              "title": "人工节",
+              "content_mode": "manual-fill",
+              "content": "人工正文"
+            },
+            {
+              "id": "a2",
+              "title": "AI 节",
+              "content_mode": "ai-generate"
+            }
+          ]
+        }
+      ]
+    },
+    "expected": {
+      "html": "<section data-app-export-template=\"false\" data-app-export-page-template=\"false\"><p style=\"text-align:center\"><em>内容由 AI 生成</em></p><p style=\"text-align:center\"><strong>项目</strong></p>\n<h1 data-app-outline-number=\"1\">混合章</h1>\n\n<h2 data-app-outline-number=\"1.1\">人工节</h2>\n<p>人工正文</p>\n</section>\n<section data-app-export-template=\"true\" data-app-export-page-template=\"true\"><h2 data-app-outline-number=\"1.2\">AI 节</h2>\n<p><em>[本小节未完成，未导出正文]</em></p></section>",
+      "warnings": [
+        "小节 1.2 AI 节 未导出正文：正文未生成"
+      ],
+      "message": "Word 已导出，其中 1 个 AI 小节未完成，仅保留标题，请完成后重新导出。"
+    }
+  },
+  {
+    "name": "全部套用模板：AI 小节同样未导出正文",
+    "snapshot": {
+      "project_name": "项目",
+      "export_template_scope": "document",
+      "outline": [
+        {
+          "id": "a",
+          "title": "一",
+          "children": [
+            {
+              "id": "a1",
+              "title": "AI 节",
+              "content_mode": "ai-generate"
+            },
+            {
+              "id": "a2",
+              "title": "人工节",
+              "content_mode": "manual-fill",
+              "content": "正文"
+            }
+          ]
+        }
+      ]
+    },
+    "expected": {
+      "html": "<section data-app-export-template=\"true\" data-app-export-page-template=\"true\"><p style=\"text-align:center\"><em>内容由 AI 生成</em></p><p style=\"text-align:center\"><strong>项目</strong></p>\n<h1 data-app-outline-number=\"1\">一</h1>\n\n<h2 data-app-outline-number=\"1.1\">AI 节</h2>\n<p><em>[本小节未完成，未导出正文]</em></p>\n<h2 data-app-outline-number=\"1.2\">人工节</h2>\n<p>正文</p>\n</section>",
+      "warnings": [
+        "小节 1.1 AI 节 未导出正文：正文未生成"
+      ],
+      "message": "Word 已导出，其中 1 个 AI 小节未完成，仅保留标题，请完成后重新导出。"
+    }
+  },
+  {
+    "name": "待处理节点的提示",
+    "snapshot": {
+      "project_name": "项目",
+      "export_template_scope": "document",
+      "outline": [
+        {
+          "id": "a",
+          "title": "模板填写",
+          "content_mode": "template-fill"
+        },
+        {
+          "id": "b",
+          "title": "目录生成",
+          "content_mode": "directory-generate"
+        },
+        {
+          "id": "c",
+          "title": "人工填写",
+          "content_mode": "manual-fill"
+        },
+        {
+          "id": "d",
+          "title": "其他（有说明）",
+          "content_mode": "other",
+          "content_mode_note": "  由商务部提供 <附件> & 盖章  "
+        },
+        {
+          "id": "e",
+          "title": "其他（无说明）",
+          "content_mode": "other"
+        },
+        {
+          "id": "f",
+          "title": "未设置处理方式"
+        },
+        {
+          "id": "g",
+          "title": "只有空白正文",
+          "content_mode": "manual-fill",
+          "content": "  \n\t "
+        }
+      ]
+    },
+    "expected": {
+      "html": "<section data-app-export-template=\"true\" data-app-export-page-template=\"true\"><p style=\"text-align:center\"><em>内容由 AI 生成</em></p><p style=\"text-align:center\"><strong>项目</strong></p>\n<h1 data-app-outline-number=\"1\">模板填写</h1>\n<p><em>[待模板填写：后续将从招标文件提取并填充内容。]</em></p>\n<h1 data-app-outline-number=\"2\">目录生成</h1>\n<p><em>[待目录生成：请在导出后生成或更新目录。]</em></p>\n<h1 data-app-outline-number=\"3\">人工填写</h1>\n<p><em>[待人工填写：请在导出后补充内容。]</em></p>\n<h1 data-app-outline-number=\"4\">其他（有说明）</h1>\n<p><em>[待处理：由商务部提供 &lt;附件&gt; &amp; 盖章]</em></p>\n<h1 data-app-outline-number=\"5\">其他（无说明）</h1>\n<p><em>[待处理：该小节采用其他特殊处理模式。]</em></p>\n<h1 data-app-outline-number=\"6\">未设置处理方式</h1>\n\n<h1 data-app-outline-number=\"7\">只有空白正文</h1>\n<p><em>[待人工填写：请在导出后补充内容。]</em></p></section>",
+      "warnings": [],
+      "message": "Word 已导出，请打开文档核对图片、表格和版式。"
+    }
+  },
+  {
+    "name": "已有正文的节点不显示待处理提示",
+    "snapshot": {
+      "project_name": "项目",
+      "export_template_scope": "document",
+      "outline": [
+        {
+          "id": "a",
+          "title": "模板填写",
+          "content_mode": "template-fill",
+          "content": "已填写的内容"
+        },
+        {
+          "id": "b",
+          "title": "其他",
+          "content_mode": "other",
+          "content_mode_note": "说明",
+          "content": "已处理"
+        }
+      ]
+    },
+    "expected": {
+      "html": "<section data-app-export-template=\"true\" data-app-export-page-template=\"true\"><p style=\"text-align:center\"><em>内容由 AI 生成</em></p><p style=\"text-align:center\"><strong>项目</strong></p>\n<h1 data-app-outline-number=\"1\">模板填写</h1>\n<p>已填写的内容</p>\n\n<h1 data-app-outline-number=\"2\">其他</h1>\n<p>已处理</p>\n</section>",
+      "warnings": [],
+      "message": "Word 已导出，请打开文档核对图片、表格和版式。"
+    }
+  },
+  {
+    "name": "父节点的正文不导出",
+    "snapshot": {
+      "project_name": "项目",
+      "export_template_scope": "document",
+      "outline": [
+        {
+          "id": "a",
+          "title": "父节点",
+          "content_mode": "manual-fill",
+          "content": "父节点上的正文",
+          "children": [
+            {
+              "id": "a1",
+              "title": "子节点",
+              "content_mode": "manual-fill",
+              "content": "子正文"
+            }
+          ]
+        }
+      ]
+    },
+    "expected": {
+      "html": "<section data-app-export-template=\"true\" data-app-export-page-template=\"true\"><p style=\"text-align:center\"><em>内容由 AI 生成</em></p><p style=\"text-align:center\"><strong>项目</strong></p>\n<h1 data-app-outline-number=\"1\">父节点</h1>\n\n<h2 data-app-outline-number=\"1.1\">子节点</h2>\n<p>子正文</p>\n</section>",
+      "warnings": [],
+      "message": "Word 已导出，请打开文档核对图片、表格和版式。"
+    }
+  },
+  {
+    "name": "六级标题与编号",
+    "snapshot": {
+      "project_name": "项目",
+      "export_template_scope": "document",
+      "outline": [
+        {
+          "id": "1",
+          "title": "L1",
+          "children": [
+            {
+              "id": "2",
+              "title": "L2",
+              "children": [
+                {
+                  "id": "3",
+                  "title": "L3",
+                  "children": [
+                    {
+                      "id": "4",
+                      "title": "L4",
+                      "children": [
+                        {
+                          "id": "5",
+                          "title": "L5",
+                          "children": [
+                            {
+                              "id": "6",
+                              "title": "L6",
+                              "content_mode": "manual-fill",
+                              "content": "最深"
+                            }
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "id": "2b",
+              "title": "L2b",
+              "content_mode": "manual-fill",
+              "content": "第二个"
+            }
+          ]
+        },
+        {
+          "id": "x",
+          "title": "第二章",
+          "content_mode": "manual-fill",
+          "content": "内容"
+        }
+      ]
+    },
+    "expected": {
+      "html": "<section data-app-export-template=\"true\" data-app-export-page-template=\"true\"><p style=\"text-align:center\"><em>内容由 AI 生成</em></p><p style=\"text-align:center\"><strong>项目</strong></p>\n<h1 data-app-outline-number=\"1\">L1</h1>\n\n<h2 data-app-outline-number=\"1.1\">L2</h2>\n\n<h3 data-app-outline-number=\"1.1.1\">L3</h3>\n\n<h4 data-app-outline-number=\"1.1.1.1\">L4</h4>\n\n<h5 data-app-outline-number=\"1.1.1.1.1\">L5</h5>\n\n<h6 data-app-outline-number=\"1.1.1.1.1.1\">L6</h6>\n<p>最深</p>\n\n<h2 data-app-outline-number=\"1.2\">L2b</h2>\n<p>第二个</p>\n\n<h1 data-app-outline-number=\"2\">第二章</h1>\n<p>内容</p>\n</section>",
+      "warnings": [],
+      "message": "Word 已导出，请打开文档核对图片、表格和版式。"
+    }
+  },
+  {
+    "name": "超过六级标题时失败",
+    "snapshot": {
+      "project_name": "项目",
+      "export_template_scope": "document",
+      "outline": [
+        {
+          "id": "1",
+          "title": "L1",
+          "children": [
+            {
+              "id": "2",
+              "title": "L2",
+              "children": [
+                {
+                  "id": "3",
+                  "title": "L3",
+                  "children": [
+                    {
+                      "id": "4",
+                      "title": "L4",
+                      "children": [
+                        {
+                          "id": "5",
+                          "title": "L5",
+                          "children": [
+                            {
+                              "id": "6",
+                              "title": "L6",
+                              "children": [
+                                {
+                                  "id": "7",
+                                  "title": "L7",
+                                  "content_mode": "manual-fill",
+                                  "content": "太深"
+                                }
+                              ]
+                            }
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    "expected": {
+      "error": "当前转换器最多支持六级章节标题"
+    }
+  },
+  {
+    "name": "GFM 表格、删除线、任务列表与列表",
+    "snapshot": {
+      "project_name": "项目",
+      "export_template_scope": "document",
+      "outline": [
+        {
+          "id": "a",
+          "title": "表格",
+          "content_mode": "manual-fill",
+          "content": "| 项目 | 数量 |\n| :--- | ---: |\n| 服务器 | 2 |\n| 交换机 | 4 |\n\n~~删除~~\n\n- [x] 已完成\n- [ ] 未完成\n\n1. 第一\n2. 第二\n\n> 引用\n\n```\ncode <b>\n```"
+        }
+      ]
+    },
+    "expected": {
+      "html": "<section data-app-export-template=\"true\" data-app-export-page-template=\"true\"><p style=\"text-align:center\"><em>内容由 AI 生成</em></p><p style=\"text-align:center\"><strong>项目</strong></p>\n<h1 data-app-outline-number=\"1\">表格</h1>\n<table>\n<thead>\n<tr>\n<th style=\"text-align:left\">项目</th>\n<th style=\"text-align:right\">数量</th>\n</tr>\n</thead>\n<tbody>\n<tr>\n<td style=\"text-align:left\">服务器</td>\n<td style=\"text-align:right\">2</td>\n</tr>\n<tr>\n<td style=\"text-align:left\">交换机</td>\n<td style=\"text-align:right\">4</td>\n</tr>\n</tbody>\n</table>\n<p><s>删除</s></p>\n<ul class=\"contains-task-list\">\n<li class=\"task-list-item enabled\"><input class=\"task-list-item-checkbox\" checked=\"\" type=\"checkbox\" id=\"task-item-N\"><label class=\"task-list-item-label\" for=\"task-item-N\"> 已完成</label></li>\n<li class=\"task-list-item enabled\"><input class=\"task-list-item-checkbox\" type=\"checkbox\" id=\"task-item-N\"><label class=\"task-list-item-label\" for=\"task-item-N\"> 未完成</label></li>\n</ul>\n<ol>\n<li>第一</li>\n<li>第二</li>\n</ol>\n<blockquote>\n<p>引用</p>\n</blockquote>\n<pre><code>code &lt;b&gt;\n</code></pre>\n</section>",
+      "warnings": [],
+      "message": "Word 已导出，请打开文档核对图片、表格和版式。"
+    }
+  },
+  {
+    "name": "中日文强调（cjk-friendly）与换行",
+    "snapshot": {
+      "project_name": "项目",
+      "export_template_scope": "document",
+      "outline": [
+        {
+          "id": "a",
+          "title": "强调",
+          "content_mode": "manual-fill",
+          "content": "**“重点”**之后的文字，以及*强调。*后续\n同一段的软换行"
+        }
+      ]
+    },
+    "expected": {
+      "html": "<section data-app-export-template=\"true\" data-app-export-page-template=\"true\"><p style=\"text-align:center\"><em>内容由 AI 生成</em></p><p style=\"text-align:center\"><strong>项目</strong></p>\n<h1 data-app-outline-number=\"1\">强调</h1>\n<p><strong>“重点”</strong>之后的文字，以及<em>强调。</em>后续\n同一段的软换行</p>\n</section>",
+      "warnings": [],
+      "message": "Word 已导出，请打开文档核对图片、表格和版式。"
+    }
+  },
+  {
+    "name": "原始 HTML 原样保留",
+    "snapshot": {
+      "project_name": "项目",
+      "export_template_scope": "document",
+      "outline": [
+        {
+          "id": "a",
+          "title": "原始 HTML",
+          "content_mode": "manual-fill",
+          "content": "<table><tr><td rowspan=\"2\">合并</td><td>甲</td></tr><tr><td>乙</td></tr></table>\n\n段落<br>换行 &amp; 实体 &copy; &nbsp;结束"
+        }
+      ]
+    },
+    "expected": {
+      "html": "<section data-app-export-template=\"true\" data-app-export-page-template=\"true\"><p style=\"text-align:center\"><em>内容由 AI 生成</em></p><p style=\"text-align:center\"><strong>项目</strong></p>\n<h1 data-app-outline-number=\"1\">原始 HTML</h1>\n<table><tbody><tr><td rowspan=\"2\">合并</td><td>甲</td></tr><tr><td>乙</td></tr></tbody></table>\n<p>段落<br>换行 &amp; 实体 © &nbsp;结束</p>\n</section>",
+      "warnings": [],
+      "message": "Word 已导出，请打开文档核对图片、表格和版式。"
+    }
+  },
+  {
+    "name": "单独成段的图片改为配图，有 alt 时作为图注",
+    "snapshot": {
+      "project_name": "项目",
+      "export_template_scope": "document",
+      "outline": [
+        {
+          "id": "a",
+          "title": "配图",
+          "content_mode": "manual-fill",
+          "content": "前文\n\n![系统架构图](IMAGE:a)\n\n![](IMAGE:b)\n\n后文"
+        }
+      ]
+    },
+    "expected": {
+      "html": "<section data-app-export-template=\"true\" data-app-export-page-template=\"true\"><p style=\"text-align:center\"><em>内容由 AI 生成</em></p><p style=\"text-align:center\"><strong>项目</strong></p>\n<h1 data-app-outline-number=\"1\">配图</h1>\n<p>前文</p>\n<figure data-app-size=\"wide\" data-app-fit=\"contain\"><img data-app-asset-ref=\"IMAGE:a\"><figcaption>系统架构图</figcaption></figure>\n<figure data-app-size=\"wide\" data-app-fit=\"contain\"><img data-app-asset-ref=\"IMAGE:b\"></figure>\n<p>后文</p>\n</section>",
+      "warnings": [],
+      "message": "Word 已导出，请打开文档核对图片、表格和版式。"
+    }
+  },
+  {
+    "name": "段落中的图片原位替换",
+    "snapshot": {
+      "project_name": "项目",
+      "export_template_scope": "document",
+      "outline": [
+        {
+          "id": "a",
+          "title": "行内图片",
+          "content_mode": "manual-fill",
+          "content": "文字 ![行内](IMAGE:a) 之后的文字"
+        }
+      ]
+    },
+    "expected": {
+      "html": "<section data-app-export-template=\"true\" data-app-export-page-template=\"true\"><p style=\"text-align:center\"><em>内容由 AI 生成</em></p><p style=\"text-align:center\"><strong>项目</strong></p>\n<h1 data-app-outline-number=\"1\">行内图片</h1>\n<p>文字 <figure data-app-size=\"wide\" data-app-fit=\"contain\"><img data-app-asset-ref=\"IMAGE:a\"><figcaption>行内</figcaption></figure> 之后的文字</p>\n</section>",
+      "warnings": [],
+      "message": "Word 已导出，请打开文档核对图片、表格和版式。"
+    }
+  },
+  {
+    "name": "同一图片引用多次",
+    "snapshot": {
+      "project_name": "项目",
+      "export_template_scope": "document",
+      "outline": [
+        {
+          "id": "a",
+          "title": "第一节",
+          "content_mode": "manual-fill",
+          "content": "![图](IMAGE:a)"
+        },
+        {
+          "id": "b",
+          "title": "第二节",
+          "content_mode": "manual-fill",
+          "content": "![图](IMAGE:a)\n\n![另一张](IMAGE:b)"
+        }
+      ]
+    },
+    "expected": {
+      "html": "<section data-app-export-template=\"true\" data-app-export-page-template=\"true\"><p style=\"text-align:center\"><em>内容由 AI 生成</em></p><p style=\"text-align:center\"><strong>项目</strong></p>\n<h1 data-app-outline-number=\"1\">第一节</h1>\n<figure data-app-size=\"wide\" data-app-fit=\"contain\"><img data-app-asset-ref=\"IMAGE:a\"><figcaption>图</figcaption></figure>\n\n<h1 data-app-outline-number=\"2\">第二节</h1>\n<figure data-app-size=\"wide\" data-app-fit=\"contain\"><img data-app-asset-ref=\"IMAGE:a\"><figcaption>图</figcaption></figure>\n<figure data-app-size=\"wide\" data-app-fit=\"contain\"><img data-app-asset-ref=\"IMAGE:b\"><figcaption>另一张</figcaption></figure>\n</section>",
+      "warnings": [],
+      "message": "Word 已导出，请打开文档核对图片、表格和版式。"
+    }
+  },
+  {
+    "name": "原始 HTML 中的图片只保留来源，其余属性丢弃",
+    "snapshot": {
+      "project_name": "项目",
+      "export_template_scope": "document",
+      "outline": [
+        {
+          "id": "a",
+          "title": "原始图片",
+          "content_mode": "manual-fill",
+          "content": "<p><img src=\"IMAGE:a\" alt=\"原始\" width=\"10\" data-app-asset-ref=\"../other\" onerror=\"x()\"></p>\n\n<div><img src=\"IMAGE:b\" data-app-size=\"small\"></div>"
+        }
+      ]
+    },
+    "expected": {
+      "html": "<section data-app-export-template=\"true\" data-app-export-page-template=\"true\"><p style=\"text-align:center\"><em>内容由 AI 生成</em></p><p style=\"text-align:center\"><strong>项目</strong></p>\n<h1 data-app-outline-number=\"1\">原始图片</h1>\n<figure data-app-size=\"wide\" data-app-fit=\"contain\"><img data-app-asset-ref=\"IMAGE:a\"><figcaption>原始</figcaption></figure>\n<div><figure data-app-size=\"wide\" data-app-fit=\"contain\"><img data-app-asset-ref=\"IMAGE:b\"></figure></div></section>",
+      "warnings": [],
+      "message": "Word 已导出，请打开文档核对图片、表格和版式。"
+    }
+  },
+  {
+    "name": "读取失败的图片原位改为提示",
+    "snapshot": {
+      "project_name": "项目",
+      "export_template_scope": "document",
+      "outline": [
+        {
+          "id": "a",
+          "title": "缺图",
+          "content_mode": "manual-fill",
+          "content": "![缺失的图](./missing-image.png)\n\n文字 ![](./missing-image.png) 文字\n\n![正常](IMAGE:a)"
+        },
+        {
+          "id": "b",
+          "title": "缺图二",
+          "content_mode": "manual-fill",
+          "content": "![](./missing-image.png)"
+        }
+      ]
+    },
+    "expected": {
+      "html": "<section data-app-export-template=\"true\" data-app-export-page-template=\"true\"><p style=\"text-align:center\"><em>内容由 AI 生成</em></p><p style=\"text-align:center\"><strong>项目</strong></p>\n<h1 data-app-outline-number=\"1\">缺图</h1>\n<p><em>[图片无法导出：缺失的图]</em></p>\n<p>文字 <em>[图片无法导出]</em> 文字</p>\n<figure data-app-size=\"wide\" data-app-fit=\"contain\"><img data-app-asset-ref=\"IMAGE:a\"><figcaption>正常</figcaption></figure>\n\n<h1 data-app-outline-number=\"2\">缺图二</h1>\n<p><em>[图片无法导出]</em></p>\n</section>",
+      "warnings": [
+        "小节 1 缺图 有 2 张图片无法导出，已在原位置用文字标出：图片文件不存在或为空",
+        "小节 2 缺图二 有 1 张图片无法导出，已在原位置用文字标出：图片文件不存在或为空"
+      ],
+      "message": "Word 已导出，3 张图片无法导出，已在原位置用文字标出，请打开文档核对。"
+    }
+  },
+  {
+    "name": "转换器返回的图片提示按引用归到小节",
+    "snapshot": {
+      "project_name": "项目",
+      "export_template_scope": "document",
+      "outline": [
+        {
+          "id": "a",
+          "title": "第一节",
+          "content_mode": "manual-fill",
+          "content": "![图甲](IMAGE:a)\n\n![](./missing-image.png)"
+        },
+        {
+          "id": "b",
+          "title": "第二节",
+          "content_mode": "manual-fill",
+          "content": "![图甲](IMAGE:a)\n\n![图乙](IMAGE:b)"
+        },
+        {
+          "id": "c",
+          "title": "第三节",
+          "content_mode": "manual-fill",
+          "content": "![图丙](IMAGE:c)"
+        }
+      ]
+    },
+    "imageWarnings": [
+      {
+        "image": "a",
+        "reason": "图片文件不存在"
+      },
+      {
+        "image": "b",
+        "reason": "无法识别的图片格式"
+      },
+      {
+        "image": "a",
+        "reason": "图片文件不存在"
+      }
+    ],
+    "expected": {
+      "html": "<section data-app-export-template=\"true\" data-app-export-page-template=\"true\"><p style=\"text-align:center\"><em>内容由 AI 生成</em></p><p style=\"text-align:center\"><strong>项目</strong></p>\n<h1 data-app-outline-number=\"1\">第一节</h1>\n<figure data-app-size=\"wide\" data-app-fit=\"contain\"><img data-app-asset-ref=\"IMAGE:a\"><figcaption>图甲</figcaption></figure>\n<p><em>[图片无法导出]</em></p>\n\n<h1 data-app-outline-number=\"2\">第二节</h1>\n<figure data-app-size=\"wide\" data-app-fit=\"contain\"><img data-app-asset-ref=\"IMAGE:a\"><figcaption>图甲</figcaption></figure>\n<figure data-app-size=\"wide\" data-app-fit=\"contain\"><img data-app-asset-ref=\"IMAGE:b\"><figcaption>图乙</figcaption></figure>\n\n<h1 data-app-outline-number=\"3\">第三节</h1>\n<figure data-app-size=\"wide\" data-app-fit=\"contain\"><img data-app-asset-ref=\"IMAGE:c\"><figcaption>图丙</figcaption></figure>\n</section>",
+      "warnings": [
+        "小节 1 第一节 有 2 张图片无法导出，已在原位置用文字标出：图片文件不存在或为空；图片文件不存在",
+        "小节 2 第二节 有 2 张图片无法导出，已在原位置用文字标出：无法识别的图片格式；图片文件不存在"
+      ],
+      "message": "Word 已导出，4 张图片无法导出，已在原位置用文字标出，请打开文档核对。"
+    }
+  },
+  {
+    "name": "AI 小节未完成与图片提示同时出现",
+    "snapshot": {
+      "project_name": "项目",
+      "export_template_scope": "ai-only",
+      "outline": [
+        {
+          "id": "a",
+          "title": "章",
+          "children": [
+            {
+              "id": "a1",
+              "title": "AI 节",
+              "content_mode": "ai-generate"
+            },
+            {
+              "id": "a2",
+              "title": "人工节",
+              "content_mode": "manual-fill",
+              "content": "![x](./missing-image.png)"
+            }
+          ]
+        }
+      ]
+    },
+    "expected": {
+      "html": "<section data-app-export-template=\"false\" data-app-export-page-template=\"true\"><p style=\"text-align:center\"><em>内容由 AI 生成</em></p><p style=\"text-align:center\"><strong>项目</strong></p>\n<h1 data-app-outline-number=\"1\">章</h1>\n</section>\n<section data-app-export-template=\"true\" data-app-export-page-template=\"true\"><h2 data-app-outline-number=\"1.1\">AI 节</h2>\n<p><em>[本小节未完成，未导出正文]</em></p></section>\n<section data-app-export-template=\"false\" data-app-export-page-template=\"false\"><h2 data-app-outline-number=\"1.2\">人工节</h2>\n<p><em>[图片无法导出：x]</em></p>\n</section>",
+      "warnings": [
+        "小节 1.1 AI 节 未导出正文：正文未生成",
+        "小节 1.2 人工节 有 1 张图片无法导出，已在原位置用文字标出：图片文件不存在或为空"
+      ],
+      "message": "Word 已导出，其中 1 个 AI 小节未完成，仅保留标题，请完成后重新导出；1 张图片无法导出，已在原位置用文字标出，请打开文档核对。"
+    }
+  }
+]

@@ -28,10 +28,14 @@
     "fastify": "5.12.5",
     "ioredis": "6.0.0",
     "kysely": "0.29.6",
+    "markdown-it": "14.3.3",
+    "markdown-it-cjk-friendly": "2.0.2",
+    "markdown-it-task-lists": "2.1.1",
     "parse5": "8.0.1",
     "pg": "8.23.1"
   },
   "devDependencies": {
+    "@types/markdown-it": "14.1.2",
     "@types/node": "24.19.1",
     "@types/pg": "8.23.1",
     "typescript": "5.9.3",
