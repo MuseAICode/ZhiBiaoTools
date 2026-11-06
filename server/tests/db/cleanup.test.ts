@@ -667,6 +667,28 @@ describe('调用方不能绕过删除条件', () => {
     await expectSqlError(sql`SELECT cleanup_delete_template_preview_requests(1, interval '0 hours')`.execute(appDb), '42883');
   });
 
+  it('整本导出（迁移 0028）：未满 7 天、未被替换的当前导出，按 id、传入极端上限、多传参数、以清理角色直接 DELETE、执行整批都删不掉', async () => {
+    const ctx = await newOrg();
+    const project = await insertProject(ctx);
+    const current = await insertArtifact(ctx, { projectId: project, documentExport: true, createdAgo: 7 * DAY - HOUR });
+    const { rows } = await sql<{ ok: boolean }>`SELECT cleanup_delete_artifact(${current.id}::uuid) AS ok`.execute(appDb);
+    expect(rows[0]!.ok).toBe(false);
+    for (const limit of [null, -1, 0, 1, 1000, 2147483647]) {
+      const candidates = await sql<{ id: string }>`SELECT id FROM cleanup_artifact_candidates(${limit}::integer)`.execute(appDb);
+      expect(candidates.rows.map((row) => row.id), String(limit)).not.toContain(current.id);
+    }
+    // 函数不接受时间、保留期或种类等参数。
+    await expectSqlError(sql`SELECT cleanup_delete_artifact(${current.id}::uuid, interval '0 days')`.execute(appDb), '42883');
+    await expectSqlError(sql`SELECT * FROM cleanup_artifact_candidates(1000, interval '0 days')`.execute(appDb), '42883');
+    await expectSqlError(sql`SELECT cleanup_delete_artifact(${current.id}::uuid, 'technical-plan-export')`.execute(appDb), '42883');
+    const deleted = await asCleanupRole(async (trx) =>
+      Number((await trx.deleteFrom('artifacts').where('id', '=', current.id).executeTakeFirst()).numDeletedRows));
+    expect(deleted).toBe(0);
+    await newCleaner().cleaner.runBatch();
+    expect(await exists('artifacts', current.id)).toBe(true);
+    expect(store.objects.has(current.key)).toBe(true);
+  });
+
   it('即使绕过函数、以清理角色直接 DELETE，策略也只放行过期的行', async () => {
     const ctx = await newOrg();
     const project = await insertProject(ctx, 6 * DAY);
@@ -765,6 +787,39 @@ describe('对象存储：先删对象，成功后再删行', () => {
       expect(rowPresentAtDelete).toEqual([true, true]);
       expect(await exists('artifacts', preview.id)).toBe(false);
       expect(store.objects.has(preview.key)).toBe(false);
+    } finally {
+      store.beforeDelete = null;
+      store.failDelete.clear();
+    }
+  });
+
+  it('整本导出（迁移 0028）同样先删对象、成功后再删行：被替换的与超过 7 天的，对象删除失败时行与对象都保留，下一批重试成功', async () => {
+    const ctx = await newOrg();
+    const project = await insertProject(ctx);
+    const replaced = await insertArtifact(ctx, { projectId: project, documentExport: true, createdAgo: HOUR, supersededAgo: 60_000 });
+    const expired = await insertArtifact(ctx, { projectId: await insertProject(ctx), documentExport: true, createdAgo: 7 * DAY + 60_000 });
+    const targets = [replaced, expired];
+    const rowPresentAtDelete: boolean[] = [];
+    store.beforeDelete = async (key) => {
+      const target = targets.find((t) => t.key === key);
+      if (target) rowPresentAtDelete.push(await exists('artifacts', target.id));
+    };
+    store.failDelete = new Set(targets.map((t) => t.key));
+    const { cleaner } = newCleaner();
+    try {
+      expect(byCategory(await cleaner.runBatch()).artifacts).toMatchObject({ deleted: 0, objects: 0, failed: 2 });
+      for (const target of targets) {
+        expect(await exists('artifacts', target.id)).toBe(true);
+        expect(store.objects.has(target.key)).toBe(true);
+      }
+
+      store.failDelete.clear();
+      expect(byCategory(await cleaner.runBatch()).artifacts).toMatchObject({ deleted: 2, objects: 2, failed: 0 });
+      expect(rowPresentAtDelete).toEqual([true, true, true, true]);
+      for (const target of targets) {
+        expect(await exists('artifacts', target.id)).toBe(false);
+        expect(store.objects.has(target.key)).toBe(false);
+      }
     } finally {
       store.beforeDelete = null;
       store.failDelete.clear();
