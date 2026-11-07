@@ -9,7 +9,10 @@
 //   段落匹配（重新匹配），ai 队列，组织级（src/knowledgeBase/jobs.ts）。
 // - template-preview（7.3d）：模板样张，export 队列，组织级，在断网的 export-preview 沙箱中生成（src/export/previewJob.ts）；
 //   template-word-export（7.3e）：样张导出 Word，执行相同，不参与样张的“新请求取代旧请求”。
+// - technical-plan-export（7.4g）：技术方案整本导出 Word，export 队列，lock_key 按项目，在断网的 export-document 沙箱中生成
+//   （src/export/documentJob.ts）。
 import { duplicateAnalysisJob } from '../duplicateCheck/job.ts';
+import { technicalPlanExportJob } from '../export/documentJob.ts';
 import { templatePreviewJob, templateWordExportJob } from '../export/previewJob.ts';
 import { feasibilityReportJobs } from '../feasibilityReport/jobs.ts';
 import { knowledgeBaseJobs } from '../knowledgeBase/jobs.ts';
@@ -18,6 +21,6 @@ import { rejectionCheckJobs } from '../rejectionCheck/jobs.ts';
 import { technicalPlanJobs } from '../technicalPlan/jobs.ts';
 import { createJobTypeRegistry, type JobTypeDefinition } from './definitions.ts';
 
-export const JOB_TYPES: readonly JobTypeDefinition<any>[] = Object.freeze([documentParseJob, ...rejectionCheckJobs, duplicateAnalysisJob, ...technicalPlanJobs, ...feasibilityReportJobs, ...knowledgeBaseJobs, templatePreviewJob, templateWordExportJob]);
+export const JOB_TYPES: readonly JobTypeDefinition<any>[] = Object.freeze([documentParseJob, ...rejectionCheckJobs, duplicateAnalysisJob, ...technicalPlanJobs, ...feasibilityReportJobs, ...knowledgeBaseJobs, templatePreviewJob, templateWordExportJob, technicalPlanExportJob]);
 
 export const jobTypeRegistry = createJobTypeRegistry(JOB_TYPES);
