@@ -19,6 +19,7 @@ import {
   enqueueTechnicalPlanExport,
   IMAGE_NOT_AVAILABLE_REASON,
   IMAGE_NOT_EMBEDDABLE_REASON,
+  WEBP_CONVERT_FAILED_REASON,
   TECHNICAL_PLAN_EXPORT_JOB_TYPE,
   technicalPlanExportLockKey,
   type TechnicalPlanExportParams,
@@ -344,8 +345,8 @@ describe('执行', () => {
     await fillOutline(ctx, projectId, refs);
     const { request } = await enqueueTechnicalPlanExport(deps(), ctx, projectId);
 
-    // 助手对没有放入的引用各返回一条提示，另把 webp 当作无法嵌入。
-    const sandbox = fakeSandbox({ warn: (referenced) => referenced.filter((id) => id !== visiblePng) });
+    // 助手对每一处引用都返回提示：没有放入的、放入了但无法嵌入的 PNG、转换失败的 WebP（7.4i）各有各的原因。
+    const sandbox = fakeSandbox({ warn: (referenced) => referenced });
     // 由同组织的同事执行（任务以发起用户的身份执行；这里证明可见性只按组织与项目，而不是按创建者）。
     const result = await runExport(colleague, projectId, request.id, { sandbox: sandbox.driver });
     expect(result.error).toBeNull();
@@ -369,9 +370,9 @@ describe('执行', () => {
     expect(objects.get(artifact!.storageKey)?.equals(DOCX)).toBe(true);
     expect(done?.result?.warnings).toEqual([
       '小节 2 AI 小节 未导出正文：正文未生成',
-      `小节 1 人工小节 有 6 张图片无法导出，已在原位置用文字标出：${IMAGE_NOT_AVAILABLE_REASON}；${IMAGE_NOT_EMBEDDABLE_REASON}`,
+      `小节 1 人工小节 有 7 张图片无法导出，已在原位置用文字标出：${IMAGE_NOT_EMBEDDABLE_REASON}；${IMAGE_NOT_AVAILABLE_REASON}；${WEBP_CONVERT_FAILED_REASON}`,
     ]);
-    expect(done?.result?.message).toBe('Word 已导出，其中 1 个 AI 小节未完成，仅保留标题，请完成后重新导出；6 张图片无法导出，已在原位置用文字标出，请打开文档核对。');
+    expect(done?.result?.message).toBe('Word 已导出，其中 1 个 AI 小节未完成，仅保留标题，请完成后重新导出；7 张图片无法导出，已在原位置用文字标出，请打开文档核对。');
   });
 
   it('没有提示时的消息；新的导出替换本项目旧的导出', async () => {

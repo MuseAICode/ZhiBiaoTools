@@ -43,6 +43,8 @@ const ENTRY_FAILURES: Readonly<Record<ExportEntryErrorCode, [code: string, messa
   helper_failed: ['EXPORT_WORD_FAILED', 'Word 生成失败，请检查模板设置'],
   helper_timeout: ['EXPORT_TIMEOUT', '样张生成超时，请稍后重试'],
   output_too_large: ['EXPORT_OUTPUT_TOO_LARGE', '生成的 Word 超过 100 MiB'],
+  // 样张不转换配图，不会出现。
+  images_too_large: ['EXPORT_FAILED', '样张生成失败'],
   export_failed: ['EXPORT_FAILED', '样张生成失败'],
 });
 
