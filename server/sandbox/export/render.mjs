@@ -117,10 +117,54 @@ export async function withRenderer(work) {
           await context.close();
         }
       },
+      /**
+       * 把一个本地页面（file://，入口写在 /work 中，只含一张静态 WebP）按固定画布截图，背景透明（7.4i：WebP 转 PNG）。
+       * 倍率为 1，图片按原始像素绘制；与装饰相同，浏览器上下文禁用 JavaScript。
+       */
+      async renderFileToTransparentPng({ url, width, height }) {
+        const context = await browser.newContext({
+          javaScriptEnabled: false,
+          viewport: { width, height },
+          deviceScaleFactor: 1,
+          serviceWorkers: 'block',
+          acceptDownloads: false,
+        });
+        try {
+          const page = await context.newPage();
+          await page.goto(url, { waitUntil: 'load', timeout: STEP_TIMEOUT_MS });
+          return await page.screenshot({
+            type: 'png',
+            clip: { x: 0, y: 0, width, height },
+            omitBackground: true,
+            animations: 'disabled',
+            timeout: STEP_TIMEOUT_MS,
+          });
+        } finally {
+          await context.close();
+        }
+      },
     });
   } finally {
     await browser.close();
   }
+}
+
+/**
+ * 栅格化一张静态 WebP 的页面：画布 width × height（透明），图片按原始尺寸放在 (x, y)。src 是同目录下的文件名。
+ * 不缩放、不平滑，PNG 的像素与 WebP 解码结果相同（7.4i）。
+ */
+export function buildImageFrameHtml({ src, width, height, x, y, frameWidth, frameHeight }) {
+  return `<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <style>
+    html, body { margin: 0; padding: 0; width: ${width}px; height: ${height}px; overflow: hidden; background: transparent; }
+    img { position: absolute; left: ${x}px; top: ${y}px; width: ${frameWidth}px; height: ${frameHeight}px; image-rendering: pixelated; }
+  </style>
+</head>
+<body><img src="${src}" alt=""></body>
+</html>`;
 }
 
 /** 把一段装饰 SVG 栅格化成 PNG（宽高为 cm）。 */

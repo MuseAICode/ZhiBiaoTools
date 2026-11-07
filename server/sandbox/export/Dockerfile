@@ -75,7 +75,7 @@ COPY --from=deps /opt/export/node_modules /opt/export/node_modules
 COPY --chmod=0644 --from=chrome *.mjs /opt/export/chrome/
 # 模板样张的固定配图（路线图 7.3b）：样张只能引用它们，入口在 preview 模式下复制到工作区，worker 不放入任何配图。
 COPY --chmod=0644 --from=preview-assets *.webp /opt/export/preview-assets/
-COPY --chmod=0644 package.json entry.mjs render.mjs /opt/export/
+COPY --chmod=0644 package.json entry.mjs render.mjs webp.mjs /opt/export/
 
 ENV HOME=/tmp LANG=C.UTF-8 TMPDIR=/tmp
 USER 10001:10001

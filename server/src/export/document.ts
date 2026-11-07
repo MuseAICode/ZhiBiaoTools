@@ -63,7 +63,8 @@ const ENTRY_FAILURES: Readonly<Record<ExportEntryErrorCode, [code: string, messa
   chrome_render_failed: ['EXPORT_DECORATION_FAILED', '页眉页脚装饰生成失败，请检查模板的页面设置'],
   helper_failed: ['EXPORT_WORD_FAILED', 'Word 生成失败，请检查模板设置与正文内容'],
   helper_timeout: ['EXPORT_TIMEOUT', 'Word 导出超时，请减少正文内容或配图后重试'],
-  output_too_large: ['EXPORT_OUTPUT_TOO_LARGE', '生成的 Word 超过 100 MiB，请减少或压缩正文中的图片'],
+  output_too_large: ['EXPORT_OUTPUT_TOO_LARGE', '生成的 Word 超过 100 MiB（WebP 配图转为 PNG 后可能变大），请减少或压缩正文中的图片'],
+  images_too_large: ['EXPORT_IMAGES_TOO_LARGE', 'WebP 配图转为 PNG 后，正文与配图合计超过 128 MiB，无法导出，请减少或压缩正文中的图片'],
   export_failed: ['EXPORT_FAILED', 'Word 导出失败'],
 });
 

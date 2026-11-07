@@ -27,6 +27,8 @@ export const EXPORT_ENTRY_ERROR_CODES = [
   'helper_failed',
   'helper_timeout',
   'output_too_large',
+  /** 整本导出：WebP 配图转成 PNG 后输入合计超过上限（7.4i）。 */
+  'images_too_large',
   'export_failed',
 ] as const;
 export type ExportEntryErrorCode = (typeof EXPORT_ENTRY_ERROR_CODES)[number];

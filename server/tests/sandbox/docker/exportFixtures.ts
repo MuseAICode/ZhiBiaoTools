@@ -39,6 +39,8 @@ export interface DecodedPng {
   height: number;
   /** 某个像素的 [r, g, b]。 */
   pixel(x: number, y: number): [number, number, number];
+  /** 某个像素的不透明度（RGB 为 255）。 */
+  alpha(x: number, y: number): number;
 }
 
 /** 解码 8 位、不隔行的 RGB / RGBA PNG（Chromium 截图的格式）。 */
@@ -94,6 +96,9 @@ export function decodePng(png: Buffer): DecodedPng {
     pixel(x, y) {
       const start = Math.floor(y) * stride + Math.floor(x) * channels;
       return [pixels[start]!, pixels[start + 1]!, pixels[start + 2]!];
+    },
+    alpha(x, y) {
+      return channels === 4 ? pixels[Math.floor(y) * stride + Math.floor(x) * channels + 3]! : 255;
     },
   };
 }

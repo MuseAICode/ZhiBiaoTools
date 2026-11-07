@@ -10,8 +10,8 @@
 //   拒绝（7.4b）→ 在 export-document 沙箱中生成（src/export/document.ts，配图经 7.4e 的 objectInputFile 流式放入）→ 存为
 //   technical-plan-export 产物（7.4d：计入组织存储配额，同一事务中替换本项目旧的导出）→ 用 summarizeDocumentExport 汇总提示
 //   与消息 → 经 completeTechnicalPlanExportRequest 写回结果；
-// - WebP（7.4g 核对）：桌面版先经 nativeImage 转为 PNG 再交给助手；助手按文件头识别 WebP 并以 image/webp 图片部件直接嵌入
-//   （openxmlhelper 的 ImageFormatTests），本步不转换；按 #59 确认时的决定由 7.4i 在 export 沙箱内转为 PNG（兼容旧版 Word 和 WPS）；
+// - WebP（7.4i）：与桌面版 normalizeImageForDocx 一致，export 沙箱的入口先把 WebP 配图转成 PNG（动图取第一帧，兼容旧版 Word 与 WPS），
+//   转换后的大小重新计入输入合计；单张转换失败时由助手原位提示，原因为“WebP 图片转换失败”；
 // - 进度经 setProgress（SSE 推送）；可续跑：worker 崩溃或关闭后从头重新执行（快照不变，结果相同），已有结果时直接结束；
 // - 任务日志只写阶段与计数，不写目录标题、正文和配图。
 import type { Kysely } from 'kysely';
@@ -38,6 +38,8 @@ export const TECHNICAL_PLAN_EXPORT_JOB_TYPE = 'technical-plan-export';
 export const IMAGE_NOT_AVAILABLE_REASON = '图片不属于本项目或已被删除，无法读取';
 /** 放入了、但助手无法嵌入（内容无法识别或已损坏）。助手的原因文字不采用（src/export/output.ts）。 */
 export const IMAGE_NOT_EMBEDDABLE_REASON = '图片内容无法识别或已损坏';
+/** 放入了的 WebP 配图在沙箱中转成 PNG 失败（入口删除它，助手原位提示），与桌面版的原因相同（7.4i）。 */
+export const WEBP_CONVERT_FAILED_REASON = 'WebP 图片转换失败';
 
 export interface TechnicalPlanExportParams {
   requestId: string;
@@ -114,11 +116,12 @@ export function createTechnicalPlanExportJob(options: TechnicalPlanExportJobOpti
         throw error;
       }
       // 助手的原因文字不采用：放入了的配图按“无法识别”，没有放入的按“不可见”。
-      const available = new Set(assets.map((asset) => asset.id));
-      const imageWarnings: ExportImageWarning[] = output.imageWarnings.map((assetRef) => ({
-        assetRef,
-        reason: available.has(assetRef) ? IMAGE_NOT_EMBEDDABLE_REASON : IMAGE_NOT_AVAILABLE_REASON,
-      }));
+      const mimes = new Map(assets.map((asset) => [asset.id, asset.mime]));
+      const imageWarnings: ExportImageWarning[] = output.imageWarnings.map((assetRef) => {
+        const mime = mimes.get(assetRef);
+        const reason = mime === undefined ? IMAGE_NOT_AVAILABLE_REASON : mime === 'image/webp' ? WEBP_CONVERT_FAILED_REASON : IMAGE_NOT_EMBEDDABLE_REASON;
+        return { assetRef, reason };
+      });
       const { warnings, message } = summarizeDocumentExport(document, imageWarnings);
       await context.log('Word 已导出', { blockCount: output.blockCount, warningCount: warnings.length });
       if (context.signal.aborted) throw new JobInterruptedError();

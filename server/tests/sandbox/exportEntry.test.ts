@@ -54,3 +54,28 @@ describe('export 入口与桌面版一致', () => {
     expect(renderSource).toContain(cmToPx);
   });
 });
+
+// 7.4i：整本导出的 WebP 配图转成 PNG（真实沙箱中的转换见 tests/sandbox/docker/exportDocument.test.ts）。
+describe('WebP 转 PNG', () => {
+  it('入口按转换后的大小重新检查的输入上限与 export-document 模板的 input.maxTotalBytes 相同', async () => {
+    const { SANDBOX_TEMPLATES } = await import('../../src/sandbox/templates.ts');
+    const match = /const MAX_INPUT_TOTAL_BYTES = (\d+) \* 1024 \* 1024;/.exec(entrySource);
+    expect(match).not.toBeNull();
+    expect(Number(match![1]) * 1024 * 1024).toBe(SANDBOX_TEMPLATES['export-document'].input.maxTotalBytes);
+  });
+
+  it('只有整本导出转换（样张的固定配图与桌面版相同，原样嵌入），转换用的浏览器上下文同样禁用 JavaScript', () => {
+    expect(entrySource).toContain('preview: Object.freeze({ wholeDocument: false, helperTimeoutMs: 45_000, builtInAssets: true, convertWebp: false })');
+    expect(entrySource).toContain('document: Object.freeze({ wholeDocument: true, helperTimeoutMs: 18 * 60_000, builtInAssets: false, convertWebp: true })');
+    expect(entrySource).toContain('if (mode.convertWebp) await convertWebpAssets(input);');
+    // render.mjs 中每个浏览器上下文都禁用 JavaScript（装饰与 WebP 转换各一处）。
+    expect(renderSource.match(/browser\.newContext\(/g)).toHaveLength(2);
+    expect(renderSource.match(/javaScriptEnabled: false,/g)).toHaveLength(2);
+  });
+
+  it('与桌面版相同：桌面版整本导出在交给助手之前把 WebP 转成 PNG', () => {
+    const desktopExportSource = readFileSync(new URL('../../../client/electron/services/exportService.cjs', import.meta.url), 'utf8');
+    expect(desktopExportSource).toContain("if (loaded.type !== 'webp') {");
+    expect(desktopExportSource).toContain("return { buffer: image.toPNG(), type: 'png' };");
+  });
+});
