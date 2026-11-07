@@ -1515,8 +1515,9 @@ AI 网关加固，做法见 `docs/SERVER_DESIGN.md` 第 10.9 节。`client/` 未
 | 7.4f | 整本导出的请求（从原 7.4f 拆出，见“整本导出的请求”）：迁移 0029 新增项目级表 `technical_plan_export_requests`（挂在技术方案项目下、本组织内可见、只能以自己的身份创建），入队时在一个事务中取快照——目录的项目名称、模板范围、所选模板经 `normalizeExportFormat` 规范化后的配置、只含组装所需字段的目录（父节点与 AI 小节的正文不放进快照，组装结果与用完整目录的相同）；没有目录、没有有效模板、标题超过六级、快照过大在入队前拒绝；结果（产物 id、提示、消息）只能写一次，完成时清空目录；删除本项目的其他请求。Store 函数与数据库测试，不接任务 | 7.4e | 已完成 | #58 |
 | 7.4g | 整本导出任务（原 7.4e、7.4f，从 7.4 拆出）：`technical-plan-export` 任务（`export` 队列，`lock_key` 按项目），入队经 7.4f 的 `saveTechnicalPlanExportRequest` 取快照（任务参数只有请求 id；入队成功后删除本项目的其他请求，失败时删除刚保存的请求），完成后经 `completeTechnicalPlanExportRequest` 写回产物 id、提示与消息，worker 用 7.4c 的 `assembleDocumentHtml` 组装，只把其 `assetRefs` 中本项目可见的图片产物以 `assets/<产物 id>` 放入 export-document 沙箱（`asset_types` 按产物的 MIME；不可见的不放，由助手原位提示），转换完成后用 `summarizeDocumentExport` 汇总提示与消息；WebP 能否由助手直接嵌入（桌面版先经 `nativeImage` 转 PNG）在本步核对（配图经 7.4e 的 `objectInputFile` 按需从对象存储读取、流式放入，对象缺失等 `SANDBOX_INPUT_FAILED` 映射为给用户的提示），**新建沙箱之前按所引用配图的合计大小拒绝**（超过模板的输入上限 128 MiB 时直接失败并提示配图过大，不创建沙箱；7.4b），进度经 SSE，超出配额时导出失败并提示 | 7.4f | 已完成 | #59 |
 | 7.4h | 整本导出的接口与下载（原 7.4f、7.4g，从 7.4 拆出）：入队接口、状态与附件下载，`export.word`、`export.openFile` 改为下载（WebBridge 随第 9 步的通用机制） | 7.4g | 未开始 | — |
+| 7.4i | WebP 转 PNG（#59 确认时登记，**第 7 步完成前必做**；与桌面版 `exportService.normalizeImageForDocx` 一致，投标文件需兼容旧版 Word 和 WPS）：整本导出的 WebP 配图在 export 沙箱内转为 PNG 后再交给助手，Chromium 保持禁用 JavaScript；转换后的大小重新计入配图合计（128 MiB）与输出 docx 的上限（100 MiB），超出时给出明确提示；测试 WebP（含透明、动图取首帧）转换后在 docx 中为 PNG 且能正常显示 | 7.4g | 未开始 | — |
 
-7.2 与 7.3 没有合并（#46 单独完成 7.2）。7.3 拆成 7.3a（输入校验）与 7.3b（任务、接口与产物），理由见“样张的输入校验（#47，7.3a）”；原 7.3b 再拆成 7.3b（沙箱中生成）、7.3c（任务与产物）、7.3d（接口与下载），理由见“样张在沙箱中生成（#48，7.3b）”；原 7.3c 再拆成 7.3c（存储）、7.3d（任务），原 7.3d 改为 7.3e，理由见“样张的存储（#50，7.3c）”。7.4 拆成 7.4a～7.4f（范围合计不变，另把 worker 端放入配图时的流式生成写进 7.4e），理由见“sandbox-runner 流式放入（#53，7.4a）”。原 7.4e 再拆出 worker 端流式放入（新 7.4e），原 7.4e、7.4f 顺延为 7.4f、7.4g，理由见“worker 端流式放入（#57，7.4e）”。原 7.4f 再拆出整本导出的请求（新 7.4f），原 7.4f、7.4g 顺延为 7.4g、7.4h，理由见“整本导出的请求（#58，7.4f）”。
+7.2 与 7.3 没有合并（#46 单独完成 7.2）。7.3 拆成 7.3a（输入校验）与 7.3b（任务、接口与产物），理由见“样张的输入校验（#47，7.3a）”；原 7.3b 再拆成 7.3b（沙箱中生成）、7.3c（任务与产物）、7.3d（接口与下载），理由见“样张在沙箱中生成（#48，7.3b）”；原 7.3c 再拆成 7.3c（存储）、7.3d（任务），原 7.3d 改为 7.3e，理由见“样张的存储（#50，7.3c）”。7.4 拆成 7.4a～7.4f（范围合计不变，另把 worker 端放入配图时的流式生成写进 7.4e），理由见“sandbox-runner 流式放入（#53，7.4a）”。原 7.4e 再拆出 worker 端流式放入（新 7.4e），原 7.4e、7.4f 顺延为 7.4f、7.4g，理由见“worker 端流式放入（#57，7.4e）”。原 7.4f 再拆出整本导出的请求（新 7.4f），原 7.4f、7.4g 顺延为 7.4g、7.4h，理由见“整本导出的请求（#58，7.4f）”。7.4i（WebP 转 PNG）由 #59 确认时新增，见“整本导出任务（#59，7.4g）”。
 
 **登记给第 8 步**（本步不做，第 8 步复用 `export` 模板或在其上新增模板；其中**必须执行页面脚本**的功能，按决定事项第 9 项在第 8 步拆分计划中逐项列出、由用户决定：Mermaid 转图要运行 `mermaid.js`，HTML 配图转图要在页面中运行测量脚本取内容包围盒，docx-editor 分页测量与格式自检要运行整个 docx-editor）：模板提取、`insert-body-html`、小节 Word 预览 `previewContentWord`、整本导出中 `ai-generate` 小节的读取、HTML / Mermaid 配图转 PNG（需要执行页面脚本）、docx-editor 分页测量与格式自检的定位书签。Agent 在沙箱中调用 `openxml` 时，按设计第 7.3 节走业务工具 RPC：worker 校验参数和归属后在 `export` 沙箱中执行，不把助手放进 Agent 沙箱。
 
@@ -1861,7 +1862,7 @@ AI 网关加固，做法见 `docs/SERVER_DESIGN.md` 第 10.9 节。`client/` 未
 - **配图**（`src/export/documentStore.ts` 的 `listTechnicalPlanExportImages`）：在 RLS 下按 id 分批查询，只取种类 `image`、已完成、未被替换、**属于这个项目**的产物（其他项目的、组织级的、其他组织的、来源文件或项目已删除的、不是图片的都不放）。人工正文中的图片都来自本项目招标文件的解析（`writeParseArtifacts`），“本项目可见”按产物的 `project_id` 判断；不放入的引用由助手原位改为“图片无法导出”的提示。`asset_types` 取产物表登记的 MIME；
 - **沙箱**（`src/export/document.ts` 的 `renderTechnicalPlanDocument`，流程与样张的 `renderTemplatePreview` 相同）：`request.json` 只有服务端组装的 HTML、规范化后的配置与配图的 MIME；配图经 7.4e 的 `objectInputFile` 按需从对象存储读取、流式放入 `assets/<产物 id>`。**新建沙箱之前**按模板的输入规则检查（7.4b）：配图至多 2,000 张（`EXPORT_TOO_MANY_IMAGES`）、`request.json` 不超过单个文件上限（`EXPORT_TOO_LARGE`）、合计不超过 128 MiB（`EXPORT_IMAGES_TOO_LARGE`，“正文与配图合计超过 128 MiB…”），不符时不创建沙箱、不读取任何配图。配图在放入时已被删除或长度不符（`SANDBOX_INPUT_FAILED`，cause 为 `ObjectInputError`）为 `EXPORT_IMAGE_UNAVAILABLE`“部分配图已被删除或已变化，请重新导出”，对象存储出错为 `EXPORT_UNAVAILABLE`。入口错误代码到提示的映射与样张相同（文案改为“Word 导出”）；沙箱数已达上限时约 2 分钟内重试 6 次；不论成败都销毁沙箱；
 - **提示的原因**：`output.ts` 不采用助手的原因文字（7.3b），汇总时没有放入的引用记为“图片不属于本项目或已被删除，无法读取”，放入了而助手无法嵌入的记为“图片内容无法识别或已损坏”；
-- **WebP（核对结论）**：助手按文件头识别 WebP，以 `image/webp` 图片部件直接嵌入（#43 / #45 的 `ImageFormatTests`，7.3b 的样张配图也是这样嵌入的），所以服务端**不转换**、原样放入。与桌面版的差别：桌面版 `exportService.normalizeImageForDocx` 先经 Electron `nativeImage` 转为 PNG，较早的 Word（不支持 WebP 的版本）打开桌面版导出的文档能显示，打开 Web 版导出的不能。是否在 export 沙箱中转为 PNG（例如用镜像中已有的 Chromium 栅格化）**待用户决定**。
+- **WebP（核对结论）**：助手按文件头识别 WebP，以 `image/webp` 图片部件直接嵌入（#43 / #45 的 `ImageFormatTests`，7.3b 的样张配图也是这样嵌入的），所以服务端**不转换**、原样放入。与桌面版的差别：桌面版 `exportService.normalizeImageForDocx` 先经 Electron `nativeImage` 转为 PNG，较早的 Word（不支持 WebP 的版本）打开桌面版导出的文档能显示，打开 Web 版导出的不能。**#59 确认时用户决定改为转成 PNG（与桌面版一致）**：投标文件需兼容旧版 Word 和 WPS。登记为 7.4i（第 7 步完成前必做），本 PR 仍按原样嵌入。
 
 **测试**：
 
@@ -1870,7 +1871,7 @@ AI 网关加固，做法见 `docs/SERVER_DESIGN.md` 第 10.9 节。`client/` 未
 - `tests/sandbox/docker/exportDocument.test.ts`（2 项，CI 在 gVisor 下运行）：`assembleDocumentHtml` 组装的整本 HTML 与按需读取的 PNG、WebP 经真实沙箱导出，两张配图原样嵌入（WebP 为 `image/webp` 部件），没有放入的引用是唯一的 `imageWarnings`，沙箱被销毁；配图在放入时缺失时为 `EXPORT_IMAGE_UNAVAILABLE` 且沙箱被销毁；
 - `tests/jobs/definitions.test.ts` 登记新任务类型。服务端单元测试（Node 24）938 项全部通过。
 
-偏离计划：无（WebP 的核对结论见上，转换与否待用户决定）。
+偏离计划：无。WebP 的核对结论见上，用户决定改为转成 PNG，登记为 7.4i。
 
 已知限制：本机没有 Docker 守护进程，新增的真实沙箱用例只在 CI（gVisor）中运行；数据库测试在本机 PostgreSQL 16 上运行，PostgreSQL 17 下的结果以 CI 为准。
 

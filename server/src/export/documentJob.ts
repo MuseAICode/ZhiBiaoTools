@@ -11,7 +11,7 @@
 //   technical-plan-export 产物（7.4d：计入组织存储配额，同一事务中替换本项目旧的导出）→ 用 summarizeDocumentExport 汇总提示
 //   与消息 → 经 completeTechnicalPlanExportRequest 写回结果；
 // - WebP（7.4g 核对）：桌面版先经 nativeImage 转为 PNG 再交给助手；助手按文件头识别 WebP 并以 image/webp 图片部件直接嵌入
-//   （openxmlhelper 的 ImageFormatTests），服务端不再转换，见路线图“整本导出任务”；
+//   （openxmlhelper 的 ImageFormatTests），本步不转换；按 #59 确认时的决定由 7.4i 在 export 沙箱内转为 PNG（兼容旧版 Word 和 WPS）；
 // - 进度经 setProgress（SSE 推送）；可续跑：worker 崩溃或关闭后从头重新执行（快照不变，结果相同），已有结果时直接结束；
 // - 任务日志只写阶段与计数，不写目录标题、正文和配图。
 import type { Kysely } from 'kysely';

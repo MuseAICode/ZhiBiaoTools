@@ -94,7 +94,8 @@ describe.runIf(sandboxEnv.exportImage)('technical plan document in the export-do
     const text = docx.get('word/document.xml')!.toString('utf8');
     expect(text).toContain('整本正文的第一段');
     expect(text).toContain('总体方案');
-    const media = [...docx].filter(([name]) => name.startsWith('word/media/'));
+    // 图片部件的位置由 Open XML SDK 决定（不一定在 word/media/ 下），按扩展名与内容在全部条目中查找（同样张的测试）。
+    const media = [...docx];
     expect(media.filter(([name]) => name.endsWith('.webp')).map(([, data]) => sha256(data))).toEqual([sha256(WEBP)]);
     expect(media.filter(([, data]) => sha256(data) === sha256(PNG))).toHaveLength(1);
     expect(docx.get('[Content_Types].xml')!.toString('utf8')).toContain('image/webp');
