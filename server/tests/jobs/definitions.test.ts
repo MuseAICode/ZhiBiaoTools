@@ -41,6 +41,7 @@ describe('任务类型登记', () => {
       'knowledge-document-match',
       'template-preview',
       'template-word-export',
+      'technical-plan-export',
     ]);
     const parse = jobTypeRegistry.get('document-parse')!;
     expect(parse.queue).toBe('parse');
@@ -75,5 +76,9 @@ describe('任务类型登记', () => {
     expect(wordExport.queue).toBe('export');
     expect(wordExport.resumable).toBe(true);
     expect(wordExport.billable).toBeFalsy();
+    const documentExport = jobTypeRegistry.get('technical-plan-export')!;
+    expect(documentExport.queue).toBe('export');
+    expect(documentExport.resumable).toBe(true);
+    expect(documentExport.billable).toBeFalsy();
   });
 });
