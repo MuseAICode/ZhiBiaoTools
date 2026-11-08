@@ -65,7 +65,7 @@ describe('export templates', () => {
   const image = 'zhibiao-export@sha256:' + 'c'.repeat(64);
   const parseHost = buildContainerSpec(parse, { image, runtime: 'runsc', jobId: JOB_ID, expiresAt: new Date(1_000) }).HostConfig;
 
-  it.each(['export-preview', 'export-document'] as const)('%s reuses the isolation of the parse template', (name) => {
+  it.each(['export-preview', 'export-document', 'export-feasibility'] as const)('%s reuses the isolation of the parse template', (name) => {
     const template = SANDBOX_TEMPLATES[name];
     expect(template.image).toBe('export');
     const spec = buildContainerSpec(template, { image, runtime: 'runsc', jobId: JOB_ID, expiresAt: new Date(1_000) });
@@ -109,9 +109,27 @@ describe('export templates', () => {
     expect(tmpfsBytes + 2 * document.input.maxTotalBytes).toBeLessThanOrEqual(document.memoryBytes - 512 * MIB);
   });
 
+  it('export-feasibility (7.5b) has exactly the limits of export-document, only the entry mode differs', () => {
+    const { name, commands, ...feasibility } = SANDBOX_TEMPLATES['export-feasibility'];
+    const { name: documentName, commands: documentCommands, ...document } = SANDBOX_TEMPLATES['export-document'];
+    expect([name, documentName]).toEqual(['export-feasibility', 'export-document']);
+    expect(feasibility).toEqual(document);
+    expect(Object.keys(commands)).toEqual(Object.keys(documentCommands));
+    expect(commands.export!.timeoutMs).toBe(documentCommands.export!.timeoutMs);
+    const image = 'zhibiao-export@sha256:' + 'c'.repeat(64);
+    const options = { image, runtime: 'runsc', jobId: JOB_ID, expiresAt: new Date(1_000) } as const;
+    const { Labels: feasibilityLabels, ...feasibilitySpec } = buildContainerSpec(SANDBOX_TEMPLATES['export-feasibility'], options);
+    const { Labels: documentLabels, ...documentSpec } = buildContainerSpec(SANDBOX_TEMPLATES['export-document'], options);
+    expect(feasibilitySpec).toEqual(documentSpec);
+    expect(feasibilityLabels).toMatchObject({ 'zhibiao.sandbox.template': 'export-feasibility' });
+    expect(documentLabels).toMatchObject({ 'zhibiao.sandbox.template': 'export-document' });
+  });
+
   it('only runs the export entry with the mode fixed by the template', () => {
     expect(resolveCommand(SANDBOX_TEMPLATES['export-preview'], 'export', [])).toEqual({ argv: ['node', '/opt/export/entry.mjs', 'preview'], timeoutMs: 60_000 });
     expect(resolveCommand(SANDBOX_TEMPLATES['export-document'], 'export', [])).toEqual({ argv: ['node', '/opt/export/entry.mjs', 'document'], timeoutMs: 1_200_000 });
+    expect(resolveCommand(SANDBOX_TEMPLATES['export-feasibility'], 'export', [])).toEqual({ argv: ['node', '/opt/export/entry.mjs', 'feasibility'], timeoutMs: 1_200_000 });
+    expect(resolveCommand(SANDBOX_TEMPLATES['export-feasibility'], 'export', ['document'])).toBeNull();
     expect(resolveCommand(SANDBOX_TEMPLATES['export-preview'], 'export', ['document'])).toBeNull();
     expect(resolveCommand(SANDBOX_TEMPLATES['export-preview'], 'export', [''])).toBeNull();
     expect(resolveCommand(SANDBOX_TEMPLATES['export-preview'], 'parse', [])).toBeNull();

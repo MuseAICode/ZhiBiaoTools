@@ -12,11 +12,12 @@
 // - 中止（任务取消、worker 关闭）抛 JobInterruptedError。
 import type { ObjectStore } from '../files/objectStore.ts';
 import { JobError, JobInterruptedError, type JobContext } from '../jobs/definitions.ts';
-import type { SandboxInputFile } from '../sandbox/archive.ts';
+import type { SandboxFile, SandboxInputFile } from '../sandbox/archive.ts';
 import { createSandboxWithRetry } from '../sandbox/createWithRetry.ts';
 import { SandboxError, type SandboxDriver } from '../sandbox/driver.ts';
 import { ObjectInputError, objectInputFile } from '../sandbox/objectInput.ts';
-import { SANDBOX_TEMPLATES } from '../sandbox/templates.ts';
+import { SANDBOX_TEMPLATES, type SandboxTemplateName } from '../sandbox/templates.ts';
+type SandboxInputLimits = (typeof SANDBOX_TEMPLATES)['export-document']['input'];
 import type { ExportFormat } from '../templates/exportFormat.ts';
 import { exportEntryErrorCode, ExportOutputError, validateExportOutput, type ExportEntryErrorCode, type ExportOutput } from './output.ts';
 
@@ -112,8 +113,11 @@ export function buildDocumentRequest(input: Pick<DocumentExportInput, 'html' | '
  * 新建沙箱之前按 export-document 模板的输入规则检查（7.4b：超过时直接失败并提示，不创建沙箱）：配图至多 2,000 张，
  * request.json 不超过单个文件的上限，request.json 与配图合计不超过 128 MiB。
  */
-export function checkDocumentInputSize(request: Buffer, assets: readonly Pick<DocumentExportAsset, 'size'>[]): void {
-  const limits = DOCUMENT_TEMPLATE.input;
+export function checkDocumentInputSize(
+  request: Buffer,
+  assets: readonly Pick<DocumentExportAsset, 'size'>[],
+  limits: SandboxInputLimits = DOCUMENT_TEMPLATE.input,
+): void {
   if (assets.length + 1 > limits.maxFiles) throw new JobError('EXPORT_TOO_MANY_IMAGES', '配图超过 2,000 张，无法导出');
   if (request.length > limits.maxFileBytes) throw new JobError('EXPORT_TOO_LARGE', '目录与正文内容过多，无法导出');
   const total = assets.reduce((sum, asset) => sum + asset.size, request.length);
@@ -131,14 +135,32 @@ export async function renderTechnicalPlanDocument(
 ): Promise<ExportOutput> {
   const request = buildDocumentRequest(input);
   checkDocumentInputSize(request, input.assets);
+  return runExportSandbox(context, objectStore, { template: 'export-document', request, assets: input.assets, validate: validateExportOutput }, options);
+}
+
+/**
+ * export-document / export-feasibility 共用的流程（调用方已按模板的输入规则检查过大小）：新建沙箱 → copyIn 放 request.json 与
+ * 按需读取的配图 → 执行模板登记的 export 命令 → copyOut 并按 validate 校验 → 销毁。失败与中止的映射见 sandboxFailure。
+ */
+export async function runExportSandbox<T>(
+  context: DocumentExportContext,
+  objectStore: Pick<ObjectStore, 'get'>,
+  run: {
+    template: Extract<SandboxTemplateName, 'export-document' | 'export-feasibility'>;
+    request: Buffer;
+    assets: readonly DocumentExportAsset[];
+    validate: (files: readonly SandboxFile[]) => Promise<T>;
+  },
+  options: DocumentExportOptions = {},
+): Promise<T> {
   if (!context.sandbox) throw unavailable();
   const driver: SandboxDriver = context.sandbox;
   const files: SandboxInputFile[] = [
-    { path: REQUEST_NAME, data: request },
-    ...input.assets.map((asset) => objectInputFile(objectStore, { path: `${ASSET_ROOT}/${asset.id}`, key: asset.storageKey, size: asset.size })),
+    { path: REQUEST_NAME, data: run.request },
+    ...run.assets.map((asset) => objectInputFile(objectStore, { path: `${ASSET_ROOT}/${asset.id}`, key: asset.storageKey, size: asset.size })),
   ];
   const sandbox = await createSandboxWithRetry(driver, context, {
-    template: 'export-document',
+    template: run.template,
     delaysMs: options.createRetryDelaysMs ?? DOCUMENT_CREATE_RETRY_DELAYS_MS,
     busy: (cause) => new JobError('EXPORT_SANDBOX_BUSY', '导出服务繁忙，请稍后重试', { cause }),
     unavailable,
@@ -153,7 +175,7 @@ export async function renderTechnicalPlanDocument(
       if (result.timedOut) throw new JobError('EXPORT_TIMEOUT', 'Word 导出超时，请减少正文内容或配图后重试');
       if (result.exitCode !== 0) throw entryFailure(exportEntryErrorCode(result.stdout));
       await context.setProgress(80);
-      return await validateExportOutput(await driver.copyOut(sandbox, { signal: context.signal }));
+      return await run.validate(await driver.copyOut(sandbox, { signal: context.signal }));
     } catch (error) {
       if (error instanceof SandboxError) throw sandboxFailure(error);
       if (error instanceof ExportOutputError) throw outputRejected(error);

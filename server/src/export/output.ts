@@ -5,6 +5,7 @@
 //   assetRef 与 reason）三个字段，长度在上限内。返回时只保留 blockCount 与告警的 assetRef：reason 是助手的文字，
 //   给用户的提示由调用方按代码决定，不直接采用（与 6.6 相同）；
 // - docx 经 assertSafeDocx 检查 ZIP 结构、条目数与解压大小（src/export/docxGuard.ts）。
+// 可研导出（export-feasibility，7.5b）的 result.json 不同：{ version: 1, warnings: [提示文字] }，见 validateFeasibilityExportOutput。
 // 入口失败时只采用它在标准输出最后一行给出的错误代码（白名单内），不采用任何文字。
 import type { SandboxFile } from '../sandbox/archive.ts';
 import { assertSafeDocx, DocxGuardError } from './docxGuard.ts';
@@ -91,19 +92,62 @@ function parseResult(data: Buffer): { blockCount: number; imageWarnings: string[
   return { blockCount, imageWarnings: refs };
 }
 
-/** 校验导出输出（归档已由 src/sandbox/archive.ts 校验）。不符时抛 ExportOutputError。 */
-export async function validateExportOutput(files: readonly SandboxFile[]): Promise<ExportOutput> {
+/** 正好是 document.docx 与 result.json，docx 经 assertSafeDocx 检查；返回 docx 与 result.json 的字节。 */
+async function splitOutput(files: readonly SandboxFile[]): Promise<{ docx: Buffer; result: Buffer }> {
   const names = files.map((file) => file.path).sort();
   if (names.length !== 2 || names[0] !== EXPORT_DOCX_NAME || names[1] !== EXPORT_RESULT_NAME) {
     throw new ExportOutputError('output must contain only document.docx and result.json');
   }
   const docx = files.find((file) => file.path === EXPORT_DOCX_NAME)!.data;
-  const result = parseResult(files.find((file) => file.path === EXPORT_RESULT_NAME)!.data);
+  const result = files.find((file) => file.path === EXPORT_RESULT_NAME)!.data;
   try {
     await assertSafeDocx(docx);
   } catch (error) {
     if (error instanceof DocxGuardError) throw new ExportOutputError(`document.docx: ${error.reason}`, { cause: error });
     throw error;
   }
-  return { docx, ...result };
+  return { docx, result };
+}
+
+/** 校验导出输出（归档已由 src/sandbox/archive.ts 校验）。不符时抛 ExportOutputError。 */
+export async function validateExportOutput(files: readonly SandboxFile[]): Promise<ExportOutput> {
+  const { docx, result } = await splitOutput(files);
+  return { docx, ...parseResult(result) };
+}
+
+/** 可研导出（7.5b）result.json 的提示：至多 2,000 条、每条 400 个字符（与 server/sandbox/export/feasibility.mjs 相同）。 */
+const MAX_FEASIBILITY_WARNING_CHARS = 400;
+
+export interface FeasibilityExportOutput {
+  docx: Buffer;
+  /**
+   * 桌面版可研导出代码生成的提示（如“图片无法导出：<图片名称>，未找到可用图片数据”）。文字由沙箱中运行的桌面版代码生成、
+   * 含正文中的图片名称，属于不可信输出：这里只接受有界的字符串、不含控制字符，前端按纯文本显示。
+   */
+  warnings: string[];
+}
+
+/**
+ * 校验可研导出的输出（export-feasibility，7.5b）：同样只能是 document.docx 与 result.json，docx 经 assertSafeDocx 检查；
+ * result.json 只能有 version（1）与 warnings（有界的字符串数组，不含控制字符）。
+ */
+export async function validateFeasibilityExportOutput(files: readonly SandboxFile[]): Promise<FeasibilityExportOutput> {
+  const { docx, result: data } = await splitOutput(files);
+  if (data.length > MAX_RESULT_BYTES) throw new ExportOutputError('result.json is too large');
+  let result: unknown;
+  try {
+    result = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(data));
+  } catch {
+    throw new ExportOutputError('result.json is not valid json');
+  }
+  if (!isPlainObject(result)) throw new ExportOutputError('result.json is not an object');
+  const { version, warnings, ...rest } = result;
+  if (version !== 1 || Object.keys(rest).length > 0) throw new ExportOutputError('result.json has an unexpected shape');
+  if (!Array.isArray(warnings) || warnings.length > MAX_WARNINGS) throw new ExportOutputError('warnings is not a bounded array');
+  for (const warning of warnings) {
+    if (typeof warning !== 'string' || [...warning].length > MAX_FEASIBILITY_WARNING_CHARS || /[\u0000-\u001f\u007f]/.test(warning)) {
+      throw new ExportOutputError('warning is not a bounded plain string');
+    }
+  }
+  return { docx, warnings: warnings as string[] };
 }

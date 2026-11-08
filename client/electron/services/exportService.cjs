@@ -1659,7 +1659,8 @@ async function imageRunFromNode(node, context, options = {}) {
   }
 
   try {
-    loaded = exportRuntime(context).normalizeImage(loaded);
+    // 注入的实现可以是异步的（export 沙箱中 WebP 由 Chromium 转换，7.5b）；桌面版的 normalizeImageForDocx 是同步的，await 不改变结果。
+    loaded = await exportRuntime(context).normalizeImage(loaded);
   } catch (error) {
     const message = `图片无法导出：${imageLabel}，${error.message || '图片格式转换失败'}`;
     addWarning(context, message);
@@ -2590,6 +2591,7 @@ function buildHeadingParagraphStyles(exportFormat) {
  * 桌面版的默认运行时：配图按 data URL、app-asset://、http(s)、本机路径四种来源读取（loadImage），WebP 经 nativeImage 转 PNG
  * （normalizeImageForDocx），页眉页脚装饰经隐藏窗口转 PNG（chromeAssetService.renderChromePngs）。
  * export 沙箱（路线图 7.5b）注入自己的三个函数：配图只从放入的产物读取、WebP 与装饰由禁用 JavaScript 的 Chromium 转换。
+ * loadImage 与 renderChromePngs 返回 Promise；normalizeImage 可以同步返回，也可以返回 Promise。
  */
 const DESKTOP_EXPORT_RUNTIME = Object.freeze({
   loadImage: (source, context) => loadImage(source, context),

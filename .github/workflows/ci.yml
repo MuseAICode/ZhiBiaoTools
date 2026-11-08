@@ -248,6 +248,7 @@ jobs:
 
       # 7.1：export 沙箱镜像。助手源码与装饰生成器经具名构建上下文取自 openxmlhelper/ 与 client/electron/shared/chrome（与桌面版同一份代码）；
       # 7.3b 起另有模板样张的固定配图，取自 client/assets/content-template-preview（与桌面版同一份文件）。
+      # 7.5b 起另有桌面版的可研导出代码（exportService.cjs 等 6 个文件），取自 client/electron；依赖按 sandbox/export/desktop/package-lock.json 安装。
       # .NET SDK 只在构建阶段，chromium-headless-shell 由镜像中的 playwright-core（按 sandbox/export/package-lock.json 安装）下载对应版本。
       - name: Build export sandbox image
         run: |
@@ -255,6 +256,7 @@ jobs:
             --build-context openxmlhelper=../openxmlhelper \
             --build-context chrome=../client/electron/shared/chrome \
             --build-context preview-assets=../client/assets/content-template-preview \
+            --build-context desktop=../client/electron \
             sandbox/export
 
       - name: Sandbox isolation, parse and export tests (gVisor)
@@ -282,4 +284,9 @@ jobs:
       # export 沙箱镜像中的入口依赖（playwright-core）单独一份 lockfile。
       - name: npm audit export sandbox dependencies (fail on high)
         working-directory: server/sandbox/export
+        run: npm audit --audit-level=high
+
+      # export 沙箱镜像中可研导出的依赖（docx、cheerio、markdown-it 等，7.5b），版本取自 client/package-lock.json。
+      - name: npm audit export sandbox desktop export dependencies (fail on high)
+        working-directory: server/sandbox/export/desktop
         run: npm audit --audit-level=high

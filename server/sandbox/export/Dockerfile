@@ -5,12 +5,14 @@
 # 输入输出经 exec 中的 tar 传送。镜像中没有凭据、编译器、.NET SDK、网络工具和包管理器（npm、corepack、yarn 已删除），
 # 也没有 setuid / setgid 程序。与 parse 镜像、第 8 步的 Agent 镜像分开，各自只装自己需要的东西。
 #
-# 构建上下文是本目录，另有三个具名上下文（与桌面版同一份代码和文件，不复制进 server/）：
+# 构建上下文是本目录，另有四个具名上下文（与桌面版同一份代码和文件，不复制进 server/）：
 #   docker build -t zhibiao-export:dev \
 #     --build-context openxmlhelper=openxmlhelper \
 #     --build-context chrome=client/electron/shared/chrome \
 #     --build-context preview-assets=client/assets/content-template-preview \
+#     --build-context desktop=client/electron \
 #     server/sandbox/export
+# desktop（7.5b）：可研报告导出 Word 在沙箱内运行桌面版同一份的 exportService.cjs，只复制它用到的 6 个文件与装饰生成器。
 # 部署时按构建出的镜像摘要引用（SANDBOX_EXPORT_IMAGE=...@sha256:...）。
 ARG NODE_IMAGE=node:24.21.0-bookworm-slim@sha256:d6aa754f16b3197301076f047b5def2f02ea1dbbc2ca920407d46d7ec7f87b20
 # .NET SDK 只在构建阶段使用（与 openxmlhelper/global.json 的 10.0 一致），不进入最终镜像。
@@ -43,6 +45,13 @@ RUN npm ci --omit=dev --ignore-scripts --no-audit --no-fund \
  && ln -s "$(echo /opt/ms-playwright/chromium_headless_shell-*/chrome-headless-shell-linux64)" /opt/ms-playwright/current \
  && test -x /opt/ms-playwright/current/chrome-headless-shell
 
+# 可研导出（7.5b）的运行时依赖：desktop/package-lock.json 是 client/package-lock.json 中这些包的条目原样截取（版本与
+# integrity 相同，tests/sandbox/exportDesktop.test.ts 核对），不执行安装脚本。
+FROM ${NODE_IMAGE} AS desktop-deps
+WORKDIR /opt/export/desktop
+COPY desktop/package.json desktop/package-lock.json desktop/.npmrc ./
+RUN npm ci --omit=dev --ignore-scripts --no-audit --no-fund
+
 FROM ${NODE_IMAGE}
 # chromium-headless-shell 的运行库（按其 ldd 结果，不装 X11 服务和图形界面）；libicu72：助手的全球化支持；
 # fontconfig + fonts-noto-cjk（Noto Sans / Serif CJK，SIL OFL 1.1）+ fonts-dejavu-core：字体（决定事项第 3 项）。
@@ -61,7 +70,8 @@ RUN apt-get update \
  && find / -xdev -type f -perm /6000 -exec chmod a-s {} + \
  && groupadd --gid 10001 sandbox \
  && useradd --uid 10001 --gid 10001 --no-create-home --home-dir /tmp --shell /usr/sbin/nologin sandbox \
- && mkdir -p /work /output /opt/export/chrome /opt/export/preview-assets
+ && mkdir -p /work /output /opt/export/chrome /opt/export/preview-assets \
+            /opt/export/desktop/electron/services /opt/export/desktop/electron/utils /opt/export/desktop/electron/shared/chrome
 
 # 模板可选的中文字体名映射到 Noto CJK；构建时生成字体缓存（根文件系统只读，运行时不写缓存）。
 COPY --chmod=0644 fonts/65-zhibiao-cjk.conf /etc/fonts/conf.d/65-zhibiao-cjk.conf
@@ -75,7 +85,12 @@ COPY --from=deps /opt/export/node_modules /opt/export/node_modules
 COPY --chmod=0644 --from=chrome *.mjs /opt/export/chrome/
 # 模板样张的固定配图（路线图 7.3b）：样张只能引用它们，入口在 preview 模式下复制到工作区，worker 不放入任何配图。
 COPY --chmod=0644 --from=preview-assets *.webp /opt/export/preview-assets/
-COPY --chmod=0644 package.json entry.mjs render.mjs webp.mjs /opt/export/
+# 可研导出（7.5b）：桌面版的生成代码与它用到的模块，目录结构与 client/electron 相同（chromeAssetService 按相对路径加载装饰生成器）。
+COPY --from=desktop-deps /opt/export/desktop/node_modules /opt/export/desktop/node_modules
+COPY --chmod=0644 --from=desktop services/exportService.cjs services/chromeAssetService.cjs /opt/export/desktop/electron/services/
+COPY --chmod=0644 --from=desktop utils/developerLog.cjs utils/paths.cjs utils/silentFileLog.cjs utils/renderMarkdownHtml.cjs /opt/export/desktop/electron/utils/
+COPY --chmod=0644 --from=desktop shared/chrome/*.mjs /opt/export/desktop/electron/shared/chrome/
+COPY --chmod=0644 package.json entry.mjs render.mjs webp.mjs feasibility.mjs /opt/export/
 
 ENV HOME=/tmp LANG=C.UTF-8 TMPDIR=/tmp
 USER 10001:10001

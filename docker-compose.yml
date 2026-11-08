@@ -18,7 +18,8 @@
 # 7.1 起 sandbox-runner 可以创建 export 沙箱（OpenXmlHelper + Chromium，docs/SERVER_DESIGN.md 第 7.9 节），样张接口上线（7.3e）起必需：
 #   - 构建镜像（在仓库根目录）：docker build -t zhibiao-export:dev --build-context openxmlhelper=openxmlhelper
 #       --build-context chrome=client/electron/shared/chrome
-#       --build-context preview-assets=client/assets/content-template-preview server/sandbox/export（7.3b 起含样张配图）
+#       --build-context preview-assets=client/assets/content-template-preview
+#       --build-context desktop=client/electron server/sandbox/export（7.3b 起含样张配图，7.5b 起含桌面版的可研导出代码）
 #   - sandbox-runner 使用 zhibiao-export:dev（SANDBOX_EXPORT_IMAGE，未配置时 sandbox-runner 拒绝启动）。
 # 重建数据库：docker compose down -v（会删除数据卷）。
 # 生产部署的 compose 与网络划分见 docs/SERVER_DESIGN.md 第 8.1 节，不使用本文件。
