@@ -201,18 +201,6 @@ jobs:
       - name: Unit tests (Vitest)
         run: npm run test
 
-      # 临时（#66 排查 runnerApp.test.ts 偶发挂住，合并前删除）：循环运行 sandbox-runner 的接口与断开测试 50 次，失败时打印输出。
-      - name: TEMP loop sandbox-runner tests
-        run: |
-          fail=0
-          for i in $(seq 1 50); do
-            if ! out=$(npx vitest run tests/sandbox/runnerApp.test.ts tests/sandbox/runnerDisconnect.test.ts 2>&1); then
-              fail=$((fail+1)); echo "::group::run $i failed"; echo "$out" | tail -60; echo "::endgroup::"
-            fi
-          done
-          echo "loop finished: $fail of 50 runs failed"
-          test "$fail" -eq 0
-
       - name: Database tests (migrations, RLS, /readyz, file storage, redis, job queue, events)
         run: npm run test:db
         env:
