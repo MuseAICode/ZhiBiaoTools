@@ -182,7 +182,13 @@ export async function buildApp(config: AppConfig, options: BuildAppOptions): Pro
   await app.register(registerDuplicateCheckRoutes, { prefix: '/api/projects', db, jobs });
   await app.register(registerRejectionCheckRoutes, { prefix: '/api/projects', db, objectStore: options.objectStore ?? null, jobs });
   await app.register(registerFeasibilityReportRoutes, { prefix: '/api/projects', db, objectStore: options.objectStore ?? null, jobs });
-  await app.register(registerTechnicalPlanRoutes, { prefix: '/api/projects', db, objectStore: options.objectStore ?? null, jobs });
+  await app.register(registerTechnicalPlanRoutes, {
+    prefix: '/api/projects',
+    db,
+    objectStore: options.objectStore ?? null,
+    jobs,
+    exportLimiter: limiters.technicalPlanExportPerUser,
+  });
 
   return app;
 }

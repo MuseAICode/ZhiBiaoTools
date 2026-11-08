@@ -145,6 +145,8 @@ export interface AuthRateLimitSettings {
    * 不属于登录类限流，与它们共用同一套计数实现（Redis 共享、不可用时退回进程内存）。
    */
   templatePreviewPerUser: FixedWindowOptions;
+  /** 技术方案整本导出 Word 的入队请求（路线图 7.4h，同上：导出不计费，靠按项目互斥与请求频率控制用量）。 */
+  technicalPlanExportPerUser: FixedWindowOptions;
 }
 
 export const DEFAULT_AUTH_RATE_LIMITS: Readonly<AuthRateLimitSettings> = Object.freeze({
@@ -158,6 +160,7 @@ export const DEFAULT_AUTH_RATE_LIMITS: Readonly<AuthRateLimitSettings> = Object.
   changePasswordPerUser: { limit: 5, windowMs: 15 * MINUTE },
   adminStepUpPerUser: { limit: 10, windowMs: 15 * MINUTE },
   templatePreviewPerUser: { limit: 120, windowMs: 10 * MINUTE },
+  technicalPlanExportPerUser: { limit: 30, windowMs: 10 * MINUTE },
 });
 
 /** 固定窗口限流器：每次请求计一次。 */
@@ -264,6 +267,7 @@ export function createAuthRateLimiters(settings: AuthRateLimitSettings, options:
     changePasswordPerUser: window('changePasswordPerUser', settings.changePasswordPerUser),
     adminStepUpPerUser: window('adminStepUpPerUser', settings.adminStepUpPerUser),
     templatePreviewPerUser: window('templatePreviewPerUser', settings.templatePreviewPerUser),
+    technicalPlanExportPerUser: window('technicalPlanExportPerUser', settings.technicalPlanExportPerUser),
   };
 }
 

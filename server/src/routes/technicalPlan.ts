@@ -24,11 +24,21 @@
 // DELETE /api/projects/:projectId/technical-plan                                    清空（招标文件与原方案进回收站）
 // POST   /api/projects/:projectId/technical-plan/bid-section-extraction             开始多标段识别（入队 bid-section-extraction）
 // POST   /api/projects/:projectId/technical-plan/bid-analysis                       开始招标解析（入队 bid-analysis）
+// POST   /api/projects/:projectId/technical-plan/export                             整本导出 Word（入队 technical-plan-export，7.4h）
+// GET    /api/projects/:projectId/technical-plan/export/:requestId                  整本导出的状态（pending / ready / expired）、提示与消息
+// GET    /api/projects/:projectId/technical-plan/export/:requestId/content          导出的 docx（附件下载）
 //
 // 导入招标文件、上传原方案后自动入队文档解析（6.6，src/parse/）。多标段识别与招标解析是任务（6.11，src/technicalPlan/jobs.ts），结果由任务
 // 经 Store 函数写入，进度、取消、暂停、继续经 /api/jobs 与 SSE；与桌面版相同，招标文件变化（导入、移除）和清空时取消本项目进行中的技术方案
 // 任务。疑似多标段检测（桌面版 checkBidSections）由解析任务在 worker 中算出，在 GET 的 bidSectionDetection 中返回。
-// 目录生成 / 调整、全局事实生成 / 调整、正文生成随第 8 步；openBidTemplate、previewContentWord 随第 7 步。
+// 目录生成 / 调整、全局事实生成 / 调整、正文生成、小节 Word 预览 previewContentWord 随第 8 步；openBidTemplate 随第 8 步（它打开的投标模板由模板提取生成，模板提取随第 8 步）。
+//
+// 整本导出 Word（7.4h，取代桌面版 export.word 的技术方案整本导出与 export.openFile）：POST 经 enqueueTechnicalPlanExport 取快照入队
+// （没有目录、没有有效模板、标题超过六级 400，快照过大 413，本项目已有未结束的整本导出 409 JOB_LOCKED，均不入队），按用户限流
+// （technicalPlanExportPerUser，超出 429，在取快照之前计数）；进度与结果经任务的 SSE，任务成功后按 requestId 取状态（提示与消息）
+// 并下载。请求属于项目、本组织内成员可见（RLS），不属于这个项目的与不存在的一样 404；每个项目只保留最近一次：新的导出入队后
+// 旧的请求被删除（404），旧的产物被替换或 7 天后清理（410）。桌面版保存后“打开文件”在 Web 版就是浏览器下载这个附件。
+// 不计费、不检查余额（第 7 步决定事项第 7 项）。
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import type { Kysely } from 'kysely';
 import { tenantOf } from '../auth/hooks.ts';
@@ -49,8 +59,15 @@ import {
   TECHNICAL_PLAN_WORDS_MAX,
 } from '../db/migrations/0018_technical_plan.ts';
 import { TECHNICAL_PLAN_CONTENT_MAX, TECHNICAL_PLAN_FACT_CONTENT_MAX, TECHNICAL_PLAN_FACT_ID_MAX } from '../db/migrations/0019_technical_plan_outline.ts';
+import { findArtifact } from '../artifacts/store.ts';
+import type { RateLimitDecision } from '../auth/rateLimit.ts';
+import { DOCX_MIME } from '../db/migrations/0027_template_preview.ts';
 import type { Database, TechnicalPlanBidItemId, TechnicalPlanStep } from '../db/schema.ts';
-import { attachmentDisposition } from '../files/filename.ts';
+import { AppError } from '../errors.ts';
+import { enqueueTechnicalPlanExport } from '../export/documentJob.ts';
+import { findTechnicalPlanExportRequest, type TechnicalPlanExportRequestRecord } from '../export/documentRequestStore.ts';
+import { attachmentDisposition, sanitizeDisplayName } from '../files/filename.ts';
+import { fileTimestamp } from '../xlsx/displayTime.ts';
 import type { ObjectStore } from '../files/objectStore.ts';
 import { storageDisabled } from '../knowledgeBase/content.ts';
 import type { JobServiceDependencies } from '../jobs/service.ts';
@@ -93,8 +110,10 @@ export interface TechnicalPlanRouteDependencies {
   db: Kysely<Database>;
   /** 读取招标文件的 Markdown 用；未配置时读取已解析的文件返回 503（还没有 Markdown 时除外）。 */
   objectStore: ObjectStore | null;
-  /** 导入后入队文档解析任务（6.6）。 */
+  /** 导入后入队文档解析任务（6.6）、整本导出任务（7.4h）。 */
   jobs: JobServiceDependencies;
+  /** 整本导出的入队按用户限流（7.4h）。 */
+  exportLimiter: { consume(key: string): Promise<RateLimitDecision> };
 }
 
 const UUID = { type: 'string', pattern: '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$' } as const;
@@ -268,6 +287,28 @@ const CHAPTER_SCHEMA = {
 
 type ProjectParams = { Params: { projectId: string } };
 type ChapterParams = { Params: { projectId: string; nodeId: string } };
+type ExportParams = { Params: { projectId: string; requestId: string } };
+
+const EXPORT_PARAMS = {
+  type: 'object',
+  properties: { ...PROJECT_ID_PARAMS.properties, requestId: UUID },
+  required: ['projectId', 'requestId'],
+  additionalProperties: false,
+} as const;
+
+function exportNotFound(): AppError {
+  return new AppError(404, 'EXPORT_NOT_FOUND', '导出记录不存在或已被新的导出取代');
+}
+
+function exportExpired(): AppError {
+  return new AppError(410, 'EXPORT_EXPIRED', '导出的 Word 已过期或已被新的导出替换，请重新导出');
+}
+
+/** 下载文件名：<项目名称>_YYYYMMDD_HHMMSS.docx（同桌面版 export.word 的默认文件名；时间为完成时间，按北京时间）。 */
+export function technicalPlanExportFileName(request: TechnicalPlanExportRequestRecord): string {
+  const name = request.projectName?.trim() ? request.projectName : '标书文档';
+  return sanitizeDisplayName(`${name}_${fileTimestamp(request.completedAt ?? request.createdAt)}.docx`);
+}
 type FileParams = { Params: { projectId: string; fileId: string } };
 
 /** 与 /api/artifacts/:artifactId/content 相同：一律附件、nosniff、sandbox CSP，Markdown 原文不会在本站内被当作页面渲染。 */
@@ -440,4 +481,62 @@ export async function registerTechnicalPlanRoutes(app: FastifyInstance, deps: Te
       return reply.code(202).send({ job: jobBody(job) });
     },
   );
+
+  app.post<ProjectParams>('/:projectId/technical-plan/export', { schema: { params: PROJECT_ID_PARAMS } }, async (request, reply) => {
+    const context = tenantOf(request);
+    const projectId = await project(request);
+    const decision = await deps.exportLimiter.consume(context.userId);
+    if (!decision.allowed) {
+      reply.header('retry-after', String(Math.max(1, Math.ceil(decision.retryAfterMs / 1000))));
+      throw new AppError(429, 'TOO_MANY_REQUESTS', '请求过于频繁，请稍后再试');
+    }
+    const enqueued = await enqueueTechnicalPlanExport(deps.jobs, context, projectId);
+    return reply.code(202).send({ requestId: enqueued.request.id, job: jobBody(enqueued.job) });
+  });
+
+  /** 本项目的整本导出请求与结果产物（产物已被替换或清理时为 null）。 */
+  async function exportOf(request: FastifyRequest<ExportParams>) {
+    const context = tenantOf(request);
+    const projectId = await project(request);
+    const record = await findTechnicalPlanExportRequest(db, context, request.params.requestId.toLowerCase());
+    if (!record || record.projectId !== projectId) throw exportNotFound();
+    const artifact = record.result === null ? null : await findArtifact(db, context, record.result.artifactId);
+    return { record, artifact };
+  }
+
+  app.get<ExportParams>('/:projectId/technical-plan/export/:requestId', { schema: { params: EXPORT_PARAMS } }, async (request) => {
+    const { record, artifact } = await exportOf(request);
+    const status = record.result === null ? 'pending' : artifact ? 'ready' : 'expired';
+    return {
+      id: record.id,
+      status,
+      fileName: status === 'ready' ? technicalPlanExportFileName(record) : null,
+      size: artifact?.size ?? null,
+      warnings: record.result?.warnings ?? [],
+      message: record.result?.message ?? null,
+      createdAt: record.createdAt.toISOString(),
+      completedAt: record.completedAt?.toISOString() ?? null,
+    };
+  });
+
+  // 与文件下载相同：一律附件、nosniff、sandbox CSP，由 api 从对象存储流式转发。
+  app.get<ExportParams>('/:projectId/technical-plan/export/:requestId/content', { schema: { params: EXPORT_PARAMS } }, async (request, reply) => {
+    if (!deps.objectStore) throw storageDisabled();
+    const { record, artifact } = await exportOf(request);
+    if (record.result === null) throw new AppError(409, 'EXPORT_NOT_READY', 'Word 尚未导出完成');
+    if (!artifact) throw exportExpired();
+    const object = await deps.objectStore.get(artifact.storageKey);
+    if (!object) {
+      request.log.error({ artifactId: artifact.id }, 'technical plan export object is missing from object storage');
+      throw exportExpired();
+    }
+    reply
+      .header('content-type', DOCX_MIME)
+      .header('content-length', String(artifact.size))
+      .header('content-disposition', attachmentDisposition(technicalPlanExportFileName(record)))
+      .header('x-content-type-options', 'nosniff')
+      .header('content-security-policy', "default-src 'none'; sandbox");
+    // cache-control 由本插件的 onSend 统一设为 no-store。
+    return reply.send(object.body);
+  });
 }
