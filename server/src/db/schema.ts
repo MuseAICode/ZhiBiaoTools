@@ -388,6 +388,30 @@ export interface TechnicalPlanExportRequestsTable {
 }
 
 /**
+ * 可研报告导出 Word 的请求（迁移 0030_feasibility_report_export）：入队时的快照与导出结果，挂在可研报告项目下，
+ * 在本组织内可见。唯一的 UPDATE 是完成（写入结果、清空 outline），完成时间由触发器写入，之后不能再改（FX001）。
+ */
+export interface FeasibilityReportExportRequestsTable {
+  id: ColumnType<string, never, never>;
+  org_id: ColumnType<string, string, never>;
+  project_id: ColumnType<string, string, never>;
+  created_by: ColumnType<string, string, never>;
+  project_name: ColumnType<string | null, string | null, never>;
+  /** jsonb 对象（规范化后的 export_format），写入时传 JSON 文本。 */
+  export_format: ColumnType<Record<string, unknown>, string, never>;
+  /** jsonb 对象（导出选项与项目信息），写入时传 JSON 文本。 */
+  options: ColumnType<Record<string, unknown>, string, never>;
+  /** jsonb 数组（快照中的目录），写入时传 JSON 文本；完成时清空。 */
+  outline: ColumnType<unknown[] | null, string, null>;
+  artifact_id: ColumnType<string | null, never, string>;
+  /** jsonb 字符串数组，写入时传 JSON 文本。 */
+  warnings: ColumnType<string[] | null, never, string>;
+  message: ColumnType<string | null, never, string>;
+  created_at: ColumnType<Date, never, never>;
+  completed_at: ColumnType<Date | null, never, never>;
+}
+
+/**
  * 组织设置（迁移 0009_settings），每个组织一行。所有成员可读，只有 owner / admin 能写（RLS）；
  * platform_model_id 必须指向已启用的平台模型（触发器 org_settings_guard，ST001）。updated_at 由触发器维护。
  */
@@ -1250,6 +1274,7 @@ export interface Database {
   artifacts: ArtifactsTable;
   template_preview_requests: TemplatePreviewRequestsTable;
   technical_plan_export_requests: TechnicalPlanExportRequestsTable;
+  feasibility_report_export_requests: FeasibilityReportExportRequestsTable;
   org_settings: OrgSettingsTable;
   user_settings: UserSettingsTable;
   export_templates: ExportTemplatesTable;

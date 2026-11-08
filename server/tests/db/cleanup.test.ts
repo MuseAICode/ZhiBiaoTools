@@ -121,11 +121,11 @@ async function newOrg(): Promise<TenantContext> {
   return { orgId, userId, role: 'owner' };
 }
 
-async function insertProject(ctx: TenantContext, deletedAgo: number | null = null): Promise<string> {
+async function insertProject(ctx: TenantContext, deletedAgo: number | null = null, kind = 'technical-plan'): Promise<string> {
   const row = await superuser
     .insertInto('projects')
     .values({
-      org_id: ctx.orgId, kind: 'technical-plan', name: '项目', created_by: ctx.userId,
+      org_id: ctx.orgId, kind, name: '项目', created_by: ctx.userId,
       deleted_at: deletedAgo === null ? null : ago(deletedAgo), deleted_by: deletedAgo === null ? null : ctx.userId,
     })
     .returning('id')
@@ -169,18 +169,20 @@ async function insertArtifact(
     projectId?: string; sourceFileId?: string; supersededAgo?: number; writing?: boolean; createdAgo?: number; preview?: boolean;
     /** 整本导出（迁移 0028）：必须同时给 projectId。 */
     documentExport?: boolean;
+    /** 可研导出（迁移 0030）：必须同时给 projectId。 */
+    feasibilityExport?: boolean;
   } = {},
 ): Promise<{ id: string; key: string }> {
   const writing = options.writing ?? false;
   const preview = options.preview ?? false;
-  const docx = preview || (options.documentExport ?? false);
+  const docx = preview || (options.documentExport ?? false) || (options.feasibilityExport ?? false);
   const row = await superuser
     .insertInto('artifacts')
     .values({
       org_id: ctx.orgId,
       project_id: options.projectId ?? null,
       source_file_id: options.sourceFileId ?? null,
-      kind: preview ? 'template-preview' : options.documentExport ? 'technical-plan-export' : 'markdown',
+      kind: preview ? 'template-preview' : options.documentExport ? 'technical-plan-export' : options.feasibilityExport ? 'feasibility-report-export' : 'markdown',
       name: docx ? 'export.docx' : 'content.md',
       mime: docx ? DOCX_MIME : MARKDOWN,
       preview_sha256: preview ? randomBytes(32) : null,
@@ -523,6 +525,28 @@ describe('只删除超过保留期的数据', () => {
       expect(store.objects.has(gone.key)).toBe(false);
     }
     for (const kept of [current, oldMarkdown]) {
+      expect(await exists('artifacts', kept.id)).toBe(true);
+      expect(store.objects.has(kept.key)).toBe(true);
+    }
+  });
+
+  it('可研导出（迁移 0030）：与整本导出相同，被替换的立即连同对象删除，未被替换的创建超过 7 天删除，未满 7 天的不动；两个种类互不替换', async () => {
+    const ctx = await newOrg();
+    const project = await insertProject(ctx, null, 'feasibility-report');
+    const other = await insertProject(ctx, null, 'feasibility-report');
+    const plan = await insertProject(ctx);
+    const superseded = await insertArtifact(ctx, { projectId: project, feasibilityExport: true, createdAgo: HOUR, supersededAgo: 60_000 });
+    const old = await insertArtifact(ctx, { projectId: other, feasibilityExport: true, createdAgo: 7 * DAY + 60_000 });
+    const current = await insertArtifact(ctx, { projectId: project, feasibilityExport: true, createdAgo: 7 * DAY - HOUR });
+    const documentExport = await insertArtifact(ctx, { projectId: plan, documentExport: true, createdAgo: 7 * DAY - HOUR });
+
+    const results = byCategory(await newCleaner().cleaner.runBatch());
+    expect(results.artifacts).toMatchObject({ deleted: 2, objects: 2, failed: 0 });
+    for (const gone of [superseded, old]) {
+      expect(await exists('artifacts', gone.id)).toBe(false);
+      expect(store.objects.has(gone.key)).toBe(false);
+    }
+    for (const kept of [current, documentExport]) {
       expect(await exists('artifacts', kept.id)).toBe(true);
       expect(store.objects.has(kept.key)).toBe(true);
     }
