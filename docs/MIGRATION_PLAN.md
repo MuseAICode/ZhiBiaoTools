@@ -1516,7 +1516,7 @@ AI 网关加固，做法见 `docs/SERVER_DESIGN.md` 第 10.9 节。`client/` 未
 | 7.4g | 整本导出任务（原 7.4e、7.4f，从 7.4 拆出）：`technical-plan-export` 任务（`export` 队列，`lock_key` 按项目），入队经 7.4f 的 `saveTechnicalPlanExportRequest` 取快照（任务参数只有请求 id；入队成功后删除本项目的其他请求，失败时删除刚保存的请求），完成后经 `completeTechnicalPlanExportRequest` 写回产物 id、提示与消息，worker 用 7.4c 的 `assembleDocumentHtml` 组装，只把其 `assetRefs` 中本项目可见的图片产物以 `assets/<产物 id>` 放入 export-document 沙箱（`asset_types` 按产物的 MIME；不可见的不放，由助手原位提示），转换完成后用 `summarizeDocumentExport` 汇总提示与消息；WebP 能否由助手直接嵌入（桌面版先经 `nativeImage` 转 PNG）在本步核对（配图经 7.4e 的 `objectInputFile` 按需从对象存储读取、流式放入，对象缺失等 `SANDBOX_INPUT_FAILED` 映射为给用户的提示），**新建沙箱之前按所引用配图的合计大小拒绝**（超过模板的输入上限 128 MiB 时直接失败并提示配图过大，不创建沙箱；7.4b），进度经 SSE，超出配额时导出失败并提示 | 7.4f | 已完成 | #59 |
 | 7.4h | 整本导出的接口与下载（原 7.4f、7.4g，从 7.4 拆出）：入队接口、状态与附件下载，`export.word`、`export.openFile` 改为下载（WebBridge 随第 9 步的通用机制） | 7.4g | 已完成 | #61 |
 | 7.4i | WebP 转 PNG（#59 确认时登记，**第 7 步完成前必做**；与桌面版 `exportService.normalizeImageForDocx` 一致，投标文件需兼容旧版 Word 和 WPS）：整本导出的 WebP 配图在 export 沙箱内转为 PNG 后再交给助手，Chromium 保持禁用 JavaScript；转换后的大小重新计入配图合计（128 MiB）与输出 docx 的上限（100 MiB），超出时给出明确提示；测试 WebP（含透明、动图取首帧）转换后在 docx 中为 PNG 且能正常显示 | 7.4g | 已完成 | #60 |
-| 7.5 | 可研报告导出 Word（#61 收尾核对时发现，见“第 7 步收尾核对（#61）”第 7 项）：桌面版 `export.word` 带 `feasibility_options` 时走 `buildDocxResult`（Main 中用 `docx` 库生成，Markdown 经 `renderMarkdownHtml` 以 `allowRawHtml: true` 渲染、配图读本机文件与 `app-asset://`、页眉页脚装饰经 Chromium 转 PNG），拆分计划的范围核实表漏了这一项。**方案由用户决定**后再拆分 | 7.4h | 未开始 | — |
+| 7.5 | 可研报告导出 Word（#61 收尾核对时发现，见“第 7 步收尾核对（#61）”第 7 项）：桌面版 `export.word` 带 `feasibility_options` 时走 `buildDocxResult`（Main 中用 `docx` 库生成，Markdown 经 `renderMarkdownHtml` 以 `allowRawHtml: true` 渲染、配图读本机文件与 `app-asset://`、页眉页脚装饰经 Chromium 转 PNG），拆分计划的范围核实表漏了这一项。#61 确认时用户选定**方案 A**：桌面版可研导出代码放进 export 沙箱运行（Chromium 仍禁用 JavaScript），沿用整本导出的上限（输入 128 MiB、2,000 张配图、docx 100 MiB）与“每个项目只保留最近一次、7 天后删除” | 7.4h | 未开始 | — |
 
 7.2 与 7.3 没有合并（#46 单独完成 7.2）。7.3 拆成 7.3a（输入校验）与 7.3b（任务、接口与产物），理由见“样张的输入校验（#47，7.3a）”；原 7.3b 再拆成 7.3b（沙箱中生成）、7.3c（任务与产物）、7.3d（接口与下载），理由见“样张在沙箱中生成（#48，7.3b）”；原 7.3c 再拆成 7.3c（存储）、7.3d（任务），原 7.3d 改为 7.3e，理由见“样张的存储（#50，7.3c）”。7.4 拆成 7.4a～7.4f（范围合计不变，另把 worker 端放入配图时的流式生成写进 7.4e），理由见“sandbox-runner 流式放入（#53，7.4a）”。原 7.4e 再拆出 worker 端流式放入（新 7.4e），原 7.4e、7.4f 顺延为 7.4f、7.4g，理由见“worker 端流式放入（#57，7.4e）”。原 7.4f 再拆出整本导出的请求（新 7.4f），原 7.4f、7.4g 顺延为 7.4g、7.4h，理由见“整本导出的请求（#58，7.4f）”。7.4i（WebP 转 PNG）由 #59 确认时新增，见“整本导出任务（#59，7.4g）”。
 
@@ -1938,25 +1938,34 @@ AI 网关加固，做法见 `docs/SERVER_DESIGN.md` 第 10.9 节。`client/` 未
 - **样张与整本导出**（拆分计划的三个用户功能）与字体列表：#46～#61 完成；`templates.renderPreview`、`systemFonts.list`、`export.exportWord` / `openFile` 在 WebBridge 中仍是空壳，随第 9 步的通用机制接上（7.2、7.3e、7.4h 已登记）。
 - **#45 发现的问题**：①整本模式下配图要在范围标记内——#55 的 `assembleDocumentHtml` 按桌面版带范围标记组装，`tests/sandbox/docker/exportDocument.test.ts` 带配图导出通过；②③即上表第 1、2 项。
 - **7.3d / 7.3e 的登记**：样张不用 `lock_key`、同一事务取消排队中的旧样张（#51，含并发测试）；`SANDBOX_EXPORT_IMAGE` 改为必需（#52）。
-- **#45 确认时“样张耗时在 7.3 再评估”**：7.3 实现了按输入哈希复用（#50、#51），没有做耗时优化，也没有重新测量，**未关闭**——列入下方需要决定的事项。
-- **第 5 步表 E 登记的 `openBidTemplate`（第 7 步）**：它打开的 `bid-template.docx` 由模板提取生成，模板提取已由 #44 决定移到第 8 步，Web 版目前没有投标模板可打开，**随第 8 步**（表 E 已同步，属于偏离，列入下方需要确认的事项）。
+- **#45 确认时“样张耗时在 7.3 再评估”**：7.3 实现了按输入哈希复用（#50、#51），没有做耗时优化，也没有重新测量，**未关闭**——#61 确认时用户决定接受现状、不做提速，已关闭。
+- **第 5 步表 E 登记的 `openBidTemplate`（第 7 步）**：它打开的 `bid-template.docx` 由模板提取生成，模板提取已由 #44 决定移到第 8 步，Web 版目前没有投标模板可打开，**随第 8 步**（表 E 已同步，属于偏离，#61 确认时用户同意）。
 - **5.11 登记的“导入招标文件前关闭 OpenXmlHelper”（随第 7 步）**：桌面版关闭常驻助手是为释放对用户文件的占用；服务端助手按任务在一次性沙箱中运行、只读放入的副本，没有常驻进程，**不适用**，无需实现。
 - **5.13 登记的“正文 Word 与 HTML 文件的暂存与回收”（随第 8 步、第 7 步）**：第 7 步的部分是导出产物的保存与清理，已由 #50（样张 24 小时）、#56（整本导出每个项目最近一次、7 天）完成；正文 Word 与 HTML 本身在正文 Agent 工作区，随第 8 步。
 - **6.6 登记的“emf / wmf / tiff / svg 图片丢弃，Word 导出若需要图元文件再议”**：第 7 步的整本导出只有人工正文的图片，来自招标文件解析，只会是已登记的位图；助手本身能识别 EMF / WMF / TIFF（#45 的 `ImageFormatTests`）。**第 7 步不需要**；AI 生成的配图（含 SVG / Mermaid 转图）随第 8 步，届时再定。
-- **新发现：可研报告导出 Word 不在拆分计划内**。第 5 步表 I 把 `exportWord` 整体登记给第 7 步，但 #44 的范围核实表只列了样张、样张导出 Word 与技术方案整本导出；桌面版可研报告页面同样调用 `export.word`（带 `feasibility_options`），走的是 `buildDocxResult`——Main 中用 `docx` 库直接生成，不经 OpenXmlHelper，Markdown 经 `renderMarkdownHtml` 以 `allowRawHtml: true` 渲染，配图读本机文件与 `app-asset://`，页眉页脚装饰经 Chromium 转 PNG。#44～#61 都没有覆盖它，服务端也没有对应的接口与任务。登记为 **7.5**（见拆分表），**第 7 步因此仍标为“进行中”**，方案由用户决定（见下）。
+- **新发现：可研报告导出 Word 不在拆分计划内**。第 5 步表 I 把 `exportWord` 整体登记给第 7 步，但 #44 的范围核实表只列了样张、样张导出 Word 与技术方案整本导出；桌面版可研报告页面同样调用 `export.word`（带 `feasibility_options`），走的是 `buildDocxResult`——Main 中用 `docx` 库直接生成，不经 OpenXmlHelper，Markdown 经 `renderMarkdownHtml` 以 `allowRawHtml: true` 渲染，配图读本机文件与 `app-asset://`，页眉页脚装饰经 Chromium 转 PNG。#44～#61 都没有覆盖它，服务端也没有对应的接口与任务。登记为 **7.5**（见拆分表），**第 7 步因此仍标为“进行中”**；#61 确认时用户选定方案 A（见“决定事项（#61 确认）”）。
 
 结论：上表第 1～6 项全部完成；第 7 项中除可研报告导出 Word（7.5）外都已完成、不适用或按理由随第 8 / 9 步。**第 7 步不标记完成**，待 7.5 决定并完成（或用户决定移出第 7 步）后再标记。
 
 #### 进入第 8 步前需要用户决定的事项（#61 登记）
 
 1. **可研报告导出 Word（7.5）怎么做**（第 7 步完成的前提）。可选方向：A. 把 `buildDocxResult` 原样搬到 export 沙箱中运行（镜像加 `docx` 库，与桌面版输出逐项一致，工作量中等，原始 HTML 仍按 `allowRawHtml` 处理但在断网沙箱中）；B. 改为与技术方案相同的路线——服务端把可研正文组装成受限 HTML、交给 OpenXmlHelper（与桌面版的输出会有差异，需要核对版式）；C. 移出第 7 步，登记给第 8 步或第 9 步。也请确认可研报告导出是否计费、是否沿用技术方案的上限（128 MiB、2,000 张、100 MiB）与“每个项目只保留最近一次、7 天”。
-2. **`openBidTemplate` 随第 8 步**（偏离第 5 步表 E）：是否同意。
+2. **`openBidTemplate` 随第 8 步**（偏离第 5 步表 E）：是否同意。（**已同意**，见下）
 3. **样张耗时**：本机 gVisor 6–8 秒（#45），7.3 只做了按输入哈希复用、没有优化。是否在第 8 步之前做优化（例如关闭浏览器不等待、装饰 PNG 按配置缓存），或接受现状、上线后按实测再定。
 4. **第 8 步中必须执行页面脚本的功能**（决定事项第 9 项）：Mermaid 转图（运行 `mermaid.js`）、HTML 配图转图（运行测量脚本取内容包围盒）、docx-editor 分页测量与格式自检（运行整个 docx-editor）。第 8 步拆分计划会逐项列出隔离方式，请届时逐项决定；如有总体倾向（例如只允许在单独的、无任何输入文件以外数据的模板中开启 JavaScript），可先告知。
 5. **AI 生成配图的格式**：第 8 步起正文配图由 AI 生成，是否接受 SVG / EMF / WMF / TIFF（迁移 0008 只登记位图，SVG 能执行脚本），还是一律在沙箱中转成 PNG 后再入库。
 6. **整本导出中 `ai-generate` 小节的读取**：第 8 步之前按“正文未生成”处理（#55）；第 8 步正文 Agent 工作区的服务端形态决定后接上，届时需要确认 AI 小节的 HTML 与配图是否先存为产物（与人工正文一样经产物 id 引用、计入配额）。
 
 不需要决定、已有安排的：`client/` 的 `follow-redirects`、`joi` 两个 high 按计划 11-11 后只改 lockfile 升级；WebBridge 的接线随第 9 步；分支保护在第 9 步上线检查中处理。
+
+#### 决定事项（#61 确认）
+
+1. **可研报告导出 Word（7.5）采用 A**：桌面版可研导出代码（`exportService.buildDocxResult` 及其依赖）放进 export 沙箱运行；沿用技术方案整本导出的上限（输入合计 128 MiB、配图至多 2,000 张、输出 docx 至多 100 MiB）与保存规则（每个项目只保留最近一次、7 天后删除，计入组织存储配额）。export 沙箱仍禁用 Chromium 的 JavaScript。
+2. **`openBidTemplate` 随第 8 步**：同意。
+3. **样张耗时**：接受现状（gVisor 下约 6–8 秒），不做提速。#45 登记的“7.3 再评估”就此关闭。
+4. **第 8 步中需要执行页面脚本的功能**：优先寻找不需要执行脚本的替代方案；必须执行时，只在**每个任务独立、断网的专用沙箱**中运行，与 export 沙箱分开（不同模板、不同镜像或至少不同模板名），严格限制输入输出大小与时长；**export 沙箱保持禁用 JavaScript**。第 8 步拆分计划按此逐项列出。
+5. **AI 生成的配图**（SVG、EMF、WMF、TIFF 等）一律在沙箱中转成 PNG 后再入库，迁移 0008 的位图白名单不放宽。
+6. **AI 小节的正文存为产物**（与人工正文一样按产物 id 引用），计入组织存储配额。
 
 ### 第 9 步说明
 
