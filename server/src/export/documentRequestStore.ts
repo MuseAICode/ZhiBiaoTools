@@ -52,6 +52,8 @@ export interface TechnicalPlanExportRequestRecord {
   id: string;
   projectId: string;
   createdBy: string;
+  /** 目录的项目名称（入队时的快照，完成后仍保留，用于下载文件名，7.4h）；没有时为 null。 */
+  projectName: string | null;
   /** 交给 assembleDocumentHtml 的快照；已完成的请求为 null（目录已清空）。 */
   snapshot: DocumentSnapshot | null;
   /** 所选模板规范化后的配置。 */
@@ -123,6 +125,7 @@ function toRecord(row: Selectable<TechnicalPlanExportRequestsTable>): TechnicalP
     id: row.id,
     projectId: row.project_id,
     createdBy: row.created_by,
+    projectName: row.project_name,
     snapshot: row.outline === null
       ? null
       : { projectName: row.project_name, exportTemplateScope: row.export_template_scope, outline: parseSnapshotItems(row.outline) },
