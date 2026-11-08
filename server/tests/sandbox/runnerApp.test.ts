@@ -108,14 +108,22 @@ describe('sandbox-runner http api', () => {
   let client: SandboxDriver;
   const logs = createLogCapture();
 
-  // 服务端仍在处理的请求（方法、路径、开始时间）：结束时用来说明是哪个请求没有结束，而不是笼统的 hook 超时。
+  // 服务端仍在处理的请求（方法、路径、开始时间），以及每个连接最后一个请求：结束时用来说明是哪个请求或连接没有结束，
+  // 而不是笼统的 hook 超时（#66 排查）。
   const inFlight = new Map<string, { label: string; startedAt: number }>();
+  const connections = new Map<import('node:net').Socket, { lastRequest: string; openedAt: number }>();
 
   beforeAll(async () => {
     fake = fakeDriver();
     app = await buildSandboxRunnerApp({ driver: fake.driver, docker: fakeDocker, runtime: 'runsc', token: TOKEN, logLevel: 'info', logStream: logs.stream });
+    app.server.on('connection', (socket: import('node:net').Socket) => {
+      connections.set(socket, { lastRequest: '(no request yet)', openedAt: Date.now() });
+      socket.once('close', () => connections.delete(socket));
+    });
     app.addHook('onRequest', async (request) => {
       inFlight.set(request.id, { label: `${request.method} ${request.url}`, startedAt: Date.now() });
+      const connection = connections.get(request.raw.socket);
+      if (connection) connection.lastRequest = `${request.method} ${request.url}`;
     });
     app.addHook('onResponse', async (request) => {
       inFlight.delete(request.id);
@@ -132,9 +140,17 @@ describe('sandbox-runner http api', () => {
     const deadline = Date.now() + 5_000;
     while (inFlight.size > 0 && Date.now() < deadline) await sleep(20);
     const pending = [...inFlight.values()].map((item) => `${item.label} (${Date.now() - item.startedAt} ms)`);
-    if (pending.length > 0) app.server.closeAllConnections();
-    await app.close();
+    // 空闲的 keep-alive 连接由 close() 关闭；5 秒后仍未关闭的（不论是否还有请求在处理）逐个列出状态再销毁。
+    const closing = app.close();
+    const lingerDeadline = Date.now() + 5_000;
+    while (connections.size > 0 && Date.now() < lingerDeadline) await sleep(20);
+    const lingering = [...connections].map(([socket, item]) =>
+      `${item.lastRequest}: open ${Date.now() - item.openedAt} ms, read ${socket.bytesRead} B, written ${socket.bytesWritten} B, ` +
+      `readable ${socket.readable}, writable ${socket.writable}, readableEnded ${socket.readableEnded}, writableEnded ${socket.writableEnded}`);
+    for (const socket of connections.keys()) socket.destroy();
+    await closing;
     expect(pending, 'requests still being handled by the runner after every test finished').toEqual([]);
+    expect(lingering, 'connections the runner kept open after every test finished').toEqual([]);
   });
   beforeEach(() => {
     fake.calls.length = 0;
