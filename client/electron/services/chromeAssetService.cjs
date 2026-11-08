@@ -13,7 +13,11 @@ const path = require('node:path');
 const { pathToFileURL } = require('node:url');
 
 const { getWorkspaceDir } = require('../utils/paths.cjs');
-const { getLocalImageRenderService } = require('./localImageRenderService.cjs');
+// 隐藏窗口渲染依赖 Electron，只在桌面版栅格化装饰时加载；export 沙箱中可研导出注入自己的装饰渲染，只用到本模块的几何函数
+// （loadChromeModule、resolveChromeLayoutSync），加载本模块不需要 Electron（路线图第 7 步 7.5a）。
+function getLocalImageRenderService() {
+  return require('./localImageRenderService.cjs').getLocalImageRenderService();
+}
 
 /** 装饰图落地目录（工作区内，相对路径传给 C#）。 */
 const CHROME_ASSET_ROOT = 'chrome-assets';
