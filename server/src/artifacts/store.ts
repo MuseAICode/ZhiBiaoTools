@@ -12,7 +12,8 @@ import { Readable } from 'node:stream';
 import { sql, type Kysely, type Selectable } from 'kysely';
 import { ARTIFACT_NAME_PATTERN, MAX_ARTIFACT_BYTES } from '../db/migrations/0008_artifacts.ts';
 import { TEMPLATE_PREVIEW_KIND } from '../db/migrations/0027_template_preview.ts';
-import { ARTIFACT_KINDS, ARTIFACT_MIMES, PROJECT_SINGLETON_KINDS, TECHNICAL_PLAN_EXPORT_KIND } from '../db/migrations/0028_technical_plan_export.ts';
+import { TECHNICAL_PLAN_EXPORT_KIND } from '../db/migrations/0028_technical_plan_export.ts';
+import { ARTIFACT_KINDS, ARTIFACT_MIMES, FEASIBILITY_REPORT_EXPORT_KIND, PROJECT_SINGLETON_KINDS } from '../db/migrations/0030_feasibility_report_export.ts';
 import type { ArtifactsTable, Database } from '../db/schema.ts';
 import { withTenant, type TenantContext } from '../db/tenant.ts';
 import { AppError } from '../errors.ts';
@@ -84,8 +85,8 @@ function assertNewArtifact(input: NewArtifact): void {
     return;
   }
   if (input.previewSha256) throw new TypeError('只有样张产物有输入哈希');
-  if (input.kind === TECHNICAL_PLAN_EXPORT_KIND) {
-    if (!input.projectId || input.sourceFileId) throw new TypeError('整本导出必须属于一个项目、不能有来源文件');
+  if (input.kind === TECHNICAL_PLAN_EXPORT_KIND || input.kind === FEASIBILITY_REPORT_EXPORT_KIND) {
+    if (!input.projectId || input.sourceFileId) throw new TypeError('整本导出与可研导出必须属于一个项目、不能有来源文件');
     return;
   }
   if (!input.projectId && !input.sourceFileId) throw new TypeError('产物必须属于一个项目或一个来源文件');
@@ -125,7 +126,7 @@ const SINGLETON_KINDS: readonly string[] = PROJECT_SINGLETON_KINDS;
 
 /**
  * 写完对象后标记完成：触发器在此检查配额（超出抛 413 STORAGE_QUOTA_EXCEEDED）。
- * 每个项目只保留最近一个的种类（整本导出）在同一事务中先把同一项目中当前的同种产物标为已被替换，再标记完成；
+ * 每个项目只保留最近一个的种类（整本导出、可研导出）在同一事务中先把同一项目中当前的同种产物标为已被替换，再标记完成；
  * 同一项目、同一种类的完成按 advisory lock 串行（先于配额的锁取得，顺序固定），后完成的替换先完成的。
  * 完成失败（例如超出配额）时整个事务回滚，旧的产物原样保留。
  */

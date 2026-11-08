@@ -14,9 +14,15 @@ export const FEASIBILITY_IMAGE_URL = /^\/api\/artifacts\/([0-9a-fA-F]{8}-[0-9a-f
 export const MAX_WARNINGS = 2_000;
 export const MAX_WARNING_CHARS = 400;
 /** 目录的上限：与服务端可研目录相同（2,000 个节点、64 层以内，实际不超过六级）；正文总量由 request.json 的大小上限约束。 */
-const MAX_OUTLINE_NODES = 2_000;
-const MAX_OUTLINE_DEPTH = 64;
-const MAX_TEXT_CHARS = 1_000;
+export const MAX_OUTLINE_NODES = 2_000;
+export const MAX_OUTLINE_DEPTH = 64;
+/** 节点 id、标题与其他短文本的字数上限：不小于服务端的上限（可研目录 id 64 字、标题 2,000 字，项目信息字段 500 字，
+ * tests/sandbox/exportFeasibility.test.ts 核对），服务端能保存的内容这里都接受。 */
+export const MAX_ID_CHARS = 200;
+export const MAX_TITLE_CHARS = 2_000;
+export const MAX_TEXT_CHARS = 1_000;
+/** 项目信息（建设内容等多行说明）的字数上限，不小于服务端的 20,000 字。 */
+export const MAX_PROJECT_INFO_CHARS = 20_000;
 const OPTION_FLAGS = ['includeCover', 'includePreparationNotes', 'includeAppendixTables'];
 const OPTION_TEXTS = ['preparationUnit', 'securityLevel', 'documentCode'];
 const PROJECT_INFO_KEYS = [
@@ -52,7 +58,7 @@ function parseOutline(raw, depth, counter) {
     if (counter.count > MAX_OUTLINE_NODES) throw invalid('outline has too many nodes');
     const { id, title, description, content, children, ...rest } = item;
     if (Object.keys(rest).length > 0) throw invalid('outline item has unexpected fields');
-    const node = { id: boundedString(id, 200, 'id'), title: boundedString(title, MAX_TEXT_CHARS, 'title') };
+    const node = { id: boundedString(id, MAX_ID_CHARS, 'id'), title: boundedString(title, MAX_TITLE_CHARS, 'title') };
     if (description !== undefined) node.description = boundedString(description, 10_000, 'description');
     // 正文长度由 request.json 的大小上限约束，这里只要求是字符串。
     if (content !== undefined) {
@@ -82,8 +88,7 @@ function parseOptions(raw) {
   options.project_info = {};
   for (const [key, value] of Object.entries(projectInfo)) {
     if (!PROJECT_INFO_KEYS.includes(key)) throw invalid('project_info has unexpected fields');
-    // constructionContent 等是多行说明，放宽到 20,000 字（服务端可研项目信息的上限之内）。
-    options.project_info[key] = boundedString(value, 20_000, key);
+    options.project_info[key] = boundedString(value, MAX_PROJECT_INFO_CHARS, key);
   }
   return options;
 }

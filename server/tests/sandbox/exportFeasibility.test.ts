@@ -7,6 +7,16 @@
 //    client/package-lock.json 中的同名条目逐项相同；入口的 feasibility 模式不经助手、静默桌面版代码的 console。
 // 真实沙箱中的端到端测试见 tests/sandbox/docker/exportFeasibility.test.ts。
 import { readFileSync } from 'node:fs';
+import {
+  FEASIBILITY_FIELD_MAX,
+  FEASIBILITY_NODE_ID_MAX,
+  FEASIBILITY_OUTLINE_DEPTH_MAX,
+  FEASIBILITY_TEXT_MAX,
+  FEASIBILITY_TITLE_MAX,
+} from '../../src/db/migrations/0017_feasibility_report.ts';
+import { FEASIBILITY_REPORT_EXPORT_PROJECT_NAME_MAX } from '../../src/db/migrations/0030_feasibility_report_export.ts';
+import { FEASIBILITY_EXPORT_OPTION_TEXT_MAX } from '../../src/export/feasibilityRequestStore.ts';
+import { FEASIBILITY_OUTLINE_NODES_MAX } from '../../src/feasibilityReport/store.ts';
 import { describe, expect, it } from 'vitest';
 // @ts-expect-error 沙箱入口的 ESM 模块没有类型声明
 import * as feasibility from '../../sandbox/export/feasibility.mjs';
@@ -62,9 +72,23 @@ describe('request.json', () => {
     ['an unknown option', { feasibility_options: { ...request().feasibility_options, baseDir: '/' } }],
     ['a non-boolean flag', { feasibility_options: { ...request().feasibility_options, includeCover: 'yes' } }],
     ['an unknown project_info field', { feasibility_options: { ...request().feasibility_options, project_info: { evil: 'x' } } }],
-    ['a too long title', { outline: [{ id: 'a', title: 'x'.repeat(1_001) }] }],
+    ['a too long title', { outline: [{ id: 'a', title: 'x'.repeat(2_001) }] }],
   ])('rejects %s', (_name, extra) => {
     expect(() => parseFeasibilityRequest(request(extra))).toThrow(FeasibilityRequestError);
+  });
+
+  it('accepts everything the server can store (outline, project information and option limits)', () => {
+    expect(feasibility.MAX_TITLE_CHARS).toBeGreaterThanOrEqual(FEASIBILITY_TITLE_MAX);
+    expect(feasibility.MAX_ID_CHARS).toBeGreaterThanOrEqual(FEASIBILITY_NODE_ID_MAX);
+    expect(feasibility.MAX_OUTLINE_NODES).toBeGreaterThanOrEqual(FEASIBILITY_OUTLINE_NODES_MAX);
+    expect(feasibility.MAX_OUTLINE_DEPTH).toBeGreaterThanOrEqual(FEASIBILITY_OUTLINE_DEPTH_MAX);
+    expect(feasibility.MAX_PROJECT_INFO_CHARS).toBeGreaterThanOrEqual(FEASIBILITY_TEXT_MAX);
+    expect(feasibility.MAX_TEXT_CHARS).toBeGreaterThanOrEqual(Math.max(FEASIBILITY_FIELD_MAX, FEASIBILITY_EXPORT_OPTION_TEXT_MAX, FEASIBILITY_REPORT_EXPORT_PROJECT_NAME_MAX));
+    const longest = parseFeasibilityRequest(request({
+      project_name: '名'.repeat(FEASIBILITY_REPORT_EXPORT_PROJECT_NAME_MAX),
+      outline: [{ id: 'i'.repeat(FEASIBILITY_NODE_ID_MAX), title: '标'.repeat(FEASIBILITY_TITLE_MAX), content: '正' }],
+    }));
+    expect([...longest.outline[0].title]).toHaveLength(FEASIBILITY_TITLE_MAX);
   });
 
   it('rejects outlines that are too deep or have too many nodes', () => {
