@@ -42,6 +42,7 @@ describe('任务类型登记', () => {
       'template-preview',
       'template-word-export',
       'technical-plan-export',
+      'feasibility-report-export',
     ]);
     const parse = jobTypeRegistry.get('document-parse')!;
     expect(parse.queue).toBe('parse');
@@ -80,5 +81,9 @@ describe('任务类型登记', () => {
     expect(documentExport.queue).toBe('export');
     expect(documentExport.resumable).toBe(true);
     expect(documentExport.billable).toBeFalsy();
+    const feasibilityExport = jobTypeRegistry.get('feasibility-report-export')!;
+    expect(feasibilityExport.queue).toBe('export');
+    expect(feasibilityExport.resumable).toBe(true);
+    expect(feasibilityExport.billable).toBeFalsy();
   });
 });
