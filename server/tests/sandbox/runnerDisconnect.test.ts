@@ -5,7 +5,9 @@
 // - 请求体发到一半时客户端只关闭写方向（FIN，声明的长度没有发完）；
 // - 请求体中途不合规（runner 回 400 并关闭连接）之后客户端继续发送；
 // - 声明的长度超过模板上限（不读请求体就回 400）之后客户端继续发送；
-// - 客户端停住不发也不关闭：放入的空闲超时（inputIdleTimeoutMs）到期后结束；慢但持续发送的客户端不受影响。
+// - 客户端停住不发也不关闭：放入的空闲超时（inputIdleTimeoutMs）到期后结束；慢但持续发送的客户端不受影响；
+// - 关闭 runner 时：已连接但从未发出请求的连接、空闲的 keep-alive 连接不阻塞关闭；在途的上传得到宽限期，到期后连接被关闭、
+//   driver 被中止；在宽限期内完成的上传照常完成。
 import { connect, type Socket } from 'node:net';
 import type { AddressInfo } from 'node:net';
 import { Readable } from 'node:stream';
@@ -242,5 +244,99 @@ describe('sandbox-runner streaming input when the connection misbehaves', () => 
     expect(await settled()).toEqual({ inFlight: [], pendingCopyIns: 0 });
     expect(fake.records.length).toBe(before + 1);
     expect(fake.records.at(-1)).toMatchObject({ outcome: 'completed', aborted: false, bytes: body.length });
+  });
+});
+
+// 关闭（重启、部署）时的收尾（#66 的根因）：Node 的 server.close() 不关闭已连接但还没发出请求的连接，会一直等到 headersTimeout。
+describe('closing the sandbox-runner', () => {
+  const GRACE_MS = 300;
+
+  async function startRunner() {
+    const local = fakeDriver();
+    const runner = await buildSandboxRunnerApp({
+      driver: local.driver, docker: fakeDocker, runtime: 'runsc', token: TOKEN, logLevel: 'info', logStream: createLogCapture().stream,
+      closeGraceMs: GRACE_MS,
+    });
+    await runner.listen({ host: '127.0.0.1', port: 0 });
+    return { runner, local, port: (runner.server.address() as AddressInfo).port };
+  }
+
+  async function rawConnection(target: number): Promise<Socket> {
+    const socket = connect(target, '127.0.0.1');
+    sockets.add(socket);
+    socket.on('error', () => {});
+    await new Promise<void>((resolve, reject) => socket.once('connect', resolve).once('error', reject));
+    return socket;
+  }
+
+  /** app.close() 用时；超过 limitMs 时返回 null（并强制结束，以免挂住测试）。 */
+  async function timedClose(runner: FastifyInstance, limitMs: number): Promise<number | null> {
+    const started = Date.now();
+    const closing = runner.close();
+    const result = await Promise.race([closing.then(() => Date.now() - started), sleep(limitMs).then(() => null)]);
+    if (result === null) {
+      runner.server.closeAllConnections();
+      await closing;
+    }
+    return result;
+  }
+
+  it('a connection that never sent a request does not hold up close()', async () => {
+    const { runner, port: target } = await startRunner();
+    const socket = await rawConnection(target);
+    await sleep(50);
+    const elapsed = await timedClose(runner, 2_000);
+    expect(elapsed).not.toBeNull();
+    expect(elapsed!).toBeLessThan(1_000);
+    await new Promise((resolve) => (socket.destroyed ? resolve(null) : socket.once('close', resolve)));
+  });
+
+  it('an idle keep-alive connection after a completed request does not hold up close()', async () => {
+    const { runner, port: target } = await startRunner();
+    const socket = await rawConnection(target);
+    socket.write(`GET /healthz HTTP/1.1\r\nhost: 127.0.0.1\r\n\r\n`);
+    await new Promise<void>((resolve) => socket.once('data', () => resolve()));
+    const elapsed = await timedClose(runner, 2_000);
+    expect(elapsed).not.toBeNull();
+    expect(elapsed!).toBeLessThan(1_000);
+  });
+
+  it('an upload in progress is given the grace period, then its connection is closed and the driver aborted', async () => {
+    const { runner, local, port: target } = await startRunner();
+    const socket = await rawConnection(target);
+    socket.write([
+      `PUT /v1/sandboxes/${SANDBOX_ID}/input HTTP/1.1`, 'host: 127.0.0.1', `authorization: Bearer ${TOKEN}`, `${SANDBOX_JOB_HEADER}: ${JOB_ID}`,
+      'content-type: application/x-tar', `content-length: ${GOOD.length + END_OF_ARCHIVE.length}`, '', '',
+    ].join('\r\n'));
+    socket.write(GOOD.subarray(0, MIB));
+    while (local.records.length === 0) await sleep(5);
+    const elapsed = await timedClose(runner, 3_000);
+    expect(elapsed).not.toBeNull();
+    expect(elapsed!).toBeGreaterThanOrEqual(GRACE_MS - 50);
+    expect(elapsed!).toBeLessThan(GRACE_MS + 1_000);
+    while (!local.records[0]!.settled) await sleep(5);
+    expect(local.records[0]).toMatchObject({ outcome: 'stream-error', aborted: true });
+  });
+
+  it('an upload that finishes within the grace period completes normally', async () => {
+    const { runner, local, port: target } = await startRunner();
+    const body = Buffer.concat([GOOD, END_OF_ARCHIVE]);
+    const socket = await rawConnection(target);
+    let received = '';
+    socket.on('data', (chunk: Buffer) => {
+      received += chunk.toString('latin1');
+    });
+    socket.write([
+      `PUT /v1/sandboxes/${SANDBOX_ID}/input HTTP/1.1`, 'host: 127.0.0.1', `authorization: Bearer ${TOKEN}`, `${SANDBOX_JOB_HEADER}: ${JOB_ID}`,
+      'content-type: application/x-tar', `content-length: ${body.length}`, '', '',
+    ].join('\r\n'));
+    socket.write(body.subarray(0, MIB));
+    while (local.records.length === 0) await sleep(5);
+    const closing = timedClose(runner, 3_000);
+    await sleep(GRACE_MS / 3);
+    socket.write(body.subarray(MIB));
+    expect(await closing).not.toBeNull();
+    expect(received).toMatch(/^HTTP\/1\.1 204 /);
+    expect(local.records[0]).toMatchObject({ outcome: 'completed', aborted: false, bytes: body.length });
   });
 });

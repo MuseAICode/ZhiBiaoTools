@@ -13,6 +13,12 @@
 // 连接没有被重置）会让这个请求、driver 对请求流的读取与沙箱内的 tar 一直挂着。放入归档时等待客户端下一块数据超过
 // inputIdleTimeoutMs（默认 60 秒）即销毁请求与连接，driver 随之中止并终止沙箱（与客户端断开相同）；另以 requestTimeout
 // 限制接收整个请求的时间（默认为最长的放入时限加 1 分钟），作为其他请求的兜底。执行命令等处理本身的耗时不受这两项限制。
+//
+// 关闭（重启、部署，#66）：Node 的 server.close() 与 Fastify 默认的 forceCloseConnections: 'idle' 只关闭空闲的 keep-alive
+// 连接，不关闭已连接但还没发出请求的连接（例如 worker 的连接池在请求被中止时留下的、健康检查与端口探测），会一直等到
+// headersTimeout（60 秒），超过 sandbox-runner 的退出时限而被强制退出，在途请求的中止信号不会触发、沙箱留到到期清理。
+// 关闭时在途请求处理完（或等满 closeGraceMs，默认 5 秒）即关闭全部剩余连接：被截断的请求触发 abortOnDisconnect，
+// driver 中止并终止对应的沙箱。
 import { createHash, timingSafeEqual } from 'node:crypto';
 import { Readable } from 'node:stream';
 import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from 'fastify';
@@ -29,6 +35,8 @@ export const SANDBOX_JOB_HEADER = 'x-sandbox-job';
 const JSON_BODY_LIMIT = 1024 * 1024;
 /** 放入归档时等待客户端下一块数据的上限。worker 从对象存储按需读取配图，正常情况下块与块之间远小于它。 */
 export const DEFAULT_INPUT_IDLE_TIMEOUT_MS = 60_000;
+/** 关闭时等待在途请求处理完的上限，之后关闭全部连接（sandbox-runner 的退出时限为 10 秒）。 */
+export const DEFAULT_CLOSE_GRACE_MS = 5_000;
 /** 接收整个请求的上限：最长的放入时限（模板的 transferTimeoutMs）加 1 分钟。 */
 export const DEFAULT_REQUEST_TIMEOUT_MS = Math.max(...Object.values(SANDBOX_TEMPLATES).map((template) => template.transferTimeoutMs)) + 60_000;
 const UUID_PATTERN = '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$';
@@ -45,6 +53,8 @@ export interface SandboxRunnerAppOptions {
   inputIdleTimeoutMs?: number;
   /** 接收整个请求的上限（毫秒），默认 DEFAULT_REQUEST_TIMEOUT_MS。 */
   requestTimeoutMs?: number;
+  /** 关闭时等待在途请求的上限（毫秒），默认 DEFAULT_CLOSE_GRACE_MS；测试中缩短。 */
+  closeGraceMs?: number;
 }
 
 const STATUS_BY_CODE: Readonly<Record<SandboxErrorCode, number>> = {
@@ -128,6 +138,30 @@ export async function buildSandboxRunnerApp(options: SandboxRunnerAppOptions): P
     requestTimeout: options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS,
   });
   const inputIdleTimeoutMs = options.inputIdleTimeoutMs ?? DEFAULT_INPUT_IDLE_TIMEOUT_MS;
+  const closeGraceMs = options.closeGraceMs ?? DEFAULT_CLOSE_GRACE_MS;
+
+  // 在途请求数（关闭时用，见文件头）：从收到请求到响应发完或连接断开（ServerResponse 的 close 事件，两种情况都只触发一次）。
+  // 不用请求对象的 close：它在请求体读完时就触发，执行命令等请求那时还在处理。
+  let activeRequests = 0;
+  app.addHook('onRequest', async (_request, reply) => {
+    activeRequests += 1;
+    reply.raw.once('close', () => {
+      activeRequests -= 1;
+    });
+  });
+  app.addHook('preClose', async () => {
+    // preClose 之后 Fastify 才停止监听并关闭空闲连接；这里只安排在其后关闭剩余的连接，不阻塞关闭流程。
+    const deadline = Date.now() + closeGraceMs;
+    const closeRemaining = () => {
+      if (activeRequests > 0 && Date.now() < deadline) {
+        setTimeout(closeRemaining, 20).unref();
+        return;
+      }
+      if (activeRequests > 0) app.log.warn({ activeRequests, closeGraceMs }, 'closing connections of requests still in progress');
+      app.server.closeAllConnections();
+    };
+    setImmediate(closeRemaining);
+  });
   registerErrorHandlers(app);
   // 输入归档（parse 至多约 192 MiB、export-document 至多约 128 MiB，另加头部）不在内存中整体缓存：把请求流原样交给路由，由 driver 边读边校验、
   // 只把通过校验的条目转给沙箱内的 tar（src/sandbox/archive.ts 的 validateArchiveStream），超过模板上限即中止。
