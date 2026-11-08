@@ -1,6 +1,7 @@
 // export 沙箱的导出入口（路线图第 7 步 7.1；docs/SERVER_DESIGN.md 第 7.9 节）。由 sandbox-runner 按 export 模板执行：
 //   node /opt/export/entry.mjs preview     模板样张（export-preview 模板）
 //   node /opt/export/entry.mjs document    整本导出（export-document 模板）
+//   node /opt/export/entry.mjs feasibility 可研报告导出 Word（export-feasibility 模板，7.5b，见 feasibility.mjs）
 // 参数只有模式名，由模板写死，调用方不能追加。输入由 worker 经 copyIn 放进 /work：
 //   request.json   { html: 受限 HTML, export_format: 已规范化的导出模板配置, asset_types?: { 引用: MIME } }
 //   assets/…       配图（只有一层，文件名就是 data-app-asset-ref；worker 只放本项目可见的图片产物）
@@ -9,22 +10,32 @@
 // 只把 document.docx 和 result.json 写到 /output：
 //   result.json    { version: 1, blockCount, imageWarnings: [{ assetRef, reason }] }
 // 整本导出（document）先把 WebP 配图转成 PNG（7.4i，见 convertWebpAssets）。
+// 可研报告（feasibility）的 request.json 是 { project_name, outline, export_format, feasibility_options, asset_types? }，
+// 不经 OpenXmlHelper：在本进程中运行与桌面版同一份的 exportService.buildDocxResult（/opt/export/desktop，镜像构建时从
+// client/electron 复制），注入只读 /work/assets 的配图读取、禁用 JavaScript 的 Chromium 转换（feasibility.mjs）。
+// 输出的 result.json 为 { version: 1, warnings: [提示文字] }。
 // 失败时 /output 为空，在标准输出最后一行写 {"error":"代码"}：参数不合法退出码 64，导出失败 65。
 // 错误只给代码，助手和浏览器的错误文字不外传；给用户看的文案由 worker 按代码决定。
 // 本进程没有网络、没有凭据；它的输出在 worker 中按不可信输入校验（src/sandbox/archive.ts）。
 import { spawn } from 'node:child_process';
+import { createRequire } from 'node:module';
 import { open, copyFile, lstat, mkdir, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { buildChrome } from './chrome/index.mjs';
 import { buildImageFrameHtml, rasterizeSvg, withRenderer } from './render.mjs';
 import { inflateSync } from 'node:zlib';
 import { isWebp, parseWebp, pngHasVisiblePixels } from './webp.mjs';
+import { createFeasibilityRuntime, FeasibilityRequestError, parseFeasibilityRequest, renderChromeWith, sanitizeWarnings as sanitizeFeasibilityWarnings } from './feasibility.mjs';
 
 const MODES = Object.freeze({
   // 时限都比模板的命令墙钟（60 秒 / 20 分钟）短，超时由入口先结束助手并给出代码，而不是整个沙箱被终止。
   // convertWebp（7.4i）：整本导出把 WebP 配图转成 PNG（与桌面版 normalizeImageForDocx 一致）；样张的固定配图与桌面版相同，原样嵌入。
   preview: Object.freeze({ wholeDocument: false, helperTimeoutMs: 45_000, builtInAssets: true, convertWebp: false }),
   document: Object.freeze({ wholeDocument: true, helperTimeoutMs: 18 * 60_000, builtInAssets: false, convertWebp: true }),
+  // 可研报告（7.5b）：桌面版的生成代码在本进程中运行（不经助手），时限与整本导出相同。
+  feasibility: Object.freeze({ feasibility: true, buildTimeoutMs: 18 * 60_000, builtInAssets: false, convertWebp: true }),
 });
+/** 镜像中桌面版的可研导出代码（与 client/electron 同一份，目录结构相同，依赖在 /opt/export/desktop/node_modules）。 */
+const DESKTOP_EXPORT_SERVICE = '/opt/export/desktop/electron/services/exportService.cjs';
 const WORK = '/work';
 const OUTPUT = '/output';
 const HELPER = '/opt/openxmlhelper/openxmlhelper';
@@ -100,7 +111,15 @@ async function readInput(mode) {
   } catch {
     throw new ExportError('request_invalid');
   }
-  if (!isPlainObject(request) || typeof request.html !== 'string' || request.html.trim() === '' || !isPlainObject(request.export_format)) {
+  let payload = null;
+  if (mode.feasibility) {
+    try {
+      payload = parseFeasibilityRequest(request);
+    } catch (error) {
+      if (error instanceof FeasibilityRequestError) throw new ExportError('request_invalid');
+      throw error;
+    }
+  } else if (!isPlainObject(request) || typeof request.html !== 'string' || request.html.trim() === '' || !isPlainObject(request.export_format)) {
     throw new ExportError('request_invalid');
   }
   const assetTypes = {};
@@ -111,7 +130,7 @@ async function readInput(mode) {
       assetTypes[name] = type;
     }
   }
-  return { html: request.html, exportFormat: request.export_format, assetTypes, assets: [...assets].sort() };
+  return { html: request.html, exportFormat: request.export_format, payload, assetTypes, assets: [...assets].sort() };
 }
 
 async function readHeader(path) {
@@ -138,9 +157,10 @@ async function inputTotalBytes(assets) {
  * 整本导出的 WebP 配图转成 PNG（7.4i，与桌面版 exportService.normalizeImageForDocx 一致：兼容不支持 WebP 的旧版 Word 与 WPS）。
  * 按文件头识别（不只看声明的类型）；动图取第一帧，放在画布中原来的位置，其余透明；由 Chromium（禁用 JavaScript）按原始像素
  * 栅格化成透明背景的 PNG，覆盖原文件，asset_types 改为 image/png。单张转换失败时删除该配图，由助手原位提示（与桌面版
- * 单张图片无法导出时相同）。每转一张都按转换后的大小重新计算输入合计，超过上限时整体失败（images_too_large），不再继续。
+ * 单张图片无法导出时相同）；keepFailed（可研导出）时保留原文件，由注入的 normalizeImage 再试一次并给出与桌面版相同的原因。
+ * 每转一张都按转换后的大小重新计算输入合计，超过上限时整体失败（images_too_large），不再继续。
  */
-async function convertWebpAssets(input) {
+async function convertWebpAssets(input, { keepFailed = false } = {}) {
   const pending = [];
   for (const name of input.assets) {
     if (isWebp(await readHeader(`${WORK}/${ASSET_ROOT}/${name}`))) pending.push(name);
@@ -152,48 +172,58 @@ async function convertWebpAssets(input) {
     await withRenderer(async (renderer) => {
       for (const [index, name] of pending.entries()) {
         const path = `${WORK}/${ASSET_ROOT}/${name}`;
-        let png = null;
-        try {
-          const image = parseWebp(await readFile(path));
-          // 静态图直接引用原文件（Chromium 按内容识别格式），动图的首帧另存一份。
-          let src = `../${ASSET_ROOT}/${name}`;
-          if (image.animated) {
-            src = `frame-${index}.webp`;
-            await writeFile(`${root}/${src}`, image.frame.data);
-          }
-          const page = `${root}/frame-${index}.html`;
-          await writeFile(page, buildImageFrameHtml({
-            src,
-            width: image.width,
-            height: image.height,
-            x: image.frame.x,
-            y: image.frame.y,
-            frameWidth: image.frame.width,
-            frameHeight: image.frame.height,
-          }));
-          png = await renderer.renderFileToTransparentPng({ url: `file://${page}`, width: image.width, height: image.height });
-          // 解码失败时截图全透明：按转换失败处理。
-          if (!pngHasVisiblePixels(png, inflateSync)) png = null;
-        } catch {
-          png = null;
-        }
+        // 静态图直接引用原文件（Chromium 按内容识别格式），不另存副本。
+        const png = await renderWebpToPng(renderer, root, String(index), await readFile(path), `../${ASSET_ROOT}/${name}`);
         if (png) {
           // 转换后的大小重新计入输入合计：超过上限时整体失败，不写入。
           const before = (await stat(path)).size;
           if ((await inputTotalBytes(input.assets)) - before + png.length > MAX_INPUT_TOTAL_BYTES) throw new ExportError('images_too_large');
           await writeFile(path, png);
           input.assetTypes[name] = 'image/png';
-        } else {
+        } else if (!keepFailed) {
           await rm(path, { force: true });
           delete input.assetTypes[name];
         }
-        await rm(`${root}/frame-${index}.webp`, { force: true });
       }
     });
   } catch (error) {
     throw error instanceof ExportError ? error : new ExportError('export_failed');
   } finally {
     await rm(root, { recursive: true, force: true });
+  }
+}
+
+/**
+ * 把一张 WebP 转成 PNG（7.4i）：动图取第一帧，放在画布中原来的位置，其余透明；由 Chromium（禁用 JavaScript）按原始像素
+ * 栅格化成透明背景的 PNG。staticSrc 是静态图可直接引用的文件（相对 root），没有时把内容写进 root 再引用。
+ * 解析失败、截图失败或截图全透明（Chromium 解码失败时什么也不画）时返回 null。中间文件在返回前删除。
+ */
+async function renderWebpToPng(renderer, root, tag, bytes, staticSrc = null) {
+  const frameFile = `frame-${tag}.webp`;
+  const pageFile = `frame-${tag}.html`;
+  try {
+    const image = parseWebp(bytes);
+    let src = staticSrc;
+    if (image.animated || !src) {
+      src = frameFile;
+      await writeFile(`${root}/${src}`, image.animated ? image.frame.data : bytes);
+    }
+    await writeFile(`${root}/${pageFile}`, buildImageFrameHtml({
+      src,
+      width: image.width,
+      height: image.height,
+      x: image.frame.x,
+      y: image.frame.y,
+      frameWidth: image.frame.width,
+      frameHeight: image.frame.height,
+    }));
+    const png = await renderer.renderFileToTransparentPng({ url: `file://${root}/${pageFile}`, width: image.width, height: image.height });
+    return pngHasVisiblePixels(png, inflateSync) ? png : null;
+  } catch {
+    return null;
+  } finally {
+    await rm(`${root}/${frameFile}`, { force: true });
+    await rm(`${root}/${pageFile}`, { force: true });
   }
 }
 
@@ -237,6 +267,61 @@ async function buildChromeAssets(page) {
     throw new ExportError('chrome_render_failed');
   }
   return result;
+}
+
+/** 可研导出期间不让桌面版代码的 console 输出进入标准输出（标准输出最后一行留给错误代码，提示文字含正文内容）。 */
+function silenceConsole() {
+  for (const method of ['log', 'info', 'warn', 'error', 'debug']) console[method] = () => {};
+}
+
+function withTimeout(promise, timeoutMs) {
+  let timer;
+  return Promise.race([
+    promise,
+    new Promise((_resolve, reject) => {
+      timer = setTimeout(() => reject(new ExportError('helper_timeout')), timeoutMs);
+    }),
+  ]).finally(() => clearTimeout(timer));
+}
+
+/**
+ * 可研报告导出 Word（7.5b）：WebP 配图先转 PNG（与整本导出相同，转换后重新计入输入合计）→ 在本进程中运行桌面版的
+ * buildDocxResult，注入的运行时只读 /work/assets、正文中 data URL 形式的 WebP 与页眉页脚装饰由 Chromium（禁用 JavaScript）转换
+ * → 只把 document.docx 与 result.json 写到 /output。生成失败为 helper_failed，超时为 helper_timeout（与整本导出相同的代码）。
+ */
+async function runFeasibility(mode, input) {
+  silenceConsole();
+  // 转换失败的保留原样：桌面版代码读到 WebP 后经 normalizeImage 再转一次，失败时原位提示“WebP 图片转换失败”（与桌面版相同）。
+  if (mode.convertWebp) await convertWebpAssets(input, { keepFailed: true });
+  const present = new Set(await readdir(`${WORK}/${ASSET_ROOT}`));
+  let buildDocxResult;
+  try {
+    ({ buildDocxResult } = createRequire(import.meta.url)(DESKTOP_EXPORT_SERVICE));
+  } catch {
+    throw new ExportError('export_failed');
+  }
+  const root = `${WORK}/${CONVERT_ROOT}`;
+  await mkdir(root, { recursive: true });
+  let result;
+  try {
+    await withRenderer(async (renderer) => {
+      let inline = 0;
+      const runtime = createFeasibilityRuntime({
+        readAsset: async (id) => (present.has(id) ? readFile(`${WORK}/${ASSET_ROOT}/${id}`) : null),
+        convertWebp: (bytes) => renderWebpToPng(renderer, root, `inline-${inline++}`, bytes),
+        renderChromePngs: (page) => renderChromeWith(buildChrome, (svg, widthCm, heightCm) => rasterizeSvg(renderer, svg, widthCm, heightCm), page),
+      });
+      result = await withTimeout(buildDocxResult(input.payload, { runtime }), mode.buildTimeoutMs);
+    });
+  } catch (error) {
+    throw error instanceof ExportError ? error : new ExportError('helper_failed');
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+  if (!Buffer.isBuffer(result?.buffer) || result.buffer.length === 0) throw new ExportError('helper_failed');
+  if (result.buffer.length > MAX_DOCX_BYTES) throw new ExportError('output_too_large');
+  await writeFile(`${OUTPUT}/${DOCX_NAME}`, result.buffer);
+  await writeFile(`${OUTPUT}/result.json`, `${JSON.stringify({ version: 1, warnings: sanitizeFeasibilityWarnings(result.warnings) })}\n`);
 }
 
 /** 运行助手一次（独立进程组，超时对整个进程组 SIGKILL）。只把退出码交回，助手的输出一律丢弃。 */
@@ -296,6 +381,10 @@ async function main() {
   try {
     if ((await readdir(OUTPUT)).length > 0) throw new ExportError('request_invalid');
     const input = await readInput(mode);
+    if (mode.feasibility) {
+      await runFeasibility(mode, input);
+      return;
+    }
     const assetRoot = mode.builtInAssets ? await prepareBuiltInAssets() : ASSET_ROOT;
     if (mode.convertWebp) await convertWebpAssets(input);
     const chrome = await buildChromeAssets(input.exportFormat.page);

@@ -7,7 +7,7 @@
 const MIB = 1024 * 1024;
 const GIB = 1024 * MIB;
 
-export const SANDBOX_TEMPLATE_NAMES = ['parse', 'export-preview', 'export-document'] as const;
+export const SANDBOX_TEMPLATE_NAMES = ['parse', 'export-preview', 'export-document', 'export-feasibility'] as const;
 export type SandboxTemplateName = (typeof SANDBOX_TEMPLATE_NAMES)[number];
 
 /** 镜像：两个 export 模板用同一个 export 镜像（第 7 步决定事项第 2 项），只是资源上限不同。 */
@@ -127,7 +127,7 @@ const EXPORT_OUTPUT: SandboxTransferLimits = Object.freeze({
 });
 
 /** export 入口：模式名由模板写死，调用方不能追加参数。输入固定在 /work，输出固定在 /output。 */
-function exportCommand(mode: 'preview' | 'document', timeoutMs: number): SandboxCommand {
+function exportCommand(mode: 'preview' | 'document' | 'feasibility', timeoutMs: number): SandboxCommand {
   return Object.freeze({
     argv: Object.freeze(['node', '/opt/export/entry.mjs', mode]),
     maxArgs: 0,
@@ -210,10 +210,22 @@ const EXPORT_DOCUMENT_TEMPLATE: SandboxTemplate = Object.freeze({
   transferTimeoutMs: 5 * 60_000,
 });
 
+/**
+ * export-feasibility：可研报告导出 Word（路线图第 7 步 7.5b，#61 决定事项第 1 项）。同一个 export 镜像、与 export-document
+ * 完全相同的隔离参数、资源与输入输出上限（输入合计 128 MiB、配图 2,000 张、docx 100 MiB），只有入口模式不同：
+ * 在沙箱内运行与桌面版同一份的可研导出代码（server/sandbox/export/feasibility.mjs），不经 OpenXmlHelper。
+ */
+const EXPORT_FEASIBILITY_TEMPLATE: SandboxTemplate = Object.freeze({
+  ...EXPORT_DOCUMENT_TEMPLATE,
+  name: 'export-feasibility',
+  commands: Object.freeze({ export: exportCommand('feasibility', 20 * 60_000) }),
+});
+
 export const SANDBOX_TEMPLATES: Readonly<Record<SandboxTemplateName, SandboxTemplate>> = Object.freeze({
   parse: PARSE_TEMPLATE,
   'export-preview': EXPORT_PREVIEW_TEMPLATE,
   'export-document': EXPORT_DOCUMENT_TEMPLATE,
+  'export-feasibility': EXPORT_FEASIBILITY_TEMPLATE,
 });
 
 export function isSandboxTemplateName(value: unknown): value is SandboxTemplateName {
