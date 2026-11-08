@@ -108,15 +108,33 @@ describe('sandbox-runner http api', () => {
   let client: SandboxDriver;
   const logs = createLogCapture();
 
+  // 服务端仍在处理的请求（方法、路径、开始时间）：结束时用来说明是哪个请求没有结束，而不是笼统的 hook 超时。
+  const inFlight = new Map<string, { label: string; startedAt: number }>();
+
   beforeAll(async () => {
     fake = fakeDriver();
     app = await buildSandboxRunnerApp({ driver: fake.driver, docker: fakeDocker, runtime: 'runsc', token: TOKEN, logLevel: 'info', logStream: logs.stream });
+    app.addHook('onRequest', async (request) => {
+      inFlight.set(request.id, { label: `${request.method} ${request.url}`, startedAt: Date.now() });
+    });
+    app.addHook('onResponse', async (request) => {
+      inFlight.delete(request.id);
+    });
+    app.addHook('onRequestAbort', async (request) => {
+      inFlight.delete(request.id);
+    });
     await app.listen({ host: '127.0.0.1', port: 0 });
     const address = app.server.address() as { port: number };
     client = createSandboxRunnerClient({ url: `http://127.0.0.1:${address.port}`, token: TOKEN });
   });
   afterAll(async () => {
+    // 每个用例都已拿到结果，服务端的处理应当很快全部结束；5 秒后仍未结束的请求列出来作为失败原因，再强制关闭连接。
+    const deadline = Date.now() + 5_000;
+    while (inFlight.size > 0 && Date.now() < deadline) await sleep(20);
+    const pending = [...inFlight.values()].map((item) => `${item.label} (${Date.now() - item.startedAt} ms)`);
+    if (pending.length > 0) app.server.closeAllConnections();
     await app.close();
+    expect(pending, 'requests still being handled by the runner after every test finished').toEqual([]);
   });
   beforeEach(() => {
     fake.calls.length = 0;
