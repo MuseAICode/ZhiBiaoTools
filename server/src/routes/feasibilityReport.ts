@@ -20,12 +20,35 @@
 // POST   /api/projects/:projectId/feasibility-report/key-parameters-job           开始生成关键参数（入队 feasibility-parameters）
 // POST   /api/projects/:projectId/feasibility-report/content-job                  开始正文生成与审校（入队 feasibility-content，{ onlyMissing? }）
 // POST   /api/projects/:projectId/feasibility-report/human-writing-job            开始自然化审校（入队 feasibility-human-writing）
+// POST   /api/projects/:projectId/feasibility-report/export                       导出 Word（入队 feasibility-report-export，7.5e）
+// GET    /api/projects/:projectId/feasibility-report/export/:requestId            导出的状态（pending / ready / expired）、提示与消息
+// GET    /api/projects/:projectId/feasibility-report/export/:requestId/content    导出的 docx（附件下载）
 //
 // 导入资料后自动入队资料解析（6.6，src/parse/）。资料分析、关键参数、正文生成与审校是任务（6.12，src/feasibilityReport/jobs.ts），结果由任务
 // 经 Store 函数写入，进度、取消、暂停、继续经 /api/jobs 与 SSE；与桌面版相同，保存项目信息、资料分析、目录、关键参数，导入、移除资料和清空时
 // 取消本项目进行中的可研任务；正文生成或审校任务未结束时不能保存目录、手工改正文（409）。目录生成 / 调整随第 8 步；
-// readCombinedSourceMarkdown（Renderer 未调用）由任务在服务端合并，不开放为接口；Word 导出随第 7 步。
+// readCombinedSourceMarkdown（Renderer 未调用）由任务在服务端合并，不开放为接口。
+//
+// 导出 Word（7.5e，取代桌面版可研页面的 export.word 与 export.openFile；做法与技术方案整本导出的 7.4h 相同）：POST 的请求体为
+// { templateId, options? }（模板 id 与桌面版的导出选项，多余字段拒绝），经 enqueueFeasibilityReportExport 取快照入队（没有目录、
+// 模板不可见、选项不合法 400，快照过大 413，本项目已有未结束的可研导出 409 JOB_LOCKED，均不入队），按用户限流
+// （feasibilityReportExportPerUser，超出 429，在取快照之前计数）；进度与结果经任务的 SSE，任务成功后按 requestId 取状态并下载。
+// 请求属于项目、本组织内成员可见（RLS），不属于这个项目的与不存在的一样 404；新的导出入队后旧的请求被删除（404），
+// 旧的产物被替换或 7 天后清理（410）。不计费、不检查余额（第 7 步决定事项第 7 项）。
 import type { FastifyInstance, FastifyRequest } from 'fastify';
+import { findArtifact } from '../artifacts/store.ts';
+import type { RateLimitDecision } from '../auth/rateLimit.ts';
+import { DOCX_MIME } from '../db/migrations/0027_template_preview.ts';
+import { AppError } from '../errors.ts';
+import { enqueueFeasibilityReportExport, FEASIBILITY_DEFAULT_PROJECT_NAME } from '../export/feasibilityJob.ts';
+import {
+  FEASIBILITY_EXPORT_OPTION_TEXT_MAX,
+  findFeasibilityExportRequest,
+  type FeasibilityExportOptionsInput,
+  type FeasibilityExportRequestRecord,
+} from '../export/feasibilityRequestStore.ts';
+import { sanitizeDisplayName } from '../files/filename.ts';
+import { fileTimestamp } from '../xlsx/displayTime.ts';
 import type { Kysely } from 'kysely';
 import { tenantOf } from '../auth/hooks.ts';
 import {
@@ -80,8 +103,10 @@ export interface FeasibilityReportRouteDependencies {
   db: Kysely<Database>;
   /** 读取资料的 Markdown 用；未配置时读取已解析的资料返回 503（还没有 Markdown 时除外）。 */
   objectStore: ObjectStore | null;
-  /** 导入后入队文档解析任务（6.6）。 */
+  /** 导入后入队文档解析任务（6.6）、导出任务（7.5e）。 */
   jobs: JobServiceDependencies;
+  /** 导出 Word 的入队按用户限流（7.5e）。 */
+  exportLimiter: { consume(key: string): Promise<RateLimitDecision> };
 }
 
 const UUID = { type: 'string', pattern: '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$' } as const;
@@ -194,6 +219,52 @@ const CONTENT_JOB_SCHEMA = {
 
 type ProjectParams = { Params: { projectId: string } };
 type SourceParams = { Params: { projectId: string; fileId: string } };
+type ExportParams = { Params: { projectId: string; requestId: string } };
+type ExportBody = { Body: { templateId: string; options?: FeasibilityExportOptionsInput } };
+
+const EXPORT_PARAMS = {
+  type: 'object',
+  properties: { ...PROJECT_ID_PARAMS.properties, requestId: UUID },
+  required: ['projectId', 'requestId'],
+  additionalProperties: false,
+} as const;
+
+const OPTION_TEXT = { type: 'string', maxLength: FEASIBILITY_EXPORT_OPTION_TEXT_MAX } as const;
+/** 与桌面版 FeasibilityExportOptions 相同的六项；多余字段拒绝（长度以字符计的上限由 Store 再按字数检查）。 */
+const EXPORT_BODY_SCHEMA = {
+  type: 'object',
+  properties: {
+    templateId: UUID,
+    options: {
+      type: 'object',
+      properties: {
+        includeCover: { type: 'boolean' },
+        includePreparationNotes: { type: 'boolean' },
+        includeAppendixTables: { type: 'boolean' },
+        preparationUnit: OPTION_TEXT,
+        securityLevel: OPTION_TEXT,
+        documentCode: OPTION_TEXT,
+      },
+      additionalProperties: false,
+    },
+  },
+  required: ['templateId'],
+  additionalProperties: false,
+} as const;
+
+function exportNotFound(): AppError {
+  return new AppError(404, 'EXPORT_NOT_FOUND', '导出记录不存在或已被新的导出取代');
+}
+
+function exportExpired(): AppError {
+  return new AppError(410, 'EXPORT_EXPIRED', '导出的 Word 已过期或已被新的导出替换，请重新导出');
+}
+
+/** 下载文件名：<项目名称>_YYYYMMDD_HHMMSS.docx（同桌面版 export.word 的默认文件名；项目名称为空时“可行性研究报告”，时间为完成时间，按北京时间）。 */
+export function feasibilityExportFileName(request: FeasibilityExportRequestRecord): string {
+  const name = request.projectName?.trim() ? request.projectName : FEASIBILITY_DEFAULT_PROJECT_NAME;
+  return sanitizeDisplayName(`${name}_${fileTimestamp(request.completedAt ?? request.createdAt)}.docx`);
+}
 type ChapterParams = { Params: { projectId: string; nodeId: string } };
 
 export async function registerFeasibilityReportRoutes(app: FastifyInstance, deps: FeasibilityReportRouteDependencies): Promise<void> {
@@ -350,5 +421,69 @@ export async function registerFeasibilityReportRoutes(app: FastifyInstance, deps
   app.post<ProjectParams>('/:projectId/feasibility-report/human-writing-job', { schema: { params: PROJECT_ID_PARAMS } }, async (request, reply) => {
     const job = await startFeasibilityHumanWriting(deps.jobs, tenantOf(request), await project(request));
     return reply.code(202).send({ job: jobBody(job) });
+  });
+
+  app.post<ProjectParams & ExportBody>(
+    '/:projectId/feasibility-report/export',
+    { schema: { params: PROJECT_ID_PARAMS, body: EXPORT_BODY_SCHEMA } },
+    async (request, reply) => {
+      const context = tenantOf(request);
+      const projectId = await project(request);
+      const decision = await deps.exportLimiter.consume(context.userId);
+      if (!decision.allowed) {
+        reply.header('retry-after', String(Math.max(1, Math.ceil(decision.retryAfterMs / 1000))));
+        throw new AppError(429, 'TOO_MANY_REQUESTS', '请求过于频繁，请稍后再试');
+      }
+      const enqueued = await enqueueFeasibilityReportExport(deps.jobs, context, projectId, {
+        templateId: request.body.templateId.toLowerCase(),
+        options: request.body.options ?? {},
+      });
+      return reply.code(202).send({ requestId: enqueued.request.id, job: jobBody(enqueued.job) });
+    },
+  );
+
+  /** 本项目的导出请求与结果产物（产物已被替换或清理时为 null）。 */
+  async function exportOf(request: FastifyRequest<ExportParams>) {
+    const context = tenantOf(request);
+    const projectId = await project(request);
+    const record = await findFeasibilityExportRequest(db, context, request.params.requestId.toLowerCase());
+    if (!record || record.projectId !== projectId) throw exportNotFound();
+    const artifact = record.result === null ? null : await findArtifact(db, context, record.result.artifactId);
+    return { record, artifact };
+  }
+
+  app.get<ExportParams>('/:projectId/feasibility-report/export/:requestId', { schema: { params: EXPORT_PARAMS } }, async (request) => {
+    const { record, artifact } = await exportOf(request);
+    const status = record.result === null ? 'pending' : artifact ? 'ready' : 'expired';
+    return {
+      id: record.id,
+      status,
+      fileName: status === 'ready' ? feasibilityExportFileName(record) : null,
+      size: artifact?.size ?? null,
+      warnings: record.result?.warnings ?? [],
+      message: record.result?.message ?? null,
+      createdAt: record.createdAt.toISOString(),
+      completedAt: record.completedAt?.toISOString() ?? null,
+    };
+  });
+
+  // 与文件下载相同：一律附件、nosniff、sandbox CSP，由 api 从对象存储流式转发；cache-control 由本插件的 onSend 设为 no-store。
+  app.get<ExportParams>('/:projectId/feasibility-report/export/:requestId/content', { schema: { params: EXPORT_PARAMS } }, async (request, reply) => {
+    if (!deps.objectStore) throw storageDisabled();
+    const { record, artifact } = await exportOf(request);
+    if (record.result === null) throw new AppError(409, 'EXPORT_NOT_READY', 'Word 尚未导出完成');
+    if (!artifact) throw exportExpired();
+    const object = await deps.objectStore.get(artifact.storageKey);
+    if (!object) {
+      request.log.error({ artifactId: artifact.id }, 'feasibility report export object is missing from object storage');
+      throw exportExpired();
+    }
+    reply
+      .header('content-type', DOCX_MIME)
+      .header('content-length', String(artifact.size))
+      .header('content-disposition', attachmentDisposition(feasibilityExportFileName(record)))
+      .header('x-content-type-options', 'nosniff')
+      .header('content-security-policy', "default-src 'none'; sandbox");
+    return reply.send(object.body);
   });
 }

@@ -147,6 +147,8 @@ export interface AuthRateLimitSettings {
   templatePreviewPerUser: FixedWindowOptions;
   /** 技术方案整本导出 Word 的入队请求（路线图 7.4h，同上：导出不计费，靠按项目互斥与请求频率控制用量）。 */
   technicalPlanExportPerUser: FixedWindowOptions;
+  /** 可研报告导出 Word 的入队请求（路线图 7.5e，同上）。 */
+  feasibilityReportExportPerUser: FixedWindowOptions;
 }
 
 export const DEFAULT_AUTH_RATE_LIMITS: Readonly<AuthRateLimitSettings> = Object.freeze({
@@ -161,6 +163,7 @@ export const DEFAULT_AUTH_RATE_LIMITS: Readonly<AuthRateLimitSettings> = Object.
   adminStepUpPerUser: { limit: 10, windowMs: 15 * MINUTE },
   templatePreviewPerUser: { limit: 120, windowMs: 10 * MINUTE },
   technicalPlanExportPerUser: { limit: 30, windowMs: 10 * MINUTE },
+  feasibilityReportExportPerUser: { limit: 30, windowMs: 10 * MINUTE },
 });
 
 /** 固定窗口限流器：每次请求计一次。 */
@@ -268,6 +271,7 @@ export function createAuthRateLimiters(settings: AuthRateLimitSettings, options:
     adminStepUpPerUser: window('adminStepUpPerUser', settings.adminStepUpPerUser),
     templatePreviewPerUser: window('templatePreviewPerUser', settings.templatePreviewPerUser),
     technicalPlanExportPerUser: window('technicalPlanExportPerUser', settings.technicalPlanExportPerUser),
+    feasibilityReportExportPerUser: window('feasibilityReportExportPerUser', settings.feasibilityReportExportPerUser),
   };
 }
 
