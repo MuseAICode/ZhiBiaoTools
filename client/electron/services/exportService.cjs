@@ -1,7 +1,11 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { fileURLToPath } = require('node:url');
-const { app, dialog, nativeImage } = require('electron');
+// Electron 只在桌面版的默认运行时（DESKTOP_EXPORT_RUNTIME）与保存流程中按需加载：可研导出在 export 沙箱中运行同一份代码时
+// （路线图第 7 步 7.5），沙箱入口注入自己的运行时，加载本模块不需要 Electron。
+function electronModule() {
+  return require('electron');
+}
 const cheerio = require('cheerio');
 const { imageSize } = require('image-size');
 const mime = require('mime-types');
@@ -880,16 +884,16 @@ function buildChromeFooter(pageSetup, chrome) {
   });
 }
 
-async function buildWordHeaders(pageSetup) {
+async function buildWordHeaders(pageSetup, runtime = DESKTOP_EXPORT_RUNTIME) {
   if (!shouldBuildHeader(pageSetup)) return undefined;
-  const chrome = await renderChromePngs(pageSetup);
+  const chrome = await runtime.renderChromePngs(pageSetup);
   const header = buildChromeHeader(pageSetup, chrome);
   return withFirstPageEmpty({ default: header }, emptyHeader, pageSetup?.first_page_different === true);
 }
 
-async function buildWordFooters(pageSetup) {
+async function buildWordFooters(pageSetup, runtime = DESKTOP_EXPORT_RUNTIME) {
   if (!shouldBuildFooter(pageSetup)) return undefined;
-  const chrome = await renderChromePngs(pageSetup);
+  const chrome = await runtime.renderChromePngs(pageSetup);
   const footer = buildChromeFooter(pageSetup, chrome);
   return withFirstPageEmpty({ default: footer }, emptyFooter, pageSetup?.first_page_different === true);
 }
@@ -1511,6 +1515,7 @@ function normalizeImageForDocx(loaded) {
     return loaded;
   }
 
+  const { nativeImage } = electronModule();
   const image = nativeImage?.createFromBuffer ? nativeImage.createFromBuffer(loaded.buffer) : null;
   if (!image || image.isEmpty()) {
     throw new Error('WebP 图片转换失败');
@@ -1520,6 +1525,7 @@ function normalizeImageForDocx(loaded) {
 }
 
 function resolveAssetImagePath(url) {
+  const { app } = electronModule();
   if (!app?.getPath) return null;
 
   const assetUrl = new URL(url);
@@ -1598,7 +1604,7 @@ async function loadImageWithRetry(source, context = {}, options = {}) {
 
   while (attempt <= retryAttempts) {
     try {
-      return await loadImage(source, context);
+      return await exportRuntime(context).loadImage(source, context);
     } catch (error) {
       if (attempt >= retryAttempts) {
         throw error;
@@ -1653,7 +1659,7 @@ async function imageRunFromNode(node, context, options = {}) {
   }
 
   try {
-    loaded = normalizeImageForDocx(loaded);
+    loaded = exportRuntime(context).normalizeImage(loaded);
   } catch (error) {
     const message = `图片无法导出：${imageLabel}，${error.message || '图片格式转换失败'}`;
     addWarning(context, message);
@@ -2580,6 +2586,32 @@ function buildHeadingParagraphStyles(exportFormat) {
   return styles;
 }
 
+/**
+ * 桌面版的默认运行时：配图按 data URL、app-asset://、http(s)、本机路径四种来源读取（loadImage），WebP 经 nativeImage 转 PNG
+ * （normalizeImageForDocx），页眉页脚装饰经隐藏窗口转 PNG（chromeAssetService.renderChromePngs）。
+ * export 沙箱（路线图 7.5b）注入自己的三个函数：配图只从放入的产物读取、WebP 与装饰由禁用 JavaScript 的 Chromium 转换。
+ */
+const DESKTOP_EXPORT_RUNTIME = Object.freeze({
+  loadImage: (source, context) => loadImage(source, context),
+  normalizeImage: (loaded) => normalizeImageForDocx(loaded),
+  renderChromePngs: (pageSetup) => renderChromePngs(pageSetup),
+});
+
+const EXPORT_RUNTIME_KEYS = Object.keys(DESKTOP_EXPORT_RUNTIME);
+
+/** 注入的运行时必须给出全部三个函数，不能部分沿用桌面版的实现（否则沙箱中会退回读本机文件）。 */
+function resolveExportRuntime(runtime) {
+  if (runtime === undefined) return DESKTOP_EXPORT_RUNTIME;
+  if (!runtime || EXPORT_RUNTIME_KEYS.some((key) => typeof runtime[key] !== 'function')) {
+    throw new TypeError(`导出运行时必须提供 ${EXPORT_RUNTIME_KEYS.join('、')}`);
+  }
+  return runtime;
+}
+
+function exportRuntime(context) {
+  return context?.runtime || DESKTOP_EXPORT_RUNTIME;
+}
+
 async function buildDocxResult(payload, options = {}) {
   // 页边距与装饰共用同一套几何，先把共享模块加载好，后面的同步取用才有值
   await loadChromeModule();
@@ -2615,6 +2647,8 @@ async function buildDocxResult(payload, options = {}) {
     // 正文区域大小在全部范围内保持一致，图片也不能按无装饰页另算高度。
     pageMargins: pageMarginCm,
     feasibility: readFeasibilityExportContext(payload),
+    // 配图读取、图片规范化与装饰转图（见 DESKTOP_EXPORT_RUNTIME）；桌面版不传，export 沙箱注入受限的实现。
+    runtime: resolveExportRuntime(options.runtime),
   };
   writeExportLog(context, 'export.docx.build.started', {
     stats,
@@ -2683,8 +2717,8 @@ async function buildDocxResult(payload, options = {}) {
   for (const [index, range] of ranges.entries()) {
     const firstPageDifferent = index === firstTemplateRange && pageSetup?.first_page_different === true;
     const sectionPageSetup = pageSetup ? { ...pageSetup, first_page_different: firstPageDifferent } : null;
-    const headers = range.useTemplate ? await buildWordHeaders(sectionPageSetup) : undefined;
-    const footers = range.useTemplate ? await buildWordFooters(sectionPageSetup) : undefined;
+    const headers = range.useTemplate ? await buildWordHeaders(sectionPageSetup, context.runtime) : undefined;
+    const footers = range.useTemplate ? await buildWordFooters(sectionPageSetup, context.runtime) : undefined;
     sections.push({
       properties: {
         type: SectionType.NEXT_PAGE,
@@ -2782,6 +2816,7 @@ function createExportService({ configStore, openXmlHelperService, getTechnicalPl
   return {
     // 导出前检查技术方案正文，问题交给原正文任务后结束本次导出。
     async exportWord(payload = {}, onProgress) {
+      const { app, dialog } = electronModule();
       const technicalExport = payload.source === 'technical-plan' ? getTechnicalPlanExport?.() : null;
       if (payload.source === 'technical-plan') {
         if (!technicalExport) throw new Error('本地数据库尚未就绪');
@@ -2881,6 +2916,7 @@ function createExportService({ configStore, openXmlHelperService, getTechnicalPl
 }
 
 module.exports = {
+  DESKTOP_EXPORT_RUNTIME,
   buildDocxBuffer,
   buildDocxResult,
   createExportService,
