@@ -283,7 +283,8 @@ describe.runIf(sandboxEnv.agentImage)('agent sandbox', () => {
       const ref = await createSandbox();
       const tools = await sh(ref, 'rg --version | head -1; fd --version; jq --version');
       expect(tools.stdout).toMatch(/^ripgrep \d/m);
-      expect(tools.stdout).toMatch(/^fd \d/m);
+      // Debian 的 fd 以 fdfind 为名打印版本（镜像中的 fd 是指向 fdfind 的链接），两种名字都算。
+      expect(tools.stdout).toMatch(/^fd(find)? \d/m);
       expect(tools.stdout).toMatch(/^jq-\d/m);
       const absent = await sh(
         ref,
