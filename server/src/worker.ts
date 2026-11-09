@@ -4,8 +4,11 @@
 // 任务中的模型调用经同一个 AI 网关模块（src/ai/gateway.ts），在 worker 进程中解密平台 Key、冻结和结算（6.4）。
 // 文档解析（6.6）经 sandbox-runner 在断网沙箱中执行（SANDBOX_RUNNER_URL + 令牌），worker 只取原件、校验结果、写产物，
 // 不运行任何文档解析器，也不挂载 Docker socket。
+// Agent 内部入口（8.2b，src/agent/endpoint.ts）：设置了 AGENT_ENDPOINT_PORT 时另开一个监听，只接收 agent-gw 经内部网络
+// agent-relay 转来的请求，每个请求按任务令牌查身份；与健康检查分开监听。
 // 清理任务（6.8）每小时一批：跨组织删除超过保留期的文件、产物、项目和任务记录，并把到期的冻结收尾（src/cleanup/）。
-import Fastify from 'fastify';
+import Fastify, { type FastifyInstance } from 'fastify';
+import { buildAgentEndpointApp } from './agent/endpoint.ts';
 import { createAiConcurrencyLimiter } from './ai/concurrency.ts';
 import { createAiGateway } from './ai/gateway.ts';
 import { KeyringError, loadFileKeyWrapper, type KeyWrapper } from './ai/keyring.ts';
@@ -89,8 +92,11 @@ const runner = createJobRunner({
 });
 
 let cleanup: CleanupSchedule | null = null;
+const agentEndpoint: FastifyInstance | null = config.agentEndpoint ? await buildAgentEndpointApp({ db: database.db, logLevel: config.logLevel }) : null;
 
 app.addHook('onClose', async () => {
+  // 先停止接收 agent-gw 转来的请求，再停任务与连接。
+  await agentEndpoint?.close();
   await cleanup?.close();
   await runner.close();
   await dispatcher.close();
@@ -122,6 +128,7 @@ process.once('SIGINT', () => void shutdown('SIGINT'));
 
 try {
   await app.listen({ host: config.host, port: config.port });
+  if (agentEndpoint && config.agentEndpoint) await agentEndpoint.listen({ host: config.agentEndpoint.host, port: config.agentEndpoint.port });
 } catch (error) {
   app.log.fatal({ err: error }, 'failed to start');
   process.exit(1);

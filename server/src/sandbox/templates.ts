@@ -29,6 +29,8 @@ export const SANDBOX_CONTAINER_PREFIX = 'zhibiao-sandbox-';
  * 不配置 DNS：名字与地址由模板写进沙箱的 /etc/hosts（ExtraHosts）。
  */
 export const AGENT_GATEWAY_HOSTNAME = 'agent-gw';
+/** agent-gw 在沙箱网络上监听的端口（8.2b）；沙箱内的入口（8.6）按 http://agent-gw:8080 访问。 */
+export const AGENT_GATEWAY_PORT = 8080;
 
 /**
  * 沙箱的网络。none：--network none，只有 lo。agent：每个沙箱一个专用的 internal 网络（第 8 步决定事项第 2 项 B1），

@@ -96,7 +96,50 @@ export interface AppConfig {
    * 只有 worker 使用；api 不读取令牌文件以外的内容，也不调用 sandbox-runner。
    */
   sandbox: SandboxClientConfig | null;
+  /**
+   * worker 的 Agent 内部入口（路线图 8.2b，src/agent/endpoint.ts）：只接收 agent-gw 经内部网络 agent-relay 转来的请求。
+   * 未设置 AGENT_ENDPOINT_PORT 时为 null，不监听；只有 worker 使用，api 不读取。
+   */
+  agentEndpoint: AgentEndpointConfig | null;
 }
+
+export interface AgentEndpointConfig {
+  /** 监听地址：生产部署只绑定在 agent-relay 网络上的地址（第 9 步上线检查）。默认 127.0.0.1。 */
+  host: string;
+  port: number;
+}
+
+/** agent-gw 进程的配置（路线图 8.2b，docs/SERVER_DESIGN.md 第 7.12 节）：不含任何凭据。 */
+export interface AgentGatewayConfig {
+  nodeEnv: NodeEnv;
+  /** 默认 0.0.0.0：sandbox-runner 随沙箱把 agent-gw 接入新的网络，要在所有接口上监听。 */
+  host: string;
+  /** 默认 8080（AGENT_GATEWAY_PORT，沙箱按这个端口访问）。 */
+  port: number;
+  logLevel: LogLevel;
+  /** worker 内部入口的源（如 http://worker:3200），只能是 http、不带路径。 */
+  upstream: string;
+  /** 一次转发（含流式响应）的总时长上限。 */
+  responseTimeoutMs: number;
+}
+
+/**
+ * agent-gw 不得持有的配置：出现任意一个即拒绝启动（决定事项第 1 项“不持有任何凭据”）。
+ * 部署时 agent-gw 不挂载任何 secret，这里防止误把 api / worker 的环境变量整段复制过去。
+ */
+export const AGENT_GATEWAY_FORBIDDEN_ENV = Object.freeze([
+  'DATABASE_PASSWORD',
+  'DATABASE_PASSWORD_FILE',
+  'MIGRATION_DATABASE_PASSWORD',
+  'MIGRATION_DATABASE_PASSWORD_FILE',
+  'AI_KEK_FILE',
+  'S3_SECRET_ACCESS_KEY',
+  'S3_SECRET_ACCESS_KEY_FILE',
+  'REDIS_PASSWORD',
+  'REDIS_PASSWORD_FILE',
+  'SANDBOX_RUNNER_TOKEN',
+  'SANDBOX_RUNNER_TOKEN_FILE',
+] as const);
 
 export interface SandboxClientConfig {
   /** sandbox-runner 的源（如 http://sandbox-runner:3100），只在内部网络 sandbox-control 上。 */
@@ -437,11 +480,20 @@ function createReader(env: Env, options: LoadConfigOptions) {
     issues.push({ name, reason });
   }
 
-  return { read, readSecret, readDatabase, readAi, readStorage, readRedis, readSandboxClient, fail, finish };
+  /** 设置了 AGENT_ENDPOINT_PORT 才启用（worker 的 Agent 内部入口，8.2b）。 */
+  function readAgentEndpoint(): AgentEndpointConfig | null {
+    if (!env.AGENT_ENDPOINT_PORT?.trim()) return null;
+    return Object.freeze({
+      host: read('AGENT_ENDPOINT_HOST', { ...HOST_SPEC, default: '127.0.0.1' }),
+      port: read('AGENT_ENDPOINT_PORT', portSpec(3200)),
+    });
+  }
+
+  return { read, readSecret, readDatabase, readAi, readStorage, readRedis, readSandboxClient, readAgentEndpoint, fail, finish };
 }
 
 export function loadConfig(env: Env, options: LoadConfigOptions = {}): AppConfig {
-  const { read, readDatabase, readAi, readStorage, readRedis, readSandboxClient, finish } = createReader(env, options);
+  const { read, readDatabase, readAi, readStorage, readRedis, readSandboxClient, readAgentEndpoint, finish } = createReader(env, options);
   const nodeEnv = read('NODE_ENV', {
     parse: oneOf(NODE_ENVS),
     expected: NODE_ENVS.join(' / '),
@@ -475,6 +527,7 @@ export function loadConfig(env: Env, options: LoadConfigOptions = {}): AppConfig
     storage: readStorage(production),
     redis: readRedis(),
     sandbox: readSandboxClient(),
+    agentEndpoint: readAgentEndpoint(),
   });
 }
 
@@ -535,5 +588,30 @@ export function loadSandboxRunnerConfig(env: Env, options: LoadConfigOptions = {
     } as VarSpec<string | null>),
     maxActive: read('SANDBOX_MAX_ACTIVE', intSpec(8, 1, 256)),
     token,
+  });
+}
+
+/**
+ * agent-gw 的配置（路线图 8.2b）。只读监听地址、日志级别、worker 内部入口的地址与转发时限；
+ * 环境中出现任何凭据类变量（AGENT_GATEWAY_FORBIDDEN_ENV）即拒绝启动。
+ */
+export function loadAgentGatewayConfig(env: Env, options: LoadConfigOptions = {}): AgentGatewayConfig {
+  const { read, fail, finish } = createReader(env, options);
+  for (const name of AGENT_GATEWAY_FORBIDDEN_ENV) {
+    if (env[name] !== undefined && env[name] !== '') fail(name, '不允许设置（agent-gw 不持有任何凭据）');
+  }
+  return finish<AgentGatewayConfig>({
+    nodeEnv: read('NODE_ENV', { parse: oneOf(NODE_ENVS), expected: NODE_ENVS.join(' / ') }),
+    host: read('HOST', { ...HOST_SPEC, default: '0.0.0.0' }),
+    port: read('PORT', portSpec(8080)),
+    logLevel: read('LOG_LEVEL', { default: 'info', parse: oneOf(LOG_LEVELS), expected: LOG_LEVELS.join(' / ') }),
+    upstream: read('AGENT_GW_UPSTREAM', {
+      parse: (raw) => {
+        const origin = parseOrigin(raw);
+        return origin !== undefined && origin.startsWith('http://') ? origin : undefined;
+      },
+      expected: 'worker 内部入口的 http 源（不带路径，如 http://worker:3200）',
+    }),
+    responseTimeoutMs: read('AGENT_GW_RESPONSE_TIMEOUT_MS', intSpec(600_000, 10_000, 3_600_000)),
   });
 }

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { ConfigError, loadConfig, loadMigrationConfig, type LoadConfigOptions } from '../src/config.ts';
+import { AGENT_GATEWAY_FORBIDDEN_ENV, ConfigError, loadAgentGatewayConfig, loadConfig, loadMigrationConfig, type LoadConfigOptions } from '../src/config.ts';
 
 /** 满足必需项的最小环境。 */
 const BASE_ENV = { NODE_ENV: 'test', DATABASE_PASSWORD: 'pw' } as const;
@@ -37,6 +37,7 @@ describe('loadConfig', () => {
       storage: null,
       redis: null,
       sandbox: null,
+      agentEndpoint: null,
     });
   });
 
@@ -85,6 +86,7 @@ describe('loadConfig', () => {
       storage: null,
       redis: null,
       sandbox: null,
+      agentEndpoint: null,
     });
     expect(Object.isFrozen(config)).toBe(true);
     expect(Object.isFrozen(config.database)).toBe(true);
@@ -350,5 +352,58 @@ describe('loadMigrationConfig', () => {
 
   it('不接受应用角色的密码代替属主密码', () => {
     expect(() => loadMigrationConfig({ DATABASE_PASSWORD: 'app-pw' })).toThrow(ConfigError);
+  });
+});
+
+describe('Agent 内部入口（AGENT_ENDPOINT_*，8.2b）', () => {
+  it('未设置 AGENT_ENDPOINT_PORT 时不启用', () => {
+    expect(loadConfig({ ...BASE_ENV, AGENT_ENDPOINT_HOST: '0.0.0.0' }).agentEndpoint).toBeNull();
+  });
+
+  it('设置端口后启用，地址默认 127.0.0.1', () => {
+    expect(loadConfig({ ...BASE_ENV, AGENT_ENDPOINT_PORT: '3200' }).agentEndpoint).toEqual({ host: '127.0.0.1', port: 3200 });
+    expect(loadConfig({ ...BASE_ENV, AGENT_ENDPOINT_PORT: '3200', AGENT_ENDPOINT_HOST: '0.0.0.0' }).agentEndpoint).toEqual({ host: '0.0.0.0', port: 3200 });
+  });
+
+  it.each(['0', '70000', 'abc'])('拒绝不合法的端口：%s', (port) => {
+    expect(expectConfigError({ ...BASE_ENV, AGENT_ENDPOINT_PORT: port }).issues.map((issue) => issue.name)).toEqual(['AGENT_ENDPOINT_PORT']);
+  });
+});
+
+describe('loadAgentGatewayConfig（8.2b）', () => {
+  const GW_ENV = { NODE_ENV: 'production', AGENT_GW_UPSTREAM: 'http://worker:3200' } as const;
+
+  it('只需 worker 内部入口的地址；默认在所有接口的 8080 端口监听', () => {
+    expect(loadAgentGatewayConfig(GW_ENV)).toEqual({
+      nodeEnv: 'production',
+      host: '0.0.0.0',
+      port: 8080,
+      logLevel: 'info',
+      upstream: 'http://worker:3200',
+      responseTimeoutMs: 600_000,
+    });
+  });
+
+  it.each(['https://worker:3200', 'http://worker:3200/v1', 'http://user@worker:3200', 'worker:3200', ''])('拒绝不合法的 AGENT_GW_UPSTREAM：%s', (upstream) => {
+    expect(() => loadAgentGatewayConfig({ ...GW_ENV, AGENT_GW_UPSTREAM: upstream })).toThrow(ConfigError);
+  });
+
+  it.each(AGENT_GATEWAY_FORBIDDEN_ENV)('环境中有凭据类变量 %s 时拒绝启动，错误信息不回显变量值', (name) => {
+    let caught: unknown;
+    try {
+      loadAgentGatewayConfig({ ...GW_ENV, [name]: 'leaked-secret-value' });
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(ConfigError);
+    expect((caught as ConfigError).issues.map((issue) => issue.name)).toEqual([name]);
+    expect((caught as ConfigError).message).not.toContain('leaked-secret-value');
+  });
+
+  it('不读取任何密钥文件', () => {
+    const readFile = () => {
+      throw new Error('agent-gw 不应读取文件');
+    };
+    expect(loadAgentGatewayConfig({ ...GW_ENV, DATABASE_HOST: 'postgres' }, { readFile }).upstream).toBe('http://worker:3200');
   });
 });

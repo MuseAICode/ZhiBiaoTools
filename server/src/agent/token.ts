@@ -19,6 +19,16 @@ export function isWellFormedAgentToken(value: unknown): value is string {
   return typeof value === 'string' && value.length === AGENT_TOKEN_LENGTH && AGENT_TOKEN_PATTERN.test(value);
 }
 
+/**
+ * 从 Authorization 头取令牌：只接受恰好一个 `Bearer <令牌>`（大小写、空白、多个值都不接受），且令牌格式正确；否则 null。
+ * agent-gw 与 worker 的内部入口共用（8.2b）。
+ */
+export function parseAgentBearer(header: unknown): string | null {
+  if (typeof header !== 'string' || !header.startsWith('Bearer ')) return null;
+  const token = header.slice(7);
+  return isWellFormedAgentToken(token) ? token : null;
+}
+
 export function hashAgentToken(token: string): Buffer {
   return createHash('sha256').update(token, 'utf8').digest();
 }
