@@ -259,6 +259,16 @@ describe('loadSandboxRunnerConfig', () => {
     expect(loadSandboxRunnerConfig({ ...production, SANDBOX_AGENT_IMAGE: agentPinned }).images.agent).toBe(agentPinned);
   });
 
+  it('rejects runc in production also when the agent image and gateway are configured (8.1)', () => {
+    // 运行时是 sandbox-runner 全局的配置，对所有模板（含 agent / agent-content）生效，模板中没有可覆盖运行时的字段。
+    const agentPinned = `registry.example.com/zhibiao-agent@sha256:${'f'.repeat(64)}`;
+    const production = { ...base, NODE_ENV: 'production', SANDBOX_PARSE_IMAGE: pinned, SANDBOX_EXPORT_IMAGE: exportPinned, SANDBOX_AGENT_IMAGE: agentPinned, SANDBOX_AGENT_GATEWAY: 'zhibiao-agent-gw-1' };
+    expect(() => loadSandboxRunnerConfig({ ...production, SANDBOX_RUNTIME: 'runc' })).toThrow(/SANDBOX_RUNTIME/);
+    expect(() => loadSandboxRunnerConfig(production)).toThrow(/SANDBOX_RUNTIME/);
+    expect(loadSandboxRunnerConfig({ ...production, SANDBOX_RUNTIME: 'runsc' }).runtime).toBe('runsc');
+    for (const name of ['agent', 'agent-content'] as const) expect(Object.keys(SANDBOX_TEMPLATES[name]).some((key) => /runtime/i.test(key))).toBe(false);
+  });
+
   it('requires a long token and does not echo it', () => {
     expect(() => loadSandboxRunnerConfig({ ...base, SANDBOX_RUNNER_TOKEN: undefined })).toThrow(/SANDBOX_RUNNER_TOKEN/);
     try {

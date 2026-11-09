@@ -99,6 +99,12 @@ describe('agent sandbox network in the driver', () => {
     expect(host.ExtraHosts).toEqual(['agent-gw:172.18.0.1']);
   });
 
+  it.each(['agent', 'agent-content'] as const)('creates %s sandboxes with the runtime configured for sandbox-runner (runsc in production)', async (template) => {
+    const fake = fakeDocker();
+    await driverFor(fake.api, { runtime: 'runsc' }).create(template, { jobId: randomUUID() });
+    expect((sandboxes(fake)[0]!.spec.HostConfig as Record<string, unknown>).Runtime).toBe('runsc');
+  });
+
   it.each([
     ['the network is not internal', { internal: false }],
     ['the network has another member', { extraMember: true }],
