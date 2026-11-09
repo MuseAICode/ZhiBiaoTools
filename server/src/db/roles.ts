@@ -36,3 +36,10 @@ export const JOBS_ROLE = 'bidtools_jobs';
  * 和 DELETE，对计费账本、余额、价格表、用量记录等其他表没有任何授权。迁移角色以 SET（不继承）加入它。
  */
 export const CLEANUP_ROLE = 'bidtools_cleanup';
+/**
+ * 按 Agent 任务令牌查身份的函数 agent_token_lookup 的 SECURITY DEFINER 属主（迁移 0031，路线图 8.2a）：agent-gw 转来的请求只带令牌，
+ * 查出令牌所属的组织、任务、项目与发起用户需要跨组织读取。与 bidtools_auth 相同：NOLOGIN、非超级用户、无 BYPASSRLS；
+ * 只对 agent_job_tokens、jobs、projects、org_memberships、users 中函数用到的列有列级 SELECT 和为它建的只读策略，对其他表
+ * （含计费账本、余额、价格表、用量记录、平台凭据、会话）没有任何授权。迁移角色以 SET（不继承）加入它。
+ */
+export const AGENT_AUTH_ROLE = 'bidtools_agent_auth';
