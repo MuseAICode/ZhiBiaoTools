@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { ConfigError, loadSandboxRunnerConfig } from '../../src/config.ts';
-import { buildContainerSpec, resolveCommand, SANDBOX_TEMPLATES } from '../../src/sandbox/templates.ts';
+import { buildContainerSpec, buildNetworkSpec, resolveCommand, SANDBOX_TEMPLATES } from '../../src/sandbox/templates.ts';
 
 const parse = SANDBOX_TEMPLATES.parse;
 const JOB_ID = '7d3c9b0e-1f2a-4b5c-8d6e-0f1a2b3c4d5e';
@@ -137,6 +137,83 @@ describe('export templates', () => {
   });
 });
 
+describe('agent templates (8.1)', () => {
+  const MIB = 1024 ** 2;
+  const GIB = 1024 ** 3;
+  const image = 'zhibiao-agent@sha256:' + 'e'.repeat(64);
+  const network = { name: `zhibiao-sandbox-${JOB_ID}`, gatewayAddress: '172.18.0.1' };
+  const parseHost = buildContainerSpec(parse, { image, runtime: 'runsc', jobId: JOB_ID, expiresAt: new Date(1_000) }).HostConfig;
+
+  it.each(['agent', 'agent-content'] as const)('%s reuses the isolation of the parse template, except for its dedicated network', (name) => {
+    const template = SANDBOX_TEMPLATES[name];
+    expect(template.image).toBe('agent');
+    expect(template.network).toBe('agent');
+    const spec = buildContainerSpec(template, { image, runtime: 'runsc', jobId: JOB_ID, expiresAt: new Date(1_000), network });
+    const host = spec.HostConfig;
+    for (const key of ['ReadonlyRootfs', 'Privileged', 'CapDrop', 'SecurityOpt', 'Init', 'IpcMode', 'Runtime', 'Binds', 'Mounts', 'Devices', 'Dns', 'LogConfig', 'RestartPolicy']) {
+      expect(host[key], key).toEqual(parseHost[key]);
+    }
+    // 网络：只接入自己的专用网络，agent-gw 的地址写在 /etc/hosts，不配置 DNS。
+    expect(host.NetworkMode).toBe(network.name);
+    expect(spec.NetworkingConfig).toEqual({ EndpointsConfig: { [network.name]: {} } });
+    expect(host.ExtraHosts).toEqual(['agent-gw:172.18.0.1']);
+    expect(host.Dns).toEqual([]);
+    expect(spec.User).toBe('10001:10001');
+    expect(spec.Env).toEqual(['HOME=/tmp', 'LANG=C.UTF-8', 'TMPDIR=/tmp']);
+    expect(spec.Labels).toMatchObject({ 'zhibiao.sandbox.template': name });
+    // 决定事项第 3 项的起步值：CPU 1 核、内存 2 GiB（无 swap）、pids 256、/workspace 1 GiB、/tmp 256 MiB。
+    expect(host.Memory).toBe(2 * GIB);
+    expect(host.MemorySwap).toBe(host.Memory);
+    expect(host.NanoCpus).toBe(1e9);
+    expect(host.PidsLimit).toBe(256);
+    expect(host.Tmpfs).toEqual({
+      '/tmp': `rw,noexec,nosuid,nodev,size=${256 * MIB},mode=1777`,
+      '/workspace': `rw,noexec,nosuid,nodev,size=${1 * GIB},uid=10001,gid=10001,mode=0700`,
+    });
+    // 工作区的取回规则（决定事项第 13 项）：文件数 ≤ 10,000、合计 ≤ 512 MiB、扩展名白名单。
+    expect(template.output).toMatchObject({ directory: '/workspace', maxFiles: 10_000, maxTotalBytes: 512 * MIB });
+    expect(template.output.extensions!.has('html')).toBe(true);
+    for (const extension of ['sh', 'js', 'mjs', 'exe', 'so', 'docx', '']) expect(template.output.extensions!.has(extension), extension).toBe(false);
+    expect(template.input).toMatchObject({ directory: '/workspace', maxFiles: 10_000, maxTotalBytes: 512 * MIB, extensions: null });
+    // 入口随 8.6 登记，8.1 没有可执行的命令。
+    expect(template.commands).toEqual({});
+    expect(resolveCommand(template, 'sh', ['-c', 'id'])).toBeNull();
+  });
+
+  it('agent-content differs from agent only in its lifetime (task wall clock 2 hours instead of 30 minutes)', () => {
+    const { name, lifetimeMs, ...content } = SANDBOX_TEMPLATES['agent-content'];
+    const { name: agentName, lifetimeMs: agentLifetime, ...agent } = SANDBOX_TEMPLATES.agent;
+    expect([name, agentName]).toEqual(['agent-content', 'agent']);
+    expect(content).toEqual(agent);
+    expect(agentLifetime).toBeGreaterThanOrEqual(30 * 60_000 + 2 * agent.transferTimeoutMs);
+    expect(lifetimeMs).toBeGreaterThanOrEqual(120 * 60_000 + 2 * agent.transferTimeoutMs);
+  });
+
+  it('requires a dedicated network exactly for the agent templates', () => {
+    const options = { image, runtime: 'runsc', jobId: JOB_ID, expiresAt: new Date(1_000) };
+    expect(() => buildContainerSpec(SANDBOX_TEMPLATES.agent, options)).toThrow();
+    expect(() => buildContainerSpec(parse, { ...options, network })).toThrow();
+    expect(() => buildContainerSpec(SANDBOX_TEMPLATES.agent, { ...options, network: { name: 'bridge', gatewayAddress: '172.18.0.1' } })).toThrow();
+    expect(() => buildContainerSpec(SANDBOX_TEMPLATES.agent, { ...options, network: { name: 'host', gatewayAddress: '172.18.0.1' } })).toThrow();
+    expect(() => buildContainerSpec(SANDBOX_TEMPLATES.agent, { ...options, network: { ...network, gatewayAddress: '172.18.0.1 evil' } })).toThrow();
+    expect(() => buildContainerSpec(SANDBOX_TEMPLATES.agent, { ...options, network: { ...network, gatewayAddress: '1.2.3.4\nx:5.6.7.8' } })).toThrow();
+  });
+
+  it('builds an internal network without a host address on the bridge', () => {
+    const spec = buildNetworkSpec(network.name, { template: 'agent', jobId: JOB_ID, expiresAt: new Date(1_000) });
+    expect(spec).toEqual({
+      Name: network.name,
+      Driver: 'bridge',
+      Internal: true,
+      Attachable: false,
+      EnableIPv6: false,
+      Options: { 'com.docker.network.bridge.inhibit_ipv4': 'true', 'com.docker.network.bridge.enable_ip_masquerade': 'false' },
+      Labels: { 'zhibiao.sandbox': '1', 'zhibiao.sandbox.template': 'agent', 'zhibiao.sandbox.job': JOB_ID, 'zhibiao.sandbox.expires': '1000' },
+    });
+    expect(() => buildNetworkSpec('bridge', { template: 'agent', jobId: JOB_ID, expiresAt: new Date(1_000) })).toThrow();
+  });
+});
+
 describe('loadSandboxRunnerConfig', () => {
   const token = 't'.repeat(40);
   const base = { NODE_ENV: 'development', SANDBOX_PARSE_IMAGE: 'zhibiao-parse:dev', SANDBOX_EXPORT_IMAGE: 'zhibiao-export:dev', SANDBOX_RUNNER_TOKEN: token };
@@ -160,12 +237,36 @@ describe('loadSandboxRunnerConfig', () => {
   });
 
   it('requires the export image since the preview endpoint ships (7.3e), and pins it in production', () => {
-    expect(loadSandboxRunnerConfig(base).images).toEqual({ parse: 'zhibiao-parse:dev', export: 'zhibiao-export:dev' });
+    expect(loadSandboxRunnerConfig(base).images).toEqual({ parse: 'zhibiao-parse:dev', export: 'zhibiao-export:dev', agent: null });
     expect(() => loadSandboxRunnerConfig({ ...base, SANDBOX_EXPORT_IMAGE: undefined })).toThrow(/SANDBOX_EXPORT_IMAGE/);
     expect(() => loadSandboxRunnerConfig({ ...base, SANDBOX_EXPORT_IMAGE: '' })).toThrow(/SANDBOX_EXPORT_IMAGE/);
     const production = { ...base, NODE_ENV: 'production', SANDBOX_RUNTIME: 'runsc', SANDBOX_PARSE_IMAGE: pinned };
     expect(() => loadSandboxRunnerConfig({ ...production, SANDBOX_EXPORT_IMAGE: 'zhibiao-export:latest' })).toThrow(/SANDBOX_EXPORT_IMAGE/);
     expect(loadSandboxRunnerConfig({ ...production, SANDBOX_EXPORT_IMAGE: exportPinned }).images.export).toBe(exportPinned);
+  });
+
+  it('makes the agent image and gateway optional until agent tasks ship (8.1), and pins the image in production', () => {
+    expect(loadSandboxRunnerConfig(base).agentGateway).toBeNull();
+    const configured = loadSandboxRunnerConfig({ ...base, SANDBOX_AGENT_IMAGE: 'zhibiao-agent:dev', SANDBOX_AGENT_GATEWAY: 'zhibiao-agent-gw-1' });
+    expect(configured.images.agent).toBe('zhibiao-agent:dev');
+    expect(configured.agentGateway).toBe('zhibiao-agent-gw-1');
+    expect(() => loadSandboxRunnerConfig({ ...base, SANDBOX_AGENT_GATEWAY: '../x' })).toThrow(/SANDBOX_AGENT_GATEWAY/);
+    expect(() => loadSandboxRunnerConfig({ ...base, SANDBOX_AGENT_GATEWAY: 'a b' })).toThrow(/SANDBOX_AGENT_GATEWAY/);
+    const production = { ...base, NODE_ENV: 'production', SANDBOX_RUNTIME: 'runsc', SANDBOX_PARSE_IMAGE: pinned, SANDBOX_EXPORT_IMAGE: exportPinned };
+    expect(loadSandboxRunnerConfig(production).images.agent).toBeNull();
+    expect(() => loadSandboxRunnerConfig({ ...production, SANDBOX_AGENT_IMAGE: 'zhibiao-agent:latest' })).toThrow(/SANDBOX_AGENT_IMAGE/);
+    const agentPinned = `registry.example.com/zhibiao-agent@sha256:${'f'.repeat(64)}`;
+    expect(loadSandboxRunnerConfig({ ...production, SANDBOX_AGENT_IMAGE: agentPinned }).images.agent).toBe(agentPinned);
+  });
+
+  it('rejects runc in production also when the agent image and gateway are configured (8.1)', () => {
+    // 运行时是 sandbox-runner 全局的配置，对所有模板（含 agent / agent-content）生效，模板中没有可覆盖运行时的字段。
+    const agentPinned = `registry.example.com/zhibiao-agent@sha256:${'f'.repeat(64)}`;
+    const production = { ...base, NODE_ENV: 'production', SANDBOX_PARSE_IMAGE: pinned, SANDBOX_EXPORT_IMAGE: exportPinned, SANDBOX_AGENT_IMAGE: agentPinned, SANDBOX_AGENT_GATEWAY: 'zhibiao-agent-gw-1' };
+    expect(() => loadSandboxRunnerConfig({ ...production, SANDBOX_RUNTIME: 'runc' })).toThrow(/SANDBOX_RUNTIME/);
+    expect(() => loadSandboxRunnerConfig(production)).toThrow(/SANDBOX_RUNTIME/);
+    expect(loadSandboxRunnerConfig({ ...production, SANDBOX_RUNTIME: 'runsc' }).runtime).toBe('runsc');
+    for (const name of ['agent', 'agent-content'] as const) expect(Object.keys(SANDBOX_TEMPLATES[name]).some((key) => /runtime/i.test(key))).toBe(false);
   });
 
   it('requires a long token and does not echo it', () => {

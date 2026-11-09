@@ -259,7 +259,11 @@ jobs:
             --build-context desktop=../client/electron \
             sandbox/export
 
-      - name: Sandbox isolation, parse and export tests (gVisor)
+      # 8.1：agent 沙箱镜像（Node 24 + rg / fd / jq，无 npm 依赖；Pi 运行时随 8.6）。
+      - name: Build agent sandbox image
+        run: docker build -t zhibiao-agent:ci sandbox/agent
+
+      - name: Sandbox isolation, parse, export and agent tests (gVisor)
         run: npm run test:sandbox
         env:
           TEST_SANDBOX_IMAGE: zhibiao-parse:ci
@@ -267,6 +271,7 @@ jobs:
           TEST_SANDBOX_OFFICE: '1'
           TEST_SANDBOX_CONTROL_IMAGE: zhibiao-parse:ci-control
           TEST_SANDBOX_EXPORT_IMAGE: zhibiao-export:ci
+          TEST_SANDBOX_AGENT_IMAGE: zhibiao-agent:ci
           # 解析卡住时的解析任务测试（tests/sandbox/docker/parseJob.test.ts）在真实沙箱和数据库上执行任务。
           TEST_DATABASE_ADMIN_URL: postgres://postgres:postgres@127.0.0.1:5432/postgres
 

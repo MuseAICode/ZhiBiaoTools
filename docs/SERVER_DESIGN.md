@@ -491,12 +491,12 @@ AI 网关（worker 内）── 解密 Key ──> 模型服务商
 
 | 项 | 设置 |
 |---|---|
-| 镜像 | 固定镜像（按 digest 引用），只含 Node、Pi 运行时、`rg/fd/jq`、LibreOffice、中文字体、Chromium；不含编译器和其他多余工具 |
+| 镜像 | 固定镜像（按 digest 引用），只含 Node、Pi 运行时、`rg/fd/jq`、LibreOffice、中文字体、Chromium；不含编译器和其他多余工具（8.1：agent 镜像不含 LibreOffice、Chromium，渲染与转换在各自的专用沙箱中做，#70 确认，见第 7.10 节） |
 | 用户 | 非 root（如 UID 10001），`--security-opt no-new-privileges`，`--cap-drop ALL` |
 | 文件系统 | 根文件系统只读；`/workspace` 和 `/tmp` 为大小受限的可写卷（如 2 GB / 512 MB） |
 | 资源 | CPU 1–2 核、内存 2 GB（无 swap）、`pids` 256、打开文件数上限 |
 | 时长 | 单条命令超时（如 5 分钟）；整个任务的墙钟上限按任务类型设定 |
-| 网络 | 解析 / 渲染类：`--network none`。Agent：只接入一个 `internal: true` 的专用网络，网络中只有 AI 网关入口；DNS 也只解析网关；显式屏蔽 `169.254.169.254` |
+| 网络 | 解析 / 渲染类：`--network none`。Agent：只接入一个 `internal: true` 的专用网络，网络中只有 AI 网关入口；DNS 也只解析网关；显式屏蔽 `169.254.169.254`（8.1 实现为每个沙箱一个专用网络、只接入 `agent-gw`，网关地址写在 `/etc/hosts`，见第 7.10 节） |
 | 挂载 | 不挂载 Docker socket、宿主目录、其他任务的卷；不注入宿主环境变量 |
 | 生命周期 | 一个任务一个沙箱，结束即销毁，不复用；异常退出的沙箱由 sandbox-runner 定期清理 |
 | 观测 | 记录每条 `bash` 命令（截断）、退出码、耗时到任务日志，供管理员排查；不记录文件内容 |
@@ -505,7 +505,7 @@ AI 网关（worker 内）── 解密 Key ──> 模型服务商
 
 ### 7.5 实现（路线图 6.5）：解析沙箱
 
-第 6 步先建本节的公共部分和断网的 `parse` 模板（路线图第 6 步“文件解析的隔离”方案 B），第 8 步在同一套机制上加 `agent` 模板（`sandbox-gw` 网络、任务令牌、业务工具 RPC）。
+第 6 步先建本节的公共部分和断网的 `parse` 模板（路线图第 6 步“文件解析的隔离”方案 B），第 8 步在同一套机制上加 `agent` 模板（每个沙箱一个只通 `agent-gw` 的专用网络，见第 7.10 节；任务令牌、业务工具 RPC 随路线图 8.2、8.4）。
 
 - **接口**：`SandboxDriver`（`server/src/sandbox/driver.ts`）的 `create / copyIn / exec / copyOut / destroy`。worker 用 HTTP 客户端（`client.ts`），sandbox-runner 用 Docker 实现（`docker.ts`）；换成微虚拟机时只换后者。
 - **模板**（`templates.ts`）：镜像、网络、用户、只读、资源、可写目录、命令、取回规则都写死在代码中，调用方只选模板名；`parse` 的参数见第 7.4 节的表，取值为路线图第 6 步决定事项第 5 项的起步值。容器的主进程只是 `sleep`，命令经 exec 执行，超时或调用方中止时终止整个容器。
@@ -580,6 +580,23 @@ Word 导出与模板样张由 OpenXmlHelper 生成 docx，页眉页脚装饰 SVG
 - **可研导出的接口（7.5e）**：`POST /api/projects/:projectId/feasibility-report/export`（`{ templateId, options? }`，`options` 只接受桌面版的六个导出选项：三个布尔开关与编制单位、密级、文件编号三个不超过 500 字的文本，其他字段 400）经 `requireProject` 校验项目后按用户限流（`feasibilityReportExportPerUser`，30 次 / 10 分钟，与技术方案的分开计数，在取快照之前计数），调用 `enqueueFeasibilityReportExport` 入队，202 `{ requestId, job }`；状态与附件下载（`GET .../feasibility-report/export/:requestId` 与 `.../content`）的规则、响应头与错误码与整本导出的接口完全相同，文件名为“项目名称_YYYYMMDD_HHMMSS.docx”（项目名称为空时“可行性研究报告”，同桌面版）。
 - **测试**：`tests/sandbox/docker/isolationSuite.ts` 是按模板参数化的同一套隔离用例（断网、只读、无能力、内存 / 进程数 / fork 炸弹 / 可写目录写满 / CPU / 超时 / 中止、取回校验、沙箱之间不共享，每项有去掉加固的对照组），parse 与两个 export 模板都跑；`export.test.ts` 另验证：恶意装饰中 7 种执行脚本的方式经完整导出流程都没有执行（对照组只把浏览器上下文改为允许 JavaScript，7 种都执行了）、装饰与受限 HTML 中的外部引用在沙箱中不被请求（对照组去掉 `--network none` 后装饰的外部引用确实被请求）、一次导出之后新的沙箱中看不到上一次的任何文件、导出结果中没有上一次的内容，以及错误代码与输出为空。CI 在 gVisor 下运行，样张与整本导出的耗时写在日志中。
 
+### 7.10 实现（路线图 8.1）：agent 沙箱
+
+Agent 任务的沙箱（路线图第 8 步“沙箱扩展”，决定事项第 1～3 项）。8.1 只建镜像、模板、每个沙箱一个的专用网络和隔离测试，不接模型；任务令牌与 `agent-gw`（8.2）、业务工具 RPC（8.4）、工作区快照（8.5）、Pi 运行时与入口（8.6）在其上接入。
+
+- **模板**（`templates.ts`）：一个 agent 镜像、按任务墙钟分成两个模板名，隔离参数与 `parse` 相同（gVisor、只读根文件系统、用户 10001、`cap-drop ALL`、`no-new-privileges`、不挂载任何宿主目录、不注入宿主环境变量、不保留容器日志），只有网络不同，有单元测试逐项核对：
+
+  | 模板 | 内存（无 swap） | CPU | `pids` | 任务墙钟 | 沙箱最长存活 | 可写目录（tmpfs） | 工作区（`/workspace`）的放入与取回 |
+  |---|---|---|---|---|---|---|---|
+  | `agent`（目录、全局事实、可研目录、模板提取） | 2 GiB | 1 核 | 256 | 30 分钟 | 45 分钟 | `/tmp` 256 MiB、`/workspace` 1 GiB | 文件数 ≤ 10,000、合计 ≤ 512 MiB、单个 ≤ 100 MiB、至多 8 层；取回只收普通文件和白名单扩展名（`md`、`txt`、`json`、`jsonl`、`html`、`mmd`、`svg`、`csv` 与 png / jpg / gif / webp），放入不限扩展名 |
+  | `agent-content`（正文生成、章节重写、原方案还原） | 与 `agent` 完全相同 | | | 2 小时 | 135 分钟 | | |
+
+  8.1 没有登记可执行的命令（入口随 8.6，命令墙钟即任务墙钟）；单条 `bash` 命令 5 分钟由入口执行，只是 Agent 自身的约束，平台的控制是命令与沙箱的墙钟、cgroup 上限和网络。快照的路径规则（桌面版工作区有中文文件名，现有取回规则只收 ASCII 路径段）随 8.5 处理。
+- **网络**（决定事项第 2 项 B1，取代第 7.4 节与第 8.1 节的共用网络 `sandbox-gw`）：创建 agent 沙箱时，sandbox-runner 先建一个与容器同名的专用网络——`internal: true`（没有出口路由）、网桥不分配 IPv4 地址（`com.docker.network.bridge.inhibit_ipv4`，宿主在这个网络上没有地址，沙箱连不到宿主上监听所有地址的服务）、不开 IPv6、不做地址伪装，标签与容器相同（模板、任务、到期时间）——再只把配置的 `agent-gw` 容器（`SANDBOX_AGENT_GATEWAY`）接入；网络必须是 internal、此时只有 `agent-gw` 一个成员，否则删除网络、按不可用处理。`agent-gw` 的地址写进沙箱的 `/etc/hosts`（`agent-gw`），不配置 DNS：runc 下 Docker 的内置 DNS 只认得网络中的两个容器、内部网络不向外转发查询，gVisor 下内置 DNS 不可用。网关必须是正在运行、不带沙箱标签的容器（防止把一个沙箱接进另一个沙箱的网络）。沙箱销毁时先删容器、再断开 `agent-gw` 并删除网络（容器已不存在时也删）；到期的网络与容器一起由 sweep 删除；创建中途失败时删除已建的网络。不同沙箱的网络之间由 Docker 的网桥隔离规则隔开，`agent-gw` 不转发。
+- **镜像**（`server/sandbox/agent/Dockerfile`）：Node 24 + `ripgrep`、`fd-find`（`fd` 链接到 `fdfind`）、`jq` 与 Debian 自带的 `/bin/sh`、coreutils，删除 npm / corepack / yarn 和 setuid 位；不含 Chromium、LibreOffice、OpenXmlHelper（偏离第 7.4 节，#70 确认）、编译器与网络工具。
+- **配置**：sandbox-runner 的 `SANDBOX_AGENT_IMAGE`（生产必须按摘要固定）与 `SANDBOX_AGENT_GATEWAY`（`agent-gw` 的容器名）；Agent 任务上线（8.6）之前可选，未配置时创建 agent 沙箱返回 `SANDBOX_UNAVAILABLE`。
+- **测试**：`tests/sandbox/docker/agentIsolation.test.ts`（CI 中在 gVisor 下运行）对 `agent` 模板跑与 parse / export 相同的一套隔离用例（只读、无能力、内存 / 进程数 / fork 炸弹 / 可写目录写满 / CPU / 超时 / 中止、取回校验、沙箱之间不共享文件，每项有去掉加固的对照组），另验证：网络只通 `agent-gw`（外网、DNS、`169.254.169.254`、Docker 网桥与宿主地址上的服务、`agent-gw` 在其他网络上的地址、另一个同时运行的 agent 沙箱都连不到；对照组为经 `/etc/hosts` 访问 `agent-gw` 的桩成功，以及去掉 `inhibit_ipv4` 后同一探测连到宿主）；专用网络的生命周期（随沙箱创建与删除、任务不符不删、到期清理、只剩网络的残留、创建失败不残留、网关未配置 / 不存在 / 是沙箱时拒绝）；逃逸面（`mount`、`unshare -m`、`unshare -n` 失败，没有 Docker socket；runc 下 `unshare -U -r` 也失败，gVisor 下用户命名空间在 Sentry 内实现、不碰宿主内核，只记录结果）与镜像内容（有 rg / fd / jq，没有浏览器、办公套件、OpenXmlHelper、Python）。driver 的失败路径另有内存桩的单元测试（`tests/sandbox/agentNetwork.test.ts`）。
+
 ## 8. 部署架构
 
 ### 8.0 部署位置（已决定，第 9 节第 13、14 项）
@@ -595,12 +612,12 @@ Word 导出与模板样张由 OpenXmlHelper 生成 docx，页眉页脚装饰 SVG
 |---|---|---|
 | `caddy` | 反向代理、TLS、静态文件 | `edge` |
 | `api` | Fastify | `edge`、`backend` |
-| `worker` | BullMQ 消费者 + AI 网关（可多副本） | `backend`、`sandbox-control`、`sandbox-gw`、`egress` |
+| `worker` | BullMQ 消费者 + AI 网关（可多副本） | `backend`、`sandbox-control`、`egress`（8.2 起另经内部网络接收 `agent-gw` 转来的请求） |
 | `sandbox-runner` | 唯一能访问容器运行时（6.5 实现，见第 7.5 节）；按模板创建 parse、export（7.1，见第 7.9 节）沙箱 | `sandbox-control`（`internal: true`，只有 worker 能访问） |
 | `postgres` | PostgreSQL 17，数据卷 | `backend` |
 | `redis` | Valkey 8（第 6 步决定替代 Redis 7，协议兼容），开启密码和 ACL，不持久化；启动脚本 `server/redis/start-valkey.sh`（6.1） | `backend` |
 | （云对象存储） | 生产环境用云厂商对象存储，不在本机；开发环境才在 Compose 中起本地 S3 兼容存储 | 经 `egress`，用实例角色访问 |
-| 沙箱容器 | 由 sandbox-runner 动态创建：parse（文档解析）、export（OpenXmlHelper 与 Chromium，一次导出一个，用完即毁）、第 8 步的 Agent | `none` 或 `sandbox-gw`（`internal: true`） |
+| 沙箱容器 | 由 sandbox-runner 动态创建：parse（文档解析）、export（OpenXmlHelper 与 Chromium，一次导出一个，用完即毁）、agent（8.1，见第 7.10 节） | parse / export 为 `none`；agent 为每个沙箱一个的专用 internal 网络，只有该沙箱与 `agent-gw`（取代原设计的共用网络 `sandbox-gw`） |
 
 - `backend` 为 `internal: true`，数据库、Redis、对象存储不暴露端口到宿主；
 - 只有 `worker` 在 `egress` 网络上能访问外网（调用模型服务商、MinerU、KMS、对象存储），并经第 4.4 节的出站校验；api 发邮件和签发预签名 URL 所需的出站访问只放行到发信服务和云厂商接口；

@@ -1,5 +1,6 @@
 // Docker Engine API 的最小客户端（经 unix socket），只在 sandbox-runner 进程中使用。不依赖第三方库。
-// 只实现沙箱需要的调用：ping、info、创建 / 启动 / 查看 / 终止 / 删除 / 列出容器、exec（含经升级连接的标准输入输出）。
+// 只实现沙箱需要的调用：ping、info、创建 / 启动 / 查看 / 终止 / 删除 / 列出容器、exec（含经升级连接的标准输入输出），
+// 以及 agent 沙箱的专用网络（8.1）：创建 / 查看 / 接入 / 断开 / 删除 / 列出网络。
 // Docker 的错误正文可能含镜像名、路径等内部信息，只写日志，不返回给调用方。
 import { request as httpRequest, type IncomingMessage } from 'node:http';
 import type { Socket } from 'node:net';
@@ -29,6 +30,16 @@ export interface DockerContainerInfo {
   HostConfig: Record<string, unknown>;
 }
 
+export interface DockerNetworkInfo {
+  Id: string;
+  Name: string;
+  Internal: boolean;
+  Labels: Record<string, string> | null;
+  Options: Record<string, string> | null;
+  /** 已接入的容器（键为容器 id）及其在本网络中的地址（如 172.18.0.1/16）。 */
+  Containers: Record<string, { Name: string; IPv4Address: string }> | null;
+}
+
 export interface DockerExecStream {
   /** 进程的标准输出（已从 Docker 的多路复用帧中拆出）。消费方应读完或销毁它。 */
   readonly stdout: Readable;
@@ -51,6 +62,17 @@ export interface DockerApi {
   removeContainer(id: string): Promise<void>;
   /** 按标签列出容器（含已停止的），返回 id、名称和标签。 */
   listContainers(label: string): Promise<Array<{ Id: string; Names: string[]; Labels: Record<string, string> }>>;
+  /** 创建网络，返回网络 id。 */
+  createNetwork(spec: Record<string, unknown>): Promise<string>;
+  /** 不存在时返回 null。 */
+  inspectNetwork(id: string): Promise<DockerNetworkInfo | null>;
+  connectNetwork(networkId: string, containerId: string): Promise<void>;
+  /** 强制断开；网络或容器已不存在、已断开时也成功。 */
+  disconnectNetwork(networkId: string, containerId: string): Promise<void>;
+  /** 删除网络；不存在时也成功。 */
+  removeNetwork(id: string): Promise<void>;
+  /** 按标签列出网络，返回 id、名称和标签。 */
+  listNetworks(label: string): Promise<Array<{ Id: string; Name: string; Labels: Record<string, string> }>>;
   createExec(containerId: string, options: { argv: readonly string[]; stdin: boolean }): Promise<string>;
   /**
    * 启动 exec 并接上标准输入输出：stdin 写完后半关闭连接（进程读到 EOF）；onStderr 收到标准错误的数据块。
@@ -197,6 +219,34 @@ export function createDockerApi(socketPath: string): DockerApi {
       const filters = encode(JSON.stringify({ label: [label] }));
       const { data } = await call('GET', `/containers/json?all=true&filters=${filters}`);
       return data as Array<{ Id: string; Names: string[]; Labels: Record<string, string> }>;
+    },
+    async createNetwork(spec) {
+      const { data } = await call('POST', '/networks/create', spec);
+      return (data as { Id: string }).Id;
+    },
+    async inspectNetwork(id) {
+      try {
+        const { data } = await call('GET', `/networks/${encode(id)}`);
+        return data as DockerNetworkInfo;
+      } catch (error) {
+        if (error instanceof DockerApiError && error.statusCode === 404) return null;
+        throw error;
+      }
+    },
+    async connectNetwork(networkId, containerId) {
+      await call('POST', `/networks/${encode(networkId)}/connect`, { Container: containerId, EndpointConfig: {} }, [200]);
+    },
+    async disconnectNetwork(networkId, containerId) {
+      // 网络或容器不存在（404）、容器未接入该网络（Docker 返回 500 / 403 视版本而定）时由调用方按删除网络的结果判断。
+      await call('POST', `/networks/${encode(networkId)}/disconnect`, { Container: containerId, Force: true }, [200, 404]);
+    },
+    async removeNetwork(id) {
+      await call('DELETE', `/networks/${encode(id)}`, undefined, [204, 404]);
+    },
+    async listNetworks(label) {
+      const filters = encode(JSON.stringify({ label: [label] }));
+      const { data } = await call('GET', `/networks?filters=${filters}`);
+      return (data as Array<{ Id: string; Name: string; Labels: Record<string, string> | null }>).map((network) => ({ Id: network.Id, Name: network.Name, Labels: network.Labels ?? {} }));
     },
     async createExec(containerId, options) {
       const { data } = await call('POST', `/containers/${encode(containerId)}/exec`, {

@@ -7,7 +7,9 @@
 //   调用方不能经 sandbox-runner 在其他容器（数据库、Redis 等）中执行命令；
 // - 输入输出经 exec 中的 tar 传送（gVisor 下 docker cp 无法写入只读根文件系统上的 tmpfs），输入先按模板校验，
 //   取回的归档按不可信输入校验（src/sandbox/archive.ts）；
-// - 命令超时、调用方中止时终止整个容器；到期的沙箱由 sweep 定期删除。
+// - 命令超时、调用方中止时终止整个容器；到期的沙箱由 sweep 定期删除；
+// - agent 模板（8.1）：每个沙箱一个专用的 internal 网络（与容器同名、同样的标签），创建时只把配置的 agent-gw 容器接入，
+//   沙箱删除时一并删除，到期的同样由 sweep 删除。
 import { randomUUID } from 'node:crypto';
 import { Readable, Transform } from 'node:stream';
 import type { FastifyBaseLogger } from 'fastify';
@@ -24,6 +26,7 @@ import {
 } from './driver.ts';
 import {
   buildContainerSpec,
+  buildNetworkSpec,
   resolveCommand,
   SANDBOX_CONTAINER_PREFIX,
   SANDBOX_LABEL,
@@ -47,6 +50,11 @@ export interface DockerSandboxDriverOptions {
   images: Readonly<Partial<Record<SandboxImageName, string | null>>>;
   /** 同时存在的沙箱数上限（含已结束、尚未删除的）。 */
   maxActive: number;
+  /**
+   * agent-gw 的容器名（8.1）：每个 agent 沙箱的专用网络只接入这一个容器。未配置时不能创建 agent 模板的沙箱。
+   * 它必须是正在运行、且不是沙箱的容器（不带沙箱标签），否则按网关不可用处理。
+   */
+  agentGateway?: string | null;
   log: Pick<FastifyBaseLogger, 'info' | 'warn' | 'error'>;
   now?: () => Date;
   /**
@@ -54,6 +62,8 @@ export interface DockerSandboxDriverOptions {
    * sandbox-runner 的入口不传。
    */
   buildSpec?: typeof buildContainerSpec;
+  /** 同上：替换 agent 沙箱专用网络的参数（例如去掉 inhibit_ipv4），只供隔离测试的对照组使用。 */
+  buildNetwork?: typeof buildNetworkSpec;
 }
 
 export interface ExecArgvOptions extends SandboxOperationOptions {
@@ -111,6 +121,7 @@ export function createDockerSandboxDriver(options: DockerSandboxDriverOptions): 
   const { docker, log } = options;
   const now = options.now ?? (() => new Date());
   const buildSpec = options.buildSpec ?? buildContainerSpec;
+  const buildNetwork = options.buildNetwork ?? buildNetworkSpec;
   let createQueue: Promise<unknown> = Promise.resolve();
 
   function wrap(error: unknown, operation: string): SandboxError {
@@ -324,6 +335,53 @@ export function createDockerSandboxDriver(options: DockerSandboxDriverOptions): 
     return output;
   }
 
+  /** 删除沙箱的专用网络：先强制断开仍接入的容器（agent-gw），再删除网络。网络已不存在时也成功。 */
+  async function removeNetwork(networkId: string): Promise<void> {
+    const info = await docker.inspectNetwork(networkId);
+    if (!info) return;
+    for (const containerId of Object.keys(info.Containers ?? {})) await docker.disconnectNetwork(info.Id, containerId);
+    await docker.removeNetwork(info.Id);
+  }
+
+  /** 按沙箱 id 删除其专用网络：只删除带沙箱标签、任务 id 相符的网络（与容器的规则相同）。 */
+  async function removeSandboxNetwork(id: string, jobId: string): Promise<void> {
+    const info = await docker.inspectNetwork(containerName(id));
+    if (!info || info.Name !== containerName(id) || info.Labels?.[SANDBOX_LABEL] !== '1' || info.Labels[SANDBOX_LABEL_JOB] !== jobId) return;
+    await removeNetwork(info.Id);
+    log.info({ sandboxId: id }, 'sandbox network removed');
+  }
+
+  /**
+   * 新建 agent 沙箱的专用网络并接入 agent-gw，返回网络名和 agent-gw 在其中的地址。网络必须是 internal、此时只有 agent-gw 一个成员，
+   * 否则删除网络、按不可用处理。中途失败时删除已建的网络。
+   */
+  async function createAgentNetwork(id: string, templateName: SandboxTemplateName, jobId: string, expiresAt: Date): Promise<{ networkId: string; name: string; gatewayAddress: string }> {
+    const gatewayName = options.agentGateway;
+    if (!gatewayName) throw new SandboxError('SANDBOX_UNAVAILABLE', '沙箱网关未配置');
+    const gateway = await docker.inspectContainer(gatewayName);
+    // 网关不能是沙箱：否则一个沙箱会被接进另一个沙箱的网络。
+    if (!gateway || !gateway.State.Running || gateway.Config.Labels?.[SANDBOX_LABEL] === '1') {
+      log.error({ gateway: gatewayName }, 'agent gateway container is not available');
+      throw new SandboxError('SANDBOX_UNAVAILABLE', '沙箱网关不可用');
+    }
+    const name = containerName(id);
+    const networkId = await docker.createNetwork(buildNetwork(name, { template: templateName, jobId, expiresAt }));
+    try {
+      await docker.connectNetwork(networkId, gateway.Id);
+      const info = await docker.inspectNetwork(networkId);
+      const members = Object.entries(info?.Containers ?? {});
+      const gatewayAddress = members.length === 1 && members[0]![0] === gateway.Id ? members[0]![1].IPv4Address.split('/', 1)[0] : undefined;
+      if (!info || !info.Internal || !gatewayAddress) {
+        log.error({ sandboxId: id, internal: info?.Internal, members: members.length }, 'agent sandbox network is not as expected');
+        throw new SandboxError('SANDBOX_UNAVAILABLE', '沙箱网络创建失败');
+      }
+      return { networkId, name, gatewayAddress };
+    } catch (error) {
+      await removeNetwork(networkId).catch((cleanupError: unknown) => log.warn({ err: cleanupError, sandboxId: id }, 'failed to remove sandbox network'));
+      throw error;
+    }
+  }
+
   const driver: DockerSandboxDriver = {
     async create(templateName, createOptions) {
       if (!isSandboxTemplateName(templateName) || !UUID_PATTERN.test(createOptions.jobId)) {
@@ -338,12 +396,24 @@ export function createDockerSandboxDriver(options: DockerSandboxDriverOptions): 
         if (existing.length >= options.maxActive) throw new SandboxError('SANDBOX_BUSY', SANDBOX_BUSY_MESSAGE);
         const id = randomUUID();
         const expiresAt = new Date(now().getTime() + template.lifetimeMs);
-        const spec = buildSpec(template, { image, runtime: options.runtime, jobId: createOptions.jobId, expiresAt });
-        const containerId = await docker.createContainer(containerName(id), spec);
+        const network = template.network === 'agent' ? await createAgentNetwork(id, templateName, createOptions.jobId, expiresAt) : null;
         try {
-          await docker.startContainer(containerId);
+          const spec = buildSpec(template, {
+            image,
+            runtime: options.runtime,
+            jobId: createOptions.jobId,
+            expiresAt,
+            ...(network ? { network: { name: network.name, gatewayAddress: network.gatewayAddress } } : {}),
+          });
+          const containerId = await docker.createContainer(containerName(id), spec);
+          try {
+            await docker.startContainer(containerId);
+          } catch (error) {
+            await docker.removeContainer(containerId).catch(() => {});
+            throw error;
+          }
         } catch (error) {
-          await docker.removeContainer(containerId).catch(() => {});
+          if (network) await removeNetwork(network.networkId).catch((cleanupError: unknown) => log.warn({ err: cleanupError, sandboxId: id }, 'failed to remove sandbox network'));
           throw error;
         }
         log.info({ sandboxId: id, template: templateName, jobId: createOptions.jobId }, 'sandbox created');
@@ -426,10 +496,14 @@ export function createDockerSandboxDriver(options: DockerSandboxDriverOptions): 
       if (!UUID_PATTERN.test(sandbox.id)) return;
       try {
         const info = await docker.inspectContainer(containerName(sandbox.id));
-        // 只删除确实是沙箱的容器；任务 id 不符时不删（按不存在处理）。
-        if (!info || info.Config.Labels?.[SANDBOX_LABEL] !== '1' || info.Config.Labels[SANDBOX_LABEL_JOB] !== sandbox.jobId) return;
-        await docker.removeContainer(info.Id);
-        log.info({ sandboxId: sandbox.id }, 'sandbox destroyed');
+        if (info) {
+          // 只删除确实是沙箱的容器；任务 id 不符时不删（按不存在处理），网络也不动。
+          if (info.Config.Labels?.[SANDBOX_LABEL] !== '1' || info.Config.Labels[SANDBOX_LABEL_JOB] !== sandbox.jobId) return;
+          await docker.removeContainer(info.Id);
+          log.info({ sandboxId: sandbox.id }, 'sandbox destroyed');
+        }
+        // agent 沙箱的专用网络（容器已不存在时也删，例如创建中途失败后残留的）。
+        await removeSandboxNetwork(sandbox.id, sandbox.jobId);
       } catch (error) {
         throw wrap(error, 'destroy');
       }
@@ -450,7 +524,19 @@ export function createDockerSandboxDriver(options: DockerSandboxDriverOptions): 
           log.warn({ err: error }, 'failed to remove expired sandbox');
         }
       }
-      if (removed > 0) log.info({ removed }, 'expired sandboxes removed');
+      // agent 沙箱的专用网络：与容器同样按到期时间删除（容器已删除、或创建中途失败后残留的网络）。
+      let removedNetworks = 0;
+      for (const network of await docker.listNetworks(`${SANDBOX_LABEL}=1`)) {
+        const expires = Number(network.Labels[SANDBOX_LABEL_EXPIRES]);
+        if (Number.isFinite(expires) && expires > current) continue;
+        try {
+          await removeNetwork(network.Id);
+          removedNetworks += 1;
+        } catch (error) {
+          log.warn({ err: error }, 'failed to remove expired sandbox network');
+        }
+      }
+      if (removed > 0 || removedNetworks > 0) log.info({ removed, removedNetworks }, 'expired sandboxes removed');
       return removed;
     },
   };
