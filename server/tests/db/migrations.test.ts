@@ -9,6 +9,7 @@ import { SYSTEM_EXPORT_TEMPLATES } from '../../src/templates/systemTemplates.ts'
 import { connect, createTestDatabase, type TestDatabase } from './harness.ts';
 
 const APPLICATION_TABLES = [
+  'agent_job_tokens',
   'artifacts',
   'auth_tokens',
   'billing_ledger',
@@ -85,6 +86,8 @@ const APPLICATION_TABLES = [
   'users',
 ];
 const APP_FUNCTIONS = [
+  'agent_job_tokens_guard',
+  'agent_token_lookup',
   'ai_admin_put_credential',
   'ai_admin_register_model',
   'ai_admin_set_model_enabled',
@@ -234,6 +237,7 @@ describe('迁移升级与回滚', () => {
       (await sql<{ prosrc: string }>`SELECT prosrc FROM pg_proc WHERE proname = 'ai_usage_begin'`.execute(testDb.admin)).rows.map((row) => row.prosrc);
     expectSuccess(await migrateToLatest(owner));
     expect((await source())[0]).toContain('ai_model_price');
+    expect(expectSuccess(await migrateDown(owner))).toEqual(['Down:0031_agent_job_tokens']);
     expect(expectSuccess(await migrateDown(owner))).toEqual(['Down:0030_feasibility_report_export']);
     expect(expectSuccess(await migrateDown(owner))).toEqual(['Down:0029_technical_plan_export_requests']);
     expect(expectSuccess(await migrateDown(owner))).toEqual(['Down:0028_technical_plan_export']);

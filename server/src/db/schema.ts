@@ -1256,6 +1256,21 @@ export interface JobStepResultsTable {
   created_at: ColumnType<Date, never, never>;
 }
 
+/**
+ * Agent 任务令牌（迁移 0031_agent_job_tokens）：agent 沙箱访问平台的唯一凭据，库中只存哈希。
+ * 应用角色读不到 token_hash（按令牌查身份只能经 agent_token_lookup），写入后只能作废一次（revoked_at 由触发器取 now()）。
+ */
+export interface AgentJobTokensTable {
+  id: Generated<string>;
+  org_id: Fixed<string>;
+  job_id: Fixed<string>;
+  run_id: Fixed<string>;
+  token_hash: ColumnType<never, Buffer, never>;
+  created_at: ColumnType<Date, never, never>;
+  expires_at: ColumnType<Date, Date | string, never>;
+  revoked_at: ColumnType<Date | null, never, Date | string>;
+}
+
 export interface Database {
   organizations: OrganizationsTable;
   users: UsersTable;
@@ -1331,4 +1346,5 @@ export interface Database {
   jobs: JobsTable;
   job_events: JobEventsTable;
   job_step_results: JobStepResultsTable;
+  agent_job_tokens: AgentJobTokensTable;
 }

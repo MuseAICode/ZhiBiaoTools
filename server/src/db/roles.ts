@@ -5,7 +5,7 @@ export const OWNER_ROLE = 'bidtools_owner';
 /** 应用连接使用的角色：非表属主、非超级用户、无 BYPASSRLS，RLS 对它强制生效。 */
 export const APP_ROLE = 'bidtools_app';
 /**
- * 登录前查询（按邮箱查用户、按令牌查会话、找回密码、兑换邀请）的 SECURITY DEFINER 函数的属主。
+ * 登录前查询（按邮箱查用户、按令牌查会话、找回密码、兑换邀请）与按 Agent 任务令牌查身份（迁移 0031）的 SECURITY DEFINER 函数的属主。
  * NOLOGIN、非超级用户、无 BYPASSRLS；只有为它单独建的策略和列级授权，任何人都不能以它的身份登录。
  * 迁移角色是它的成员（SET 而非 INHERIT），只用于在迁移中以它的身份建删函数。
  */

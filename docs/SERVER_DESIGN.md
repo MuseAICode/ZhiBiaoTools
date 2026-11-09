@@ -505,7 +505,7 @@ AI 网关（worker 内）── 解密 Key ──> 模型服务商
 
 ### 7.5 实现（路线图 6.5）：解析沙箱
 
-第 6 步先建本节的公共部分和断网的 `parse` 模板（路线图第 6 步“文件解析的隔离”方案 B），第 8 步在同一套机制上加 `agent` 模板（每个沙箱一个只通 `agent-gw` 的专用网络，见第 7.10 节；任务令牌、业务工具 RPC 随路线图 8.2、8.4）。
+第 6 步先建本节的公共部分和断网的 `parse` 模板（路线图第 6 步“文件解析的隔离”方案 B），第 8 步在同一套机制上加 `agent` 模板（每个沙箱一个只通 `agent-gw` 的专用网络，见第 7.10 节；任务令牌见第 7.11 节（8.2a），`agent-gw` 与业务工具 RPC 随路线图 8.2b～8.2d、8.4）。
 
 - **接口**：`SandboxDriver`（`server/src/sandbox/driver.ts`）的 `create / copyIn / exec / copyOut / destroy`。worker 用 HTTP 客户端（`client.ts`），sandbox-runner 用 Docker 实现（`docker.ts`）；换成微虚拟机时只换后者。
 - **模板**（`templates.ts`）：镜像、网络、用户、只读、资源、可写目录、命令、取回规则都写死在代码中，调用方只选模板名；`parse` 的参数见第 7.4 节的表，取值为路线图第 6 步决定事项第 5 项的起步值。容器的主进程只是 `sleep`，命令经 exec 执行，超时或调用方中止时终止整个容器。
@@ -596,6 +596,16 @@ Agent 任务的沙箱（路线图第 8 步“沙箱扩展”，决定事项第 1
 - **镜像**（`server/sandbox/agent/Dockerfile`）：Node 24 + `ripgrep`、`fd-find`（`fd` 链接到 `fdfind`）、`jq` 与 Debian 自带的 `/bin/sh`、coreutils，删除 npm / corepack / yarn 和 setuid 位；不含 Chromium、LibreOffice、OpenXmlHelper（偏离第 7.4 节，#70 确认）、编译器与网络工具。
 - **配置**：sandbox-runner 的 `SANDBOX_AGENT_IMAGE`（生产必须按摘要固定）与 `SANDBOX_AGENT_GATEWAY`（`agent-gw` 的容器名）；Agent 任务上线（8.6）之前可选，未配置时创建 agent 沙箱返回 `SANDBOX_UNAVAILABLE`。
 - **测试**：`tests/sandbox/docker/agentIsolation.test.ts`（CI 中在 gVisor 下运行）对 `agent` 模板跑与 parse / export 相同的一套隔离用例（只读、无能力、内存 / 进程数 / fork 炸弹 / 可写目录写满 / CPU / 超时 / 中止、取回校验、沙箱之间不共享文件，每项有去掉加固的对照组），另验证：网络只通 `agent-gw`（外网、DNS、`169.254.169.254`、Docker 网桥与宿主地址上的服务、`agent-gw` 在其他网络上的地址、另一个同时运行的 agent 沙箱都连不到；对照组为经 `/etc/hosts` 访问 `agent-gw` 的桩成功，以及去掉 `inhibit_ipv4` 后同一探测连到宿主）；专用网络的生命周期（随沙箱创建与删除、任务不符不删、到期清理、只剩网络的残留、创建失败不残留、网关未配置 / 不存在 / 是沙箱时拒绝）；逃逸面（`mount`、`unshare -m`、`unshare -n` 失败，没有 Docker socket；runc 下 `unshare -U -r` 也失败，gVisor 下用户命名空间在 Sentry 内实现、不碰宿主内核，只记录结果）与镜像内容（有 rg / fd / jq，没有浏览器、办公套件、OpenXmlHelper、Python）。driver 的失败路径另有内存桩的单元测试（`tests/sandbox/agentNetwork.test.ts`）。
+
+### 7.11 实现（路线图 8.2a）：Agent 任务令牌
+
+agent 沙箱访问平台的唯一凭据（路线图第 8 步“沙箱扩展”的任务令牌，决定事项第 1 项）。8.2a 只建令牌的存储、签发、作废与按令牌查身份，不接 `agent-gw` 与模型调用（8.2b、8.2c）。细化第 7.3 节“任务令牌”：令牌按每次执行（`run_id`）签发，而不是按沙箱；绑定的是任务的一次执行，组织、项目、发起用户与任务类型都从 `jobs` 现查。
+
+- **格式**（`src/agent/token.ts`，不依赖数据库，`agent-gw` 只用其中的格式检查）：`agt_` 加 32 字节随机数的 base64url（共 47 个字符）；库中只存 SHA-256；日志中只记哈希的前 12 个十六进制字符（`agentTokenLogId`）。
+- **存储**（迁移 0031，`agent_job_tokens`）：`org_id`、`job_id`、`run_id`、`token_hash`、`expires_at`、`revoked_at`，以复合外键挂在同一组织的任务上，随任务记录删除。强制 RLS：应用角色只能为本组织中 `running`、`run_id` 相符、未请求暂停的任务写入；每个任务最多一个未作废的令牌（部分唯一索引）；读不到 `token_hash`（没有该列的 SELECT 授权）；只有 `revoked_at` 的 UPDATE 授权，作废只能一次、时间由触发器取 `now()`（`AT001`）；没有 DELETE 授权。有效期至多 135 分钟（`agent-content` 沙箱的最长存活时间，CHECK 兜底，单元测试核对与模板一致）。
+- **有效条件全部在查询时现算**（`agent_token_lookup(bytea)`，属主 `bidtools_auth`，与 `auth_session_lookup` 相同的写法）：令牌未作废、未过期；任务仍是 `running`、未请求暂停、`run_id` 仍是签发时的那次执行、租约未过期；发起用户仍是该组织成员、账号正常；任务属于项目时项目未删除。因此任务结束、暂停（请求暂停即失效）、取消、被对账收回、续跑换执行者、发起人被移出组织或停用、项目删除时，令牌立即失效，不依赖应用代码记得作废；返回的到期时间取令牌与租约中较早者，角色是发起人当前的角色。撤销暂停请求（执行尚未停止）后同一执行的令牌恢复有效。无效的令牌一律返回 0 行，不区分原因。为此 `bidtools_auth` 新增 `agent_job_tokens`、`jobs`、`projects` 中函数用到的列的只读授权与只对它生效的策略。
+- **Store**（`src/agent/tokenStore.ts`）：`issueAgentJobToken(run, ttlMs)` 锁住任务行确认仍在本次执行中，作废该任务之前的令牌再写入新令牌，返回令牌原文（只交给沙箱模板注入 Pi 进程的环境）；`revokeAgentJobTokens(run)` 在沙箱销毁、执行结束时作废本次执行的令牌；`lookupAgentJobToken(token)` 格式不对不查库，返回的身份是令牌所代表身份的唯一来源；`agentTenantContext(identity)` 按发起用户建立业务读写的租户上下文（8.4）。
+- **测试**：`tests/db/agentJobTokens.test.ts`——对照组（有效令牌查出完整身份）与每一种失效（作废、过期、租约过期、请求暂停、取消、成功 / 失败 / 余额不足暂停、续跑换执行者、发起人移出组织、停用、项目删除），签发条件，直接写入时的 RLS、有效期与唯一约束，作废只能一次、不能改其他列与删除，用户间隔离，随任务删除，函数属主与列级授权；对查询函数中的暂停 / `run_id`、账号状态、租约三个条件做过变异检查（去掉后对应用例失败）。`tests/agent/token.test.ts` 覆盖格式检查与日志标识。
 
 ## 8. 部署架构
 
