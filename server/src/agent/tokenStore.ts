@@ -1,7 +1,7 @@
 // Agent 任务令牌的签发、作废与按令牌查身份（迁移 0031_agent_job_tokens，路线图第 8 步 8.2a）。
 //
 // - 签发：worker 为正在执行的 agent 任务创建沙箱前调用，按组织上下文（withOrgContext）写入，RLS 只允许为本组织中 running、
-//   run_id 相符、未请求暂停的任务签发；同一任务之前未作废的令牌在同一事务中先作废（每个任务最多一个有效令牌）；
+//   run_id 相符、未请求暂停、属于项目的任务签发（不属于项目的任务直接拒绝，8.13 确定模板提取的归属后再开放）；同一任务之前未作废的令牌在同一事务中先作废（每个任务最多一个有效令牌）；
 // - 作废：沙箱销毁、执行结束时调用；任务结束、暂停、取消、换执行者、发起人被移出组织后，令牌在查询时即已无效，作废只是收尾；
 // - 查身份：agent-gw 转来的请求只带令牌，worker 按令牌哈希经 agent_token_lookup 查出组织、任务、项目、用户与任务类型，
 //   这是令牌所代表身份的唯一来源，请求中出现的这些字段一律不采信（8.2b 起）。
@@ -28,7 +28,8 @@ export interface AgentTokenIdentity {
   orgId: string;
   jobId: string;
   runId: string;
-  projectId: string | null;
+  /** 令牌只对这个项目有效。 */
+  projectId: string;
   userId: string;
   jobType: string;
   /** 发起用户当前在组织中的角色。 */
@@ -38,9 +39,18 @@ export interface AgentTokenIdentity {
   logId: string;
 }
 
+/** 任务不属于项目：Agent 令牌只对本任务所属项目有效，不为组织级任务签发。 */
+export class AgentTokenProjectRequiredError extends Error {
+  constructor() {
+    super('Agent 任务令牌只为属于项目的任务签发');
+    this.name = 'AgentTokenProjectRequiredError';
+  }
+}
+
 /**
  * 为一次执行签发令牌。ttlMs 取该任务类型的墙钟上限（最长 135 分钟，数据库 CHECK 兜底），实际有效期还受租约限制（查询时现算）。
- * 执行已不属于本执行者（被收回、已结束）、任务已请求暂停时返回 null，不签发。
+ * 执行已不属于本执行者（被收回、已结束）、任务已请求暂停时返回 null，不签发；任务不属于项目时抛 AgentTokenProjectRequiredError
+ * （RLS 同样拒绝写入）。
  */
 export async function issueAgentJobToken(db: Kysely<Database>, run: RunRef, ttlMs: number): Promise<IssuedAgentToken | null> {
   if (!Number.isInteger(ttlMs) || ttlMs < AGENT_TOKEN_MIN_TTL_MS || ttlMs > AGENT_TOKEN_MAX_TTL_MS) {
@@ -52,7 +62,7 @@ export async function issueAgentJobToken(db: Kysely<Database>, run: RunRef, ttlM
     // 锁住任务行：与暂停、取消、结束串行，签发时看到的就是提交时的状态。
     const job = await trx
       .selectFrom('jobs')
-      .select('id')
+      .select('project_id')
       .where('id', '=', run.jobId)
       .where('run_id', '=', run.runId)
       .where('status', '=', 'running')
@@ -60,6 +70,7 @@ export async function issueAgentJobToken(db: Kysely<Database>, run: RunRef, ttlM
       .forUpdate()
       .executeTakeFirst();
     if (!job) return null;
+    if (job.project_id === null) throw new AgentTokenProjectRequiredError();
     await trx.updateTable('agent_job_tokens').set({ revoked_at: sql<Date>`now()` }).where('job_id', '=', run.jobId).where('revoked_at', 'is', null).execute();
     const row = await trx
       .insertInto('agent_job_tokens')
@@ -101,7 +112,7 @@ export async function lookupAgentJobToken(db: Kysely<Database>, token: unknown):
     org_id: string;
     job_id: string;
     run_id: string;
-    project_id: string | null;
+    project_id: string;
     user_id: string;
     job_type: string;
     member_role: string;

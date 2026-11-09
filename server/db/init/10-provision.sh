@@ -30,6 +30,9 @@ GRANT bidtools_jobs TO bidtools_owner WITH INHERIT FALSE, SET TRUE;
 -- 清理函数的属主（每小时跨组织删除超过保留期的文件、产物、项目和任务记录；对计费表没有任何权限），属性同 bidtools_auth。
 CREATE ROLE bidtools_cleanup NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS NOINHERIT;
 GRANT bidtools_cleanup TO bidtools_owner WITH INHERIT FALSE, SET TRUE;
+-- 按 Agent 任务令牌查身份的函数的属主（只读令牌、任务、项目、成员关系与账号状态中函数用到的列），属性同 bidtools_auth。
+CREATE ROLE bidtools_agent_auth NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS NOINHERIT;
+GRANT bidtools_agent_auth TO bidtools_owner WITH INHERIT FALSE, SET TRUE;
 CREATE DATABASE :"db_name" OWNER bidtools_owner;
 REVOKE ALL ON DATABASE :"db_name" FROM PUBLIC;
 GRANT CONNECT, TEMPORARY ON DATABASE :"db_name" TO bidtools_app;

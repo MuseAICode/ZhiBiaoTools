@@ -7,6 +7,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { generateAgentToken, hashAgentToken } from '../../src/agent/token.ts';
 import {
   agentTenantContext,
+  AgentTokenProjectRequiredError,
   AGENT_TOKEN_MAX_TTL_MS,
   issueAgentJobToken,
   lookupAgentJobToken,
@@ -15,7 +16,8 @@ import {
 } from '../../src/agent/tokenStore.ts';
 import { createDatabase, type DatabaseHandle } from '../../src/db/database.ts';
 import { migrateToLatest } from '../../src/db/migrator.ts';
-import { APP_ROLE, AUTH_ROLE, OWNER_ROLE } from '../../src/db/roles.ts';
+import { AGENT_AUTH_GRANTS } from '../../src/db/migrations/0031_agent_job_tokens.ts';
+import { AGENT_AUTH_ROLE, APP_ROLE, AUTH_ROLE, OWNER_ROLE } from '../../src/db/roles.ts';
 import type { Database } from '../../src/db/schema.ts';
 import { withOrgContext, withTenant, type TenantContext } from '../../src/db/tenant.ts';
 import { claimJob, finishRun, insertJob, recoverJob, requestCancel, requestPause, requestResume, type RunRef } from '../../src/jobs/store.ts';
@@ -57,9 +59,15 @@ async function createProject(member: Member): Promise<string> {
   return row.id;
 }
 
-/** 新建一个任务并认领为 running，返回本次执行。 */
+/** 新建一个属于项目的任务（未给出项目时新建一个）并认领为 running，返回本次执行。 */
 async function runningJob(member: Member, projectId?: string): Promise<RunRef> {
-  const job = await insertJob(appDb, member.context, { type: 'test-agent', params: {}, ...(projectId ? { projectId } : {}) });
+  const job = await insertJob(appDb, member.context, { type: 'test-agent', params: {}, projectId: projectId ?? (await createProject(member)) });
+  return claim(member.orgId, job.id);
+}
+
+/** 不属于项目的（组织级）任务，认领为 running。 */
+async function runningOrgJob(member: Member): Promise<RunRef> {
+  const job = await insertJob(appDb, member.context, { type: 'test-agent', params: {} });
   return claim(member.orgId, job.id);
 }
 
@@ -126,11 +134,32 @@ describe('签发与按令牌查身份', () => {
     expect(row.expires_at.getTime() - row.created_at.getTime()).toBe(TTL_MS);
   });
 
-  it('不属于项目的任务也能签发，projectId 为 null', async () => {
+  it('不属于项目的任务不签发：Store 拒绝，直接写入被 RLS 拒绝', async () => {
     const a = await newMember();
-    const run = await runningJob(a);
-    const identity = await lookupAgentJobToken(appDb, (await issue(run)).token);
-    expect(identity).toMatchObject({ jobId: run.jobId, projectId: null });
+    const run = await runningOrgJob(a);
+    await expect(issueAgentJobToken(appDb, run, TTL_MS)).rejects.toThrow(AgentTokenProjectRequiredError);
+    await expect(
+      withOrgContext(appDb, a.orgId, (trx) =>
+        trx
+          .insertInto('agent_job_tokens')
+          .values({ org_id: a.orgId, job_id: run.jobId, run_id: run.runId, token_hash: hashAgentToken(generateAgentToken()), expires_at: new Date(Date.now() + 60_000) })
+          .execute(),
+      ),
+    ).rejects.toThrow(/row-level security/);
+    expect(await superuser.selectFrom('agent_job_tokens').select('id').where('job_id', '=', run.jobId).execute()).toEqual([]);
+    // 对照组：同一组织、同样状态的项目任务能签发。
+    await issue(await runningJob(a));
+  });
+
+  it('即使库中有不属于项目的任务的令牌（绕过签发条件写入），也查不到', async () => {
+    const a = await newMember();
+    const run = await runningOrgJob(a);
+    const token = generateAgentToken();
+    await superuser
+      .insertInto('agent_job_tokens')
+      .values({ org_id: a.orgId, job_id: run.jobId, run_id: run.runId, token_hash: hashAgentToken(token), expires_at: sql`now() + interval '10 minutes'` })
+      .execute();
+    expect(await lookupAgentJobToken(appDb, token)).toBeNull();
   });
 
   it('格式不对、不存在的令牌查不到', async () => {
@@ -386,15 +415,15 @@ describe('表的权限与约束', () => {
   });
 });
 
-describe('agent_token_lookup', () => {
-  it('SECURITY DEFINER、固定 search_path、属主为 bidtools_auth，只授权给应用角色', async () => {
+describe('agent_token_lookup 与 bidtools_agent_auth', () => {
+  it('SECURITY DEFINER、固定 search_path、属主为 bidtools_agent_auth，只授权给应用角色', async () => {
     const signature = 'agent_token_lookup(bytea)';
     const result = await sql<{ prosecdef: boolean; proconfig: string[]; owner: string; public_acl: boolean; volatile: string }>`
       SELECT p.prosecdef, p.proconfig, pg_get_userbyid(p.proowner) AS owner, p.provolatile AS volatile,
              EXISTS (SELECT 1 FROM aclexplode(p.proacl) a WHERE a.grantee = 0) AS public_acl
       FROM pg_proc p WHERE p.oid = ${signature}::regprocedure`.execute(superuser);
     expect(result.rows).toEqual([
-      { prosecdef: true, proconfig: ['search_path=pg_catalog, pg_temp'], owner: AUTH_ROLE, public_acl: false, volatile: 's' },
+      { prosecdef: true, proconfig: ['search_path=pg_catalog, pg_temp'], owner: AGENT_AUTH_ROLE, public_acl: false, volatile: 's' },
     ]);
     const privileges = await sql<{ app: boolean; owner: boolean }>`
       SELECT has_function_privilege(${APP_ROLE}, ${signature}, 'EXECUTE') AS app,
@@ -402,25 +431,72 @@ describe('agent_token_lookup', () => {
     expect(privileges.rows).toEqual([{ app: true, owner: false }]);
   });
 
-  it('bidtools_auth 对 agent_job_tokens、jobs、projects 只有函数用到的列的只读权限', async () => {
-    const result = await sql<{ table_name: string; privilege_type: string; column_name: string }>`
-      SELECT table_name, privilege_type, column_name FROM information_schema.column_privileges
-      WHERE grantee = ${AUTH_ROLE} AND table_name IN ('agent_job_tokens', 'jobs', 'projects')
-      ORDER BY table_name, privilege_type, column_name`.execute(superuser);
-    const byTable = (table: string) => result.rows.filter((row) => row.table_name === table);
-    expect(new Set(result.rows.map((row) => row.privilege_type))).toEqual(new Set(['SELECT']));
-    expect(byTable('agent_job_tokens').map((row) => row.column_name)).toEqual(['expires_at', 'job_id', 'org_id', 'revoked_at', 'run_id', 'token_hash']);
-    expect(byTable('jobs').map((row) => row.column_name)).toEqual([
-      'id',
-      'lease_expires_at',
-      'org_id',
-      'pause_requested',
-      'project_id',
-      'run_id',
-      'status',
-      'type',
-      'user_id',
+  it('属主角色不能登录、不是超级用户、不能绕过 RLS，迁移角色只能 SET、不继承', async () => {
+    const result = await sql`
+      SELECT rolcanlogin, rolsuper, rolbypassrls, rolinherit, rolcreatedb, rolcreaterole, rolreplication
+      FROM pg_roles WHERE rolname = ${AGENT_AUTH_ROLE}`.execute(superuser);
+    expect(result.rows).toEqual([
+      { rolcanlogin: false, rolsuper: false, rolbypassrls: false, rolinherit: false, rolcreatedb: false, rolcreaterole: false, rolreplication: false },
     ]);
-    expect(byTable('projects').map((row) => row.column_name)).toEqual(['deleted_at', 'id', 'org_id']);
+    const members = await sql`
+      SELECT pg_get_userbyid(member) AS member, inherit_option, set_option, admin_option
+      FROM pg_auth_members WHERE roleid = ${AGENT_AUTH_ROLE}::regrole`.execute(superuser);
+    expect(members.rows).toEqual([{ member: OWNER_ROLE, inherit_option: false, set_option: true, admin_option: false }]);
+    await expect(sql`SET ROLE ${sql.id(AGENT_AUTH_ROLE)}`.execute(appDb)).rejects.toThrow(/permission denied/);
+  });
+
+  it('只对函数用到的列有只读权限，对计费、会话、凭据等其他表没有任何权限', async () => {
+    const columns = await sql<{ table_name: string; privilege_type: string; column_name: string }>`
+      SELECT table_name, privilege_type, column_name FROM information_schema.column_privileges
+      WHERE grantee = ${AGENT_AUTH_ROLE} ORDER BY table_name, column_name`.execute(superuser);
+    expect(new Set(columns.rows.map((row) => row.privilege_type))).toEqual(new Set(['SELECT']));
+    const expected = Object.fromEntries(AGENT_AUTH_GRANTS.map(([table, cols]) => [table, [...cols].sort()]));
+    const actual: Record<string, string[]> = {};
+    for (const row of columns.rows) (actual[row.table_name] ??= []).push(row.column_name);
+    expect(actual).toEqual(expected);
+
+    // 表级授权：一个都没有（只有列级 SELECT）。
+    const tables = await sql`
+      SELECT table_name, privilege_type FROM information_schema.table_privileges WHERE grantee = ${AGENT_AUTH_ROLE}`.execute(superuser);
+    expect(tables.rows).toEqual([]);
+
+    // 逐表核对：计费、用量、凭据、会话等表上没有任何权限，也没有为它建的策略。
+    for (const table of [
+      'org_balances',
+      'billing_ledger',
+      'model_prices',
+      'usage_records',
+      'provider_credentials',
+      'platform_models',
+      'sessions',
+      'auth_tokens',
+      'invitations',
+      'files',
+      'artifacts',
+      'job_events',
+      'job_step_results',
+      'organizations',
+    ]) {
+      const check = await sql<{ any: boolean }>`
+        SELECT has_any_column_privilege(${AGENT_AUTH_ROLE}, ${table}::regclass, 'SELECT, INSERT, UPDATE, REFERENCES')
+            OR has_table_privilege(${AGENT_AUTH_ROLE}, ${table}::regclass, 'DELETE, TRUNCATE, TRIGGER') AS any`.execute(superuser);
+      expect(check.rows[0]!.any, table).toBe(false);
+    }
+    const policies = await sql<{ table: string }>`
+      SELECT c.relname AS table FROM pg_policy p JOIN pg_class c ON c.oid = p.polrelid
+      WHERE ${AGENT_AUTH_ROLE}::regrole = ANY (p.polroles) ORDER BY c.relname`.execute(superuser);
+    expect(policies.rows.map((row) => row.table)).toEqual(AGENT_AUTH_GRANTS.map(([table]) => table).sort());
+
+    // 函数之外不能执行其他定义者函数，也没有建函数的权限。
+    const create = await sql<{ create: boolean }>`SELECT has_schema_privilege(${AGENT_AUTH_ROLE}, 'public', 'CREATE') AS create`.execute(superuser);
+    expect(create.rows).toEqual([{ create: false }]);
+  });
+
+  it('bidtools_auth 的权限不因本迁移扩大：对 agent_job_tokens、jobs、projects 没有任何权限', async () => {
+    for (const table of ['agent_job_tokens', 'jobs', 'projects']) {
+      const check = await sql<{ any: boolean }>`
+        SELECT has_any_column_privilege(${AUTH_ROLE}, ${table}::regclass, 'SELECT, INSERT, UPDATE, REFERENCES') AS any`.execute(superuser);
+      expect(check.rows[0]!.any, table).toBe(false);
+    }
   });
 });

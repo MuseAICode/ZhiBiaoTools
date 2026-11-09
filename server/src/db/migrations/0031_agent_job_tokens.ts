@@ -7,27 +7,39 @@
 // - 令牌未作废（revoked_at）、未过期（expires_at，签发时按任务墙钟给出，最长 135 分钟）；
 // - 任务仍是 running、没有请求暂停、run_id 仍是签发时的那一次执行、租约未过期：任务结束、暂停（含请求暂停）、取消（cancelling）、
 //   被对账收回或续跑换了执行者，令牌立即失效；续跑时签发新令牌；
-// - 发起用户仍是该组织成员、账号正常；任务属于项目时项目未删除。
+// - 发起用户仍是该组织成员、账号正常；任务所属项目未删除。
+// 只为属于项目的任务签发（令牌只对本任务所属项目有效）：project_id 为空的任务签发时拒绝；模板提取（8.13）的归属确定后再开放。
 //
 // 不变式由数据库保证：
-// - 强制 RLS：应用角色只能为本组织（app.org_id）中正在执行、run_id 相符、未请求暂停的任务签发；每个任务最多一个未作废的令牌
+// - 强制 RLS：应用角色只能为本组织（app.org_id）中正在执行、run_id 相符、未请求暂停、属于项目的任务签发；每个任务最多一个未作废的令牌
 //   （部分唯一索引），签发新令牌前须先作废旧的；
 // - 应用角色读不到 token_hash（没有列级 SELECT 授权），按令牌查身份只能经 agent_token_lookup；
 // - 写入后只能作废：应用角色只有 revoked_at 的 UPDATE 授权，作废不能撤销，作废时间由触发器取 now()（AT001）；没有 DELETE 授权，
 //   令牌随任务记录删除（外键级联，清理任务删除 jobs 时一并删除，见 0024_cleanup）。
 //
-// agent_token_lookup 与 auth_session_lookup（0002）相同：属主 bidtools_auth（NOLOGIN、无 BYPASSRLS），按完整的令牌哈希精确匹配，
-// 最多返回一行，只返回调用方需要的字段；本迁移为 bidtools_auth 增加 agent_job_tokens、jobs、projects 中函数用到的列的只读授权与策略。
+// agent_token_lookup 的写法与 auth_session_lookup（0002）相同：按完整的令牌哈希精确匹配，最多返回一行，只返回调用方需要的字段。
+// 属主是专用的定义者角色 bidtools_agent_auth（NOLOGIN、无 BYPASSRLS，由数据库管理员创建，见 server/db/init/10-provision.sh），
+// 只对 agent_job_tokens、jobs、projects、org_memberships、users 中函数用到的列有列级 SELECT 和只对它生效的只读策略，
+// 对其他表没有任何授权；不复用 bidtools_auth，令牌查身份与登录、会话的权限互不扩大。
 import { sql, type Kysely, type RawBuilder } from 'kysely';
-import { APP_ROLE, AUTH_ROLE } from '../roles.ts';
+import { AGENT_AUTH_ROLE, APP_ROLE } from '../roles.ts';
 
 async function run(db: Kysely<unknown>, statements: readonly RawBuilder<unknown>[]): Promise<void> {
   for (const statement of statements) await statement.execute(db);
 }
 
 const app = sql.id(APP_ROLE);
-const auth = sql.id(AUTH_ROLE);
+const agentAuth = sql.id(AGENT_AUTH_ROLE);
 const SECURE = sql.raw('SECURITY DEFINER SET search_path = pg_catalog, pg_temp');
+
+/** bidtools_agent_auth 的列级只读授权：只有 agent_token_lookup 用到的列。 */
+export const AGENT_AUTH_GRANTS: readonly (readonly [string, readonly string[]])[] = [
+  ['agent_job_tokens', ['org_id', 'job_id', 'run_id', 'token_hash', 'expires_at', 'revoked_at']],
+  ['jobs', ['id', 'org_id', 'project_id', 'user_id', 'type', 'status', 'pause_requested', 'run_id', 'lease_expires_at']],
+  ['projects', ['id', 'org_id', 'deleted_at']],
+  ['org_memberships', ['org_id', 'user_id', 'role']],
+  ['users', ['id', 'status']],
+];
 
 /** 令牌最长有效期（分钟）：agent-content 沙箱的最长存活时间（src/sandbox/templates.ts），由测试核对。 */
 export const AGENT_TOKEN_MAX_TTL_MINUTES = 135;
@@ -73,7 +85,7 @@ export async function up(db: Kysely<unknown>): Promise<void> {
           WITH CHECK (org_id = app_current_org_id() AND revoked_at IS NULL AND EXISTS (
             SELECT 1 FROM jobs j
             WHERE j.id = agent_job_tokens.job_id AND j.run_id = agent_job_tokens.run_id
-              AND j.status = 'running' AND NOT j.pause_requested))`,
+              AND j.status = 'running' AND NOT j.pause_requested AND j.project_id IS NOT NULL))`,
     sql`CREATE POLICY agent_job_tokens_update_tenant ON agent_job_tokens FOR UPDATE TO ${app}
           USING (org_id = app_current_org_id())
           WITH CHECK (org_id = app_current_org_id())`,
@@ -81,18 +93,17 @@ export async function up(db: Kysely<unknown>): Promise<void> {
     sql`GRANT INSERT (org_id, job_id, run_id, token_hash, expires_at) ON agent_job_tokens TO ${app}`,
     sql`GRANT UPDATE (revoked_at) ON agent_job_tokens TO ${app}`,
 
-    // bidtools_auth：只授函数用到的列；策略只对它生效（TO bidtools_auth），应用角色不受影响。
-    sql`GRANT SELECT (org_id, job_id, run_id, token_hash, expires_at, revoked_at) ON agent_job_tokens TO ${auth}`,
-    sql`GRANT SELECT (id, org_id, project_id, user_id, type, status, pause_requested, run_id, lease_expires_at) ON jobs TO ${auth}`,
-    sql`GRANT SELECT (id, org_id, deleted_at) ON projects TO ${auth}`,
-    sql`CREATE POLICY agent_job_tokens_auth_functions ON agent_job_tokens FOR SELECT TO ${auth} USING (true)`,
-    sql`CREATE POLICY jobs_auth_functions ON jobs FOR SELECT TO ${auth} USING (true)`,
-    sql`CREATE POLICY projects_auth_functions ON projects FOR SELECT TO ${auth} USING (true)`,
+    // bidtools_agent_auth：只授函数用到的列；策略只对它生效（TO bidtools_agent_auth），应用角色不受影响。
+    sql`GRANT USAGE ON SCHEMA public TO ${agentAuth}`,
+    ...AGENT_AUTH_GRANTS.flatMap(([table, columns]) => [
+      sql`GRANT SELECT (${sql.join(columns.map((column) => sql.id(column)))}) ON ${sql.table(table)} TO ${agentAuth}`,
+      sql`CREATE POLICY ${sql.id(`${table}_agent_auth_lookup`)} ON ${sql.table(table)} FOR SELECT TO ${agentAuth} USING (true)`,
+    ]),
 
-    sql`GRANT CREATE ON SCHEMA public TO ${auth}`,
-    sql`SET ROLE ${auth}`,
+    sql`GRANT CREATE ON SCHEMA public TO ${agentAuth}`,
+    sql`SET ROLE ${agentAuth}`,
     // 按令牌哈希查身份：只返回未作废、未过期，任务仍在本次执行中（running、未请求暂停、run_id 相符、租约未过期），
-    // 发起用户仍是成员且账号正常，项目（如有）未删除的令牌。expires_at 是令牌与租约中较早的到期时间。
+    // 发起用户仍是成员且账号正常，任务属于项目且项目未删除的令牌。expires_at 是令牌与租约中较早的到期时间。
     sql`CREATE FUNCTION agent_token_lookup(p_token_hash bytea)
           RETURNS TABLE (org_id uuid, job_id uuid, run_id uuid, project_id uuid, user_id uuid, job_type text,
                          member_role text, expires_at timestamptz)
@@ -107,27 +118,28 @@ export async function up(db: Kysely<unknown>): Promise<void> {
             WHERE t.token_hash = p_token_hash AND t.revoked_at IS NULL AND t.expires_at > now()
               AND j.status = 'running' AND NOT j.pause_requested AND j.run_id = t.run_id AND j.lease_expires_at > now()
               AND u.status = 'active'
-              AND (j.project_id IS NULL OR EXISTS (
-                SELECT 1 FROM public.projects p WHERE p.org_id = j.org_id AND p.id = j.project_id AND p.deleted_at IS NULL))
+              AND EXISTS (
+                SELECT 1 FROM public.projects p WHERE p.org_id = j.org_id AND p.id = j.project_id AND p.deleted_at IS NULL)
             LIMIT 1
           $$`,
     sql`REVOKE ALL ON FUNCTION agent_token_lookup(bytea) FROM PUBLIC`,
     sql`GRANT EXECUTE ON FUNCTION agent_token_lookup(bytea) TO ${app}`,
     sql`RESET ROLE`,
-    sql`REVOKE CREATE ON SCHEMA public FROM ${auth}`,
+    sql`REVOKE CREATE ON SCHEMA public FROM ${agentAuth}`,
   ]);
 }
 
 export async function down(db: Kysely<unknown>): Promise<void> {
   await run(db, [
-    sql`SET ROLE ${auth}`,
+    sql`SET ROLE ${agentAuth}`,
     sql`DROP FUNCTION agent_token_lookup(bytea)`,
     sql`RESET ROLE`,
-    sql`DROP POLICY projects_auth_functions ON projects`,
-    sql`DROP POLICY jobs_auth_functions ON jobs`,
-    sql`REVOKE SELECT (id, org_id, deleted_at) ON projects FROM ${auth}`,
-    sql`REVOKE SELECT (id, org_id, project_id, user_id, type, status, pause_requested, run_id, lease_expires_at) ON jobs FROM ${auth}`,
+    ...AGENT_AUTH_GRANTS.filter(([table]) => table !== 'agent_job_tokens').flatMap(([table, columns]) => [
+      sql`DROP POLICY ${sql.id(`${table}_agent_auth_lookup`)} ON ${sql.table(table)}`,
+      sql`REVOKE SELECT (${sql.join(columns.map((column) => sql.id(column)))}) ON ${sql.table(table)} FROM ${agentAuth}`,
+    ]),
     sql`DROP TABLE agent_job_tokens`,
     sql`DROP FUNCTION agent_job_tokens_guard()`,
+    sql`REVOKE USAGE ON SCHEMA public FROM ${agentAuth}`,
   ]);
 }
