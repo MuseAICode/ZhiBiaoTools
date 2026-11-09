@@ -2,16 +2,16 @@
 // 模板写死在代码中：镜像（由 sandbox-runner 的配置给出摘要固定的引用）、网络、只读根文件系统、用户、资源上限、
 // 可写目录、可执行的命令和取回规则。调用方（worker）只能选模板名，不能传镜像、挂载、网络或任意 Docker 参数。
 // 第 6 步建了 parse 模板（断网解析）；第 7 步加 export 模板（断网导出 Word，路线图 7.1），分样张与整本导出两档资源上限；
-// 第 8 步在同一套机制上加 agent 模板（内部网络、任务令牌、业务工具 RPC）。
+// 第 8 步在同一套机制上加 agent 模板（8.1：镜像、资源与每个沙箱一个内部网络；任务令牌、业务工具 RPC 随 8.2、8.4）。
 
 const MIB = 1024 * 1024;
 const GIB = 1024 * MIB;
 
-export const SANDBOX_TEMPLATE_NAMES = ['parse', 'export-preview', 'export-document', 'export-feasibility'] as const;
+export const SANDBOX_TEMPLATE_NAMES = ['parse', 'export-preview', 'export-document', 'export-feasibility', 'agent', 'agent-content'] as const;
 export type SandboxTemplateName = (typeof SANDBOX_TEMPLATE_NAMES)[number];
 
-/** 镜像：两个 export 模板用同一个 export 镜像（第 7 步决定事项第 2 项），只是资源上限不同。 */
-export const SANDBOX_IMAGE_NAMES = ['parse', 'export'] as const;
+/** 镜像：export 模板用同一个 export 镜像（第 7 步决定事项第 2 项），两个 agent 模板用同一个 agent 镜像，只是资源上限不同。 */
+export const SANDBOX_IMAGE_NAMES = ['parse', 'export', 'agent'] as const;
 export type SandboxImageName = (typeof SANDBOX_IMAGE_NAMES)[number];
 
 /** 沙箱内进程的用户与组（镜像中的 sandbox 用户），非 root。 */
@@ -24,6 +24,17 @@ export const SANDBOX_LABEL_JOB = 'zhibiao.sandbox.job';
 export const SANDBOX_LABEL_EXPIRES = 'zhibiao.sandbox.expires';
 export const SANDBOX_CONTAINER_PREFIX = 'zhibiao-sandbox-';
 
+/**
+ * agent 沙箱访问平台的唯一入口（agent-gw，路线图第 8 步决定事项第 1 项，8.2 实现）在沙箱内的名字。
+ * 不配置 DNS：名字与地址由模板写进沙箱的 /etc/hosts（ExtraHosts）。
+ */
+export const AGENT_GATEWAY_HOSTNAME = 'agent-gw';
+
+/**
+ * 沙箱的网络。none：--network none，只有 lo。agent：每个沙箱一个专用的 internal 网络（第 8 步决定事项第 2 项 B1），
+ * 由 sandbox-runner 随沙箱创建与删除，网络中只有这个沙箱和 agent-gw；网桥不分配 IPv4 地址，沙箱到不了宿主。
+ */
+export type SandboxNetworkKind = 'none' | 'agent';
 /** 进出沙箱的文件规则：只收普通文件，路径在目录内、按段校验，数量、大小和扩展名受限。 */
 export interface SandboxTransferLimits {
   /** 沙箱内的目录（copyIn 解到这里，copyOut 从这里打包）。 */
@@ -50,6 +61,7 @@ export interface SandboxTemplate {
   readonly name: SandboxTemplateName;
   /** 用哪个镜像（引用由 sandbox-runner 的配置给出）。 */
   readonly image: SandboxImageName;
+  readonly network: SandboxNetworkKind;
   /** 沙箱从创建起最长存活多久，到期由 sandbox-runner 销毁（不论是否还在使用）。 */
   readonly lifetimeMs: number;
   readonly memoryBytes: number;
@@ -73,6 +85,7 @@ export interface SandboxTemplate {
 const PARSE_TEMPLATE: SandboxTemplate = Object.freeze({
   name: 'parse',
   image: 'parse' as const,
+  network: 'none' as const,
   lifetimeMs: 15 * 60_000,
   memoryBytes: 2 * GIB,
   nanoCpus: 1_000_000_000,
@@ -144,6 +157,7 @@ function exportCommand(mode: 'preview' | 'document' | 'feasibility', timeoutMs: 
 const EXPORT_PREVIEW_TEMPLATE: SandboxTemplate = Object.freeze({
   name: 'export-preview',
   image: 'export' as const,
+  network: 'none' as const,
   // 命令墙钟 60 秒 + 放入与取回各 1 分钟，再留出余量。
   lifetimeMs: 5 * 60_000,
   memoryBytes: 1 * GIB,
@@ -181,6 +195,7 @@ const EXPORT_PREVIEW_TEMPLATE: SandboxTemplate = Object.freeze({
 const EXPORT_DOCUMENT_TEMPLATE: SandboxTemplate = Object.freeze({
   name: 'export-document',
   image: 'export' as const,
+  network: 'none' as const,
   // 命令墙钟 20 分钟 + 放入与取回各 5 分钟，再留出余量。
   lifetimeMs: 35 * 60_000,
   memoryBytes: 2 * GIB,
@@ -221,11 +236,68 @@ const EXPORT_FEASIBILITY_TEMPLATE: SandboxTemplate = Object.freeze({
   commands: Object.freeze({ export: exportCommand('feasibility', 20 * 60_000) }),
 });
 
+/**
+ * agent 工作区的放入与取回规则（/workspace，路线图第 8 步“工作区”与决定事项第 13 项）：只收普通文件，
+ * 文件数 ≤ 10,000、合计 ≤ 512 MiB，扩展名限于 Agent 的正文、中间文件与会话文件会用到的文本与图片格式。
+ * 快照的保存、取回与恢复（含中文路径段的处理）随 8.5，届时按实际用到的文件核对本表。
+ */
+const AGENT_WORKSPACE: SandboxTransferLimits = Object.freeze({
+  directory: '/workspace',
+  maxDepth: 8,
+  maxFiles: 10_000,
+  // 单个文件不超过产物的大小上限（迁移 0008 的 MAX_ARTIFACT_BYTES）。
+  maxFileBytes: 100 * MIB,
+  maxTotalBytes: 512 * MIB,
+  extensions: new Set(['md', 'txt', 'json', 'jsonl', 'html', 'mmd', 'svg', 'csv', 'png', 'jpg', 'jpeg', 'gif', 'webp']),
+});
+
+/**
+ * agent：Agent 任务（路线图第 8 步 8.1，决定事项第 3 项的起步值）。镜像只有 Node 24、rg / fd / jq、/bin/sh 与基本 coreutils
+ * （Pi 运行时随 8.6），不含 Chromium、LibreOffice、OpenXmlHelper、编译器和网络工具。隔离参数与 parse 相同（gVisor、非 root、
+ * cap-drop ALL、no-new-privileges、只读根文件系统、不挂载宿主目录、不注入宿主环境变量），只有网络不同：每个沙箱一个专用的
+ * internal 网络，只通 agent-gw（见 SandboxNetworkKind）。资源：CPU 1 核、内存 2 GiB（无 swap）、pids 256、/workspace 1 GiB、
+ * /tmp 256 MiB（tmpfs 计入内存上限）。
+ *
+ * 任务墙钟按任务类型（正文生成 2 小时，其余 30 分钟），分成两个模板：沙箱最长存活为墙钟加放入、取回的时限，到期由 sandbox-runner
+ * 销毁，不论 Agent 是否还在运行。Agent 的入口命令（命令墙钟即任务墙钟）随 8.6 登记；单条 bash 命令 5 分钟由入口执行，
+ * 它只是 Agent 自身的约束，平台的控制是命令与沙箱的墙钟、cgroup 上限与网络。
+ */
+const AGENT_TEMPLATE: SandboxTemplate = Object.freeze({
+  name: 'agent',
+  image: 'agent' as const,
+  network: 'agent' as const,
+  // 任务墙钟 30 分钟 + 放入与取回各 5 分钟，再留出余量。
+  lifetimeMs: 45 * 60_000,
+  memoryBytes: 2 * GIB,
+  nanoCpus: 1_000_000_000,
+  pidsLimit: 256,
+  openFilesLimit: 1024,
+  tmpfs: Object.freeze({
+    '/tmp': { bytes: 256 * MIB, owner: 'root' as const },
+    '/workspace': { bytes: 1 * GIB, owner: 'sandbox' as const },
+  }),
+  // 放入的是 worker 选定的本任务文件与已经过取回校验的工作区快照，与 parse / export 相同不限扩展名；其余规则与取回相同。
+  input: Object.freeze({ ...AGENT_WORKSPACE, extensions: null }),
+  output: AGENT_WORKSPACE,
+  commands: Object.freeze({}),
+  transferTimeoutMs: 5 * 60_000,
+});
+
+/** agent-content：正文生成（含章节重写、原方案还原）的 Agent 任务，任务墙钟 2 小时，其余与 agent 完全相同。 */
+const AGENT_CONTENT_TEMPLATE: SandboxTemplate = Object.freeze({
+  ...AGENT_TEMPLATE,
+  name: 'agent-content',
+  // 任务墙钟 2 小时 + 放入与取回各 5 分钟，再留出余量。
+  lifetimeMs: 135 * 60_000,
+});
+
 export const SANDBOX_TEMPLATES: Readonly<Record<SandboxTemplateName, SandboxTemplate>> = Object.freeze({
   parse: PARSE_TEMPLATE,
   'export-preview': EXPORT_PREVIEW_TEMPLATE,
   'export-document': EXPORT_DOCUMENT_TEMPLATE,
   'export-feasibility': EXPORT_FEASIBILITY_TEMPLATE,
+  agent: AGENT_TEMPLATE,
+  'agent-content': AGENT_CONTENT_TEMPLATE,
 });
 
 export function isSandboxTemplateName(value: unknown): value is SandboxTemplateName {
@@ -250,6 +322,8 @@ export interface ContainerSpecOptions {
   runtime: string;
   jobId: string;
   expiresAt: Date;
+  /** network 为 agent 的模板必需：该沙箱的专用网络名与 agent-gw 在其中的地址；network 为 none 的模板不能给出。 */
+  network?: { name: string; gatewayAddress: string };
 }
 
 /** Docker Engine API 创建容器的请求体（POST /containers/create）。 */
@@ -265,6 +339,9 @@ function tmpfsOptions(spec: { bytes: number; owner: 'root' | 'sandbox' }): strin
  * 输入输出经 exec 中的 tar 传送，不挂载任何宿主目录、卷或 Docker socket，不注入宿主环境变量。
  */
 export function buildContainerSpec(template: SandboxTemplate, options: ContainerSpecOptions): ContainerSpec {
+  if ((template.network === 'agent') !== (options.network !== undefined)) throw new Error('sandbox network does not match the template');
+  const network = options.network;
+  if (network && (!NETWORK_NAME_PATTERN.test(network.name) || !IPV4_PATTERN.test(network.gatewayAddress))) throw new Error('invalid sandbox network');
   return {
     Image: options.image,
     Entrypoint: ['/usr/bin/sleep'],
@@ -287,7 +364,7 @@ export function buildContainerSpec(template: SandboxTemplate, options: Container
     },
     HostConfig: {
       Runtime: options.runtime,
-      NetworkMode: 'none',
+      NetworkMode: network ? network.name : 'none',
       ReadonlyRootfs: true,
       Privileged: false,
       CapDrop: ['ALL'],
@@ -305,12 +382,50 @@ export function buildContainerSpec(template: SandboxTemplate, options: Container
       Mounts: [],
       Devices: [],
       Dns: [],
-      ExtraHosts: [],
+      // agent：agent-gw 的地址写进 /etc/hosts，不依赖 DNS。
+      ExtraHosts: network ? [`${AGENT_GATEWAY_HOSTNAME}:${network.gatewayAddress}`] : [],
       // 不保留容器的标准输出（可能含文档内容）；命令的输出经 exec 取回。
       LogConfig: { Type: 'none', Config: {} },
       RestartPolicy: { Name: 'no' },
       AutoRemove: false,
     },
-    NetworkingConfig: { EndpointsConfig: {} },
+    NetworkingConfig: { EndpointsConfig: network ? { [network.name]: {} } : {} },
+  };
+}
+
+const NETWORK_NAME_PATTERN = /^zhibiao-sandbox-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+const IPV4_PATTERN = /^(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}$/;
+
+export interface NetworkSpecOptions {
+  template: SandboxTemplateName;
+  jobId: string;
+  expiresAt: Date;
+}
+
+/**
+ * agent 沙箱的专用网络（Docker Engine API POST /networks/create 的请求体，路线图第 8 步决定事项第 2 项 B1）：
+ * - internal：没有出口路由（外网、169.254.169.254、宿主的其他网络都到不了）；
+ * - 网桥不分配 IPv4 地址（inhibit_ipv4）：宿主在这个网络上没有地址，沙箱连不到宿主上监听所有地址的服务（有对照测试）；
+ * - 不开 IPv6、不做地址伪装；网络中只有该沙箱与 agent-gw，与其他沙箱的网络之间由 Docker 的网桥隔离规则隔开；
+ * - 标签与沙箱容器相同（模板、任务、到期时间），sandbox-runner 只删除带这些标签的网络，到期的由 sweep 删除。
+ */
+export function buildNetworkSpec(name: string, options: NetworkSpecOptions): Record<string, unknown> {
+  if (!NETWORK_NAME_PATTERN.test(name)) throw new Error('invalid sandbox network');
+  return {
+    Name: name,
+    Driver: 'bridge',
+    Internal: true,
+    Attachable: false,
+    EnableIPv6: false,
+    Options: {
+      'com.docker.network.bridge.inhibit_ipv4': 'true',
+      'com.docker.network.bridge.enable_ip_masquerade': 'false',
+    },
+    Labels: {
+      [SANDBOX_LABEL]: '1',
+      [SANDBOX_LABEL_TEMPLATE]: options.template,
+      [SANDBOX_LABEL_JOB]: options.jobId,
+      [SANDBOX_LABEL_EXPIRES]: String(options.expiresAt.getTime()),
+    },
   };
 }

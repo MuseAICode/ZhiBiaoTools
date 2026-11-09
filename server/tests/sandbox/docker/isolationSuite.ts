@@ -1,7 +1,8 @@
 // 沙箱隔离的公共测试套件（路线图第 6 步“文件解析的隔离”的测试要求，6.5 建立；7.1 起按模板参数化，export 模板复用）：
 // 在真实的 Docker（CI 中为 gVisor）中按模板创建沙箱，在沙箱内运行探测脚本。每项加固都有对照组：去掉该项（网络、只读根文件系统、
 // 内存 / pids / CPU 上限、取回校验）后同一个探测会得到相反的结果，证明测试确实能发现加固被去掉。
-// parse 模板在 isolation.test.ts、export 模板在 exportIsolation.test.ts 中调用 defineIsolationSuite。
+// parse 模板在 isolation.test.ts、export 模板在 exportIsolation.test.ts、agent 模板在 agentIsolation.test.ts 中调用 defineIsolationSuite。
+// 断网（--network none）的用例只对 network 为 none 的模板；agent 模板的网络（每个沙箱一个专用网络，只通 agent-gw）在 agentIsolation.test.ts。
 import { createHash, randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { statfs } from 'node:fs/promises';
@@ -26,6 +27,8 @@ export interface IsolationTarget {
   outputExtension: string;
   /** 一组合法的输出（相对输出目录的路径），用于往返测试。 */
   validOutput: readonly string[];
+  /** 取回规则不允许的一个文件名（默认 page.html；agent 的工作区允许 html）。 */
+  disallowedOutput?: string;
 }
 
 export interface IsolationHarness {
@@ -42,12 +45,15 @@ export interface IsolationHarness {
   expectHostHealthy(): Promise<void>;
 }
 
-/** 按模板创建沙箱并在测试结束后销毁的工具；同一测试文件中的公共套件与专用用例共用。 */
-export function createIsolationHarness(template: SandboxTemplateName, image: string): IsolationHarness {
+/**
+ * 按模板创建沙箱并在测试结束后销毁的工具；同一测试文件中的公共套件与专用用例共用。
+ * agentGateway：agent 模板的 agent-gw 容器名（测试中由 agentIsolation.test.ts 启动的桩）。
+ */
+export function createIsolationHarness(template: SandboxTemplateName, image: string, agentGateway?: string): IsolationHarness {
   const created: Array<{ driver: DockerSandboxDriver; ref: SandboxRef }> = [];
   const imageName: SandboxImageName = SANDBOX_TEMPLATES[template].image;
   const makeDriver: IsolationHarness['makeDriver'] = (overrides = {}) =>
-    createDockerSandboxDriver({ docker, runtime: sandboxEnv.runtime, images: { [imageName]: image }, maxActive: 32, log: silentLog, ...overrides });
+    createDockerSandboxDriver({ docker, runtime: sandboxEnv.runtime, images: { [imageName]: image }, maxActive: 32, agentGateway: agentGateway ?? null, log: silentLog, ...overrides });
   const driver = makeDriver();
 
   const createSandbox: IsolationHarness['createSandbox'] = async (target = driver) => {
@@ -136,7 +142,7 @@ export function defineIsolationSuite(target: IsolationTarget, harness: Isolation
   const outputDirectory = template.output.directory;
   const ext = target.outputExtension;
 
-  describe('network', () => {
+  describe.runIf(template.network === 'none')('network', () => {
     let server: Server;
     let gateway: string;
     let port: number;
@@ -282,7 +288,8 @@ export function defineIsolationSuite(target: IsolationTarget, harness: Isolation
       const { json } = await dockerRequest('GET', `/containers/zhibiao-sandbox-${ref.id}/json`);
       const info = json as { HostConfig: Record<string, unknown>; Mounts: unknown[]; Config: { User: string; Labels: Record<string, string> } };
       expect(info.HostConfig).toMatchObject({
-        NetworkMode: 'none',
+        // agent 模板：该沙箱自己的专用网络（与容器同名）。
+        NetworkMode: template.network === 'none' ? 'none' : `zhibiao-sandbox-${ref.id}`,
         ReadonlyRootfs: true,
         Privileged: false,
         CapDrop: ['ALL'],
@@ -461,7 +468,8 @@ export function defineIsolationSuite(target: IsolationTarget, harness: Isolation
       const original = Buffer.from('原件内容\u0000binary', 'utf8');
       await driver.copyIn(ref, [{ path: 'original.bin', data: original }]);
       const [first, ...rest] = target.validOutput;
-      const script = [`cp ${inputDirectory}/original.bin ${outputDirectory}/${first}`];
+      // agent 的输入与输出是同一个目录（/workspace）：移走放入的文件，取回的只有合法输出。
+      const script = [`${inputDirectory === outputDirectory ? 'mv' : 'cp'} ${inputDirectory}/original.bin ${outputDirectory}/${first}`];
       for (const path of rest) {
         if (path.includes('/')) script.push(`mkdir -p ${outputDirectory}/${path.slice(0, path.lastIndexOf('/'))}`);
         script.push(`printf x > ${outputDirectory}/${path}`);
@@ -478,7 +486,7 @@ export function defineIsolationSuite(target: IsolationTarget, harness: Isolation
       ['a hard link', `printf x > ${outputDirectory}/a.${ext} && ln ${outputDirectory}/a.${ext} ${outputDirectory}/b.${ext}`],
       ['a fifo', `mkfifo ${outputDirectory}/pipe.${ext}`],
       ['too many files', `i=0; while [ $i -le ${template.output.maxFiles} ]; do : > ${outputDirectory}/f$i.${ext}; i=$((i+1)); done`],
-      ['a disallowed extension', `printf '<script>' > ${outputDirectory}/page.html`],
+      ['a disallowed extension', `printf '<script>' > ${outputDirectory}/${target.disallowedOutput ?? 'page.html'}`],
       ['a path that is too deep', `mkdir -p ${tooDeep.slice(0, tooDeep.lastIndexOf('/'))} && printf x > ${tooDeep}`],
       ['an unsafe file name', `printf x > '${outputDirectory}/-rf.${ext}'`],
     ])('rejects output containing %s', async (_name, script) => {

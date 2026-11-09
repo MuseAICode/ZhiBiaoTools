@@ -52,6 +52,13 @@ function fakeDocker() {
         if (container.id === nameOrId || container.name === nameOrId) containers.delete(container.id);
       }
     },
+    // agent 沙箱的专用网络（8.1）：这里只有 parse 沙箱，没有网络。
+    async inspectNetwork() {
+      return null;
+    },
+    async listNetworks() {
+      return [];
+    },
     async listContainers(label: string) {
       const [key, value] = label.split('=');
       return [...containers.values()]

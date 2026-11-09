@@ -181,7 +181,7 @@ describe('sandbox-runner http api', () => {
       { template: 'parse', jobId: JOB_ID, image: 'alpine' },
       { template: 'parse', jobId: JOB_ID, binds: ['/:/host'] },
       { template: 'parse', jobId: JOB_ID, network: 'host' },
-      { template: 'agent', jobId: JOB_ID },
+      { template: 'shell', jobId: JOB_ID },
       { template: 'parse', jobId: 'not-a-uuid' },
       { template: 'parse' },
     ]) {

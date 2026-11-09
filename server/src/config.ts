@@ -114,8 +114,13 @@ export interface SandboxRunnerConfig {
   dockerSocket: string;
   /** 容器运行时：生产只允许 runsc（gVisor）；开发、测试可用参数相同的 runc（第 6 步决定事项第 2 项）。 */
   runtime: SandboxRuntime;
-  /** 各镜像的引用，都必须配置；生产必须按摘要固定（name@sha256:...）。export 镜像随样张接口上线（7.3e）改为必需。 */
-  images: { parse: string; export: string };
+  /**
+   * 各镜像的引用；生产必须按摘要固定（name@sha256:...）。parse、export 必须配置（export 随样张接口上线，7.3e）；
+   * agent（路线图 8.1）在 Agent 任务上线（8.6）之前可以不配置，未配置时为 null，不能创建 agent 模板的沙箱。
+   */
+  images: { parse: string; export: string; agent: string | null };
+  /** agent-gw 的容器名（8.1，8.2 起部署）：每个 agent 沙箱的专用网络只接入它。未配置时为 null，不能创建 agent 模板的沙箱。 */
+  agentGateway: string | null;
   /** 同时存在的沙箱数上限。 */
   maxActive: number;
   /** worker 调用 sandbox-runner 的共享令牌（至少 32 个字符）。 */
@@ -521,7 +526,13 @@ export function loadSandboxRunnerConfig(env: Env, options: LoadConfigOptions = {
     images: Object.freeze({
       parse: read('SANDBOX_PARSE_IMAGE', imageSpec),
       export: read('SANDBOX_EXPORT_IMAGE', imageSpec),
+      agent: read('SANDBOX_AGENT_IMAGE', { ...imageSpec, default: null } as VarSpec<string | null>),
     }),
+    agentGateway: read('SANDBOX_AGENT_GATEWAY', {
+      default: null,
+      parse: (raw) => (/^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/.test(raw) ? raw : undefined),
+      expected: 'agent-gw 的容器名',
+    } as VarSpec<string | null>),
     maxActive: read('SANDBOX_MAX_ACTIVE', intSpec(8, 1, 256)),
     token,
   });

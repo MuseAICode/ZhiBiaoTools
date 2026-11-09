@@ -1,6 +1,6 @@
 // sandbox-runner 进程入口（docs/SERVER_DESIGN.md 第 7.4、7.5 节；路线图第 6 步 6.5）：与 api 同一镜像、不同入口
 // （node dist/sandbox-runner.js）。唯一挂载 Docker socket、能创建容器的进程，只按 src/sandbox/templates.ts 中写死的模板
-// 创建和销毁沙箱。只在内部网络 sandbox-control 上监听，只有 worker 持有调用令牌。
+// 创建和销毁沙箱（agent 模板另有每个沙箱一个的专用网络，路线图 8.1）。只在内部网络 sandbox-control 上监听，只有 worker 持有调用令牌。
 // 启动时检查配置的容器运行时（生产为 runsc）已在 Docker 中登记，否则拒绝启动；之后每 30 秒删除到期的沙箱。
 import { loadSandboxRunnerConfig, ConfigError, type SandboxRunnerConfig } from './config.ts';
 import { assertRuntimeAvailable, createDockerSandboxDriver } from './sandbox/docker.ts';
@@ -36,7 +36,7 @@ const log = {
   warn: (obj: unknown, msg?: string) => app.log.warn(obj, msg),
   error: (obj: unknown, msg?: string) => app.log.error(obj, msg),
 } as Parameters<typeof createDockerSandboxDriver>[0]['log'];
-const driver = createDockerSandboxDriver({ docker, runtime: config.runtime, images: config.images, maxActive: config.maxActive, log });
+const driver = createDockerSandboxDriver({ docker, runtime: config.runtime, images: config.images, maxActive: config.maxActive, agentGateway: config.agentGateway, log });
 const app = await buildSandboxRunnerApp({ driver, docker, runtime: config.runtime, token: config.token, logLevel: config.logLevel });
 if (config.runtime !== 'runsc') app.log.warn({ runtime: config.runtime }, 'sandbox runtime is not gVisor (development only)');
 

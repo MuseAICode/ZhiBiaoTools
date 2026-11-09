@@ -21,6 +21,9 @@
 #       --build-context preview-assets=client/assets/content-template-preview
 #       --build-context desktop=client/electron server/sandbox/export（7.3b 起含样张配图，7.5b 起含桌面版的可研导出代码）
 #   - sandbox-runner 使用 zhibiao-export:dev（SANDBOX_EXPORT_IMAGE，未配置时 sandbox-runner 拒绝启动）。
+# 8.1 起 sandbox-runner 可以创建 agent 沙箱（每个沙箱一个只通 agent-gw 的 internal 网络，docs/SERVER_DESIGN.md 第 7.10 节）。
+#   Agent 任务上线（8.6）之前不需要：SANDBOX_AGENT_IMAGE、SANDBOX_AGENT_GATEWAY 未配置时只是不能创建 agent 沙箱；
+#   镜像：docker build -t zhibiao-agent:dev server/sandbox/agent；agent-gw 服务随 8.2 加入本文件。
 # 重建数据库：docker compose down -v（会删除数据卷）。
 # 生产部署的 compose 与网络划分见 docs/SERVER_DESIGN.md 第 8.1 节，不使用本文件。
 name: bidtools-dev
