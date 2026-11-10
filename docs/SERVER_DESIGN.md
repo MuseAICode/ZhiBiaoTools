@@ -643,6 +643,18 @@ Pi 运行时经 OpenAI 兼容的 chat completions 调用模型，并依赖 funct
 - **步骤幂等**：请求内容（`request_hash`）包含工具定义、工具选择与消息中的工具字段；不带工具字段的消息与 8.2c1 之前的写法逐字节相同，升级前保存的步骤结果升级后仍能取回（有测试）。迁移 0032 给 `job_step_results` 增加可空列 `tool_calls`（jsonb 数组，1～128 项，序列化后不超过结果的字节上限；没有工具调用的步骤为 `NULL`），应用角色补这一列的 `INSERT` 授权，仍没有 `UPDATE` / `DELETE`，RLS 策略不变；续跑时带工具调用的步骤原样取回。
 - **测试**：`tests/ai/tools.test.ts`（请求校验的对照组与 40 余种恶意样本、流式汇总的对照组与结构不合法样本、请求体只含校验过的字段、冻结上界）；`tests/db/aiGateway.test.ts`“工具调用（8.2c1）”（端到端汇总与分段、请求体、冻结额、不合法请求不冻结不调用、结构不合法不收费、模型写坏的工具调用照常收费、中途断开按部分工具调用估算）；`tests/db/jobBilling.test.ts`（带工具调用的步骤保存与取回、工具字段不同是新的调用、不用工具时 `request_hash` 与旧写法相同、`tool_calls` 的 CHECK 与授权）；`migrations.test.ts` 补回滚顺序。请求内容的工具字段、冻结上界中的工具定义、`toolCallId` 的引用检查、同一调用两个 `id` 的检查做过变异检查（去掉后对应用例失败）。
 
+### 7.14 实现（路线图 8.2c2）：Agent 的模型调用路由
+
+agent-gw 登记 `POST /v1/chat/completions`（请求体上限 4 MiB，`AGENT_CHAT_MAX_BODY_BYTES`，agent-gw 与 worker 内部入口各自执行），worker 内部入口上的路由（`src/agent/chatCompletions.ts`）经 AI 网关调用模型。只实现 Pi（`@earendil-works/pi-ai` 的 `openai-completions`）在本平台配置下发送的 OpenAI 兼容**流式子集**，请求按攻击者的输入处理：
+
+- **身份只按令牌**：组织、发起用户（`TenantContext`）、任务与任务类型取自 `agentIdentityOf`；请求体 schema 不允许未登记的字段，`org_id`、`project_id`、`job_id`、`user_id`、`provider`、`base_url`、`api_key`、`headers`、`extra_body` 等一律 400，不冻结、不调用服务商；头部中自称的身份不读取（agent-gw 也不转发）。
+- **模型固定**：组织在设置中选用的平台模型（`resolveJobModel`，没有选择时 409 `AI_MODEL_NOT_CONFIGURED`），白名单与定价由网关再检查；请求中的 `model`（OpenAI SDK 必带）只校验格式、不采信。`max_tokens` / `max_completion_tokens`（只能给一个）截到平台上限 `AI_MAX_OUTPUT_TOKENS`，不给时取平台上限。
+- **接受的字段**：`messages`（1～2,000 条；system / user 的 `content` 为字符串或文本分段（≤ 256 段，不接受图片）；assistant 的 `content` 可为 `null` 或省略，可带 `tool_calls`；tool 消息必须带 `tool_call_id`）、`stream`（必须为 `true`）、`stream_options.include_usage`、`temperature`（0～2）、`tools`（`strict` 只接受 `false`，空数组按不提供工具处理）、`tool_choice`、`store`（只接受 `false`）。不接受 `reasoning_content`、tool 消息的 `name`、`n`、`response_format` 等。不做类型转换（`"100"` 不当作数字），`__proto__` 键拒绝。工具字段的细节先按 8.2c1 的规则（`assertToolRequest`）检查一次，网关调用时再检查一次。
+- **计费与幂等**：`source = 'job'`，步骤键固定为 `agent:chat`；网关的步骤幂等键本来就含请求内容的 SHA-256，因此同一任务、同一请求内容就是同一步骤，续跑时 Pi 重发同一请求取回已保存的结果，不再冻结、不再扣费。并发名额一直排队等待，直到沙箱断开或 worker 关闭。
+- **响应**：第一段输出到达时才开始 SSE（`text/event-stream`，OpenAI 的 `chat.completion.chunk` 格式，第一块带 `role: assistant`，工具调用转回 `delta.tool_calls`），之后是带 `finish_reason` 的结束块、（要求时的）用量块和 `[DONE]`；取回已保存的结果时一次给出全部内容与工具调用。开始推送前的失败（余额不足 402、模型未选择 409、上游失败等）按普通 JSON 错误返回，开始推送后的失败以 `data: {"error": ...}` 结束、不发 `[DONE]`，非业务错误只返回通用文案。思考内容照常计费但不转给沙箱。响应中不含组织、项目、用户、执行等内部标识。
+- **中止**：沙箱断开（agent-gw 随之中止转发）按已产生的用量收费（与用户取消相同）；worker 关闭时内部入口先以 `shutdown` 中止进行中的调用（不收费，`platform_interrupted`），至多等 5 秒释放冻结，再关闭全部连接（`forceCloseConnections`，agent-gw 的空闲长连接不拖住关闭）。
+- **测试**：`tests/agent/chatCompletions.test.ts`（网关用桩代替：Pi 请求形状的对照组、转换结果、SSE 格式、33 种顶层与 18 种消息级恶意样本、上限、失败与断开）；`tests/db/agentChat.test.ts`（真实数据库与 AI 网关、本机模拟服务商、经 agent-gw：按令牌记账、模型不采信、伪造字段与头部、步骤幂等、令牌无效与暂停、余额不足、请求体上限、断开与关闭的计费、日志中没有令牌与 Key）。顶层字段白名单、`max_tokens` 截断、关闭不收费、模型不采信、任务只按令牌做过变异检查。
+
 ## 8. 部署架构
 
 ### 8.0 部署位置（已决定，第 9 节第 13、14 项）
@@ -658,7 +670,7 @@ Pi 运行时经 OpenAI 兼容的 chat completions 调用模型，并依赖 funct
 |---|---|---|
 | `caddy` | 反向代理、TLS、静态文件 | `edge` |
 | `api` | Fastify | `edge`、`backend` |
-| `worker` | BullMQ 消费者 + AI 网关（可多副本）；8.2b 起另有 Agent 内部入口（见第 7.12 节） | `backend`、`sandbox-control`、`egress`、`agent-relay`（`internal: true`，接收 `agent-gw` 转来的请求） |
+| `worker` | BullMQ 消费者 + AI 网关（可多副本）；8.2b 起另有 Agent 内部入口（见第 7.12 节），8.2c2 起其上有模型调用路由（见第 7.14 节） | `backend`、`sandbox-control`、`egress`、`agent-relay`（`internal: true`，接收 `agent-gw` 转来的请求） |
 | `agent-gw` | agent 沙箱访问平台的唯一入口（8.2b，见第 7.12 节），不持有平台凭据（只有转给 worker 这一跳的中继密钥） | `agent-relay`，以及 sandbox-runner 随沙箱接入的每个 agent 沙箱的专用网络 |
 | `sandbox-runner` | 唯一能访问容器运行时（6.5 实现，见第 7.5 节）；按模板创建 parse、export（7.1，见第 7.9 节）沙箱 | `sandbox-control`（`internal: true`，只有 worker 能访问） |
 | `postgres` | PostgreSQL 17，数据卷 | `backend` |

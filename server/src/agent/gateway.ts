@@ -32,11 +32,18 @@ export interface AgentGatewayRoute {
   readonly bodyLimit?: number;
 }
 
+/** 模型调用（8.2c2，src/agent/chatCompletions.ts）的路径与请求体上限；agent-gw 与 worker 的内部入口各自执行这个上限。 */
+export const AGENT_CHAT_PATH = '/v1/chat/completions';
+export const AGENT_CHAT_MAX_BODY_BYTES = 4 * 1024 * 1024;
+
 /**
- * 转给 worker 的路由，worker 的内部入口有同样的路径。8.2b 只有查询令牌状态的 /v1/session；
- * 模型调用（8.2c，POST /v1/chat/completions）与业务工具 RPC（8.4）在这里登记后才能经过 agent-gw。
+ * 转给 worker 的路由，worker 的内部入口有同样的路径：查询令牌状态的 /v1/session（8.2b）与模型调用（8.2c2）；
+ * 业务工具 RPC（8.4）在这里登记后才能经过 agent-gw。
  */
-export const AGENT_GATEWAY_ROUTES: readonly AgentGatewayRoute[] = Object.freeze([Object.freeze({ method: 'GET', path: '/v1/session' } as const)]);
+export const AGENT_GATEWAY_ROUTES: readonly AgentGatewayRoute[] = Object.freeze([
+  Object.freeze({ method: 'GET', path: '/v1/session' } as const),
+  Object.freeze({ method: 'POST', path: AGENT_CHAT_PATH, bodyLimit: AGENT_CHAT_MAX_BODY_BYTES } as const),
+]);
 
 export interface AgentGatewayLimits {
   /** 请求行加全部头部的字节数上限（Node 的 maxHeaderSize）。 */
@@ -61,7 +68,7 @@ export const DEFAULT_AGENT_GATEWAY_LIMITS: AgentGatewayLimits = Object.freeze({
   maxHeaderBytes: 8 * 1024,
   headersTimeoutMs: 10_000,
   requestTimeoutMs: 60_000,
-  // 模型调用的请求带整段对话，8.2c 按实测再定各路由自己的上限；这里是 agent-gw 的兜底。
+  // 各路由给出自己的上限（模型调用 AGENT_CHAT_MAX_BODY_BYTES）；这里是 agent-gw 的兜底。
   maxBodyBytes: 8 * 1024 * 1024,
   maxInFlightPerToken: 4,
   maxConnections: 256,

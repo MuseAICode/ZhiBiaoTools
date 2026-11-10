@@ -5,7 +5,8 @@
 // 文档解析（6.6）经 sandbox-runner 在断网沙箱中执行（SANDBOX_RUNNER_URL + 令牌），worker 只取原件、校验结果、写产物，
 // 不运行任何文档解析器，也不挂载 Docker socket。
 // Agent 内部入口（8.2b，src/agent/endpoint.ts）：设置了 AGENT_ENDPOINT_PORT 时另开一个监听，只接收 agent-gw 经内部网络
-// agent-relay 转来的请求，每个请求按任务令牌查身份；与健康检查分开监听。
+// agent-relay 转来的请求，每个请求按任务令牌查身份；与健康检查分开监听。模型调用（8.2c2，POST /v1/chat/completions）
+// 经同一个 AI 网关，组织与任务按令牌取，模型取组织设置中选用的平台模型。
 // 清理任务（6.8）每小时一批：跨组织删除超过保留期的文件、产物、项目和任务记录，并把到期的冻结收尾（src/cleanup/）。
 import Fastify, { type FastifyInstance } from 'fastify';
 import { buildAgentEndpointApp } from './agent/endpoint.ts';
@@ -92,7 +93,14 @@ const runner = createJobRunner({
 });
 
 let cleanup: CleanupSchedule | null = null;
-const agentEndpoint: FastifyInstance | null = config.agentEndpoint ? await buildAgentEndpointApp({ db: database.db, relayKey: config.agentEndpoint.relayKey, logLevel: config.logLevel }) : null;
+const agentEndpoint: FastifyInstance | null = config.agentEndpoint ? await buildAgentEndpointApp({
+      db: database.db,
+      relayKey: config.agentEndpoint.relayKey,
+      logLevel: config.logLevel,
+      // 模型调用（8.2c2）经同一个 AI 网关；未配置主密钥时返回 503。
+      gateway,
+      maxOutputTokens: config.ai.maxOutputTokens,
+    }) : null;
 
 app.addHook('onClose', async () => {
   // 先停止接收 agent-gw 转来的请求，再停任务与连接。
