@@ -1240,6 +1240,12 @@ export interface JobEventsTable {
  * 任务步骤的调用结果（迁移 0025_job_step_results）：与结算在同一事务中写入，续跑时同一步骤、同一请求直接取回，
  * 不再调用服务商、不再扣费。只追加（应用角色没有 UPDATE、DELETE），随任务记录删除。
  */
+export interface JobStepToolCall {
+  id: string;
+  name: string;
+  arguments: string;
+}
+
 export interface JobStepResultsTable {
   org_id: Fixed<string>;
   job_id: Fixed<string>;
@@ -1249,6 +1255,8 @@ export interface JobStepResultsTable {
   content: Fixed<string>;
   reasoning_content: Fixed<string>;
   finish_reason: Fixed<string | null>;
+  /** jsonb 数组（模型发起的工具调用，每项 {id, name, arguments}，迁移 0032），没有时为 NULL；写入时传 JSON 文本。 */
+  tool_calls: ColumnType<JobStepToolCall[] | null, string | null | undefined, never>;
   input_tokens: ColumnType<string, number, never>;
   cached_input_tokens: ColumnType<string, number, never>;
   output_tokens: ColumnType<string, number, never>;

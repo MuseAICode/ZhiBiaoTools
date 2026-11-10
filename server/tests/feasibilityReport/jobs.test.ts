@@ -267,7 +267,7 @@ async function runServer(type: string, params: unknown, options: { checkpoint?: 
           content = respond(request.messages);
           stepResults.set(key, content);
         }
-        return { requestId: 'r', content, reasoningContent: '', finishReason: 'stop', aborted: false, reused: false, usage: {} as never, billing: { status: 'billed', amount: 1n } };
+        return { requestId: 'r', content, reasoningContent: '', toolCalls: [], finishReason: 'stop', aborted: false, reused: false, usage: {} as never, billing: { status: 'billed', amount: 1n } };
       },
     },
     objectStore: null,

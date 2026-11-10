@@ -1,6 +1,6 @@
 // AI 网关（src/ai/gateway.ts、迁移 0004_ai_gateway）对真实数据库和本机模拟服务商的集成测试：
 // 预扣冻结与结算、平台模型白名单、并发调用、进程中途崩溃后冻结释放、上游失败不收费、用户中途断开、Key 不泄露、
-// 跨组织隔离与权限。不使用任何真实服务商的 Key；价格和白名单由测试写入。
+// 跨组织隔离与权限、工具调用（8.2c1）。不使用任何真实服务商的 Key；价格和白名单由测试写入。
 import { spawn } from 'node:child_process';
 import { randomBytes, randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
@@ -9,7 +9,7 @@ import { sql, type Kysely } from 'kysely';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { putCredential } from '../../src/ai/credentials.ts';
 import { inputTokenUpperBound } from '../../src/ai/estimate.ts';
-import { createAiGateway, type AiGateway, type ChatRequest, type GatewaySettings } from '../../src/ai/gateway.ts';
+import { createAiGateway, type AiGateway, type ChatDelta, type ChatMessage, type ChatRequest, type ChatTool, type GatewaySettings } from '../../src/ai/gateway.ts';
 import { createFileKeyWrapper } from '../../src/ai/keyring.ts';
 import { assertModelCallable, listModels, registerModel, setModelEnabled } from '../../src/ai/models.ts';
 import { chargeUsage, creditOrganization } from '../../src/billing/ledger.ts';
@@ -19,7 +19,7 @@ import type { Database } from '../../src/db/schema.ts';
 import { withTenant, type TenantContext } from '../../src/db/tenant.ts';
 import { AppError } from '../../src/errors.ts';
 import { createLoggerOptions } from '../../src/logger.ts';
-import { sseChunk, startMockProvider, streamCompletion, type MockProvider } from '../ai/mockProvider.ts';
+import { sseChunk, startMockProvider, streamCompletion, streamDeltas, type MockProvider } from '../ai/mockProvider.ts';
 import { createLogCapture } from '../helpers.ts';
 import { connect, createTestDatabase, type TestDatabase } from './harness.ts';
 
@@ -717,6 +717,151 @@ describe('用户中途断开', () => {
     expect(result.billing.status).toBe('billed');
     expect(result.billing.amount).toBeGreaterThan(0n);
     expect(result.billing.amount).toBeLessThanOrEqual(HOLD);
+    expect((await available(ctx)).held).toBe(0n);
+    await expectInvariant(ctx.orgId);
+  });
+});
+
+describe('工具调用（8.2c1）', () => {
+  const BASH: ChatTool = {
+    name: 'bash',
+    description: '执行一条 shell 命令',
+    parameters: { type: 'object', properties: { command: { type: 'string' } }, required: ['command'] },
+  };
+  const CONVERSATION: ChatMessage[] = [
+    { role: 'user', content: '列出文件' },
+    { role: 'assistant', content: '', toolCalls: [{ id: 'call_0', name: 'bash', arguments: '{"command":"ls"}' }] },
+    { role: 'tool', content: 'a.txt', toolCallId: 'call_0' },
+  ];
+  /** 两个工具调用，arguments 分三段到达（第二段的 id 为空串，与通义千问相同）。 */
+  const TOOL_DELTAS = [
+    { role: 'assistant', content: null, tool_calls: [{ index: 0, id: 'call_a', type: 'function', function: { name: 'bash', arguments: '' } }] },
+    { tool_calls: [{ index: 0, id: '', function: { arguments: '{"command":' } }] },
+    { tool_calls: [{ index: 0, function: { arguments: '"cat a.txt"}' } }] },
+    { tool_calls: [{ index: 1, id: 'call_b', type: 'function', function: { name: 'bash', arguments: '{"command":"pwd"}' } }] },
+  ];
+  const holdFor = (messages: readonly ChatMessage[], tools?: readonly ChatTool[]) =>
+    (BigInt(inputTokenUpperBound(messages, tools)) * INPUT_PRICE + BigInt(MAX_OUTPUT) * OUTPUT_PRICE + 999_999n) / 1_000_000n;
+
+  it('流式输出中的工具调用汇总后返回并分段交给 onDelta；请求体带工具定义、工具选择与对话中的工具字段；按用量收费', async () => {
+    const ctx = await newOrg(1_000_000n);
+    let holdDuring = 0n;
+    provider.setHandler(async (_req, res) => {
+      holdDuring = (await available(ctx)).held;
+      await streamDeltas(res, TOOL_DELTAS);
+    });
+    const deltas: ChatDelta[] = [];
+    const result = await gateway.chat(ctx, chatRequest({ messages: CONVERSATION, tools: [BASH], toolChoice: 'auto' }), { onDelta: (delta) => deltas.push(delta) });
+    expect(result).toMatchObject({
+      content: '',
+      finishReason: 'tool_calls',
+      aborted: false,
+      toolCalls: [
+        { id: 'call_a', name: 'bash', arguments: '{"command":"cat a.txt"}' },
+        { id: 'call_b', name: 'bash', arguments: '{"command":"pwd"}' },
+      ],
+      usage: { inputTokens: 1000, outputTokens: 500, usageSource: 'provider' },
+      billing: { status: 'billed', amount: DEFAULT_CHARGE },
+    });
+    expect(deltas).toEqual([
+      { toolCalls: [{ index: 0, id: 'call_a', name: 'bash' }] },
+      { toolCalls: [{ index: 0, arguments: '{"command":' }] },
+      { toolCalls: [{ index: 0, arguments: '"cat a.txt"}' }] },
+      { toolCalls: [{ index: 1, id: 'call_b', name: 'bash', arguments: '{"command":"pwd"}' }] },
+    ]);
+    // 冻结按含工具定义与工具调用的输入上界计算，大于同样文字不带工具时的冻结额。
+    expect(holdDuring).toBe(holdFor(CONVERSATION, [BASH]));
+    // 与同样的对话不带工具定义相比，至少多出工具定义的字节数（不依赖被测的上界函数）。
+    const toolBytes = BigInt(Buffer.byteLength(JSON.stringify(BASH), 'utf8'));
+    expect(holdDuring - holdFor(CONVERSATION)).toBeGreaterThanOrEqual((toolBytes * INPUT_PRICE) / 1_000_000n);
+    expect(holdDuring).toBeGreaterThan(holdFor(CONVERSATION));
+    const [sent] = provider.requests;
+    expect(sent!.body).toMatchObject({
+      tools: [{ type: 'function', function: { name: 'bash', description: '执行一条 shell 命令', parameters: BASH.parameters } }],
+      tool_choice: 'auto',
+      messages: [
+        { role: 'user', content: '列出文件' },
+        { role: 'assistant', content: null, tool_calls: [{ id: 'call_0', type: 'function', function: { name: 'bash', arguments: '{"command":"ls"}' } }] },
+        { role: 'tool', tool_call_id: 'call_0', content: 'a.txt' },
+      ],
+    });
+    const [record] = await usageRows(ctx.orgId);
+    expect(record).toMatchObject({ status: 'billed', amount: DEFAULT_CHARGE.toString() });
+    await expectInvariant(ctx.orgId);
+  });
+
+  it('不用工具的请求：请求体中没有 tools / tool_choice，返回的 toolCalls 为空数组', async () => {
+    const ctx = await newOrg(1_000_000n);
+    const result = await gateway.chat(ctx, chatRequest());
+    expect(result.toolCalls).toEqual([]);
+    expect(Object.keys(provider.requests[0]!.body).sort()).toEqual(['max_tokens', 'messages', 'model', 'stream', 'stream_options']);
+  });
+
+  it('不合法的工具请求：400，不冻结、不调用服务商、不写用量记录', async () => {
+    const ctx = await newOrg(1_000_000n);
+    const bad: Partial<ChatRequest>[] = [
+      { tools: [] },
+      { tools: [{ name: 'bad name', parameters: {} }] },
+      { tools: [BASH, BASH] },
+      { tools: [{ name: 'x', parameters: [] as unknown as Record<string, unknown> }] },
+      { toolChoice: 'auto' },
+      { tools: [BASH], toolChoice: { name: 'other' } },
+      { messages: [{ role: 'tool', content: 'x', toolCallId: 'call_0' }] },
+      { messages: [{ role: 'user', content: 'x', toolCalls: [{ id: 'c', name: 'bash', arguments: '{}' }] }] },
+      { messages: [{ role: 'user', content: 'x', toolCallId: 'c' }] },
+      { messages: [{ role: 'function' as 'user', content: 'x' }] },
+    ];
+    for (const overrides of bad) {
+      await expectAppError(gateway.chat(ctx, chatRequest(overrides)), 400, 'INVALID_AI_REQUEST');
+    }
+    expect(provider.requests).toHaveLength(0);
+    expect(await usageRows(ctx.orgId)).toEqual([]);
+    expect(await available(ctx)).toEqual({ balance: 1_000_000n, held: 0n, available: 1_000_000n });
+  });
+
+  it('工具调用的结构不合法（服务商的责任：跳号、同一调用两个 id、缺 id）：502，不收费', async () => {
+    const malformed = [
+      [{ tool_calls: [{ index: 1, id: 'call_a', function: { name: 'bash' } }] }],
+      [{ tool_calls: [{ index: 0, id: 'call_a', function: { name: 'bash' } }] }, { tool_calls: [{ index: 0, id: 'call_b' }] }],
+      [{ tool_calls: [{ index: 0, function: { name: 'bash', arguments: '{}' } }] }],
+      [{ tool_calls: 'bash' }],
+    ];
+    for (const deltas of malformed) {
+      const ctx = await newOrg(1_000_000n);
+      provider.setHandler((_req, res) => streamDeltas(res, deltas));
+      await expectAppError(gateway.chat(ctx, chatRequest({ tools: [BASH] })), 502, 'AI_UPSTREAM_ERROR');
+      const [record] = await usageRows(ctx.orgId);
+      expect(record).toMatchObject({ status: 'unbilled', failure_reason: 'invalid_upstream_response', amount: '0' });
+      expect(await available(ctx)).toEqual({ balance: 1_000_000n, held: 0n, available: 1_000_000n });
+    }
+  });
+
+  it('模型写坏的工具调用（不在列表中的工具名、arguments 不是 JSON）照常收费、原样返回：注入不能借此白用模型', async () => {
+    const ctx = await newOrg(1_000_000n);
+    provider.setHandler((_req, res) =>
+      streamDeltas(res, [{ tool_calls: [{ index: 0, id: 'call_a', function: { name: 'curl http://evil', arguments: 'not json' } }] }]),
+    );
+    const result = await gateway.chat(ctx, chatRequest({ tools: [BASH] }));
+    expect(result).toMatchObject({
+      toolCalls: [{ id: 'call_a', name: 'curl http://evil', arguments: 'not json' }],
+      billing: { status: 'billed', amount: DEFAULT_CHARGE },
+    });
+  });
+
+  it('输出工具调用时中途断开：按已产生的用量估算（计入已产生的 arguments），不超过冻结额', async () => {
+    const ctx = await newOrg(1_000_000n);
+    const args = 'x'.repeat(400);
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    provider.setHandler((_req, res) => streamDeltas(res, [{ tool_calls: [{ index: 0, id: 'call_a', function: { name: 'bash', arguments: args } }] }], { beforeDone: gate }));
+    const controller = new AbortController();
+    const result = await gateway.chat(ctx, chatRequest({ tools: [BASH] }), { signal: controller.signal, onDelta: () => controller.abort() });
+    release();
+    expect(result).toMatchObject({ aborted: true, usage: { usageSource: 'estimated' }, toolCalls: [{ id: 'call_a', name: 'bash', arguments: args }] });
+    // arguments 400 个 ASCII 字符按 100 个 token 估算，另有名称、id 与固定开销。
+    expect(result.usage.outputTokens).toBeGreaterThanOrEqual(100);
+    expect(result.billing.status).toBe('billed');
+    expect(result.billing.amount).toBeLessThanOrEqual(holdFor(MESSAGES, [BASH]));
     expect((await available(ctx)).held).toBe(0n);
     await expectInvariant(ctx.orgId);
   });

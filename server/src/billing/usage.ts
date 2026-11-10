@@ -4,7 +4,7 @@
 import { sql, type Kysely, type Transaction } from 'kysely';
 import { GATEWAY_FAILURE_REASONS } from '../db/migrations/0004_ai_gateway.ts';
 import { JOB_STEP_FAILURE_REASONS } from '../db/migrations/0025_job_step_results.ts';
-import type { BillingProvider, Database, UsageSource } from '../db/schema.ts';
+import type { BillingProvider, Database, JobStepToolCall, UsageSource } from '../db/schema.ts';
 import { withTenant, type TenantContext } from '../db/tenant.ts';
 import { AppError } from '../errors.ts';
 import { toBillingError } from './ledger.ts';
@@ -137,6 +137,8 @@ export interface JobStepResult {
   requestId: string;
   content: string;
   reasoningContent: string;
+  /** 模型发起的工具调用（迁移 0032；没有时为空数组）。 */
+  toolCalls: JobStepToolCall[];
   finishReason: string | null;
   usage: SettleUsageInput;
 }
@@ -153,7 +155,7 @@ async function findStepIn(trx: Transaction<Database>, context: TenantContext, st
     .selectFrom('job_step_results as s')
     .innerJoin('usage_records as u', (join) => join.onRef('u.org_id', '=', 's.org_id').onRef('u.id', '=', 's.usage_id'))
     .select([
-      'u.request_id', 's.content', 's.reasoning_content', 's.finish_reason', 's.input_tokens', 's.cached_input_tokens',
+      'u.request_id', 's.content', 's.reasoning_content', 's.tool_calls', 's.finish_reason', 's.input_tokens', 's.cached_input_tokens',
       's.output_tokens', 's.usage_source',
     ])
     .where('s.org_id', '=', context.orgId)
@@ -166,6 +168,7 @@ async function findStepIn(trx: Transaction<Database>, context: TenantContext, st
     requestId: row.request_id,
     content: row.content,
     reasoningContent: row.reasoning_content,
+    toolCalls: (row.tool_calls ?? []).map((call) => ({ id: String(call.id), name: String(call.name), arguments: String(call.arguments) })),
     finishReason: row.finish_reason,
     usage: {
       inputTokens: Number(row.input_tokens),
@@ -208,6 +211,8 @@ export async function settleJobStep(
             usage_id: usageId,
             content: result.content,
             reasoning_content: result.reasoningContent,
+            // 没有工具调用时为 NULL（与 0032 之前的行相同）。
+            tool_calls: result.toolCalls.length > 0 ? JSON.stringify(result.toolCalls.map((call) => ({ id: call.id, name: call.name, arguments: call.arguments }))) : null,
             finish_reason: result.finishReason,
             input_tokens: usage.inputTokens,
             cached_input_tokens: usage.cachedInputTokens,

@@ -6,9 +6,10 @@
 // - 运行中余额不足以冻结时任务暂停为 paused / insufficient_balance 并推送，充值后继续，不重复调用、不重复扣费；
 // - 按“组织 + 服务商”的 Redis 分布式信号量，上限取组织设置与平台上限的较小值；
 // - 步骤幂等（6.4a，迁移 0025_job_step_results）：调用已结算、checkpoint 未保存时崩溃，续跑不再调用服务商、不再扣费；
-//   结果与结算同一事务提交；并发完成同一步骤只扣费一次；worker 关闭、租约丢失中止的调用不收费。
+//   结果与结算同一事务提交；并发完成同一步骤只扣费一次；worker 关闭、租约丢失中止的调用不收费；
+//   带工具调用的步骤（8.2c1，迁移 0032_job_step_tool_calls）原样取回工具调用，不用工具的步骤的请求内容与之前相同。
 // 需要 TEST_DATABASE_ADMIN_URL 和 TEST_REDIS_URL / TEST_REDIS_PASSWORD。
-import { randomBytes, randomUUID } from 'node:crypto';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import type { Redis } from 'ioredis';
 import { sql, type Kysely } from 'kysely';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
@@ -46,7 +47,7 @@ import { cancelJob, enqueueJob, resumeJob, type JobServiceDependencies } from '.
 import { claimJob, findJobForOrg, renewRun } from '../../src/jobs/store.ts';
 import { jobBody } from '../../src/jobs/view.ts';
 import { bullmqConnection } from '../../src/redis.ts';
-import { startMockProvider, streamCompletion, type MockProvider } from '../ai/mockProvider.ts';
+import { startMockProvider, streamCompletion, streamDeltas, type MockProvider } from '../ai/mockProvider.ts';
 import { rawRedis, redisConfig, testLogger, uniquePrefix, waitFor, wipeQueueKeys } from './jobFixtures.ts';
 import { connect, createTestDatabase, type TestDatabase } from './harness.ts';
 
@@ -765,7 +766,7 @@ describe('步骤幂等（6.4a）：平台自身故障导致的重复调用不向
     const jobId = await runningJob(ctx);
     const otherJob = await runningJob(ctx);
     const step = { jobId, stepKey: 'step:0', requestHash: randomBytes(32) };
-    const result = { requestId: randomUUID(), content: '结果', reasoningContent: '', finishReason: 'stop' };
+    const result = { requestId: randomUUID(), content: '结果', reasoningContent: '', toolCalls: [], finishReason: 'stop' };
     const usage = { inputTokens: 10, cachedInputTokens: 0, outputTokens: 10, usageSource: 'provider' as const };
 
     // 用量记录已经释放：结算失败，结果不保存。
@@ -855,6 +856,75 @@ describe('步骤幂等（6.4a）：平台自身故障导致的重复调用不向
     }
     expect(provider.requests).toHaveLength(1 + changed.length);
     expect((await usageOf(ctx.orgId)).every((row) => row.status === 'billed')).toBe(true);
+  });
+
+  it('带工具调用的步骤（8.2c1）：工具调用与结算一起保存，续跑时原样取回、不调用服务商；工具定义、工具选择、对话中的工具字段不同都是新的调用', async () => {
+    const ctx = await newMember(10n * JOB_MIN_START_BALANCE);
+    const jobId = await runningJob(ctx);
+    const gateway = newGateway();
+    provider.setHandler((_request, response) =>
+      streamDeltas(response, [{ tool_calls: [{ index: 0, id: 'call_a', type: 'function', function: { name: 'bash', arguments: '{"command":"ls"}' } }] }], { usage: USAGE }),
+    );
+    const bash = { name: 'bash', parameters: { type: 'object', properties: { command: { type: 'string' } } } };
+    const request = jobRequest(jobId, 'agent:1', { tools: [bash] });
+    const first = await gateway.chat(ctx, request);
+    expect(first).toMatchObject({ reused: false, toolCalls: [{ id: 'call_a', name: 'bash', arguments: '{"command":"ls"}' }], finishReason: 'tool_calls' });
+    const [row] = await stepRows(jobId);
+    expect(row).toMatchObject({ content: '', tool_calls: [{ id: 'call_a', name: 'bash', arguments: '{"command":"ls"}' }] });
+
+    const again = await gateway.chat(ctx, request);
+    expect(again).toMatchObject({ reused: true, toolCalls: first.toolCalls, content: '', finishReason: 'tool_calls', billing: { status: 'unbilled', amount: 0n } });
+    expect(provider.requests).toHaveLength(1);
+
+    const followUp: ChatRequest['messages'] = [
+      ...MESSAGES,
+      { role: 'assistant', content: '', toolCalls: first.toolCalls },
+      { role: 'tool', content: 'a.txt', toolCallId: 'call_a' },
+    ];
+    const changed = [
+      jobRequest(jobId, 'agent:1'),
+      jobRequest(jobId, 'agent:1', { tools: [{ ...bash, description: '执行命令' }] }),
+      jobRequest(jobId, 'agent:1', { tools: [bash], toolChoice: 'required' }),
+      jobRequest(jobId, 'agent:1', { tools: [bash], messages: followUp }),
+      jobRequest(jobId, 'agent:1', { tools: [bash], messages: [followUp[0]!, followUp[1]!, { ...followUp[2]!, content: 'b.txt' }] }),
+      jobRequest(jobId, 'agent:1', { tools: [bash], messages: [followUp[0]!, { ...followUp[1]!, toolCalls: [{ id: 'call_a', name: 'bash', arguments: '{"command":"pwd"}' }] }, followUp[2]!] }),
+    ];
+    for (const next of changed) expect(await gateway.chat(ctx, next)).toMatchObject({ reused: false, billing: { status: 'billed' } });
+    expect(provider.requests).toHaveLength(1 + changed.length);
+  });
+
+  it('不用工具的步骤：请求内容（request_hash）与 8.2c1 之前的写法相同，升级前保存的结果升级后仍能取回；tool_calls 为 NULL', async () => {
+    const ctx = await newMember(10n * JOB_MIN_START_BALANCE);
+    const jobId = await runningJob(ctx);
+    await newGateway().chat(ctx, jobRequest(jobId, 'legacy', { temperature: 0.3 }));
+    const legacy = createHash('sha256')
+      .update(JSON.stringify(['deepseek', 'deepseek-chat', MAX_OUTPUT, 0.3, MESSAGES.map((message) => [message.role, message.content])]), 'utf8')
+      .digest();
+    const [row] = await stepRows(jobId);
+    expect(Buffer.from(row!.request_hash).equals(legacy)).toBe(true);
+    expect(row!.tool_calls).toBeNull();
+  });
+
+  it('job_step_results.tool_calls：只能是 1～128 项的数组；应用角色只有 INSERT 授权', async () => {
+    const ctx = await newMember(10n * JOB_MIN_START_BALANCE);
+    const jobId = await runningJob(ctx);
+    const insert = async (toolCalls: string) => {
+      const pending = await hold(ctx, jobId);
+      return withTenant(appDb, ctx, (trx) => trx.insertInto('job_step_results').values({
+        org_id: ctx.orgId, job_id: jobId, step_key: `x-${randomUUID()}`, request_hash: randomBytes(32), usage_id: pending.usageId, content: '',
+        reasoning_content: '', tool_calls: toolCalls, finish_reason: 'tool_calls', input_tokens: 0, cached_input_tokens: 0, output_tokens: 0, usage_source: 'provider',
+      }).execute());
+    };
+    const call = { id: 'c', name: 'bash', arguments: '{}' };
+    for (const bad of ['{}', '[]', '"x"', JSON.stringify(Array.from({ length: 129 }, () => call))]) {
+      await expect(insert(bad)).rejects.toMatchObject({ code: '23514' });
+    }
+    await insert(JSON.stringify(Array.from({ length: 128 }, () => call)));
+    const privileges = await sql<{ privilege_type: string }>`
+      SELECT privilege_type FROM information_schema.column_privileges
+      WHERE table_name = 'job_step_results' AND column_name = 'tool_calls' AND grantee = ${APP_ROLE} ORDER BY privilege_type`.execute(superuser);
+    expect(privileges.rows.map((item) => item.privilege_type)).toEqual(['INSERT', 'SELECT']);
+    await expect(withTenant(appDb, ctx, (trx) => sql`UPDATE job_step_results SET tool_calls = NULL`.execute(trx))).rejects.toMatchObject({ code: '42501' });
   });
 
   it('worker 关闭时中止进行中的调用：按平台原因不收费（platform_interrupted）；续跑重做这一步，每步只扣费一次', async () => {

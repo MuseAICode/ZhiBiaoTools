@@ -9,6 +9,7 @@ function result(content: string, aborted = false): ChatResult {
     requestId: 'r',
     content,
     reasoningContent: '',
+    toolCalls: [],
     finishReason: 'stop',
     aborted,
     reused: false,
