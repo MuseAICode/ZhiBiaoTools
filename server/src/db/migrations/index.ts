@@ -32,6 +32,7 @@ import * as technicalPlanExport from './0028_technical_plan_export.ts';
 import * as technicalPlanExportRequests from './0029_technical_plan_export_requests.ts';
 import * as feasibilityReportExport from './0030_feasibility_report_export.ts';
 import * as agentJobTokens from './0031_agent_job_tokens.ts';
+import * as jobStepToolCalls from './0032_job_step_tool_calls.ts';
 
 export const migrations: Readonly<Record<string, Migration>> = Object.freeze({
   '0001_identity': identity,
@@ -65,4 +66,5 @@ export const migrations: Readonly<Record<string, Migration>> = Object.freeze({
   '0029_technical_plan_export_requests': technicalPlanExportRequests,
   '0030_feasibility_report_export': feasibilityReportExport,
   '0031_agent_job_tokens': agentJobTokens,
+  '0032_job_step_tool_calls': jobStepToolCalls,
 });

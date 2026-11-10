@@ -16,6 +16,11 @@
 // “任务 + 步骤键 + 请求内容的 SHA-256”查已保存的结果，有则直接返回（reused），不冻结、不调用服务商、不扣费；
 // 调用完成时结果与结算在同一事务中写入，续跑时同一步骤不会再调用服务商、再扣费。因平台原因中止的调用
 // （ChatOptions.platformAborted，worker 关闭、租约丢失）不收费（platform_interrupted），也不保存结果。
+//
+// 工具调用（路线图 8.2c1，供 Agent 使用，src/ai/tools.ts）：请求可以带工具定义（tools）、工具选择（toolChoice），
+// 消息可以带工具调用（assistant 的 toolCalls）与工具结果（tool 消息）；流式输出中的工具调用汇总后随结果返回（toolCalls），
+// 并经 onDelta 分段交给调用方。工具定义与工具调用计入冻结的输入上界；步骤幂等的请求内容包含工具字段，保存的结果包含工具调用
+// （迁移 0032_job_step_tool_calls）。不用工具的请求与之前完全相同（请求体、冻结额、步骤幂等的请求内容都不变）。
 import { createDecipheriv, createHash, randomUUID } from 'node:crypto';
 import type { FastifyBaseLogger } from 'fastify';
 import type { Kysely } from 'kysely';
@@ -38,13 +43,15 @@ import { DEFAULT_CONCURRENCY_LIMIT } from '../db/migrations/0009_settings.ts';
 import { JOB_STEP_KEY_PATTERN } from '../db/migrations/0025_job_step_results.ts';
 import type { AiConcurrencyLimiter } from './concurrency.ts';
 import { credentialAad } from './credentials.ts';
-import { estimateInputTokens, estimateTokens, inputTokenUpperBound } from './estimate.ts';
+import { estimateInputTokens, estimateOutputTokens, inputTokenUpperBound } from './estimate.ts';
 import type { KeyWrapper } from './keyring.ts';
 import { assertModelCallable } from './models.ts';
-import { PROVIDER_ADAPTERS, type ChatMessage, type ProviderUsage } from './providers.ts';
+import { PROVIDER_ADAPTERS, type ChatMessage, type ChatTool, type ChatToolCall, type ChatToolChoice, type ProviderUsage } from './providers.ts';
+import { assertToolRequest, canonicalTools, ToolCallAccumulator, ToolRequestError, type ToolCallDelta } from './tools.ts';
 import { streamChatCompletion, UpstreamAbortedError, UpstreamError } from './upstream.ts';
 
-export type { ChatMessage } from './providers.ts';
+export type { ChatMessage, ChatTool, ChatToolCall, ChatToolChoice } from './providers.ts';
+export type { ToolCallDelta } from './tools.ts';
 
 export interface GatewaySettings {
   upstreamTimeoutMs: number;
@@ -64,6 +71,10 @@ export interface ChatRequest {
   /** 不指定时取 AI_MAX_OUTPUT_TOKENS；不能超过它。 */
   maxOutputTokens?: number | undefined;
   temperature?: number | undefined;
+  /** 提供给模型的工具（8.2c1）；不用工具时不传。 */
+  tools?: readonly ChatTool[] | undefined;
+  /** 工具选择，只能与 tools 一起传。 */
+  toolChoice?: ChatToolChoice | undefined;
   source: UsageSource;
   /** 所属任务（source = 'job' 时必填，任务必须正在执行），写入 usage_records；任务类型以任务记录为准。 */
   jobId?: string | null;
@@ -78,6 +89,8 @@ export interface ChatRequest {
 export interface ChatDelta {
   content?: string;
   reasoningContent?: string;
+  /** 工具调用的若干段（按 index 归位；id、name 只在第一次出现时给出，arguments 依次拼接）。 */
+  toolCalls?: ToolCallDelta[];
 }
 
 export interface ChatOptions {
@@ -98,6 +111,8 @@ export interface ChatResult {
   requestId: string;
   content: string;
   reasoningContent: string;
+  /** 模型发起的工具调用（没有时为空数组）。名称与 arguments 是模型输出，不可信。 */
+  toolCalls: ChatToolCall[];
   finishReason: string | null;
   /** true 表示调用方中途取消，content 只是已产生的部分。 */
   aborted: boolean;
@@ -114,7 +129,7 @@ export interface AiGateway {
 /** 单次调用的响应体上限。 */
 export const MAX_UPSTREAM_RESPONSE_BYTES = 32 * 1024 * 1024;
 const MAX_TOKENS = 1_000_000_000;
-const ROLES = new Set(['system', 'user', 'assistant']);
+const ROLES = new Set(['system', 'user', 'assistant', 'tool']);
 const JOB_TYPE_PATTERN = /^[a-z][a-z0-9-]{0,63}$/;
 const STEP_KEY_PATTERN = new RegExp(JOB_STEP_KEY_PATTERN);
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -158,6 +173,12 @@ function assertRequest(request: ChatRequest, settings: GatewaySettings): number 
   for (const message of request.messages) {
     if (!ROLES.has(message?.role) || typeof message.content !== 'string') throw invalid('消息格式不正确');
   }
+  try {
+    assertToolRequest(request.messages, request.tools, request.toolChoice);
+  } catch (error) {
+    if (error instanceof ToolRequestError) throw invalid(error.message);
+    throw error;
+  }
   const maxOutputTokens = request.maxOutputTokens ?? settings.maxOutputTokens;
   if (!Number.isSafeInteger(maxOutputTokens) || maxOutputTokens < 1 || maxOutputTokens > settings.maxOutputTokens) {
     throw invalid(`最大输出 token 数应为 1 到 ${settings.maxOutputTokens} 之间的整数`);
@@ -177,13 +198,20 @@ function assertRequest(request: ChatRequest, settings: GatewaySettings): number 
 
 /** 请求内容的 SHA-256：同一步骤键下请求不同（例如暂停期间用户改了输入）就是新的调用。 */
 function requestHash(request: ChatRequest, maxOutputTokens: number): Buffer {
-  const canonical = JSON.stringify([
+  const parts: unknown[] = [
     request.provider,
     request.model,
     maxOutputTokens,
     request.temperature ?? null,
-    request.messages.map((message) => [message.role, message.content]),
-  ]);
+    // 不带工具字段的消息与 8.2c1 之前的写法相同：已保存的步骤结果在升级后仍能取回。
+    request.messages.map((message) =>
+      message.toolCalls === undefined && message.toolCallId === undefined
+        ? [message.role, message.content]
+        : [message.role, message.content, message.toolCalls?.map((call) => [call.id, call.name, call.arguments]) ?? null, message.toolCallId ?? null],
+    ),
+  ];
+  if (request.tools !== undefined || request.toolChoice !== undefined) parts.push(canonicalTools(request.tools, request.toolChoice));
+  const canonical = JSON.stringify(parts);
   return createHash('sha256').update(canonical, 'utf8').digest();
 }
 
@@ -259,7 +287,7 @@ export function createAiGateway(options: CreateAiGatewayOptions): AiGateway {
       jobType: request.jobType ?? null,
       provider: request.provider,
       model: request.model,
-      estimatedInputTokens: clampTokens(inputTokenUpperBound(request.messages)),
+      estimatedInputTokens: clampTokens(inputTokenUpperBound(request.messages, request.tools)),
       maxOutputTokens,
       holdSeconds: settings.holdTtlSeconds,
     });
@@ -268,6 +296,8 @@ export function createAiGateway(options: CreateAiGatewayOptions): AiGateway {
     const signal = chatOptions.signal ? AbortSignal.any([chatOptions.signal, timeout]) : timeout;
     let content = '';
     let reasoningContent = '';
+    let toolCalls: ChatToolCall[] = [];
+    const toolCallParts = new ToolCallAccumulator();
     let finishReason: string | null = null;
     let providerUsage: ProviderUsage | null = null;
     let failure: GatewayFailureReason | null = null;
@@ -278,7 +308,14 @@ export function createAiGateway(options: CreateAiGatewayOptions): AiGateway {
       baseUrl: credential.baseUrl,
       path: adapter.chatPath,
       apiKey: credential.apiKey,
-      body: adapter.buildBody({ model: request.model, messages: request.messages, maxOutputTokens, temperature: request.temperature }),
+      body: adapter.buildBody({
+        model: request.model,
+        messages: request.messages,
+        maxOutputTokens,
+        temperature: request.temperature,
+        tools: request.tools,
+        toolChoice: request.toolChoice,
+      }),
       signal,
       isTimeout: () => timeout.aborted,
       privateHosts: settings.upstreamPrivateHosts,
@@ -291,11 +328,14 @@ export function createAiGateway(options: CreateAiGatewayOptions): AiGateway {
         if ('error' in event) throw new UpstreamError('upstream_error');
         if (event.usage != null) providerUsage = adapter.parseUsage(event.usage) ?? providerUsage;
         const choice = Array.isArray(event.choices) ? (event.choices[0] as Record<string, unknown> | undefined) : undefined;
-        const delta = (choice?.delta ?? null) as { content?: unknown; reasoning_content?: unknown } | null;
+        const delta = (choice?.delta ?? null) as { content?: unknown; reasoning_content?: unknown; tool_calls?: unknown } | null;
         const piece: ChatDelta = {};
         if (typeof delta?.content === 'string' && delta.content !== '') piece.content = delta.content;
         if (typeof delta?.reasoning_content === 'string' && delta.reasoning_content !== '') piece.reasoningContent = delta.reasoning_content;
-        if (piece.content !== undefined || piece.reasoningContent !== undefined) {
+        // 结构不合法的工具调用块抛 UpstreamError（invalid_upstream_response），按上游失败不收费。
+        const toolPieces = toolCallParts.add(delta?.tool_calls);
+        if (toolPieces.length > 0) piece.toolCalls = toolPieces;
+        if (piece.content !== undefined || piece.reasoningContent !== undefined || piece.toolCalls !== undefined) {
           content += piece.content ?? '';
           reasoningContent += piece.reasoningContent ?? '';
           chatOptions.onDelta?.(piece);
@@ -305,9 +345,12 @@ export function createAiGateway(options: CreateAiGatewayOptions): AiGateway {
       }
       // 既没有 [DONE] 也没有 finish_reason：输出被截断，按上游失败处理。
       if (!step.value.done && finishReason === null) throw new UpstreamError('invalid_upstream_response');
+      toolCalls = toolCallParts.finish();
     } catch (error) {
       if (error instanceof UpstreamAbortedError) {
         aborted = true;
+        // 已产生的部分工具调用：按已产生的用量结算时计入估算。
+        toolCalls = toolCallParts.snapshot();
       } else if (error instanceof UpstreamError) {
         failure = error.reason;
         failureDetail = { ...(error.status ? { status: error.status } : {}), ...(error.upstreamCode ? { upstreamCode: error.upstreamCode } : {}) };
@@ -356,14 +399,14 @@ export function createAiGateway(options: CreateAiGatewayOptions): AiGateway {
     const usage: SettleUsageInput = providerUsage
       ? { ...providerUsage, usageSource: 'provider' }
       : {
-          inputTokens: clampTokens(estimateInputTokens(request.messages)),
+          inputTokens: clampTokens(estimateInputTokens(request.messages, request.tools)),
           cachedInputTokens: 0,
-          outputTokens: clampTokens(estimateTokens(content) + estimateTokens(reasoningContent)),
+          outputTokens: clampTokens(estimateOutputTokens(content, reasoningContent, toolCalls)),
           usageSource: 'estimated',
         };
     // 任务步骤：完整的结果与结算在同一事务中写入。被用户取消、暂停中止的部分结果不保存（续跑时重新调用）。
     if (step && !aborted) {
-      const stepped = await settleJobStep(db, context, hold.usageId, step, { requestId, content, reasoningContent, finishReason }, usage);
+      const stepped = await settleJobStep(db, context, hold.usageId, step, { requestId, content, reasoningContent, toolCalls, finishReason }, usage);
       log.info(
         {
           ai: {
@@ -408,6 +451,7 @@ export function createAiGateway(options: CreateAiGatewayOptions): AiGateway {
       requestId,
       content,
       reasoningContent,
+      toolCalls,
       finishReason,
       aborted,
       reused: false,

@@ -211,6 +211,7 @@ function chatResult(content: string): ChatResult {
     requestId: randomUUID(),
     content,
     reasoningContent: '',
+    toolCalls: [],
     finishReason: 'stop',
     aborted: false,
     reused: false,

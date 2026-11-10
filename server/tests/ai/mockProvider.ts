@@ -50,6 +50,22 @@ export async function streamCompletion(response: http.ServerResponse, options: S
   response.end(sseChunk('[DONE]'));
 }
 
+/** 按 OpenAI 兼容格式流式返回若干 delta（例如分段的 tool_calls）、finish_reason、用量块与 [DONE]。 */
+export async function streamDeltas(
+  response: http.ServerResponse,
+  deltas: readonly unknown[],
+  options: { finishReason?: string; usage?: Record<string, unknown> | null; beforeDone?: Promise<void> } = {},
+): Promise<void> {
+  response.writeHead(200, { 'content-type': 'text/event-stream' });
+  for (const delta of deltas) response.write(sseChunk({ id: 'c1', choices: [{ index: 0, delta, finish_reason: null }] }));
+  if (options.beforeDone) await options.beforeDone;
+  response.write(sseChunk({ id: 'c1', choices: [{ index: 0, delta: {}, finish_reason: options.finishReason ?? 'tool_calls' }] }));
+  if (options.usage !== null) {
+    response.write(sseChunk({ id: 'c1', choices: [], usage: options.usage ?? { prompt_tokens: 1000, completion_tokens: 500, total_tokens: 1500 } }));
+  }
+  response.end(sseChunk('[DONE]'));
+}
+
 export async function startMockProvider(expectedApiKey: string): Promise<MockProvider> {
   const defaultHandler: MockHandler = async (request, response) => {
     if (request.authorization !== `Bearer ${expectedApiKey}`) {

@@ -281,7 +281,8 @@ describe.runIf(sandboxEnv.agentImage)('agent sandbox', () => {
 
     it('ships rg, fd and jq, and no browser, office suite or OpenXmlHelper', async () => {
       const ref = await createSandbox();
-      const tools = await sh(ref, 'rg --version | head -1; fd --version; jq --version');
+      // 不经管道截断：`rg --version | head -1` 中 head 先退出时 rg 偶发向 stderr 写 "error: broken pipe"（#74 CI），sh 要求 stderr 为空。
+      const tools = await sh(ref, 'rg --version; fd --version; jq --version');
       expect(tools.stdout).toMatch(/^ripgrep \d/m);
       // Debian 的 fd 以 fdfind 为名打印版本（镜像中的 fd 是指向 fdfind 的链接），两种名字都算。
       expect(tools.stdout).toMatch(/^fd(find)? \d/m);

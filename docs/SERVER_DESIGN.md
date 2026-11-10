@@ -505,7 +505,7 @@ AI 网关（worker 内）── 解密 Key ──> 模型服务商
 
 ### 7.5 实现（路线图 6.5）：解析沙箱
 
-第 6 步先建本节的公共部分和断网的 `parse` 模板（路线图第 6 步“文件解析的隔离”方案 B），第 8 步在同一套机制上加 `agent` 模板（每个沙箱一个只通 `agent-gw` 的专用网络，见第 7.10 节；任务令牌见第 7.11 节（8.2a），`agent-gw` 见第 7.12 节（8.2b），模型调用与业务工具 RPC 随路线图 8.2c、8.4）。
+第 6 步先建本节的公共部分和断网的 `parse` 模板（路线图第 6 步“文件解析的隔离”方案 B），第 8 步在同一套机制上加 `agent` 模板（每个沙箱一个只通 `agent-gw` 的专用网络，见第 7.10 节；任务令牌见第 7.11 节（8.2a），`agent-gw` 见第 7.12 节（8.2b），AI 网关的工具调用见第 7.13 节（8.2c1），模型调用路由与业务工具 RPC 随路线图 8.2c2、8.4）。
 
 - **接口**：`SandboxDriver`（`server/src/sandbox/driver.ts`）的 `create / copyIn / exec / copyOut / destroy`。worker 用 HTTP 客户端（`client.ts`），sandbox-runner 用 Docker 实现（`docker.ts`）；换成微虚拟机时只换后者。
 - **模板**（`templates.ts`）：镜像、网络、用户、只读、资源、可写目录、命令、取回规则都写死在代码中，调用方只选模板名；`parse` 的参数见第 7.4 节的表，取值为路线图第 6 步决定事项第 5 项的起步值。容器的主进程只是 `sleep`，命令经 exec 执行，超时或调用方中止时终止整个容器。
@@ -631,6 +631,17 @@ agent 沙箱 ──(专用 internal 网络，/etc/hosts: agent-gw)──> agent-
 - **转给哪个 worker**：agent-gw 转给 `agent-relay` 上的 worker 服务地址（多副本时由 Docker 的服务名解析分配），不必是执行该任务的那个 worker：身份每次按令牌从数据库查出，模型调用（8.2c）与业务工具（8.4）都在 worker 中按身份无状态地执行。
 - **部署**（开发 compose）：新增 `agent-gw` 服务（固定容器名 `bidtools-dev-agent-gw`，即 sandbox-runner 的 `SANDBOX_AGENT_GATEWAY`）与 internal 网络 `agent-relay`（只有 `agent-gw` 与 worker）；worker 设置 `AGENT_ENDPOINT_HOST` / `AGENT_ENDPOINT_PORT`（3200）；新 secret `agent_relay_key`（`init-dev-secrets.sh` 生成）只挂给 agent-gw 与 worker。生产部署时内部入口只绑定在 `agent-relay` 网络上的地址（第 9 步上线检查），中继密钥是第二道防线。
 - **测试**：`tests/agent/gateway.test.ts`（worker 用 HTTP 桩代替）——对照组（转发、请求体原样、流式响应首块即时到达）与恶意样本：缺失 / 格式错误的令牌（9 种）、未登记的方法与路径（含 `HEAD`、`..`、`//`）、查询串、自称身份的头部与 `Cookie`、worker 的 `Set-Cookie` 不回传、超大头部、慢速头部、只连接不发送、超大请求体（声明长度与分块两种）、错误的内容类型、GET 带请求体、慢速请求体、请求体不完整、畸形请求与请求走私样本、同一令牌并发超限、沙箱中途断开时中止转发、worker 超时（504）与不可用（502，不回显地址）、日志中没有令牌与请求体；令牌检查、头部时限、查询串、并发上限、请求时限、响应头白名单各做过变异检查（去掉后对应用例失败）。`tests/db/agentEndpoint.test.ts`——中继密钥（不带、空、错一个字符、长短不同、大小写不同、放在其他头部，即使带有效令牌也 401；不带密钥时有效与无效令牌的响应相同；日志中没有密钥）、请求体上限（上限以内对照组、声明长度超限、分块超限、GET 声明超大，都由 worker 自己拒绝），中继密钥检查、声明长度预检、读取上限各做过变异检查；有效令牌（对照组）、无效令牌、作废 / 请求暂停 / 取消 / 移出组织后的下一个请求立即 401（与“不存在”相同）、伪造身份头部与查询串不影响结果、响应不含内部标识、经 agent-gw 的端到端用例、日志中没有令牌。`tests/config.test.ts` 覆盖两者的配置与凭据类变量拒绝启动。
+
+### 7.13 实现（路线图 8.2c1）：AI 网关的工具调用
+
+Pi 运行时经 OpenAI 兼容的 chat completions 调用模型，并依赖 function calling（`bash`、读写文件与各业务工具都是工具调用，桌面版 `agentOpenAiProxy.cjs` 把 `tools` 原样转给服务商）。现有网关只支持纯文本消息，8.2c 因此拆成两步：8.2c1 在网关中加入工具调用（本节），8.2c2 在 agent-gw 与 worker 的内部入口上加 `POST /v1/chat/completions`（按令牌取组织与任务、模型固定为组织选用的白名单模型）。8.2c1 不加路由，`client/` 与交互式 `/api/ai/chat`（仍只接受 system / user / assistant 文本消息）不变。
+
+- **请求**（`ChatRequest`）：新增 `tools`（每个 `{ name, description?, parameters }`）与 `toolChoice`（`auto` / `none` / `required` / `{ name }`）；消息新增 `tool` 角色，assistant 消息可带 `toolCalls`（`{ id, name, arguments }`），tool 消息必须带 `toolCallId`。
+- **校验**（`src/ai/tools.ts`，8.2c2 起这些内容来自 agent 沙箱，按不可信输入处理）：工具 1～128 个，名称 `^[A-Za-z0-9_-]{1,64}$` 且不重复，说明 ≤ 8 KiB，参数 schema 必须是只含 JSON 类型的普通对象、嵌套 ≤ 32 层、序列化 ≤ 64 KiB，全部工具合计 ≤ 512 KiB；工具选择只能与工具一起出现，指定的工具必须在列表中；只有 assistant 能带工具调用（每条 1～128 个，id 为 1～128 个可见 ASCII 字符），只有 tool 消息能带 `toolCallId`，且必须回应**前面**某条 assistant 消息中的调用 id。不合法时 400 `INVALID_AI_REQUEST`，不冻结、不调用服务商。发给服务商的请求体只由校验过的字段重新组装，消息与工具上的其他字段（自称的组织、Base URL 等）不转；只有工具调用的 assistant 消息 `content` 传 `null`。不用工具的请求体与之前完全相同。
+- **流式输出**：`delta.tool_calls` 按 `index` 归并（`ToolCallAccumulator`），`id`、`name` 取第一次出现的非空值，`arguments` 依次拼接，汇总结果在 `ChatResult.toolCalls` 中返回，各段归位后经 `onDelta({ toolCalls })` 交给调用方（8.2c2 转成 OpenAI 格式的 SSE）。**结构由服务商负责**：`index` 不是 0～127 的整数或跳号、同一调用出现两个不同的 `id`、字段类型不对、结束时缺 `id`，按上游响应不合法处理（`invalid_upstream_response`，不收费，与截断的输出相同）。**内容由模型负责**：工具名不在列表中或带奇怪字符、同一调用后来出现不同的名称（保留第一次的）、`arguments` 不是合法 JSON，照常收费、原样返回，由 Pi 处理——否则提示注入可以让模型故意写坏工具调用来白用模型。
+- **计费**：冻结的输入上界计入工具定义（名称、说明、参数 schema 的 UTF-8 字节）与对话中的工具调用、工具结果引用，另加有工具时整段工具说明 1,024 token、每个工具 64 token、每次工具调用 32 token 的模板开销（宽松上界，结算时多余部分释放）；服务商没有返回用量时的本地估算同样计入，输出估算计入工具调用的名称与 `arguments`；用户中途断开时按已产生的部分工具调用估算。不用工具的请求冻结额与之前相同。
+- **步骤幂等**：请求内容（`request_hash`）包含工具定义、工具选择与消息中的工具字段；不带工具字段的消息与 8.2c1 之前的写法逐字节相同，升级前保存的步骤结果升级后仍能取回（有测试）。迁移 0032 给 `job_step_results` 增加可空列 `tool_calls`（jsonb 数组，1～128 项，序列化后不超过结果的字节上限；没有工具调用的步骤为 `NULL`），应用角色补这一列的 `INSERT` 授权，仍没有 `UPDATE` / `DELETE`，RLS 策略不变；续跑时带工具调用的步骤原样取回。
+- **测试**：`tests/ai/tools.test.ts`（请求校验的对照组与 40 余种恶意样本、流式汇总的对照组与结构不合法样本、请求体只含校验过的字段、冻结上界）；`tests/db/aiGateway.test.ts`“工具调用（8.2c1）”（端到端汇总与分段、请求体、冻结额、不合法请求不冻结不调用、结构不合法不收费、模型写坏的工具调用照常收费、中途断开按部分工具调用估算）；`tests/db/jobBilling.test.ts`（带工具调用的步骤保存与取回、工具字段不同是新的调用、不用工具时 `request_hash` 与旧写法相同、`tool_calls` 的 CHECK 与授权）；`migrations.test.ts` 补回滚顺序。请求内容的工具字段、冻结上界中的工具定义、`toolCallId` 的引用检查、同一调用两个 `id` 的检查做过变异检查（去掉后对应用例失败）。
 
 ## 8. 部署架构
 
