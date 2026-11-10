@@ -22,8 +22,11 @@
 #       --build-context desktop=client/electron server/sandbox/export（7.3b 起含样张配图，7.5b 起含桌面版的可研导出代码）
 #   - sandbox-runner 使用 zhibiao-export:dev（SANDBOX_EXPORT_IMAGE，未配置时 sandbox-runner 拒绝启动）。
 # 8.1 起 sandbox-runner 可以创建 agent 沙箱（每个沙箱一个只通 agent-gw 的 internal 网络，docs/SERVER_DESIGN.md 第 7.10 节）。
-#   Agent 任务上线（8.6）之前不需要：SANDBOX_AGENT_IMAGE、SANDBOX_AGENT_GATEWAY 未配置时只是不能创建 agent 沙箱；
-#   镜像：docker build -t zhibiao-agent:dev server/sandbox/agent；agent-gw 服务随 8.2 加入本文件。
+#   Agent 任务上线（8.6）之前不需要：SANDBOX_AGENT_IMAGE 未配置时只是不能创建 agent 沙箱（SANDBOX_AGENT_GATEWAY 8.2b 起指向 agent-gw）；
+#   镜像：docker build -t zhibiao-agent:dev server/sandbox/agent。
+# 8.2b 起新增 agent-gw 服务（agent 沙箱访问平台的唯一入口，docs/SERVER_DESIGN.md 第 7.12 节）：不需要新的 secret 或角色，
+#   worker 加入 internal 网络 agent-relay 并在 3200 端口开 Agent 内部入口；sandbox-runner 的 SANDBOX_AGENT_GATEWAY 指向它的容器名。
+#   重新运行 init-dev-secrets.sh 生成 agent_relay_key（agent-gw → worker 这一跳的共享密钥，只有这两个服务拿到）。
 # 重建数据库：docker compose down -v（会删除数据卷）。
 # 生产部署的 compose 与网络划分见 docs/SERVER_DESIGN.md 第 8.1 节，不使用本文件。
 name: bidtools-dev
@@ -225,12 +228,18 @@ services:
       S3_SECRET_ACCESS_KEY_FILE: /run/secrets/s3_secret_key
       SANDBOX_RUNNER_URL: http://sandbox-runner:3100
       SANDBOX_RUNNER_TOKEN_FILE: /run/secrets/sandbox_runner_token
+      # Agent 内部入口（8.2b）：只接收 agent-gw 经 agent-relay 转来的请求，每个请求按任务令牌查身份。开发环境在所有接口上监听，
+      # 生产部署只绑定在 agent-relay 网络上的地址（第 9 步上线检查）。
+      AGENT_ENDPOINT_HOST: 0.0.0.0
+      AGENT_ENDPOINT_PORT: "3200"
+      AGENT_RELAY_KEY_FILE: /run/secrets/agent_relay_key
     secrets:
       - db_app_password
       - ai_kek
       - redis_password
       - s3_secret_key
       - sandbox_runner_token
+      - agent_relay_key
     depends_on:
       migrate:
         condition: service_completed_successfully
@@ -244,6 +253,7 @@ services:
       - default
       - backend
       - sandbox-control
+      - agent-relay
     # 收到 SIGTERM 后中止执行中的任务（可续跑的回到 queued），最多等 25 秒（src/worker.ts）。
     stop_grace_period: 30s
     <<: *hardening
@@ -266,6 +276,8 @@ services:
       SANDBOX_RUNTIME: ${SANDBOX_RUNTIME:-runc}
       SANDBOX_PARSE_IMAGE: zhibiao-parse:dev
       SANDBOX_EXPORT_IMAGE: zhibiao-export:dev
+      # agent 沙箱的专用网络只接入这个容器（8.1）；SANDBOX_AGENT_IMAGE 随 Agent 任务上线（8.6）配置。
+      SANDBOX_AGENT_GATEWAY: bidtools-dev-agent-gw
       SANDBOX_RUNNER_TOKEN_FILE: /run/secrets/sandbox_runner_token
     secrets:
       - sandbox_runner_token
@@ -276,6 +288,32 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
     networks:
       - sandbox-control
+    <<: *hardening
+    restart: unless-stopped
+
+  # agent 沙箱访问平台的唯一入口（docs/SERVER_DESIGN.md 第 7.12 节，路线图第 8 步决定事项第 1 项 B）：与 api 同一镜像，入口为
+  # dist/agent-gw.js。**不持有平台凭据**：只挂载这一跳的中继密钥 agent_relay_key，没有数据库、Redis、对象存储、主密钥的配置（出现即拒绝启动）。
+  # worker 的内部入口只接受带正确中继密钥的请求，网络配置出错时沙箱也绕不过 agent-gw 的过滤。
+  # 只做令牌格式、大小与时限检查，再经 internal 网络 agent-relay 转给 worker 的内部入口；只在 agent-relay 上，连不到数据库、
+  # Redis、sandbox-runner 和外网。sandbox-runner 创建 agent 沙箱时把它接入该沙箱的专用网络（按固定的容器名查找），
+  # 沙箱经 /etc/hosts 中的 agent-gw:8080 访问它。
+  agent-gw:
+    image: bidtools-api:dev
+    build:
+      context: ./server
+    command: ["node", "dist/agent-gw.js"]
+    container_name: bidtools-dev-agent-gw
+    environment:
+      NODE_ENV: development
+      LOG_LEVEL: debug
+      HOST: 0.0.0.0
+      PORT: "8080"
+      AGENT_GW_UPSTREAM: http://worker:3200
+      AGENT_RELAY_KEY_FILE: /run/secrets/agent_relay_key
+    secrets:
+      - agent_relay_key
+    networks:
+      - agent-relay
     <<: *hardening
     restart: unless-stopped
 
@@ -294,13 +332,18 @@ secrets:
     file: ./server/.dev-secrets/redis_password
   sandbox_runner_token:
     file: ./server/.dev-secrets/sandbox_runner_token
+  agent_relay_key:
+    file: ./server/.dev-secrets/agent_relay_key
 
 # backend：Redis 所在的网络，只有 api 和 worker 加入。开发环境需要把 Redis 端口映射到本机供集成测试使用，
 # 所以没有设为 internal（internal 网络不能映射端口）；生产部署的网络划分见 docs/SERVER_DESIGN.md 第 8.1 节。
 # sandbox-control：sandbox-runner 所在的内部网络（internal，不能访问外网）；只有 worker 加入以调用它（6.6），api 不加入。
+# agent-relay：agent-gw 与 worker 之间的内部网络（internal，8.2b），只有这两个服务加入。
 networks:
   backend:
   sandbox-control:
+    internal: true
+  agent-relay:
     internal: true
 
 volumes:

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 生成开发用 docker-compose.yml 所需的数据库密码、AI 网关主密钥、对象存储密钥、Redis 密码和沙箱服务令牌（随机值），已存在的文件不覆盖。
+# 生成开发用 docker-compose.yml 所需的数据库密码、AI 网关主密钥、对象存储密钥、Redis 密码、沙箱服务令牌和 Agent 中继密钥（随机值），已存在的文件不覆盖。
 # 文件在 server/.dev-secrets/，已被 .gitignore 排除；只用于本机开发，生产环境的密钥另行管理。
 set -euo pipefail
 
@@ -10,7 +10,8 @@ chmod 700 "$dir"
 # s3_secret_key：本地对象存储（SeaweedFS）的访问密钥，api 用它访问 bucket。
 # redis_password：Redis（Valkey）ACL 用户 bidtools 的密码，见 server/redis/start-valkey.sh。
 # sandbox_runner_token：worker 调用 sandbox-runner 的共享令牌（48 个十六进制字符，至少 32 个），见 src/sandbox/runnerApp.ts。
-for name in postgres_password db_owner_password db_app_password s3_secret_key redis_password sandbox_runner_token; do
+# agent_relay_key：agent-gw 转给 worker 的 Agent 内部入口时带的共享密钥（只用于这一跳，8.2b），见 src/agent/endpoint.ts。
+for name in postgres_password db_owner_password db_app_password s3_secret_key redis_password sandbox_runner_token agent_relay_key; do
   file="$dir/$name"
   if [[ -s "$file" ]]; then
     echo "保留已有的 $name"
