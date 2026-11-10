@@ -92,7 +92,7 @@ const runner = createJobRunner({
 });
 
 let cleanup: CleanupSchedule | null = null;
-const agentEndpoint: FastifyInstance | null = config.agentEndpoint ? await buildAgentEndpointApp({ db: database.db, logLevel: config.logLevel }) : null;
+const agentEndpoint: FastifyInstance | null = config.agentEndpoint ? await buildAgentEndpointApp({ db: database.db, relayKey: config.agentEndpoint.relayKey, logLevel: config.logLevel }) : null;
 
 app.addHook('onClose', async () => {
   // 先停止接收 agent-gw 转来的请求，再停任务与连接。

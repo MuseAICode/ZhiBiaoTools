@@ -355,25 +355,36 @@ describe('loadMigrationConfig', () => {
   });
 });
 
+const RELAY_KEY = 'relay-key-'.padEnd(48, 'k');
+
 describe('Agent 内部入口（AGENT_ENDPOINT_*，8.2b）', () => {
-  it('未设置 AGENT_ENDPOINT_PORT 时不启用', () => {
+  it('未设置 AGENT_ENDPOINT_PORT 时不启用，也不要求中继密钥', () => {
     expect(loadConfig({ ...BASE_ENV, AGENT_ENDPOINT_HOST: '0.0.0.0' }).agentEndpoint).toBeNull();
   });
 
   it('设置端口后启用，地址默认 127.0.0.1', () => {
-    expect(loadConfig({ ...BASE_ENV, AGENT_ENDPOINT_PORT: '3200' }).agentEndpoint).toEqual({ host: '127.0.0.1', port: 3200 });
-    expect(loadConfig({ ...BASE_ENV, AGENT_ENDPOINT_PORT: '3200', AGENT_ENDPOINT_HOST: '0.0.0.0' }).agentEndpoint).toEqual({ host: '0.0.0.0', port: 3200 });
+    expect(loadConfig({ ...BASE_ENV, AGENT_ENDPOINT_PORT: '3200', AGENT_RELAY_KEY: RELAY_KEY }).agentEndpoint).toEqual({ host: '127.0.0.1', port: 3200, relayKey: RELAY_KEY });
+    expect(
+      loadConfig({ ...BASE_ENV, AGENT_ENDPOINT_PORT: '3200', AGENT_ENDPOINT_HOST: '0.0.0.0', AGENT_RELAY_KEY_FILE: '/run/secrets/agent_relay_key' }, { readFile: () => `${RELAY_KEY}\n` }).agentEndpoint,
+    ).toEqual({ host: '0.0.0.0', port: 3200, relayKey: RELAY_KEY });
+  });
+
+  it('启用后中继密钥必需且至少 32 个字符，错误信息不回显密钥', () => {
+    expect(expectConfigError({ ...BASE_ENV, AGENT_ENDPOINT_PORT: '3200' }).issues.map((issue) => issue.name)).toEqual(['AGENT_RELAY_KEY']);
+    const error = expectConfigError({ ...BASE_ENV, AGENT_ENDPOINT_PORT: '3200', AGENT_RELAY_KEY: 'short-relay-key' });
+    expect(error.issues.map((issue) => issue.name)).toEqual(['AGENT_RELAY_KEY']);
+    expect(error.message).not.toContain('short-relay-key');
   });
 
   it.each(['0', '70000', 'abc'])('拒绝不合法的端口：%s', (port) => {
-    expect(expectConfigError({ ...BASE_ENV, AGENT_ENDPOINT_PORT: port }).issues.map((issue) => issue.name)).toEqual(['AGENT_ENDPOINT_PORT']);
+    expect(expectConfigError({ ...BASE_ENV, AGENT_ENDPOINT_PORT: port, AGENT_RELAY_KEY: RELAY_KEY }).issues.map((issue) => issue.name)).toEqual(['AGENT_ENDPOINT_PORT']);
   });
 });
 
 describe('loadAgentGatewayConfig（8.2b）', () => {
-  const GW_ENV = { NODE_ENV: 'production', AGENT_GW_UPSTREAM: 'http://worker:3200' } as const;
+  const GW_ENV = { NODE_ENV: 'production', AGENT_GW_UPSTREAM: 'http://worker:3200', AGENT_RELAY_KEY: RELAY_KEY } as const;
 
-  it('只需 worker 内部入口的地址；默认在所有接口的 8080 端口监听', () => {
+  it('只需 worker 内部入口的地址与中继密钥；默认在所有接口的 8080 端口监听', () => {
     expect(loadAgentGatewayConfig(GW_ENV)).toEqual({
       nodeEnv: 'production',
       host: '0.0.0.0',
@@ -381,7 +392,13 @@ describe('loadAgentGatewayConfig（8.2b）', () => {
       logLevel: 'info',
       upstream: 'http://worker:3200',
       responseTimeoutMs: 600_000,
+      relayKey: RELAY_KEY,
     });
+  });
+
+  it('中继密钥必需且至少 32 个字符', () => {
+    expect(() => loadAgentGatewayConfig({ ...GW_ENV, AGENT_RELAY_KEY: undefined })).toThrow(ConfigError);
+    expect(() => loadAgentGatewayConfig({ ...GW_ENV, AGENT_RELAY_KEY: 'short' })).toThrow(ConfigError);
   });
 
   it.each(['https://worker:3200', 'http://worker:3200/v1', 'http://user@worker:3200', 'worker:3200', ''])('拒绝不合法的 AGENT_GW_UPSTREAM：%s', (upstream) => {
@@ -400,10 +417,14 @@ describe('loadAgentGatewayConfig（8.2b）', () => {
     expect((caught as ConfigError).message).not.toContain('leaked-secret-value');
   });
 
-  it('不读取任何密钥文件', () => {
-    const readFile = () => {
-      throw new Error('agent-gw 不应读取文件');
+  it('只读取中继密钥文件', () => {
+    const read: string[] = [];
+    const readFile = (path: string) => {
+      read.push(path);
+      return RELAY_KEY;
     };
-    expect(loadAgentGatewayConfig({ ...GW_ENV, DATABASE_HOST: 'postgres' }, { readFile }).upstream).toBe('http://worker:3200');
+    const config = loadAgentGatewayConfig({ NODE_ENV: 'production', AGENT_GW_UPSTREAM: 'http://worker:3200', AGENT_RELAY_KEY_FILE: '/run/secrets/agent_relay_key', DATABASE_HOST: 'postgres' }, { readFile });
+    expect(config.relayKey).toBe(RELAY_KEY);
+    expect(read).toEqual(['/run/secrets/agent_relay_key']);
   });
 });

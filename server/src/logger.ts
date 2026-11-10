@@ -27,6 +27,8 @@ const SENSITIVE_KEYS = [
   'cookie',
   'set-cookie',
   'x-api-key',
+  'x-agent-relay-key',
+  'relayKey',
 ] as const;
 
 export const REDACT_PATHS: readonly string[] = SENSITIVE_KEYS.flatMap((key) => {

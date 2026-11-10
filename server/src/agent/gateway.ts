@@ -1,7 +1,8 @@
 // agent-gw：agent 沙箱访问平台的唯一入口（路线图第 8 步决定事项第 1 项 B，8.2b；docs/SERVER_DESIGN.md 第 7.12 节）。
 //
-// 只在 agent 沙箱的专用网络（由 sandbox-runner 随沙箱接入）与 worker 之间的内部网络 agent-relay 上，**不持有任何凭据**：
+// 只在 agent 沙箱的专用网络（由 sandbox-runner 随沙箱接入）与 worker 之间的内部网络 agent-relay 上，**不持有平台凭据**：
 // 没有数据库连接、主密钥、对象存储凭据、模型 Key、sandbox-runner 令牌（入口启动时发现这些配置即拒绝启动，见 src/agent-gw.ts）。
+// 只持有 agent-gw → worker 这一跳的专用共享密钥（AGENT_RELAY_KEY_HEADER，#73 确认），worker 的内部入口只接受带它的请求。
 // 被攻破时只能看到经过它的令牌与请求；令牌短期有效、绑定一次执行，worker 对每个请求都按令牌重新查身份。
 //
 // 每个请求按顺序检查，任一项不符即拒绝、不转给 worker：
@@ -11,8 +12,8 @@
 //   4. 并发：同一令牌同时进行的请求 ≤ maxInFlightPerToken（超出 429），整个进程的连接数 ≤ maxConnections；
 //   5. 请求体：不带请求体的路由不接受请求体（400）；带请求体的只收 application/json（415），≤ 路由的 bodyLimit（超出 413，
 //      声明的长度超限时不读取），收齐整个请求的时限 requestTimeoutMs（慢速请求体断开连接）。agent-gw 不解析 JSON，原样转发；
-//   6. 转发：经内部网络转给 worker 的内部入口（src/agent/endpoint.ts），只带 Authorization、Content-Type、Content-Length 与
-//      请求 id，沙箱发来的其他头部（Cookie、X-Forwarded-For、自称的组织 / 任务等）一律不转；响应只回传状态码、Content-Type、
+//   6. 转发：经内部网络转给 worker 的内部入口（src/agent/endpoint.ts），只带 Authorization、Content-Type、Content-Length、
+//      请求 id 与 agent-gw 自己的中继密钥，沙箱发来的其他头部（Cookie、X-Forwarded-For、自称的组织 / 任务等）一律不转；响应只回传状态码、Content-Type、
 //      Content-Length、Cache-Control，响应体流式回传、不缓冲（8.2c 的流式模型输出）。连接 worker 超过 upstreamConnectTimeoutMs 返回 502，
 //      整个转发超过 responseTimeoutMs 中止（尚未响应时 504）；沙箱断开时立即中止转给 worker 的请求。
 //
@@ -22,7 +23,7 @@ import Fastify, { LogController, type FastifyInstance, type FastifyReply, type F
 import type { LogLevel } from '../config.ts';
 import { AppError, registerErrorHandlers } from '../errors.ts';
 import { createLoggerOptions } from '../logger.ts';
-import { agentTokenLogId, hashAgentToken, parseAgentBearer } from './token.ts';
+import { AGENT_RELAY_KEY_HEADER, AGENT_RELAY_KEY_MIN_LENGTH, agentTokenLogId, hashAgentToken, parseAgentBearer } from './token.ts';
 
 export interface AgentGatewayRoute {
   readonly method: 'GET' | 'POST';
@@ -71,6 +72,8 @@ export const DEFAULT_AGENT_GATEWAY_LIMITS: AgentGatewayLimits = Object.freeze({
 export interface AgentGatewayOptions {
   /** worker 内部入口的源（如 http://worker:3200），只在内部网络 agent-relay 上。 */
   upstream: string;
+  /** 转给 worker 时带的中继密钥（至少 32 个字符），与 worker 的 AGENT_RELAY_KEY 相同。 */
+  relayKey: string;
   logLevel: LogLevel;
   logStream?: NodeJS.WritableStream;
   limits?: Partial<AgentGatewayLimits>;
@@ -93,6 +96,10 @@ export async function buildAgentGateway(options: AgentGatewayOptions): Promise<F
   if (upstream.protocol !== 'http:' || upstream.pathname !== '/' || upstream.search || upstream.username) {
     throw new TypeError('agent-gw 的上游必须是不带路径的 http 源');
   }
+  if (typeof options.relayKey !== 'string' || options.relayKey.length < AGENT_RELAY_KEY_MIN_LENGTH) {
+    throw new TypeError(`Agent 中继密钥至少 ${AGENT_RELAY_KEY_MIN_LENGTH} 个字符`);
+  }
+  const relayKey = options.relayKey;
   const app = Fastify({
     logger: createLoggerOptions({ level: options.logLevel, ...(options.logStream ? { stream: options.logStream } : {}) }),
     // 默认的请求日志带 Fastify 的请求对象，改为在 onResponse 中只记必要的字段（含令牌哈希前缀）。
@@ -175,7 +182,7 @@ export async function buildAgentGateway(options: AgentGatewayOptions): Promise<F
     const state = tokens.get(request);
     if (!state) throw new AppError(401, 'AGENT_TOKEN_INVALID', '任务令牌无效');
     const body = route.method === 'POST' ? (request.body as Buffer | undefined) ?? Buffer.alloc(0) : null;
-    const headers: OutgoingHttpHeaders = { authorization: `Bearer ${state.token}`, 'x-request-id': request.id };
+    const headers: OutgoingHttpHeaders = { authorization: `Bearer ${state.token}`, 'x-request-id': request.id, [AGENT_RELAY_KEY_HEADER]: relayKey };
     if (body) {
       headers['content-type'] = 'application/json';
       headers['content-length'] = body.length;

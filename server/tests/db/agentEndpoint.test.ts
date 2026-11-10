@@ -8,7 +8,7 @@ import type { Kysely } from 'kysely';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { buildAgentEndpointApp } from '../../src/agent/endpoint.ts';
 import { buildAgentGateway } from '../../src/agent/gateway.ts';
-import { generateAgentToken } from '../../src/agent/token.ts';
+import { AGENT_RELAY_KEY_HEADER, generateAgentToken } from '../../src/agent/token.ts';
 import { issueAgentJobToken, revokeAgentJobTokens } from '../../src/agent/tokenStore.ts';
 import { createDatabase, type DatabaseHandle } from '../../src/db/database.ts';
 import { migrateToLatest } from '../../src/db/migrator.ts';
@@ -19,6 +19,8 @@ import { createLogCapture } from '../helpers.ts';
 import { connect, createTestDatabase, type TestDatabase } from './harness.ts';
 
 const TTL_MS = 30 * 60_000;
+const RELAY_KEY = 'relay-key-'.padEnd(48, 'k');
+const BODY_LIMIT = 16 * 1024;
 const LEASE_MS = 60_000;
 
 let testDb: TestDatabase;
@@ -65,9 +67,11 @@ async function issue(run: RunRef): Promise<string> {
   return issued!.token;
 }
 
-async function get(origin: string, token: string | null, init: { path?: string; headers?: Record<string, string> } = {}) {
+/** 默认带正确的中继密钥（经 agent-gw 时它会被替换为 agent-gw 自己的）；relayKey 为 null 时不带。 */
+async function get(origin: string, token: string | null, init: { path?: string; headers?: Record<string, string>; relayKey?: string | null } = {}) {
+  const relayKey = init.relayKey === undefined ? RELAY_KEY : init.relayKey;
   const response = await fetch(`${origin}${init.path ?? '/v1/session'}`, {
-    headers: { ...(token === null ? {} : { authorization: `Bearer ${token}` }), ...init.headers },
+    headers: { ...(token === null ? {} : { authorization: `Bearer ${token}` }), ...(relayKey === null ? {} : { [AGENT_RELAY_KEY_HEADER]: relayKey }), ...init.headers },
   });
   return { status: response.status, body: (await response.json()) as Record<string, any> };
 }
@@ -83,10 +87,12 @@ beforeAll(async () => {
   superuser = testDb.admin;
   database = createDatabase(testDb.appConfig);
   appDb = database.db;
-  endpoint = await buildAgentEndpointApp({ db: appDb, logLevel: 'info', logStream: endpointLogs.stream });
+  endpoint = await buildAgentEndpointApp({ db: appDb, relayKey: RELAY_KEY, bodyLimit: BODY_LIMIT, logLevel: 'info', logStream: endpointLogs.stream });
+  // 测试用的带请求体的路由：验证 worker 入口自己执行请求体上限（8.2c 起的真实路由同样受它约束）。
+  endpoint.post('/v1/test-echo', async (request) => ({ bytes: JSON.stringify(request.body).length }));
   await endpoint.listen({ host: '127.0.0.1', port: 0 });
   endpointOrigin = `http://127.0.0.1:${(endpoint.server.address() as AddressInfo).port}`;
-  gateway = await buildAgentGateway({ upstream: endpointOrigin, logLevel: 'info', logStream: gatewayLogs.stream });
+  gateway = await buildAgentGateway({ upstream: endpointOrigin, relayKey: RELAY_KEY, logLevel: 'info', logStream: gatewayLogs.stream });
   await gateway.listen({ host: '127.0.0.1', port: 0 });
   gatewayOrigin = `http://127.0.0.1:${(gateway.server.address() as AddressInfo).port}`;
 });
@@ -171,6 +177,99 @@ describe('按令牌查身份', () => {
   it('有效令牌访问未登记的路径 → 404', async () => {
     const token = await issue(await runningJob(await newMember()));
     expect((await get(endpointOrigin, token, { path: '/v1/admin' })).status).toBe(404);
+  });
+});
+
+describe('中继密钥：只接受 agent-gw 转来的请求', () => {
+  it.each([
+    ['不带', null],
+    ['空', ''],
+    ['错一个字符', `${RELAY_KEY.slice(0, -1)}x`],
+    ['少一个字符', RELAY_KEY.slice(0, -1)],
+    ['多一个字符', `${RELAY_KEY}k`],
+    ['大小写不同', RELAY_KEY.toUpperCase()],
+  ])('%s的中继密钥：即使带有效令牌也 401', async (_name, relayKey) => {
+    const token = await issue(await runningJob(await newMember()));
+    const response = await get(endpointOrigin, token, { relayKey });
+    expect(response.status).toBe(401);
+    expect(response.body.error.code).toBe('UNAUTHORIZED');
+    // 对照组：同一令牌带正确的密钥成功。
+    expect((await get(endpointOrigin, token)).status).toBe(200);
+  });
+
+  it('中继密钥放在其他头部（如 Authorization 之外的 x-api-key）不算', async () => {
+    const token = await issue(await runningJob(await newMember()));
+    expect((await get(endpointOrigin, token, { relayKey: null, headers: { 'x-api-key': RELAY_KEY } })).status).toBe(401);
+  });
+
+  it('不带中继密钥时，有效与无效令牌的响应相同（不查库、不泄露令牌是否有效）', async () => {
+    const token = await issue(await runningJob(await newMember()));
+    const valid = await get(endpointOrigin, token, { relayKey: null });
+    const invalid = await get(endpointOrigin, generateAgentToken(), { relayKey: null });
+    expect(valid.status).toBe(401);
+    expect({ ...valid.body.error, requestId: null }).toEqual({ ...invalid.body.error, requestId: null });
+  });
+
+  it('日志中没有中继密钥', async () => {
+    await get(endpointOrigin, generateAgentToken(), { relayKey: `${RELAY_KEY.slice(0, -1)}x` });
+    expect(endpointLogs.text()).not.toContain(RELAY_KEY);
+    expect(endpointLogs.text()).not.toContain(RELAY_KEY.slice(0, -1));
+  });
+});
+
+describe('请求体上限：worker 入口自己执行，不只依赖 agent-gw', () => {
+  async function post(body: string | ReadableStream, headers: Record<string, string>, token: string) {
+    const response = await fetch(`${endpointOrigin}/v1/test-echo`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${token}`, [AGENT_RELAY_KEY_HEADER]: RELAY_KEY, 'content-type': 'application/json', ...headers },
+      body,
+      ...(typeof body === 'string' ? {} : { duplex: 'half' }),
+    } as RequestInit);
+    return response.status;
+  }
+
+  it('对照组：上限以内的请求体正常处理', async () => {
+    const token = await issue(await runningJob(await newMember()));
+    expect(await post(JSON.stringify({ text: 'a'.repeat(1024) }), {}, token)).toBe(200);
+  });
+
+  it('声明的长度超过上限 → 413', async () => {
+    const token = await issue(await runningJob(await newMember()));
+    expect(await post(JSON.stringify({ text: 'a'.repeat(BODY_LIMIT) }), {}, token)).toBe(413);
+  });
+
+  it('分块传输（不声明长度）超过上限 → 413', async () => {
+    const token = await issue(await runningJob(await newMember()));
+    const chunk = new TextEncoder().encode(' '.repeat(1024));
+    let sent = 0;
+    const stream = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (sent === 0) controller.enqueue(new TextEncoder().encode('{"a":"'));
+        if (sent >= 40) {
+          controller.enqueue(new TextEncoder().encode('"}'));
+          controller.close();
+          return;
+        }
+        sent += 1;
+        controller.enqueue(chunk);
+      },
+    });
+    expect(await post(stream, {}, token)).toBe(413);
+  });
+
+  it('GET 上声明超大的请求体 → 413（不读取）', async () => {
+    const token = await issue(await runningJob(await newMember()));
+    const { request } = await import('node:http');
+    const status = await new Promise<number>((resolve, reject) => {
+      const url = new URL(`${endpointOrigin}/v1/session`);
+      const req = request({ host: url.hostname, port: url.port, path: url.pathname, method: 'GET', headers: { authorization: `Bearer ${token}`, [AGENT_RELAY_KEY_HEADER]: RELAY_KEY, 'content-length': String(BODY_LIMIT * 100) }, agent: false }, (res) => {
+        res.resume();
+        resolve(res.statusCode ?? 0);
+      });
+      req.on('error', reject);
+      req.write(' '.repeat(16));
+    });
+    expect(status).toBe(413);
   });
 });
 

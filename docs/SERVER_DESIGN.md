@@ -614,22 +614,23 @@ agent 沙箱访问平台的唯一入口（路线图第 8 步决定事项第 1 �
 
 ```
 agent 沙箱 ──(专用 internal 网络，/etc/hosts: agent-gw)──> agent-gw:8080 ──(internal 网络 agent-relay)──> worker:3200（Agent 内部入口）
-                                                         不持有任何凭据                                    按令牌查身份（每个请求）
+                                                         不持有平台凭据                                    先验中继密钥，再按令牌查身份（每个请求）
 ```
 
-- **`agent-gw`**（`src/agent-gw.ts`、`src/agent/gateway.ts`）：与 api 同一镜像、不同入口。**不持有任何凭据**：不挂载 secret，环境中出现数据库密码、主密钥、对象存储密钥、Redis 密码或 sandbox-runner 令牌的配置（`AGENT_GATEWAY_FORBIDDEN_ENV`）即拒绝启动。只在 `agent-relay` 与 sandbox-runner 随沙箱接入的专用网络上，在所有接口的 8080 端口（`AGENT_GATEWAY_PORT`）监听。每个请求按顺序检查，任一项不符即拒绝、不转给 worker：
+- **`agent-gw`**（`src/agent-gw.ts`、`src/agent/gateway.ts`）：与 api 同一镜像、不同入口。**不持有平台凭据**：只挂载这一跳的中继密钥 `agent_relay_key`（见下），环境中出现数据库密码、主密钥、对象存储密钥、Redis 密码或 sandbox-runner 令牌的配置（`AGENT_GATEWAY_FORBIDDEN_ENV`）即拒绝启动。只在 `agent-relay` 与 sandbox-runner 随沙箱接入的专用网络上，在所有接口的 8080 端口（`AGENT_GATEWAY_PORT`）监听。每个请求按顺序检查，任一项不符即拒绝、不转给 worker：
   1. 头部：请求行加全部头部 ≤ 8 KiB（431），10 秒内收齐头部（否则断开）；畸形请求行、重复的 `Content-Length`、`Content-Length` 与分块传输同时出现、非法字符由 Node 的 HTTP 解析器拒绝（400 并断开）；
   2. 路由：只有登记的方法与路径（`AGENT_GATEWAY_ROUTES`），其余 404，不自动生成 `HEAD`；查询串一律丢弃；
   3. 令牌：恰好一个 `Bearer agt_...` 且格式正确（`parseAgentBearer`，不查库），否则 401——此时还没有读取请求体，响应带 `Connection: close`；
   4. 并发：同一令牌同时进行的请求 ≤ 4（429），整个进程的连接数 ≤ 256；
   5. 请求体：不带请求体的路由不接受请求体（400）；带请求体的只收 `application/json`（415），≤ 路由的上限（兜底 8 MiB，超出 413，声明的长度超限时不读取），60 秒内收齐整个请求（否则断开）。不解析 JSON，原样转发；
-  6. 转发：只带 `Authorization`、`Content-Type`、`Content-Length` 与 agent-gw 生成的请求 id，沙箱发来的其他头部（`Cookie`、`X-Forwarded-For`、自称的组织 / 任务 / 用户、`Host` 等）一律不转；响应只回传状态码与 `Content-Type`、`Content-Length`、`Cache-Control`，响应体流式回传、不缓冲。连接 worker 超过 5 秒为 502，整个转发超过 `AGENT_GW_RESPONSE_TIMEOUT_MS`（默认 10 分钟）中止（尚未响应时 504）；沙箱断开时立即中止转给 worker 的请求。
+  6. 转发：只带 `Authorization`、`Content-Type`、`Content-Length`、agent-gw 生成的请求 id 与 agent-gw 自己的中继密钥，沙箱发来的其他头部（含同名的中继密钥头部、`Cookie`、`X-Forwarded-For`、自称的组织 / 任务 / 用户、`Host` 等）一律不转；响应只回传状态码与 `Content-Type`、`Content-Length`、`Cache-Control`，响应体流式回传、不缓冲。连接 worker 超过 5 秒为 502，整个转发超过 `AGENT_GW_RESPONSE_TIMEOUT_MS`（默认 10 分钟）中止（尚未响应时 504）；沙箱断开时立即中止转给 worker 的请求。
   
   日志只记方法、路径、状态码、耗时与令牌哈希前缀（`tokenId`），不记令牌原文、请求体。
-- **worker 的 Agent 内部入口**（`src/agent/endpoint.ts`）：worker 设置了 `AGENT_ENDPOINT_PORT` 时另开一个监听（与健康检查分开），**每个请求都调用 `lookupAgentJobToken` 重新查身份、不缓存**，令牌失效（作废、过期、暂停、取消、换执行者、发起人移出组织、项目删除）后的下一个请求立即 401，各种无效一律同样的 401。令牌身份是唯一可信来源，后续路由经 `agentIdentityOf(request)` 取得；请求中自称的组织、任务、用户等字段不采信（不依赖 agent-gw 已剥掉这些头部）。`GET /v1/session` 只返回 `{ status, expiresAt }`，不返回组织、项目、用户等标识。请求体与接收时限同样有上限；日志记令牌哈希前缀与任务 id。
+- **中继密钥**（#73 确认）：agent-gw 与 worker 之间一个专用共享密钥（`AGENT_RELAY_KEY` / `AGENT_RELAY_KEY_FILE`，至少 32 个字符，头部 `x-agent-relay-key`），只用于这一跳，不是平台的敏感凭据。worker 的内部入口**先**校验它（两边取 SHA-256 后 `timingSafeEqual`，常量时间），不带或带错的请求即使有有效的任务令牌也 401、不查库，响应与令牌是否有效无关。目的：网络配置出错、沙箱能直接连到 worker 时，沙箱也绕不过 agent-gw 的过滤。密钥与令牌一样不进日志（日志脱敏字段另加 `x-agent-relay-key`）。
+- **worker 的 Agent 内部入口**（`src/agent/endpoint.ts`）：worker 设置了 `AGENT_ENDPOINT_PORT`（同时必须有中继密钥）时另开一个监听（与健康检查分开）。**请求体大小自己检查**、不只依赖 agent-gw：声明的长度超过上限（默认 8 MiB）时不读取直接 413（GET 也一样），分块传输的按读取的字节数检查。**每个请求都调用 `lookupAgentJobToken` 重新查身份、不缓存**，令牌失效（作废、过期、暂停、取消、换执行者、发起人移出组织、项目删除）后的下一个请求立即 401，各种无效一律同样的 401。令牌身份是唯一可信来源，后续路由经 `agentIdentityOf(request)` 取得；请求中自称的组织、任务、用户等字段不采信（不依赖 agent-gw 已剥掉这些头部）。`GET /v1/session` 只返回 `{ status, expiresAt }`，不返回组织、项目、用户等标识。接收时限同样有上限；日志记令牌哈希前缀与任务 id。
 - **转给哪个 worker**：agent-gw 转给 `agent-relay` 上的 worker 服务地址（多副本时由 Docker 的服务名解析分配），不必是执行该任务的那个 worker：身份每次按令牌从数据库查出，模型调用（8.2c）与业务工具（8.4）都在 worker 中按身份无状态地执行。
-- **部署**（开发 compose）：新增 `agent-gw` 服务（固定容器名 `bidtools-dev-agent-gw`，即 sandbox-runner 的 `SANDBOX_AGENT_GATEWAY`）与 internal 网络 `agent-relay`（只有 `agent-gw` 与 worker）；worker 设置 `AGENT_ENDPOINT_HOST` / `AGENT_ENDPOINT_PORT`（3200）。agent-gw 与 worker 之间没有共享密钥（agent-gw 不持有凭据），worker 的内部入口只认任务令牌；生产部署时内部入口只绑定在 `agent-relay` 网络上的地址（第 9 步上线检查）。
-- **测试**：`tests/agent/gateway.test.ts`（worker 用 HTTP 桩代替）——对照组（转发、请求体原样、流式响应首块即时到达）与恶意样本：缺失 / 格式错误的令牌（9 种）、未登记的方法与路径（含 `HEAD`、`..`、`//`）、查询串、自称身份的头部与 `Cookie`、worker 的 `Set-Cookie` 不回传、超大头部、慢速头部、只连接不发送、超大请求体（声明长度与分块两种）、错误的内容类型、GET 带请求体、慢速请求体、请求体不完整、畸形请求与请求走私样本、同一令牌并发超限、沙箱中途断开时中止转发、worker 超时（504）与不可用（502，不回显地址）、日志中没有令牌与请求体；令牌检查、头部时限、查询串、并发上限、请求时限、响应头白名单各做过变异检查（去掉后对应用例失败）。`tests/db/agentEndpoint.test.ts`——有效令牌（对照组）、无效令牌、作废 / 请求暂停 / 取消 / 移出组织后的下一个请求立即 401（与“不存在”相同）、伪造身份头部与查询串不影响结果、响应不含内部标识、经 agent-gw 的端到端用例、日志中没有令牌。`tests/config.test.ts` 覆盖两者的配置与凭据类变量拒绝启动。
+- **部署**（开发 compose）：新增 `agent-gw` 服务（固定容器名 `bidtools-dev-agent-gw`，即 sandbox-runner 的 `SANDBOX_AGENT_GATEWAY`）与 internal 网络 `agent-relay`（只有 `agent-gw` 与 worker）；worker 设置 `AGENT_ENDPOINT_HOST` / `AGENT_ENDPOINT_PORT`（3200）；新 secret `agent_relay_key`（`init-dev-secrets.sh` 生成）只挂给 agent-gw 与 worker。生产部署时内部入口只绑定在 `agent-relay` 网络上的地址（第 9 步上线检查），中继密钥是第二道防线。
+- **测试**：`tests/agent/gateway.test.ts`（worker 用 HTTP 桩代替）——对照组（转发、请求体原样、流式响应首块即时到达）与恶意样本：缺失 / 格式错误的令牌（9 种）、未登记的方法与路径（含 `HEAD`、`..`、`//`）、查询串、自称身份的头部与 `Cookie`、worker 的 `Set-Cookie` 不回传、超大头部、慢速头部、只连接不发送、超大请求体（声明长度与分块两种）、错误的内容类型、GET 带请求体、慢速请求体、请求体不完整、畸形请求与请求走私样本、同一令牌并发超限、沙箱中途断开时中止转发、worker 超时（504）与不可用（502，不回显地址）、日志中没有令牌与请求体；令牌检查、头部时限、查询串、并发上限、请求时限、响应头白名单各做过变异检查（去掉后对应用例失败）。`tests/db/agentEndpoint.test.ts`——中继密钥（不带、空、错一个字符、长短不同、大小写不同、放在其他头部，即使带有效令牌也 401；不带密钥时有效与无效令牌的响应相同；日志中没有密钥）、请求体上限（上限以内对照组、声明长度超限、分块超限、GET 声明超大，都由 worker 自己拒绝），中继密钥检查、声明长度预检、读取上限各做过变异检查；有效令牌（对照组）、无效令牌、作废 / 请求暂停 / 取消 / 移出组织后的下一个请求立即 401（与“不存在”相同）、伪造身份头部与查询串不影响结果、响应不含内部标识、经 agent-gw 的端到端用例、日志中没有令牌。`tests/config.test.ts` 覆盖两者的配置与凭据类变量拒绝启动。
 
 ## 8. 部署架构
 
@@ -647,7 +648,7 @@ agent 沙箱 ──(专用 internal 网络，/etc/hosts: agent-gw)──> agent-
 | `caddy` | 反向代理、TLS、静态文件 | `edge` |
 | `api` | Fastify | `edge`、`backend` |
 | `worker` | BullMQ 消费者 + AI 网关（可多副本）；8.2b 起另有 Agent 内部入口（见第 7.12 节） | `backend`、`sandbox-control`、`egress`、`agent-relay`（`internal: true`，接收 `agent-gw` 转来的请求） |
-| `agent-gw` | agent 沙箱访问平台的唯一入口（8.2b，见第 7.12 节），不持有任何凭据 | `agent-relay`，以及 sandbox-runner 随沙箱接入的每个 agent 沙箱的专用网络 |
+| `agent-gw` | agent 沙箱访问平台的唯一入口（8.2b，见第 7.12 节），不持有平台凭据（只有转给 worker 这一跳的中继密钥） | `agent-relay`，以及 sandbox-runner 随沙箱接入的每个 agent 沙箱的专用网络 |
 | `sandbox-runner` | 唯一能访问容器运行时（6.5 实现，见第 7.5 节）；按模板创建 parse、export（7.1，见第 7.9 节）沙箱 | `sandbox-control`（`internal: true`，只有 worker 能访问） |
 | `postgres` | PostgreSQL 17，数据卷 | `backend` |
 | `redis` | Valkey 8（第 6 步决定替代 Redis 7，协议兼容），开启密码和 ACL，不持久化；启动脚本 `server/redis/start-valkey.sh`（6.1） | `backend` |

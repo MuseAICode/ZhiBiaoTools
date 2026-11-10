@@ -6,7 +6,7 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import type { FastifyInstance } from 'fastify';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { AGENT_GATEWAY_ROUTES, buildAgentGateway, type AgentGatewayLimits } from '../../src/agent/gateway.ts';
-import { agentTokenLogId, generateAgentToken, hashAgentToken } from '../../src/agent/token.ts';
+import { AGENT_RELAY_KEY_HEADER, agentTokenLogId, generateAgentToken, hashAgentToken } from '../../src/agent/token.ts';
 import { createLogCapture } from '../helpers.ts';
 
 interface Recorded {
@@ -62,11 +62,13 @@ let gateway: FastifyInstance;
 let gatewayPort: number;
 let logs: ReturnType<typeof createLogCapture>;
 const token = generateAgentToken();
+const RELAY_KEY = 'relay-key-'.padEnd(48, 'k');
 
 async function startGateway(options: { upstream?: string; limits?: Partial<AgentGatewayLimits> } = {}) {
   logs = createLogCapture();
   const app = await buildAgentGateway({
     upstream: options.upstream ?? upstreamOrigin,
+    relayKey: RELAY_KEY,
     logLevel: 'info',
     logStream: logs.stream,
     limits: { ...TEST_LIMITS, ...options.limits },
@@ -156,6 +158,7 @@ describe('对照组：合法请求转给 worker', () => {
     expect(upstream.requests).toHaveLength(1);
     expect(upstream.requests[0]).toMatchObject({ method: 'GET', url: '/v1/session' });
     expect(upstream.requests[0]!.headers.authorization).toBe(`Bearer ${token}`);
+    expect(upstream.requests[0]!.headers[AGENT_RELAY_KEY_HEADER]).toBe(RELAY_KEY);
   });
 
   it('POST 路由原样转发 JSON 请求体（agent-gw 不解析）', async () => {
@@ -236,11 +239,14 @@ describe('头部：只转必要的头部，回传时也只带必要的头部', (
         'x-api-key': 'sk-fake',
         host: 'worker.internal',
         'x-request-id': 'forged',
+        [AGENT_RELAY_KEY_HEADER]: 'forged-relay-key-'.padEnd(48, 'f'),
       },
     });
     expect(response.status).toBe(200);
     const forwarded = upstream.requests[0]!.headers;
-    expect(Object.keys(forwarded).sort()).toEqual(['authorization', 'connection', 'host', 'x-request-id']);
+    expect(Object.keys(forwarded).sort()).toEqual(['authorization', 'connection', 'host', AGENT_RELAY_KEY_HEADER, 'x-request-id']);
+    // 沙箱自带的中继密钥头部不转发：只有 agent-gw 自己的密钥。
+    expect(forwarded[AGENT_RELAY_KEY_HEADER]).toBe(RELAY_KEY);
     expect(forwarded['x-request-id']).not.toBe('forged');
     expect(forwarded.host).not.toBe('worker.internal');
   });
@@ -461,6 +467,7 @@ describe('日志', () => {
     expect(text).not.toContain(token);
     expect(text).not.toContain(token.slice(4, 20));
     expect(text).not.toContain('secret_prompt');
+    expect(text).not.toContain(RELAY_KEY);
     const logId = agentTokenLogId(hashAgentToken(token));
     const lines = logs.lines().filter((line) => line.msg === 'agent request');
     expect(lines.length).toBeGreaterThanOrEqual(3);
@@ -470,6 +477,10 @@ describe('日志', () => {
 
 describe('构建参数', () => {
   it.each(['https://worker:3200', 'http://worker:3200/v1', 'http://u:p@worker:3200'])('拒绝不合法的上游：%s', async (value) => {
-    await expect(buildAgentGateway({ upstream: value, logLevel: 'silent' })).rejects.toThrow(TypeError);
+    await expect(buildAgentGateway({ upstream: value, relayKey: RELAY_KEY, logLevel: 'silent' })).rejects.toThrow(TypeError);
+  });
+
+  it.each(['', 'short-key'])('拒绝过短的中继密钥：%j', async (relayKey) => {
+    await expect(buildAgentGateway({ upstream: 'http://worker:3200', relayKey, logLevel: 'silent' })).rejects.toThrow(TypeError);
   });
 });

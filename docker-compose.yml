@@ -26,6 +26,7 @@
 #   镜像：docker build -t zhibiao-agent:dev server/sandbox/agent。
 # 8.2b 起新增 agent-gw 服务（agent 沙箱访问平台的唯一入口，docs/SERVER_DESIGN.md 第 7.12 节）：不需要新的 secret 或角色，
 #   worker 加入 internal 网络 agent-relay 并在 3200 端口开 Agent 内部入口；sandbox-runner 的 SANDBOX_AGENT_GATEWAY 指向它的容器名。
+#   重新运行 init-dev-secrets.sh 生成 agent_relay_key（agent-gw → worker 这一跳的共享密钥，只有这两个服务拿到）。
 # 重建数据库：docker compose down -v（会删除数据卷）。
 # 生产部署的 compose 与网络划分见 docs/SERVER_DESIGN.md 第 8.1 节，不使用本文件。
 name: bidtools-dev
@@ -231,12 +232,14 @@ services:
       # 生产部署只绑定在 agent-relay 网络上的地址（第 9 步上线检查）。
       AGENT_ENDPOINT_HOST: 0.0.0.0
       AGENT_ENDPOINT_PORT: "3200"
+      AGENT_RELAY_KEY_FILE: /run/secrets/agent_relay_key
     secrets:
       - db_app_password
       - ai_kek
       - redis_password
       - s3_secret_key
       - sandbox_runner_token
+      - agent_relay_key
     depends_on:
       migrate:
         condition: service_completed_successfully
@@ -289,7 +292,8 @@ services:
     restart: unless-stopped
 
   # agent 沙箱访问平台的唯一入口（docs/SERVER_DESIGN.md 第 7.12 节，路线图第 8 步决定事项第 1 项 B）：与 api 同一镜像，入口为
-  # dist/agent-gw.js。**不持有任何凭据**：不挂载 secret，没有数据库、Redis、对象存储、主密钥的配置（出现即拒绝启动）。
+  # dist/agent-gw.js。**不持有平台凭据**：只挂载这一跳的中继密钥 agent_relay_key，没有数据库、Redis、对象存储、主密钥的配置（出现即拒绝启动）。
+  # worker 的内部入口只接受带正确中继密钥的请求，网络配置出错时沙箱也绕不过 agent-gw 的过滤。
   # 只做令牌格式、大小与时限检查，再经 internal 网络 agent-relay 转给 worker 的内部入口；只在 agent-relay 上，连不到数据库、
   # Redis、sandbox-runner 和外网。sandbox-runner 创建 agent 沙箱时把它接入该沙箱的专用网络（按固定的容器名查找），
   # 沙箱经 /etc/hosts 中的 agent-gw:8080 访问它。
@@ -305,6 +309,9 @@ services:
       HOST: 0.0.0.0
       PORT: "8080"
       AGENT_GW_UPSTREAM: http://worker:3200
+      AGENT_RELAY_KEY_FILE: /run/secrets/agent_relay_key
+    secrets:
+      - agent_relay_key
     networks:
       - agent-relay
     <<: *hardening
@@ -325,6 +332,8 @@ secrets:
     file: ./server/.dev-secrets/redis_password
   sandbox_runner_token:
     file: ./server/.dev-secrets/sandbox_runner_token
+  agent_relay_key:
+    file: ./server/.dev-secrets/agent_relay_key
 
 # backend：Redis 所在的网络，只有 api 和 worker 加入。开发环境需要把 Redis 端口映射到本机供集成测试使用，
 # 所以没有设为 internal（internal 网络不能映射端口）；生产部署的网络划分见 docs/SERVER_DESIGN.md 第 8.1 节。

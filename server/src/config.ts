@@ -107,9 +107,11 @@ export interface AgentEndpointConfig {
   /** 监听地址：生产部署只绑定在 agent-relay 网络上的地址（第 9 步上线检查）。默认 127.0.0.1。 */
   host: string;
   port: number;
+  /** agent-gw 转发时带的中继密钥（AGENT_RELAY_KEY 或 AGENT_RELAY_KEY_FILE，至少 32 个字符；只用于这一跳）。 */
+  relayKey: string;
 }
 
-/** agent-gw 进程的配置（路线图 8.2b，docs/SERVER_DESIGN.md 第 7.12 节）：不含任何凭据。 */
+/** agent-gw 进程的配置（路线图 8.2b，docs/SERVER_DESIGN.md 第 7.12 节）：不含平台凭据，只有 agent-gw → worker 这一跳的中继密钥。 */
 export interface AgentGatewayConfig {
   nodeEnv: NodeEnv;
   /** 默认 0.0.0.0：sandbox-runner 随沙箱把 agent-gw 接入新的网络，要在所有接口上监听。 */
@@ -121,10 +123,12 @@ export interface AgentGatewayConfig {
   upstream: string;
   /** 一次转发（含流式响应）的总时长上限。 */
   responseTimeoutMs: number;
+  /** 转给 worker 时带的中继密钥（AGENT_RELAY_KEY 或 AGENT_RELAY_KEY_FILE，至少 32 个字符）。 */
+  relayKey: string;
 }
 
 /**
- * agent-gw 不得持有的配置：出现任意一个即拒绝启动（决定事项第 1 项“不持有任何凭据”）。
+ * agent-gw 不得持有的配置：出现任意一个即拒绝启动（决定事项第 1 项“不持有平台凭据”；中继密钥 AGENT_RELAY_KEY 除外）。
  * 部署时 agent-gw 不挂载任何 secret，这里防止误把 api / worker 的环境变量整段复制过去。
  */
 export const AGENT_GATEWAY_FORBIDDEN_ENV = Object.freeze([
@@ -480,16 +484,24 @@ function createReader(env: Env, options: LoadConfigOptions) {
     issues.push({ name, reason });
   }
 
-  /** 设置了 AGENT_ENDPOINT_PORT 才启用（worker 的 Agent 内部入口，8.2b）。 */
+  /** Agent 中继密钥（8.2b）：必需，至少 32 个字符。 */
+  function readRelayKey(): string {
+    const key = readSecret('AGENT_RELAY_KEY');
+    if (key !== undefined && key !== '' && key.length < 32) fail('AGENT_RELAY_KEY', '过短（至少 32 个字符）');
+    return key;
+  }
+
+  /** 设置了 AGENT_ENDPOINT_PORT 才启用（worker 的 Agent 内部入口，8.2b）；启用后中继密钥必需。 */
   function readAgentEndpoint(): AgentEndpointConfig | null {
     if (!env.AGENT_ENDPOINT_PORT?.trim()) return null;
     return Object.freeze({
       host: read('AGENT_ENDPOINT_HOST', { ...HOST_SPEC, default: '127.0.0.1' }),
       port: read('AGENT_ENDPOINT_PORT', portSpec(3200)),
+      relayKey: readRelayKey(),
     });
   }
 
-  return { read, readSecret, readDatabase, readAi, readStorage, readRedis, readSandboxClient, readAgentEndpoint, fail, finish };
+  return { read, readSecret, readDatabase, readAi, readStorage, readRedis, readSandboxClient, readAgentEndpoint, readRelayKey, fail, finish };
 }
 
 export function loadConfig(env: Env, options: LoadConfigOptions = {}): AppConfig {
@@ -592,13 +604,13 @@ export function loadSandboxRunnerConfig(env: Env, options: LoadConfigOptions = {
 }
 
 /**
- * agent-gw 的配置（路线图 8.2b）。只读监听地址、日志级别、worker 内部入口的地址与转发时限；
+ * agent-gw 的配置（路线图 8.2b）。只读监听地址、日志级别、worker 内部入口的地址、转发时限与中继密钥；
  * 环境中出现任何凭据类变量（AGENT_GATEWAY_FORBIDDEN_ENV）即拒绝启动。
  */
 export function loadAgentGatewayConfig(env: Env, options: LoadConfigOptions = {}): AgentGatewayConfig {
-  const { read, fail, finish } = createReader(env, options);
+  const { read, readRelayKey, fail, finish } = createReader(env, options);
   for (const name of AGENT_GATEWAY_FORBIDDEN_ENV) {
-    if (env[name] !== undefined && env[name] !== '') fail(name, '不允许设置（agent-gw 不持有任何凭据）');
+    if (env[name] !== undefined && env[name] !== '') fail(name, '不允许设置（agent-gw 不持有平台凭据）');
   }
   return finish<AgentGatewayConfig>({
     nodeEnv: read('NODE_ENV', { parse: oneOf(NODE_ENVS), expected: NODE_ENVS.join(' / ') }),
@@ -613,5 +625,6 @@ export function loadAgentGatewayConfig(env: Env, options: LoadConfigOptions = {}
       expected: 'worker 内部入口的 http 源（不带路径，如 http://worker:3200）',
     }),
     responseTimeoutMs: read('AGENT_GW_RESPONSE_TIMEOUT_MS', intSpec(600_000, 10_000, 3_600_000)),
+    relayKey: readRelayKey(),
   });
 }
