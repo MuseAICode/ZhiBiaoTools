@@ -7,6 +7,7 @@ import { readFileSync } from 'node:fs';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { readArchive } from '../../../src/sandbox/archive.ts';
 import { createSandboxRunnerClient } from '../../../src/sandbox/client.ts';
+import { countSandboxes } from '../../../src/sandbox/docker.ts';
 import type { SandboxRef } from '../../../src/sandbox/driver.ts';
 import { buildSandboxRunnerApp } from '../../../src/sandbox/runnerApp.ts';
 import { SANDBOX_TEMPLATES } from '../../../src/sandbox/templates.ts';
@@ -24,7 +25,7 @@ defineIsolationSuite(
 
 describe('sandbox lifecycle', () => {
   it('enforces the maximum number of sandboxes', async () => {
-    const existing = (await docker.listContainers('zhibiao.sandbox=1')).length;
+    const existing = await countSandboxes(docker);
     const limited = makeDriver({ maxActive: existing + 1 });
     const first = await createSandbox(limited);
     await expect(limited.create('parse', { jobId: randomUUID() })).rejects.toMatchObject({ code: 'SANDBOX_BUSY' });
@@ -34,7 +35,7 @@ describe('sandbox lifecycle', () => {
 
   it('counts stopped and expired-but-unswept sandboxes toward the cap, and allows creating again after cleanup', async () => {
     // 路线图 6.6（#28 确认时登记）：计入全部带沙箱标签的容器，含已停止、已到期但尚未清理的残留沙箱。
-    const existing = (await docker.listContainers('zhibiao.sandbox=1')).length;
+    const existing = await countSandboxes(docker);
     const limited = makeDriver({ maxActive: existing + 2 });
     // 已到期但还没被清理：创建时的时钟早于一个生命周期，标签中的到期时间已过。
     const past = makeDriver({ maxActive: existing + 2, now: () => new Date(Date.now() - parse.lifetimeMs - 60_000) });

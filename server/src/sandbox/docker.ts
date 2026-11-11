@@ -48,7 +48,7 @@ export interface DockerSandboxDriverOptions {
   runtime: string;
   /** 各镜像的引用（按摘要固定），由 sandbox-runner 的配置决定；未配置的镜像（如尚未部署的 export）不能创建对应模板的沙箱。 */
   images: Readonly<Partial<Record<SandboxImageName, string | null>>>;
-  /** 同时存在的沙箱数上限（含已结束、尚未删除的）。 */
+  /** 同时存在的沙箱数上限（含已结束、尚未删除的容器与只剩专用网络的残留，见 countSandboxes）。 */
   maxActive: number;
   /**
    * agent-gw 的容器名（8.1）：每个 agent 沙箱的专用网络只接入这一个容器。未配置时不能创建 agent 模板的沙箱。
@@ -115,6 +115,23 @@ class OutputPreview {
 
 function containerName(id: string): string {
   return `${SANDBOX_CONTAINER_PREFIX}${id}`;
+}
+
+/**
+ * 计入沙箱总数上限的数量（8.2d）：带沙箱标签的容器（含已停止、已到期但尚未清理的）与带沙箱标签的专用网络
+ * （含容器已删、网络因清理失败残留的）按名称合并计数——同一个 agent 沙箱的容器与网络同名，只算一个；
+ * 只剩容器或只剩网络的各算一个。因此容器数与网络数都不会超过上限，残留网络不能累积到耗尽 Docker 的地址池。
+ * 名称不是沙箱名称格式的（只有本服务创建带沙箱标签的对象，正常不会出现）按 id 各算一个。
+ */
+export async function countSandboxes(docker: Pick<DockerApi, 'listContainers' | 'listNetworks'>): Promise<number> {
+  const [containers, networks] = await Promise.all([docker.listContainers(`${SANDBOX_LABEL}=1`), docker.listNetworks(`${SANDBOX_LABEL}=1`)]);
+  const keys = new Set<string>();
+  for (const container of containers) {
+    const name = container.Names?.[0]?.replace(/^\//, '');
+    keys.add(name?.startsWith(SANDBOX_CONTAINER_PREFIX) ? name : `container:${container.Id}`);
+  }
+  for (const network of networks) keys.add(network.Name.startsWith(SANDBOX_CONTAINER_PREFIX) ? network.Name : `network:${network.Id}`);
+  return keys.size;
 }
 
 export function createDockerSandboxDriver(options: DockerSandboxDriverOptions): DockerSandboxDriver {
@@ -391,9 +408,7 @@ export function createDockerSandboxDriver(options: DockerSandboxDriverOptions): 
       const image = options.images[template.image];
       if (!image) throw new SandboxError('SANDBOX_UNAVAILABLE', '沙箱镜像未配置');
       const run = async (): Promise<SandboxRef> => {
-        // 计入全部带沙箱标签的容器（listContainers 含已停止的），含已停止、已到期但尚未清理的残留沙箱。
-        const existing = await docker.listContainers(`${SANDBOX_LABEL}=1`);
-        if (existing.length >= options.maxActive) throw new SandboxError('SANDBOX_BUSY', SANDBOX_BUSY_MESSAGE);
+        if ((await countSandboxes(docker)) >= options.maxActive) throw new SandboxError('SANDBOX_BUSY', SANDBOX_BUSY_MESSAGE);
         const id = randomUUID();
         const expiresAt = new Date(now().getTime() + template.lifetimeMs);
         const network = template.network === 'agent' ? await createAgentNetwork(id, templateName, createOptions.jobId, expiresAt) : null;

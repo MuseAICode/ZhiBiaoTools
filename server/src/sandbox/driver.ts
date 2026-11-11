@@ -80,7 +80,8 @@ export class SandboxError extends Error {
 }
 
 /**
- * 同时存在的沙箱数已达上限时的文案（429 SANDBOX_BUSY）。上限计入全部带沙箱标签的容器，含已停止、已到期但尚未清理的残留沙箱。
+ * 同时存在的沙箱数已达上限时的文案（429 SANDBOX_BUSY）。上限计入全部带沙箱标签的容器，含已停止、已到期但尚未清理的残留沙箱，
+ * 以及只剩专用网络的 agent 沙箱残留（与容器同名的只算一个，见 docker.ts 的 countSandboxes）。
  * worker 经 HTTP 收到 SANDBOX_BUSY 时用同一文案，不采用响应中的文字。
  */
 export const SANDBOX_BUSY_MESSAGE = '沙箱数已达上限，请稍后重试';
