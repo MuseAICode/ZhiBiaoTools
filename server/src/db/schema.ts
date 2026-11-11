@@ -56,7 +56,7 @@ import type {
 } from './migrations/0018_technical_plan.ts';
 import type { TECHNICAL_PLAN_CONTENT_MODES } from './migrations/0019_technical_plan_outline.ts';
 import type { JOB_EVENT_KINDS, JOB_STATUSES } from './migrations/0021_jobs.ts';
-import type { JOB_PAUSE_REASONS } from './migrations/0022_job_billing.ts';
+import type { AGENT_BUDGET_EXHAUSTED_REASONS, JOB_PAUSE_REASONS } from './migrations/0033_agent_job_budgets.ts';
 import type { ProjectKind } from '../projects/store.ts';
 
 type Timestamp = ColumnType<Date, Date | string, Date | string>;
@@ -1221,7 +1221,7 @@ export interface JobsTable {
   finished_at: ColumnType<Date | null, never, Date | string | null>;
   /** 本任务已扣费的合计（计费单位，bigint 读出为字符串），只由 ai_usage_settle 累加（迁移 0022_job_billing）。 */
   billed_amount: ColumnType<string, never, never>;
-  /** 暂停原因（迁移 0022_job_billing），只在 paused 时可以有值。 */
+  /** 暂停原因（迁移 0022_job_billing，0033 新增任务上限的两个原因），只在 paused 时可以有值。 */
   pause_reason: ColumnType<JobPauseReason | null, never, JobPauseReason | null>;
 }
 
@@ -1277,6 +1277,23 @@ export interface AgentJobTokensTable {
   created_at: ColumnType<Date, never, never>;
   expires_at: ColumnType<Date, Date | string, never>;
   revoked_at: ColumnType<Date | null, never, Date | string>;
+}
+
+export type AgentBudgetExhaustedReason = (typeof AGENT_BUDGET_EXHAUSTED_REASONS)[number];
+
+/**
+ * Agent 任务的费用与轮数上限（迁移 0033_agent_job_budgets）：入队时写入，上限不能改；轮数只能逐次加 1，
+ * 达到上限的原因只能设置一次（触发器 AB001）。bigint 读出为字符串。
+ */
+export interface AgentJobBudgetsTable {
+  org_id: Fixed<string>;
+  job_id: Fixed<string>;
+  cost_limit: ColumnType<string, string, never>;
+  turn_limit: ColumnType<number, number, never>;
+  turns_used: ColumnType<number, never, number>;
+  exhausted_reason: ColumnType<AgentBudgetExhaustedReason | null, never, AgentBudgetExhaustedReason>;
+  created_at: ColumnType<Date, never, never>;
+  updated_at: ColumnType<Date, never, never>;
 }
 
 export interface Database {
@@ -1355,4 +1372,5 @@ export interface Database {
   job_events: JobEventsTable;
   job_step_results: JobStepResultsTable;
   agent_job_tokens: AgentJobTokensTable;
+  agent_job_budgets: AgentJobBudgetsTable;
 }

@@ -9,6 +9,8 @@
 //     ├──取消──> cancelled
 //     └──暂停──> paused ──继续──> queued；paused ──取消──> cancelled
 //   running ──调用模型时余额不足以冻结──> paused（pause_reason = insufficient_balance，6.4）；充值后继续即回到 queued
+//   running ──达到 Agent 任务的费用或轮数上限──> paused（pause_reason = task_cost_limit / task_turn_limit，8.3a）；
+//     不能经普通的“继续”恢复，须由发起人或组织管理员确认继续（8.3b）
 //
 // 用户发起的操作（新建、查询、取消、暂停、继续）经 withTenant；worker 的系统操作（认领、续租、结束、对账）经 withOrgContext，
 // 只设置组织、不代表任何用户。worker 的每一次写入都带 run_id 条件：租约被收回后，原执行者的写入只影响 0 行。
@@ -24,8 +26,10 @@ import {
   JOB_LOCK_KEY_MAX_LENGTH,
   JOB_PARAMS_MAX_BYTES,
 } from '../db/migrations/0021_jobs.ts';
-import type { Database, JobEventKind, JobPauseReason, JobsTable, JobStatus, MemberRole } from '../db/schema.ts';
+import type { AgentBudgetExhaustedReason, Database, JobEventKind, JobPauseReason, JobsTable, JobStatus, MemberRole } from '../db/schema.ts';
+import { insertAgentJobBudget, type AgentTaskLimits } from '../agent/budget.ts';
 import { assertJobStartBalance } from '../billing/usage.ts';
+import { AGENT_BUDGET_EXHAUSTED_REASONS } from '../db/migrations/0033_agent_job_budgets.ts';
 import { withOrgContext, withTenant, type TenantContext } from '../db/tenant.ts';
 import { AppError } from '../errors.ts';
 import { serializeJsonObject } from '../jsonObject.ts';
@@ -45,7 +49,7 @@ export interface JobRecord {
   errorCode: string | null;
   errorMessage: string | null;
   attempt: number;
-  /** 暂停原因：insufficient_balance（运行中余额不足，6.4）；用户手动暂停时为 null。 */
+  /** 暂停原因：insufficient_balance（运行中余额不足，6.4）、task_cost_limit / task_turn_limit（达到任务上限，8.3a）；用户手动暂停时为 null。 */
   pauseReason: JobPauseReason | null;
   /** 本任务已扣费的合计（计费单位），在结算的同一事务中累加。 */
   billedAmount: bigint;
@@ -153,6 +157,8 @@ export interface NewJob {
    * 并发入队时每个事务都看得到之前提交的任务，结果总是只有最后提交的一个仍在排队。不用 lock_key（运行中的旧任务会使新请求 409）。
    */
   supersedeQueued?: boolean;
+  /** Agent 任务的费用与轮数上限（JobTypeDefinition.agentLimits），与任务在同一事务中写入。 */
+  agentLimits?: AgentTaskLimits | null;
 }
 
 export interface InsertedJob {
@@ -194,6 +200,7 @@ export async function insertJobSuperseding(db: Kysely<Database>, context: Tenant
         .returningAll()
         .executeTakeFirstOrThrow();
       const job = toRecord(row);
+      if (input.agentLimits) await insertAgentJobBudget(trx, job, input.agentLimits);
       await appendEvent(trx, job, 'queued', null, { userId: context.userId });
       const superseded: JobRecord[] = [];
       if (input.supersedeQueued) {
@@ -372,6 +379,10 @@ export async function requestResume(
     if (!row) throw jobNotFound();
     if (isFinalStatus(row.status)) throw jobFinished();
     if (row.status === 'paused') {
+      // 达到任务上限而暂停的：只能由发起人或组织管理员确认继续（8.3b，确认时增加一份额度），普通的继续不放行。
+      if (isTaskLimitReason(row.pause_reason)) {
+        throw new AppError(409, 'JOB_TASK_LIMIT_CONFIRM_REQUIRED', '任务已达到费用或调用次数上限，需由发起人或组织管理员确认后继续');
+      }
       if (checkBalance(row.type)) await assertJobStartBalance(trx);
       const updated = await trx
         .updateTable('jobs')
@@ -555,13 +566,24 @@ export async function findJobForOrg(db: Kysely<Database>, orgId: string, jobId: 
   return row ? toRecord(row) : null;
 }
 
+export function isTaskLimitReason(reason: JobPauseReason | null): reason is AgentBudgetExhaustedReason {
+  return reason !== null && (AGENT_BUDGET_EXHAUSTED_REASONS as readonly string[]).includes(reason);
+}
+
+const TASK_LIMIT_PAUSE_MESSAGES: Readonly<Record<AgentBudgetExhaustedReason, string>> = {
+  task_cost_limit: '本任务的费用已达到上限，任务已暂停，由发起人或组织管理员确认后可以继续',
+  task_turn_limit: '本任务的模型调用次数已达到上限，任务已暂停，由发起人或组织管理员确认后可以继续',
+};
+
 export type RunOutcome =
   | { kind: 'succeeded' }
   | { kind: 'failed'; code: string; message: string }
   /** 执行被中止（取消、暂停、worker 关闭）：按数据库中的状态收尾。 */
   | { kind: 'interrupted' }
   /** 调用模型时余额不足以冻结（6.4）：暂停为 paused / insufficient_balance，已请求取消时仍为 cancelled。 */
-  | { kind: 'insufficient-balance' };
+  | { kind: 'insufficient-balance' }
+  /** 达到 Agent 任务的费用或轮数上限（8.3a）：暂停为 paused / 该原因，已请求取消时仍为 cancelled。 */
+  | { kind: 'task-limit'; reason: AgentBudgetExhaustedReason };
 
 /**
  * 结束一次执行。成功即 succeeded（即使期间请求了取消，工作已完成）；失败即 failed，除非已请求取消（cancelled）；
@@ -595,6 +617,26 @@ export async function finishRun(db: Kysely<Database>, run: RunRef, outcome: RunO
         .returningAll()
         .executeTakeFirstOrThrow();
       await appendEvent(trx, toRecord(updated), 'paused', '余额不足，任务已暂停，充值后可继续', { reason: 'insufficient_balance' });
+      return 'paused';
+    }
+    if (outcome.kind === 'task-limit' && row.status === 'running') {
+      const updated = await trx
+        .updateTable('jobs')
+        .set({ status: 'paused', pause_reason: outcome.reason, pause_requested: false, run_id: null, lease_expires_at: null })
+        .where('id', '=', row.id)
+        .returningAll()
+        .executeTakeFirstOrThrow();
+      // 事件中记下暂停时的已扣费与上限（确认继续的页面显示，8.3b）。
+      const budget = await trx
+        .selectFrom('agent_job_budgets')
+        .select(['cost_limit', 'turn_limit', 'turns_used'])
+        .where('job_id', '=', row.id)
+        .executeTakeFirst();
+      await appendEvent(trx, toRecord(updated), 'paused', TASK_LIMIT_PAUSE_MESSAGES[outcome.reason], {
+        reason: outcome.reason,
+        billedAmount: updated.billed_amount,
+        ...(budget ? { costLimit: budget.cost_limit, turnLimit: budget.turn_limit, turnsUsed: budget.turns_used } : {}),
+      });
       return 'paused';
     }
     return releaseInTrx(trx, row, resumable, 'released');

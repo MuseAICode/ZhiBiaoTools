@@ -2,7 +2,8 @@
 // src/jobs/registry.ts；测试用的任务类型在 tests/ 中定义，不进入构建产物。
 import type { Kysely } from 'kysely';
 import type { ChatDelta, ChatRequest, ChatResult } from '../ai/gateway.ts';
-import type { Database } from '../db/schema.ts';
+import { isValidAgentTaskLimits, type AgentTaskLimits } from '../agent/budget.ts';
+import type { AgentBudgetExhaustedReason, Database } from '../db/schema.ts';
 import type { TenantContext } from '../db/tenant.ts';
 import type { ObjectStore } from '../files/objectStore.ts';
 import type { SandboxDriver } from '../sandbox/driver.ts';
@@ -93,6 +94,11 @@ export interface JobTypeDefinition<P = unknown> {
    * 不足时拒绝（402 INSUFFICIENT_BALANCE）。不调用模型的任务（解析、导出、清理）不检查。
    */
   readonly billable?: boolean;
+  /**
+   * Agent 任务的费用与轮数上限（路线图 8.3a，迁移 0033_agent_job_budgets）：agent 队列的任务类型必须给出（src/agent/budget.ts 的
+   * AGENT_TASK_LIMITS），入队时与任务一起写入；其他队列不能给出。
+   */
+  readonly agentLimits?: AgentTaskLimits;
   /** 校验并归一化任务参数（入队时和执行前各一次），不合法时抛错。参数里只放 id 和少量选项。 */
   parseParams(raw: unknown): P;
   run(context: JobContext<P>): Promise<void>;
@@ -119,6 +125,20 @@ export class JobBalanceExhaustedError extends Error {
   }
 }
 
+/**
+ * 达到任务的费用或轮数上限（8.3a）：任务应立即退出，执行者把任务暂停为 paused / task_cost_limit 或 task_turn_limit，
+ * 由发起人或组织管理员确认继续（8.3b）。
+ */
+export class JobTaskLimitError extends Error {
+  readonly reason: AgentBudgetExhaustedReason;
+
+  constructor(reason: AgentBudgetExhaustedReason, options?: ErrorOptions) {
+    super(`job reached its ${reason === 'task_cost_limit' ? 'cost' : 'turn'} limit`, options);
+    this.name = 'JobTaskLimitError';
+    this.reason = reason;
+  }
+}
+
 /** 租约已丢失（被对账收回或任务已被别人结束）：当前执行者的写入不再生效，应立即退出。 */
 export class JobInterruptedError extends Error {
   constructor() {
@@ -140,6 +160,13 @@ export function createJobTypeRegistry(definitions: readonly JobTypeDefinition<an
     if (!TYPE_PATTERN.test(definition.type)) throw new TypeError(`任务类型名称不合法：${definition.type}`);
     if (!(JOB_QUEUES as readonly string[]).includes(definition.queue)) throw new TypeError(`任务类型 ${definition.type} 的队列不合法`);
     if (byType.has(definition.type)) throw new TypeError(`任务类型重复登记：${definition.type}`);
+    // Agent 任务必须有上限（不放行没有上限的 Agent 任务），其他任务不登记上限。
+    if ((definition.queue === 'agent') !== (definition.agentLimits !== undefined)) {
+      throw new TypeError(`任务类型 ${definition.type}：agent 队列的任务必须给出费用与轮数上限，其他队列不能给出`);
+    }
+    if (definition.agentLimits !== undefined && !isValidAgentTaskLimits(definition.agentLimits)) {
+      throw new TypeError(`任务类型 ${definition.type} 的费用与轮数上限不合法`);
+    }
     byType.set(definition.type, definition);
   }
   return Object.freeze({ get: (type: string) => byType.get(type), types: Object.freeze([...byType.values()]) });

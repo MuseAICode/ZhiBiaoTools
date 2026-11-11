@@ -42,7 +42,7 @@ export async function enqueueJobSuperseding(deps: JobServiceDependencies, contex
   const definition = deps.registry.get(input.type);
   if (!definition) throw new TypeError(`任务类型未登记：${input.type}`);
   definition.parseParams(input.params);
-  const inserted = await insertJobSuperseding(deps.db, context, { ...input, checkBalance: definition.billable === true });
+  const inserted = await insertJobSuperseding(deps.db, context, { ...input, checkBalance: definition.billable === true, agentLimits: definition.agentLimits ?? null });
   const notifier = deps.notifier ?? NULL_JOB_NOTIFIER;
   for (const cancelled of inserted.superseded) await notifier.changed(cancelled);
   await notifier.changed(inserted.job);

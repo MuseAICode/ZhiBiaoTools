@@ -12,6 +12,11 @@
 //   请求体；只接受流式（stream 必须为 true），不接受图片、思考内容（reasoning_content）、tool 消息的 name 等 Pi 在本平台配置下
 //   不发送的字段。
 //
+// 任务上限（8.3a，src/agent/budget.ts）：每个请求在调用网关之前先按令牌的任务原子地计入一轮——**取回已保存结果的请求同样计入**，
+// 否则被注入的 Agent 可以无限重发同一请求（不冻结、不扣费）空耗墙钟与并发名额；达到轮数上限即 409 TASK_TURN_LIMIT，不取回、
+// 不冻结、不调用服务商。费用上限由冻结（ai_usage_begin）检查，超出即 409 TASK_COST_LIMIT 并记下原因；之后的请求都被拒绝，
+// 执行者据此暂停任务（task_cost_limit / task_turn_limit）。没有登记上限的任务一律拒绝。
+//
 // 计费、步骤幂等、并发都沿用 AI 网关：source = 'job'，任务按令牌取；步骤键固定为 AGENT_CHAT_STEP_KEY，网关的步骤幂等键
 // 本来就含请求内容的 SHA-256，所以“同一任务、同一请求内容”就是同一步骤——续跑时 Pi 重发同一请求取回已保存的结果，不再扣费。
 // 中止：沙箱断开（agent-gw 随之中止转发）按已产生的用量收费（与用户取消相同）；worker 关闭时中止的调用不收费
@@ -29,6 +34,7 @@ import { assertToolRequest, ToolRequestError } from '../ai/tools.ts';
 import { AppError } from '../errors.ts';
 import type { JobModel } from '../jobs/chat.ts';
 import { JobError } from '../jobs/definitions.ts';
+import { TASK_COST_LIMIT_CODE } from './budget.ts';
 import { AGENT_CHAT_MAX_BODY_BYTES, AGENT_CHAT_PATH } from './gateway.ts';
 import { agentTenantContext, type AgentTokenIdentity } from './tokenStore.ts';
 
@@ -50,6 +56,10 @@ export interface AgentChatDependencies {
   maxOutputTokens: number;
   /** 本次请求的令牌身份（endpoint.ts 的 agentIdentityOf）。 */
   identityOf: (request: FastifyRequest) => AgentTokenIdentity;
+  /** 计入一轮模型调用请求（endpoint.ts 传 beginAgentTurn）；达到上限、没有登记上限、任务不在执行中时抛 AppError。 */
+  beginTurn: (identity: AgentTokenIdentity) => Promise<void>;
+  /** 冻结时费用上限检查失败后记下原因（endpoint.ts 传 markAgentBudgetExhausted）。 */
+  markCostLimit: (identity: AgentTokenIdentity) => Promise<void>;
   /** 登记进行中的调用，worker 关闭时以原因 'shutdown' 统一中止（不收费）；返回注销函数。 */
   track: (controller: AbortController) => () => void;
 }
@@ -278,6 +288,8 @@ export function registerAgentChatRoute(app: FastifyInstance, deps: AgentChatDepe
         if (error instanceof JobError) throw new AppError(409, error.code, error.message);
         throw error;
       }
+      // 轮数：在取回已保存结果、冻结之前计入（达到上限时抛错，不调用网关）。
+      await deps.beginTurn(identity);
 
       // 沙箱断开（agent-gw 中止转发）时立即中止上游调用，已产生的用量照常结算；worker 关闭时由 track 统一中止（不收费）。
       const controller = new AbortController();
@@ -347,6 +359,9 @@ export function registerAgentChatRoute(app: FastifyInstance, deps: AgentChatDepe
         );
       } catch (error) {
         untrack();
+        if (error instanceof AppError && error.code === TASK_COST_LIMIT_CODE) {
+          await deps.markCostLimit(identity).catch((markError: unknown) => request.log.error({ err: markError, jobId: identity.jobId }, 'agent budget mark failed'));
+        }
         if (!streaming) throw error;
         const failure = error instanceof AppError ? { code: error.code, message: error.message } : { code: 'INTERNAL_ERROR', message: '服务器内部错误' };
         if (!(error instanceof AppError)) request.log.error({ err: error, jobId: identity.jobId }, 'agent chat stream failed');
