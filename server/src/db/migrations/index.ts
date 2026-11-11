@@ -34,6 +34,7 @@ import * as feasibilityReportExport from './0030_feasibility_report_export.ts';
 import * as agentJobTokens from './0031_agent_job_tokens.ts';
 import * as jobStepToolCalls from './0032_job_step_tool_calls.ts';
 import * as agentJobBudgets from './0033_agent_job_budgets.ts';
+import * as agentJobBudgetConfirm from './0034_agent_job_budget_confirm.ts';
 
 export const migrations: Readonly<Record<string, Migration>> = Object.freeze({
   '0001_identity': identity,
@@ -69,4 +70,5 @@ export const migrations: Readonly<Record<string, Migration>> = Object.freeze({
   '0031_agent_job_tokens': agentJobTokens,
   '0032_job_step_tool_calls': jobStepToolCalls,
   '0033_agent_job_budgets': agentJobBudgets,
+  '0034_agent_job_budget_confirm': agentJobBudgetConfirm,
 });

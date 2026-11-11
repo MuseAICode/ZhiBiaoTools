@@ -7,7 +7,7 @@ import type { TenantContext } from '../db/tenant.ts';
 import type { JobTypeRegistry } from './definitions.ts';
 import { NULL_JOB_NOTIFIER, type JobNotifier } from './notify.ts';
 import type { JobDispatcher } from './queue.ts';
-import { insertJobSuperseding, requestCancel, requestPause, requestResume, type InsertedJob, type JobRecord, type NewJob } from './store.ts';
+import { confirmTaskLimit, insertJobSuperseding, requestCancel, requestPause, requestResume, type InsertedJob, type JobRecord, type NewJob } from './store.ts';
 
 export interface JobServiceDependencies {
   db: Kysely<Database>;
@@ -65,6 +65,17 @@ export async function pauseJob(deps: JobServiceDependencies, context: TenantCont
 export async function resumeJob(deps: JobServiceDependencies, context: TenantContext, jobId: string): Promise<JobRecord> {
   // 从暂停继续前同样检查余额（余额不足暂停的任务充值后才能继续）。
   const change = await requestResume(deps.db, context, jobId, (type) => deps.registry.get(type)?.billable === true);
+  await (deps.notifier ?? NULL_JOB_NOTIFIER).changed(change.job);
+  if (change.dispatch) await dispatchBestEffort(deps, change.job);
+  return change.job;
+}
+
+/**
+ * 达到 Agent 任务的费用或轮数上限后确认继续（8.3b）：发起人或组织 owner / admin，上限各加一份，任务回到 queued 并派发。
+ * 余额不足时 402，任务仍是 paused。
+ */
+export async function confirmJobTaskLimit(deps: JobServiceDependencies, context: TenantContext, jobId: string): Promise<JobRecord> {
+  const change = await confirmTaskLimit(deps.db, context, jobId);
   await (deps.notifier ?? NULL_JOB_NOTIFIER).changed(change.job);
   if (change.dispatch) await dispatchBestEffort(deps, change.job);
   return change.job;

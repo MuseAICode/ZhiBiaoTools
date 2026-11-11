@@ -5,7 +5,8 @@
 // - 轮数：Agent 的模型调用路由每个请求先经 beginAgentTurn 原子地计入一轮（含取回已保存结果的请求），达到上限时 TASK_TURN_LIMIT，
 //   不取回、不冻结、不调用服务商；没有登记上限的任务一律拒绝（不放行没有上限的 Agent 调用）；
 // - 达到任一上限后记下原因（exhausted_reason，只能设置一次），之后的请求都被拒绝；执行者据此把任务暂停为 task_cost_limit /
-//   task_turn_limit（JobTaskLimitError → finishRun），由发起人或组织管理员确认继续（8.3b）。
+//   task_turn_limit（JobTaskLimitError → finishRun），由发起人或组织管理员确认继续（src/jobs/store.ts 的 confirmTaskLimit，8.3b）：
+//   上限各加一份（入队时的上限）、清除原因，改法与确认人由数据库守卫限定（迁移 0034_agent_job_budget_confirm）。
 import { sql, type Kysely, type Transaction } from 'kysely';
 import { TASK_COST_LIMIT_CODE, TASK_COST_LIMIT_MESSAGE, UNITS_PER_YUAN } from '../billing/ledger.ts';
 import { AGENT_BUDGET_MAX_COST_LIMIT, AGENT_BUDGET_MAX_TURN_LIMIT } from '../db/migrations/0033_agent_job_budgets.ts';
@@ -68,13 +69,18 @@ export interface AgentJobBudget {
   exhaustedReason: AgentBudgetExhaustedReason | null;
   /** 本任务已扣费的合计（jobs.billed_amount）。 */
   billedAmount: bigint;
+  /** 确认继续时上限各加的一份（入队时的上限，0034）。 */
+  costStep: bigint;
+  turnStep: number;
+  /** 已确认继续的次数。 */
+  confirmations: number;
 }
 
 async function readBudget(trx: Transaction<Database>, jobId: string): Promise<AgentJobBudget | null> {
   const row = await trx
     .selectFrom('agent_job_budgets as b')
     .innerJoin('jobs as j', (join) => join.onRef('j.org_id', '=', 'b.org_id').onRef('j.id', '=', 'b.job_id'))
-    .select(['b.cost_limit', 'b.turn_limit', 'b.turns_used', 'b.exhausted_reason', 'j.billed_amount'])
+    .select(['b.cost_limit', 'b.turn_limit', 'b.turns_used', 'b.exhausted_reason', 'b.cost_step', 'b.turn_step', 'b.confirmations', 'j.billed_amount'])
     .where('b.job_id', '=', jobId)
     .executeTakeFirst();
   if (!row) return null;
@@ -84,12 +90,20 @@ async function readBudget(trx: Transaction<Database>, jobId: string): Promise<Ag
     turnsUsed: row.turns_used,
     exhaustedReason: row.exhausted_reason,
     billedAmount: BigInt(row.billed_amount),
+    costStep: BigInt(row.cost_step),
+    turnStep: row.turn_step,
+    confirmations: row.confirmations,
   };
 }
 
 /** 读出任务的上限与用量（worker 的系统操作，按组织上下文）；没有登记时为 null。 */
 export async function findAgentJobBudget(db: Kysely<Database>, job: { orgId: string; jobId: string }): Promise<AgentJobBudget | null> {
   return withOrgContext(db, job.orgId, (trx) => readBudget(trx, job.jobId));
+}
+
+/** 读出任务的上限与用量（用户请求，按 TenantContext 与 RLS：本组织的任务）；没有登记时为 null。 */
+export async function getAgentJobBudget(db: Kysely<Database>, context: TenantContext, jobId: string): Promise<AgentJobBudget | null> {
+  return withTenant(db, context, (trx) => readBudget(trx, jobId));
 }
 
 /** 达到上限的错误：任务将暂停，由发起人或组织管理员确认继续。 */

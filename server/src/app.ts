@@ -157,7 +157,6 @@ export async function buildApp(config: AppConfig, options: BuildAppOptions): Pro
   await app.register(registerAiRoutes, { prefix: '/api/ai', gateway, maxOutputTokens: config.ai.maxOutputTokens });
   await app.register(registerFileRoutes, { prefix: '/api/files', db, objectStore: options.objectStore ?? null, ...options.uploadLimits });
   await app.register(registerProjectRoutes, { prefix: '/api/projects', db });
-  await app.register(registerJobRoutes, { prefix: '/api/jobs', db, notifier: options.events?.notifier ?? NULL_JOB_NOTIFIER });
   await app.register(registerEventRoutes, { prefix: '/api/events', db, hub: options.events?.hub ?? null, ...options.eventLimits });
   // 业务接口入队任务（6.6 起：导入后的文档解析）。先写 jobs，提交后放进 BullMQ；放入失败时由 worker 的对账派发。
   const jobs: JobServiceDependencies = {
@@ -167,6 +166,7 @@ export async function buildApp(config: AppConfig, options: BuildAppOptions): Pro
     log: app.log,
     notifier: options.events?.notifier ?? NULL_JOB_NOTIFIER,
   };
+  await app.register(registerJobRoutes, { prefix: '/api/jobs', db, notifier: options.events?.notifier ?? NULL_JOB_NOTIFIER, jobs });
   await app.register(registerArtifactRoutes, { prefix: '/api/artifacts', db, objectStore: options.objectStore ?? null });
   await app.register(registerSettingsRoutes, { prefix: '/api/settings', db });
   await app.register(registerTemplateRoutes, {

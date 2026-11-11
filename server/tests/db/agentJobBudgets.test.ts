@@ -1,11 +1,11 @@
 // Agent 任务的费用与轮数上限（迁移 0033_agent_job_budgets、src/agent/budget.ts，路线图第 8 步 8.3a）：
 // - 入队：agent 队列的任务类型必须登记上限，入队时与任务一起写入；
-// - 数据库不变式：上限不能改、轮数只能逐次加 1、达到上限的原因只能设置一次（AB001），只能为本组织 queued 的任务写入，
+// - 数据库不变式：上限不能直接改（确认继续见 agentJobBudgetConfirm.test.ts）、轮数只能逐次加 1、达到上限的原因只能设置一次（AB001），只能为本组织 queued 的任务写入，
 //   只在执行中更新；计费角色只读费用上限；
 // - 轮数：原子递增，并发请求也不超过上限；达到上限后记下原因、之后一律拒绝；
 // - 费用：冻结时检查“已扣费 + 本任务未到期的冻结 + 本次冻结 ≤ 上限”，并发冻结也不超过上限；没有登记上限的任务不受影响；
 // - 执行者：假模型永不停止时在上限处暂停（task_turn_limit / task_cost_limit），已扣费 ≤ 上限；普通的“继续”被拒绝，取消照常；
-//   低于上限的任务正常完成（对照组）；
+//   低于上限的任务正常完成（对照组）；暂停时已记下达到上限的原因（确认继续的前提）；
 // - 回滚 0033：因上限暂停的任务改为普通暂停。
 // 经 agent-gw 的模型调用路由的端到端用例（含取回已保存结果的请求计入轮数）见 tests/db/agentChat.test.ts。
 import { randomBytes, randomUUID } from 'node:crypto';
@@ -304,8 +304,9 @@ describe('数据库不变式（应用角色）', () => {
     const ctx = await newMember();
     const run = await runningAgentJob(ctx);
     const update = (set: Record<string, unknown>) => asApp(ctx, (trx) => trx.updateTable('agent_job_budgets').set(set).where('job_id', '=', run.jobId).execute());
-    await expectCode(update({ cost_limit: '99999999' }), '42501');
-    await expectCode(update({ turn_limit: 100 }), '42501');
+    // 上限只能经确认继续改（0034，见 agentJobBudgetConfirm.test.ts）：执行中直接改被守卫拒绝。
+    await expectCode(update({ cost_limit: '99999999' }), 'AB001');
+    await expectCode(update({ turn_limit: 100 }), 'AB001');
     await expectCode(update({ turns_used: 2 }), 'AB001');
     await update({ turns_used: 1 });
     await expectCode(update({ turns_used: 0 }), 'AB001');
@@ -353,14 +354,19 @@ describe('数据库不变式（应用角色）', () => {
     expect((await budgetRow(run.jobId))!.turns_used).toBe(0);
   });
 
-  it('授权：应用角色只能写入上限、只能更新已用轮数与原因；计费角色只读费用上限', async () => {
+  it('授权：应用角色只能写入上限、只能更新已用轮数、原因与（确认继续时的）上限；计费角色只读费用上限', async () => {
     const privilege = async (role: string, column: string, kind: string) =>
       (await sql<{ ok: boolean }>`SELECT has_column_privilege(${role}, 'agent_job_budgets', ${column}, ${kind}) AS ok`.execute(superuser)).rows[0]!.ok;
     expect(await privilege(APP_ROLE, 'cost_limit', 'INSERT')).toBe(true);
     expect(await privilege(APP_ROLE, 'turns_used', 'INSERT')).toBe(false);
     expect(await privilege(APP_ROLE, 'exhausted_reason', 'INSERT')).toBe(false);
-    expect(await privilege(APP_ROLE, 'cost_limit', 'UPDATE')).toBe(false);
-    expect(await privilege(APP_ROLE, 'turn_limit', 'UPDATE')).toBe(false);
+    // 0034：上限与确认次数可以更新（只能经确认继续，由守卫限定）；“一份”额度不能写。
+    expect(await privilege(APP_ROLE, 'cost_limit', 'UPDATE')).toBe(true);
+    expect(await privilege(APP_ROLE, 'turn_limit', 'UPDATE')).toBe(true);
+    expect(await privilege(APP_ROLE, 'cost_step', 'UPDATE')).toBe(false);
+    expect(await privilege(APP_ROLE, 'turn_step', 'UPDATE')).toBe(false);
+    expect(await privilege(APP_ROLE, 'cost_step', 'INSERT')).toBe(false);
+    expect(await privilege(APP_ROLE, 'confirmations', 'INSERT')).toBe(false);
     expect(await privilege(APP_ROLE, 'turns_used', 'UPDATE')).toBe(true);
     const table = async (role: string, kind: string) =>
       (await sql<{ ok: boolean }>`SELECT has_table_privilege(${role}, 'agent_job_budgets', ${kind}) AS ok`.execute(superuser)).rows[0]!.ok;
@@ -516,6 +522,8 @@ describe('执行者：达到上限即暂停（假模型永不停止）', () => {
     const run = await runningAgentJob(ctx);
     expect(await finishRun(appDb, run, { kind: 'task-limit', reason: 'task_cost_limit' }, true)).toBe('paused');
     expect(await jobRow(run.jobId)).toMatchObject({ status: 'paused', pause_reason: 'task_cost_limit', run_id: null });
+    // 执行者没能记下原因时，暂停的同一事务中补上（确认继续的前提）。
+    expect((await budgetRow(run.jobId))!.exhausted_reason).toBe('task_cost_limit');
     const deps = { db: appDb, registry, dispatcher: null, log: logs.log };
     await expectCode(resumeJob(deps, ctx, run.jobId), 'JOB_TASK_LIMIT_CONFIRM_REQUIRED');
     expect((await jobRow(run.jobId)).status).toBe('paused');
@@ -539,6 +547,7 @@ describe('回滚 0033', () => {
     await appDb.destroy();
     const owner = connect(testDb.ownerConfig);
     try {
+      expect((await migrateDown(owner)).results?.map((result) => result.migrationName)).toEqual(['0034_agent_job_budget_confirm']);
       const down = await migrateDown(owner);
       expect(down.error).toBeUndefined();
       expect(down.results?.map((result) => result.migrationName)).toEqual(['0033_agent_job_budgets']);
