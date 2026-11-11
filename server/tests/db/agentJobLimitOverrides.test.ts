@@ -265,6 +265,43 @@ describe('权限（数据库）', () => {
       '23514',
     );
   });
+
+  it('硬上限（10,000 元 / 1,000,000 次）由数据库强制：函数与表的 CHECK 各拦一次，含 UPDATE；边界值可以写入（对照组）', async () => {
+    const { context } = await newOrg();
+    const MAX = { costLimit: AGENT_BUDGET_MAX_COST_LIMIT, turnLimit: AGENT_BUDGET_MAX_TURN_LIMIT } satisfies AgentTaskLimits;
+    const set = (limits: AgentTaskLimits) => setAgentLimitOverride(appDb, ctxAdmin, { orgId: context.orgId, jobType: 'test-agent-outline', limits, note: null });
+
+    // 函数：任一项超出 1 都拒绝，表不变。
+    await expectCode(set({ costLimit: MAX.costLimit + 1n, turnLimit: MAX.turnLimit }), 'BAD_REQUEST');
+    await expectCode(set({ costLimit: MAX.costLimit, turnLimit: MAX.turnLimit + 1 }), 'BAD_REQUEST');
+    expect(await overrideRows(context.orgId)).toEqual([]);
+
+    // 对照组：恰好等于硬上限可以写入，入队时写入的也是硬上限。
+    expect(await set(MAX)).toMatchObject(MAX);
+    const jobId = await enqueueAgent(context);
+    expect(await budgetRow(jobId)).toMatchObject({ cost_limit: MAX.costLimit.toString(), turn_limit: MAX.turnLimit });
+
+    // 表的 CHECK：绕过函数与 RLS（超级用户）直接写，INSERT 与 UPDATE 都被拒绝。
+    const insert = (cost: bigint, turn: number) =>
+      superuser.insertInto('agent_job_limit_overrides').values({
+        org_id: context.orgId, job_type: 'test-agent-template', cost_limit: cost.toString(), turn_limit: turn,
+        created_by: platformAdmin, updated_by: platformAdmin,
+      }).execute();
+    await expectCode(insert(MAX.costLimit + 1n, 1), '23514');
+    await expectCode(insert(1n, MAX.turnLimit + 1), '23514');
+    const update = (values: { cost_limit?: string; turn_limit?: number }) =>
+      superuser.updateTable('agent_job_limit_overrides').set(values).where('org_id', '=', context.orgId).execute();
+    await expectCode(update({ cost_limit: (MAX.costLimit + 1n).toString() }), '23514');
+    await expectCode(update({ turn_limit: MAX.turnLimit + 1 }), '23514');
+    expect(await overrideRows(context.orgId)).toEqual([expect.objectContaining({ cost_limit: MAX.costLimit.toString(), turn_limit: MAX.turnLimit })]);
+
+    // 覆盖值等于硬上限时，确认继续再加一份会超出硬上限：409，上限不变。
+    const run = { orgId: context.orgId, jobId, runId: randomUUID() };
+    expect((await claimJob(appDb, { ...run, leaseMs: 60_000, orgRunningLimit: 100, attemptsFor: () => 5 })).kind).toBe('claimed');
+    expect(await finishRun(appDb, run, { kind: 'task-limit', reason: 'task_turn_limit' }, true)).toBe('paused');
+    await expectCode(confirmJobTaskLimit(offline(), context, jobId), 'TASK_LIMIT_MAX_REACHED');
+    expect(await budgetRow(jobId)).toMatchObject({ cost_limit: MAX.costLimit.toString(), turn_limit: MAX.turnLimit, confirmations: 0 });
+  });
 });
 
 describe('/api/admin/agent-limits', () => {
