@@ -5,12 +5,14 @@
 //   恶意样本为外网、DNS、元数据服务、宿主（Docker 网桥与宿主地址上监听所有地址的服务）、agent-gw 在其他网络上的地址、
 //   另一个同时运行的 agent 沙箱；对照组为经 /etc/hosts 中的 agent-gw 访问桩成功，以及去掉 inhibit_ipv4 后同一探测连到宿主；
 // - 专用网络的生命周期：随沙箱创建与删除、到期清理、创建失败时不残留，网关未配置、不可用或是沙箱时拒绝创建；
+//   只剩网络的残留计入沙箱总数上限，占满时拒绝创建、清理后恢复（8.2d）；
 // - 逃逸面与镜像内容：mount、unshare 失败，没有 Docker socket，镜像中有 rg / fd / jq、没有 Chromium、LibreOffice、OpenXmlHelper。
 // agent-content 与 agent 只有沙箱最长存活不同（tests/sandbox/templates.test.ts 核对），这里只跑 agent。
 import { randomUUID } from 'node:crypto';
 import { networkInterfaces } from 'node:os';
 import { createServer, type Server } from 'node:net';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { countSandboxes } from '../../../src/sandbox/docker.ts';
 import { buildNetworkSpec, SANDBOX_TEMPLATES } from '../../../src/sandbox/templates.ts';
 import { docker, dockerRequest, sandboxEnv } from './env.ts';
 import { bridgeGateway, createIsolationHarness, defineIsolationSuite } from './isolationSuite.ts';
@@ -238,6 +240,35 @@ describe.runIf(sandboxEnv.agentImage)('agent sandbox', () => {
       expect(await inspectNetwork(`zhibiao-sandbox-${leftover.id}`)).toBeNull();
       expect(await inspectNetwork(`zhibiao-sandbox-${current.id}`)).not.toBeNull();
       expect((await probe<NetworkProbe>(current, networkProbe([]))).gateway).toBe('gateway');
+    });
+
+    it('counts leftover networks toward the sandbox cap: refuses to create while they fill it, and recovers after cleanup', async () => {
+      // 8.2d（#71 确认时登记）：上限同时计入带沙箱标签的专用网络，只剩网络的残留不能累积到耗尽地址池。
+      const listNetworks = async () => (await docker.listNetworks('zhibiao.sandbox=1')).length;
+      const existing = await countSandboxes(docker);
+      const limited = makeDriver({ maxActive: existing + 2 });
+      const past = makeDriver({ maxActive: existing + 2, now: () => new Date(Date.now() - agent.lifetimeMs - 60_000) });
+      // 两个只剩网络的残留（容器已删，例如清理失败）：一个未到期、一个已到期。
+      const leftover = await createSandbox(limited);
+      await docker.removeContainer(`zhibiao-sandbox-${leftover.id}`);
+      const expiredLeftover = await createSandbox(past);
+      await docker.removeContainer(`zhibiao-sandbox-${expiredLeftover.id}`);
+      expect(await inspectNetwork(`zhibiao-sandbox-${leftover.id}`)).not.toBeNull();
+      const networksBefore = await listNetworks();
+
+      const busy = await limited.create('agent', { jobId: randomUUID() }).then(() => null, (error: unknown) => error);
+      expect(busy).toMatchObject({ code: 'SANDBOX_BUSY', message: '沙箱数已达上限，请稍后重试' });
+      // 拒绝时不新建网络。
+      expect(await listNetworks()).toBe(networksBefore);
+
+      // 到期清理删掉已到期的残留网络后可以再创建；销毁未到期的残留（容器已不存在）后同样。
+      await limited.sweep();
+      expect(await inspectNetwork(`zhibiao-sandbox-${expiredLeftover.id}`)).toBeNull();
+      await createSandbox(limited);
+      await expect(limited.create('agent', { jobId: randomUUID() })).rejects.toMatchObject({ code: 'SANDBOX_BUSY' });
+      await limited.destroy(leftover);
+      expect(await inspectNetwork(`zhibiao-sandbox-${leftover.id}`)).toBeNull();
+      await createSandbox(limited);
     });
 
     it('leaves no network behind when the container cannot be created', async () => {
