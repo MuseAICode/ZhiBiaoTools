@@ -4,12 +4,14 @@
 // - 模型固定为组织选用的白名单模型：请求中的 model 不采信，发给服务商的是平台模型，用量按它记账；max_tokens 截到平台上限；
 // - 计费与步骤幂等沿用 AI 网关：按用量扣费，同一任务同一请求内容（续跑时 Pi 重发）取回已保存的结果、只扣一次；
 // - 令牌无效、请求暂停后不调用服务商；沙箱断开按已产生的用量收费，worker 关闭时中止的调用不收费；
+// - 任务上限（8.3a）：取回已保存结果的请求同样计入轮数，重复同一请求到上限即被拒绝；费用上限在冻结时检查；
 // - 日志中没有令牌原文与 Key。
 import { randomBytes, randomUUID } from 'node:crypto';
 import type { AddressInfo } from 'node:net';
 import Fastify, { type FastifyInstance } from 'fastify';
 import type { Kysely } from 'kysely';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { AGENT_TASK_LIMITS, type AgentTaskLimits } from '../../src/agent/budget.ts';
 import { AGENT_CHAT_PATH, AGENT_CHAT_STEP_KEY } from '../../src/agent/chatCompletions.ts';
 import { buildAgentEndpointApp } from '../../src/agent/endpoint.ts';
 import { buildAgentGateway } from '../../src/agent/gateway.ts';
@@ -78,19 +80,19 @@ async function newMember(options: { balance?: bigint; model?: boolean } = {}): P
   return { orgId, userId, context: { orgId, userId, role: 'owner' } };
 }
 
-async function runningJob(member: Member): Promise<RunRef> {
+async function runningJob(member: Member, limits: AgentTaskLimits = AGENT_TASK_LIMITS.outline): Promise<RunRef> {
   const project = await withTenant(appDb, member.context, (trx) =>
     trx.insertInto('projects').values({ org_id: member.orgId, kind: 'technical-plan', name: '项目', created_by: member.userId }).returning('id').executeTakeFirstOrThrow(),
   );
-  const job = await insertJob(appDb, member.context, { type: 'test-agent', params: {}, projectId: project.id });
+  const job = await insertJob(appDb, member.context, { type: 'test-agent', params: {}, projectId: project.id, agentLimits: limits });
   const runId = randomUUID();
   const result = await claimJob(appDb, { orgId: member.orgId, jobId: job.id, runId, leaseMs: LEASE_MS, orgRunningLimit: 100, attemptsFor: () => 5 });
   expect(result.kind).toBe('claimed');
   return { orgId: member.orgId, jobId: job.id, runId };
 }
 
-async function tokenFor(member: Member): Promise<{ run: RunRef; token: string }> {
-  const run = await runningJob(member);
+async function tokenFor(member: Member, limits?: AgentTaskLimits): Promise<{ run: RunRef; token: string }> {
+  const run = await runningJob(member, limits);
   const issued = await issueAgentJobToken(appDb, run, TTL_MS);
   return { run, token: issued!.token };
 }
@@ -347,6 +349,59 @@ describe('令牌、余额与上限', () => {
     const big = JSON.stringify(body({ messages: [{ role: 'user', content: 'x'.repeat(4 * 1024 * 1024) }] }));
     expect((await chat(gwOrigin, token, big)).status).toBe(413);
     expect((await chat(endpointOrigin, token, big)).status).toBe(413);
+    expect(provider.requests).toHaveLength(0);
+  });
+});
+
+describe('任务上限（8.3a）', () => {
+  async function budgetOf(jobId: string) {
+    return superuser.selectFrom('agent_job_budgets').selectAll().where('job_id', '=', jobId).executeTakeFirstOrThrow();
+  }
+
+  it('恶意样本：重复同一请求（取回已保存的结果）也计入轮数，到上限即 409 TASK_TURN_LIMIT，不取回、不调用服务商', async () => {
+    const member = await newMember();
+    const { run, token } = await tokenFor(member, { costLimit: 1_000_000n, turnLimit: 3 });
+    for (let turn = 0; turn < 3; turn += 1) expect((await chat(gwOrigin, token, body())).status).toBe(200);
+    // 第一次调用服务商，后两次取回已保存的结果。
+    expect(provider.requests).toHaveLength(1);
+    const limited = await chat(gwOrigin, token, body());
+    expect(limited.status).toBe(409);
+    expect(JSON.parse(limited.text).error.code).toBe('TASK_TURN_LIMIT');
+    // 换一个请求内容同样被拒绝：之后一律不调用服务商。
+    expect((await chat(gwOrigin, token, body({ messages: [{ role: 'user', content: '另一个问题' }] }))).status).toBe(409);
+    expect(provider.requests).toHaveLength(1);
+    expect(await budgetOf(run.jobId)).toMatchObject({ turns_used: 3, exhausted_reason: 'task_turn_limit' });
+    expect((await usageRows(member.orgId)).map((row) => row.status)).toEqual(['billed']);
+  });
+
+  it('对照组：低于轮数上限的请求正常返回，每个请求计一轮', async () => {
+    const member = await newMember();
+    const { run, token } = await tokenFor(member, { costLimit: 1_000_000n, turnLimit: 3 });
+    expect((await chat(gwOrigin, token, body())).status).toBe(200);
+    expect((await chat(gwOrigin, token, body({ messages: [{ role: 'user', content: '第二轮' }] }))).status).toBe(200);
+    expect(await budgetOf(run.jobId)).toMatchObject({ turns_used: 2, exhausted_reason: null });
+  });
+
+  it('费用上限不足一次冻结：409 TASK_COST_LIMIT，不冻结、不调用服务商，记下原因后之后的请求也被拒绝', async () => {
+    const member = await newMember();
+    const { run, token } = await tokenFor(member, { costLimit: 1n, turnLimit: 100 });
+    const limited = await chat(gwOrigin, token, body());
+    expect(limited.status).toBe(409);
+    expect(JSON.parse(limited.text).error.code).toBe('TASK_COST_LIMIT');
+    expect(provider.requests).toHaveLength(0);
+    expect(await usageRows(member.orgId)).toHaveLength(0);
+    expect(await budgetOf(run.jobId)).toMatchObject({ exhausted_reason: 'task_cost_limit', turns_used: 1 });
+    expect(JSON.parse((await chat(gwOrigin, token, body())).text).error.code).toBe('TASK_COST_LIMIT');
+    expect((await budgetOf(run.jobId)).turns_used).toBe(1);
+  });
+
+  it('任务没有登记上限：409 AGENT_BUDGET_MISSING，不调用服务商', async () => {
+    const member = await newMember();
+    const { run, token } = await tokenFor(member);
+    await superuser.deleteFrom('agent_job_budgets').where('job_id', '=', run.jobId).execute();
+    const response = await chat(gwOrigin, token, body());
+    expect(response.status).toBe(409);
+    expect(JSON.parse(response.text).error.code).toBe('AGENT_BUDGET_MISSING');
     expect(provider.requests).toHaveLength(0);
   });
 });

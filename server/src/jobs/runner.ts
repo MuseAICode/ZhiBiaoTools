@@ -17,6 +17,8 @@
 // 模型调用（6.4）：任务经 context.ai 调用 AI 网关（在 worker 进程中运行），用量记到本任务；余额不足以冻结时
 // 任务退出、暂停为 paused / insufficient_balance，经 notifier 推送（job 事件的 pauseReason），充值后由用户继续。
 // 每次调用带步骤键（6.4a）：结果与结算同一事务保存，续跑时同一步骤直接取回，不重复调用、不重复扣费。
+// Agent 任务（8.3a）：每次调用先计入一轮（beginAgentTurn），达到费用或轮数上限时任务退出（JobTaskLimitError）、
+// 暂停为 paused / task_cost_limit 或 task_turn_limit，由发起人或组织管理员确认继续（8.3b）。
 import { randomUUID } from 'node:crypto';
 import { DelayedError, Worker, type Job, type RedisOptions as BullmqRedisOptions } from 'bullmq';
 import { Redis } from 'ioredis';
@@ -24,6 +26,7 @@ import type { FastifyBaseLogger } from 'fastify';
 import type { Kysely } from 'kysely';
 import { JOB_DISPATCH_BATCH_MAX } from '../db/migrations/0021_jobs.ts';
 import type { AiGateway } from '../ai/gateway.ts';
+import { beginAgentTurn, markAgentBudgetExhausted, TASK_COST_LIMIT_CODE, TASK_TURN_LIMIT_CODE } from '../agent/budget.ts';
 import type { Database } from '../db/schema.ts';
 import { AppError } from '../errors.ts';
 import type { ObjectStore } from '../files/objectStore.ts';
@@ -34,6 +37,7 @@ import {
   JobBalanceExhaustedError,
   JobError,
   JobInterruptedError,
+  JobTaskLimitError,
   maxAttemptsOf,
   ORG_RUNNING_JOB_LIMIT,
   type JobAi,
@@ -176,12 +180,17 @@ export function createJobRunner(options: JobRunnerOptions): JobRunner {
     };
     // 余额不足以冻结：之后的调用不再发起，执行结束后暂停（不中止进行中的其他调用，它们照常结算）。
     let balanceExhausted = false;
+    // 达到 Agent 任务上限：之后的调用不再发起，执行结束后暂停。
+    let taskLimit: JobTaskLimitError | null = null;
     const tenant = { orgId: job.orgId, userId: job.userId, role };
+    const turnRef = { tenant, jobId: job.id, runId };
     const ai: JobAi = {
       async chat(request, chatOptions = {}) {
         if (balanceExhausted) throw new JobBalanceExhaustedError();
+        if (taskLimit) throw new JobTaskLimitError(taskLimit.reason);
         if (!gateway) throw new JobError('AI_UNAVAILABLE', '模型服务暂不可用，请稍后再试');
         try {
+          if (definition.agentLimits) await beginAgentTurn(db, turnRef);
           return await gateway.chat(
             tenant,
             { ...request, source: 'job', jobId: job.id, jobType: job.type },
@@ -199,6 +208,15 @@ export function createJobRunner(options: JobRunnerOptions): JobRunner {
           if (error instanceof AppError && error.code === 'INSUFFICIENT_BALANCE') {
             balanceExhausted = true;
             throw new JobBalanceExhaustedError({ cause: error });
+          }
+          if (error instanceof AppError && (error.code === TASK_COST_LIMIT_CODE || error.code === TASK_TURN_LIMIT_CODE)) {
+            // 之前已达到另一个上限时按先记下的原因暂停。
+            const reason =
+              error.code === TASK_COST_LIMIT_CODE
+                ? ((await markAgentBudgetExhausted(db, turnRef, 'task_cost_limit').catch(() => null)) ?? 'task_cost_limit')
+                : 'task_turn_limit';
+            taskLimit = new JobTaskLimitError(reason, { cause: error });
+            throw taskLimit;
           }
           if (controller.signal.aborted) throw error;
           if (error instanceof AppError) throw new JobError(error.code, error.message, { cause: error });
@@ -250,8 +268,11 @@ export function createJobRunner(options: JobRunnerOptions): JobRunner {
       await definition.run({ ...context, params });
       outcome = { kind: 'succeeded' };
     } catch (error) {
+      const limitReached = error instanceof JobTaskLimitError ? error : taskLimit;
       if (balanceExhausted && !lost) {
         outcome = { kind: 'insufficient-balance' };
+      } else if (limitReached && !lost) {
+        outcome = { kind: 'task-limit', reason: limitReached.reason };
       } else if (controller.signal.aborted || error instanceof JobInterruptedError) {
         outcome = { kind: 'interrupted' };
       } else if (error instanceof JobError) {

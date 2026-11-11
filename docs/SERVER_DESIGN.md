@@ -653,6 +653,7 @@ agent-gw 登记 `POST /v1/chat/completions`（请求体上限 4 MiB，`AGENT_CHA
 - **计费与幂等**：`source = 'job'`，步骤键固定为 `agent:chat`；网关的步骤幂等键本来就含请求内容的 SHA-256，因此同一任务、同一请求内容就是同一步骤，续跑时 Pi 重发同一请求取回已保存的结果，不再冻结、不再扣费。并发名额一直排队等待，直到沙箱断开或 worker 关闭。
 - **响应**：第一段输出到达时才开始 SSE（`text/event-stream`，OpenAI 的 `chat.completion.chunk` 格式，第一块带 `role: assistant`，工具调用转回 `delta.tool_calls`），之后是带 `finish_reason` 的结束块、（要求时的）用量块和 `[DONE]`；取回已保存的结果时一次给出全部内容与工具调用。开始推送前的失败（余额不足 402、模型未选择 409、上游失败等）按普通 JSON 错误返回，开始推送后的失败以 `data: {"error": ...}` 结束、不发 `[DONE]`，非业务错误只返回通用文案。思考内容照常计费但不转给沙箱。响应中不含组织、项目、用户、执行等内部标识。
 - **中止**：沙箱断开（agent-gw 随之中止转发）按已产生的用量收费（与用户取消相同）；worker 关闭时内部入口先以 `shutdown` 中止进行中的调用（不收费，`platform_interrupted`），至多等 5 秒释放冻结，再关闭全部连接（`forceCloseConnections`，agent-gw 的空闲长连接不拖住关闭）。
+- **任务上限（8.3a）**：每个请求先计入本任务的一轮（含取回已保存结果的），费用上限在冻结时检查，见第 10.11 节。
 - **测试**：`tests/agent/chatCompletions.test.ts`（网关用桩代替：Pi 请求形状的对照组、转换结果、SSE 格式、33 种顶层与 18 种消息级恶意样本、上限、失败与断开）；`tests/db/agentChat.test.ts`（真实数据库与 AI 网关、本机模拟服务商、经 agent-gw：按令牌记账、模型不采信、伪造字段与头部、步骤幂等、令牌无效与暂停、余额不足、请求体上限、断开与关闭的计费、日志中没有令牌与 Key）。顶层字段白名单、`max_tokens` 截断、关闭不收费、模型不采信、任务只按令牌做过变异检查。
 
 ## 8. 部署架构
@@ -926,6 +927,15 @@ agent-gw 登记 `POST /v1/chat/completions`（请求体上限 4 MiB，`AGENT_CHA
 - **并发信号量**（`src/ai/concurrency.ts`）：键 `ai:concurrency:{orgId}:{provider}` 的有序集合，Lua 脚本原子地清掉到期名额、判断上限、加入令牌；名额最长占用一个冻结时长，崩溃时到期自动收回。上限 = min(`org_settings.concurrency_limit`，`AI_CONCURRENCY_MAX`)；网关在白名单检查之后、解密 Key 和冻结之前取得名额。交互式调用最多等 `AI_CONCURRENCY_WAIT_MS` 后 429 `AI_CONCURRENCY_LIMITED`，任务中的调用一直等到被取消；Redis 不可用时不放行（503 `AI_CONCURRENCY_UNAVAILABLE`），api 未配置 Redis 时不限制。Redis 被清空时名额一起消失，短时间内可能超出上限，不影响计费；
 - **步骤幂等（路线图 6.4a，#34）**：平台自身故障导致的重复调用不向用户收费。任务的每次模型调用带步骤键，完整的调用结果与结算在同一事务中写入 `job_step_results`（迁移 0025），续跑时同一步骤、同一请求内容（SHA-256）的调用直接取回结果，不冻结、不调用服务商、不扣费；两个执行者并发完成同一步骤时后提交的不收费（`duplicate_step`）；worker 关闭、租约丢失中止的调用不收费（`platform_interrupted`），用户取消、暂停中止的照旧按已产生的用量收费；
 - 细节与偏离见路线图“worker 接入 AI 网关与余额（#27，6.4）”。
+
+### 10.11 实现（路线图 8.3a）：Agent 任务的费用与轮数上限
+
+被注入的 Agent 可以无限调用模型直到余额耗尽（第 8 步威胁模型 T5），因此每个 Agent 任务有一份**任务级上限**，由数据库强制（迁移 0033，`src/agent/budget.ts`）：
+
+- **登记**：`agent` 队列的任务类型必须在定义中给出 `agentLimits`（费用上限、轮数上限，起步值见 `AGENT_TASK_LIMITS`：正文生成 30 元 / 3,000 轮，章节重写与原方案还原、目录与全局事实类各 5 元 / 500 轮，模板提取 3 元 / 300 轮），其他队列不能给出（登记时检查）；入队时与任务在同一事务中写入 `agent_job_budgets`。上限写入后不能改，轮数只能逐次加 1、不超过上限，达到上限的原因只能设置一次（触发器 `AB001`）；只能为本组织 `queued` 的任务写入、只在 `running` 时更新；
+- **费用**：`ai_usage_begin` 在锁住组织余额的同一事务中检查“`jobs.billed_amount` + 本任务未到期的冻结 + 本次冻结 ≤ 费用上限”，否则 `BL016` → 409 `TASK_COST_LIMIT`，不冻结、不调用服务商。结算也先锁组织余额，并发的冻结与结算按顺序检查，已扣费不超过上限。没有登记上限的任务（第 6 步的任务）不受影响；
+- **轮数**：Agent 的模型调用路由在调用网关之前按令牌的任务原子地计入一轮（一条带条件的 `UPDATE`），**取回已保存结果的请求同样计入**；达到上限即 409 `TASK_TURN_LIMIT`，不取回、不冻结、不调用服务商。没有登记上限的任务一律 409 `AGENT_BUDGET_MISSING`。worker 中 Agent 任务经 `context.ai` 的调用同样先计入一轮；
+- **暂停**：达到任一上限后记下原因，之后的请求按该原因拒绝；执行者把任务暂停为 `paused`，`pause_reason` 为 `task_cost_limit` / `task_turn_limit`，`paused` 事件记下已扣费、上限与已用轮数。这类暂停不能经普通的“继续”恢复（409 `JOB_TASK_LIMIT_CONFIRM_REQUIRED`），由发起人或组织管理员确认继续（8.3b）；取消照常。
 
 ## 11. 合规待确认事项
 

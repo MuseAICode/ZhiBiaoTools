@@ -76,7 +76,11 @@ function pgErrorCode(error: unknown): unknown {
   return (error as { code?: unknown } | null)?.code;
 }
 
-/** 把数据库抛出的计费错误（迁移 0003_billing ~ 0005_platform_models、0022_job_billing 中的 SQLSTATE）转成给用户看的 AppError，其他错误原样抛出。 */
+/** 任务费用达到上限（迁移 0033_agent_job_budgets 的 BL016）：不冻结、不调用服务商，任务暂停为 task_cost_limit。 */
+export const TASK_COST_LIMIT_CODE = 'TASK_COST_LIMIT';
+export const TASK_COST_LIMIT_MESSAGE = '本任务的费用已达到上限，任务将暂停，由发起人或组织管理员确认后可以继续';
+
+/** 把数据库抛出的计费错误（迁移 0003_billing ~ 0005_platform_models、0022_job_billing、0033_agent_job_budgets 中的 SQLSTATE）转成给用户看的 AppError，其他错误原样抛出。 */
 export function toBillingError(error: unknown): unknown {
   switch (pgErrorCode(error)) {
     case 'BL001':
@@ -108,6 +112,8 @@ export function toBillingError(error: unknown): unknown {
       return new AppError(404, 'AI_MODEL_NOT_FOUND', '模型不存在', { cause: error });
     case 'BL015':
       return new AppError(409, 'JOB_NOT_RUNNING', '任务不在执行中，不能调用模型', { cause: error });
+    case 'BL016':
+      return new AppError(409, TASK_COST_LIMIT_CODE, TASK_COST_LIMIT_MESSAGE, { cause: error });
     case '22023':
       return new AppError(400, 'BAD_REQUEST', '请求不合法', { cause: error });
     case '42501':

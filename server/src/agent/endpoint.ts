@@ -21,10 +21,11 @@ import type { Database } from '../db/schema.ts';
 import { AppError, registerErrorHandlers } from '../errors.ts';
 import { resolveJobModel } from '../jobs/chat.ts';
 import { createLoggerOptions } from '../logger.ts';
+import { beginAgentTurn, markAgentBudgetExhausted } from './budget.ts';
 import { registerAgentChatRoute } from './chatCompletions.ts';
 import { DEFAULT_AGENT_GATEWAY_LIMITS } from './gateway.ts';
 import { AGENT_RELAY_KEY_HEADER, createRelayKeyVerifier, parseAgentBearer } from './token.ts';
-import { lookupAgentJobToken, type AgentTokenIdentity } from './tokenStore.ts';
+import { agentTenantContext, lookupAgentJobToken, type AgentTokenIdentity } from './tokenStore.ts';
 
 export interface AgentEndpointOptions {
   db: Kysely<Database>;
@@ -136,6 +137,12 @@ export async function buildAgentEndpointApp(options: AgentEndpointOptions): Prom
     gateway: options.gateway ?? null,
     maxOutputTokens: options.maxOutputTokens ?? DEFAULT_AGENT_MAX_OUTPUT_TOKENS,
     identityOf: agentIdentityOf,
+    beginTurn: async (identity) => {
+      await beginAgentTurn(options.db, { tenant: agentTenantContext(identity), jobId: identity.jobId, runId: identity.runId });
+    },
+    markCostLimit: async (identity) => {
+      await markAgentBudgetExhausted(options.db, { tenant: agentTenantContext(identity), jobId: identity.jobId, runId: identity.runId }, 'task_cost_limit');
+    },
     track(controller) {
       if (closing) controller.abort('shutdown');
       inFlight.add(controller);

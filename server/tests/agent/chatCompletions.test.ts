@@ -54,6 +54,10 @@ const calls: Call[] = [];
 let script: Script = {};
 let resolveModel: (context: TenantContext) => Promise<JobModel> = async () => PLATFORM_MODEL;
 const inFlight = new Set<AbortController>();
+/** 计入轮数的桩（8.3a）：记录调用；turnError 给出时抛出它（达到上限等）。 */
+const turns: AgentTokenIdentity[] = [];
+const costMarks: AgentTokenIdentity[] = [];
+let turnError: unknown = null;
 
 const stubGateway: AiGateway = {
   async chat(context, request, options = {}) {
@@ -87,6 +91,13 @@ async function buildApp(gateway: AiGateway | null): Promise<{ app: FastifyInstan
     gateway,
     maxOutputTokens: PLATFORM_MAX_OUTPUT,
     identityOf: () => IDENTITY,
+    beginTurn: async (identity) => {
+      turns.push(identity);
+      if (turnError) throw turnError;
+    },
+    markCostLimit: async (identity) => {
+      costMarks.push(identity);
+    },
     track(controller) {
       inFlight.add(controller);
       return () => inFlight.delete(controller);
@@ -109,6 +120,9 @@ afterAll(async () => {
 
 beforeEach(() => {
   calls.length = 0;
+  turns.length = 0;
+  costMarks.length = 0;
+  turnError = null;
   script = { deltas: [{ content: '你好' }, { content: '，世界' }] };
   resolveModel = async () => PLATFORM_MODEL;
 });
@@ -432,5 +446,46 @@ describe('失败', () => {
     expect(calls[0]!.options.platformAborted!()).toBe(false);
     // 调用结束后注销，不留在进行中的集合里。
     await expect.poll(() => inFlight.size).toBe(0);
+  });
+});
+
+describe('任务上限（8.3a）', () => {
+  it('对照组：每个请求先按令牌的身份计入一轮，再调用网关', async () => {
+    const response = await post(piBody());
+    expect(response.status).toBe(200);
+    expect(turns).toEqual([IDENTITY]);
+    expect(calls).toHaveLength(1);
+    expect(costMarks).toHaveLength(0);
+  });
+
+  it('达到轮数上限：409 TASK_TURN_LIMIT，不调用网关（也就不取回已保存的结果、不冻结）', async () => {
+    turnError = new AppError(409, 'TASK_TURN_LIMIT', '本任务的模型调用次数已达到上限');
+    const response = await post(piBody());
+    expect(response.status).toBe(409);
+    expect(JSON.parse(response.text).error.code).toBe('TASK_TURN_LIMIT');
+    expect(calls).toHaveLength(0);
+  });
+
+  it('请求不合法、组织没有选择模型时不计入轮数', async () => {
+    expect((await post(piBody({ org_id: randomUUID() }))).status).toBe(400);
+    resolveModel = async () => {
+      throw new JobError('AI_MODEL_NOT_CONFIGURED', '组织尚未选择模型');
+    };
+    expect((await post(piBody())).status).toBe(409);
+    expect(turns).toHaveLength(0);
+  });
+
+  it('冻结时达到费用上限：409 TASK_COST_LIMIT，并记下原因', async () => {
+    script = { error: new AppError(409, 'TASK_COST_LIMIT', '本任务的费用已达到上限') };
+    const response = await post(piBody());
+    expect(response.status).toBe(409);
+    expect(JSON.parse(response.text).error.code).toBe('TASK_COST_LIMIT');
+    expect(costMarks).toEqual([IDENTITY]);
+  });
+
+  it('其他失败（如余额不足）不记下费用上限', async () => {
+    script = { error: new AppError(402, 'INSUFFICIENT_BALANCE', '余额不足') };
+    expect((await post(piBody())).status).toBe(402);
+    expect(costMarks).toHaveLength(0);
   });
 });
