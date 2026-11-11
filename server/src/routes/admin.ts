@@ -1,5 +1,6 @@
 // 平台管理员接口（docs/SERVER_DESIGN.md 第 3.4 节）：生成邀请（第一版只接受邀请注册，第 9 节第 5 项），
-// 计费的手动充值、冲正和新增价格版本（第 10.4、10.5 节），以及平台模型白名单的登记、启用、停用（迁移 0005_platform_models）。
+// 计费的手动充值、冲正和新增价格版本（第 10.4、10.5 节），平台模型白名单的登记、启用、停用（迁移 0005_platform_models），
+// 以及 Agent 任务上限按组织覆盖（迁移 0035_agent_job_limit_overrides，路线图 8.3c，第 10.11 节）。
 // 是否平台管理员每次从数据库读取（经 RLS，只能读到自己），不缓存在会话中，撤销后立即生效。
 // 邀请表的 INSERT 策略同样要求平台管理员，应用层漏判时数据库仍会拒绝。
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
@@ -21,6 +22,12 @@ import {
 import { API_KEY_PATTERN, BASE_URL_MAX_LENGTH, listCredentialStatus, normalizeBaseUrl, putCredential, type CredentialStatus } from '../ai/credentials.ts';
 import type { KeyWrapper } from '../ai/keyring.ts';
 import { listModels, registerModel, setModelEnabled, type PlatformModel } from '../ai/models.ts';
+import { isValidAgentTaskLimits } from '../agent/budget.ts';
+import { deleteAgentLimitOverride, listAgentLimitOverrides, setAgentLimitOverride, type AgentLimitOverride } from '../agent/limitOverrides.ts';
+import { JOB_TYPE_PATTERN } from '../db/migrations/0021_jobs.ts';
+import { AGENT_BUDGET_MAX_TURN_LIMIT } from '../db/migrations/0033_agent_job_budgets.ts';
+import { AGENT_LIMIT_OVERRIDE_NOTE_MAX_LENGTH } from '../db/migrations/0035_agent_job_limit_overrides.ts';
+import type { JobTypeRegistry } from '../jobs/definitions.ts';
 import { BILLING_PROVIDERS, type BillingProvider, type Database } from '../db/schema.ts';
 import { withTenant } from '../db/tenant.ts';
 import { AppError } from '../errors.ts';
@@ -36,6 +43,8 @@ export interface AdminRouteDependencies {
   keyWrapper: KeyWrapper | null;
   /** AI_UPSTREAM_PRIVATE_HOSTS：允许 http 的上游主机。 */
   upstreamPrivateHosts: readonly string[];
+  /** 已登记的任务类型：Agent 上限覆盖只接受 agent 队列的任务类型，并返回各类型的起步值。 */
+  jobRegistry: JobTypeRegistry;
 }
 
 const UUID_SCHEMA = { type: 'string', pattern: '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$' } as const;
@@ -48,6 +57,7 @@ const ISO_TIMESTAMP_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d{1,
 
 const MONEY_FIELDS = [
   'amount',
+  'costLimit',
   'confirmAmount',
   'inputPricePerMtok',
   'outputPricePerMtok',
@@ -96,12 +106,30 @@ function modelResponse(model: PlatformModel) {
   };
 }
 
+function limitOverrideResponse(override: AgentLimitOverride) {
+  return {
+    jobType: override.jobType,
+    costLimit: override.costLimit.toString(),
+    turnLimit: override.turnLimit,
+    note: override.note,
+    updatedBy: override.updatedBy,
+    updatedAt: override.updatedAt.toISOString(),
+  };
+}
+
+const AGENT_LIMIT_PARAMS_SCHEMA = {
+  type: 'object',
+  properties: { orgId: UUID_SCHEMA, jobType: { type: 'string', pattern: JOB_TYPE_PATTERN } },
+  required: ['orgId', 'jobType'],
+} as const;
+
 function credentialResponse(status: CredentialStatus) {
   return { ...status, createdAt: status.createdAt.toISOString() };
 }
 
 export async function registerAdminRoutes(app: FastifyInstance, deps: AdminRouteDependencies): Promise<void> {
-  const { db, mailer, publicOrigin, hasher, limiters, keyWrapper, upstreamPrivateHosts } = deps;
+  const { db, mailer, publicOrigin, hasher, limiters, keyWrapper, upstreamPrivateHosts, jobRegistry } = deps;
+  const agentJobTypes = () => jobRegistry.types.filter((definition) => definition.queue === 'agent' && definition.agentLimits !== undefined);
 
   /**
    * 资金操作前的二次验证：重新输入当前密码，防止被盗用的会话直接动账。
@@ -451,6 +479,107 @@ export async function registerAdminRoutes(app: FastifyInstance, deps: AdminRoute
         'ai model disabled',
       );
       return { model: { ...model, updatedAt: model.updatedAt.toISOString() } };
+    },
+  );
+
+  // Agent 任务上限按组织覆盖（8.3c）：列出已登记的 Agent 任务类型及起步值，以及该组织的覆盖值。
+  app.get<{ Params: { orgId: string } }>(
+    '/agent-limits/:orgId',
+    { schema: { params: { type: 'object', properties: { orgId: UUID_SCHEMA }, required: ['orgId'] } } },
+    async (request) => {
+      const overrides = await listAgentLimitOverrides(db, tenantOf(request), request.params.orgId.toLowerCase());
+      return {
+        jobTypes: agentJobTypes().map((definition) => ({
+          jobType: definition.type,
+          costLimit: definition.agentLimits!.costLimit.toString(),
+          turnLimit: definition.agentLimits!.turnLimit,
+        })),
+        overrides: overrides.map(limitOverrideResponse),
+      };
+    },
+  );
+
+  // 设置覆盖值：可以放宽也可以收紧，放宽等于允许该组织的单个任务花更多的钱，与资金操作一样要求重新输入密码。
+  // 只影响之后入队的任务。
+  app.put<{ Params: { orgId: string; jobType: string }; Body: { costLimit: string; turnLimit: number; note?: string; password: string } }>(
+    '/agent-limits/:orgId/:jobType',
+    {
+      preValidation: async (request) => {
+        await rejectNumericMoney(request);
+        // Fastify 的校验会把字符串 "500" 转换成整数，所以在校验之前检查：轮数只接受 JSON 数字。
+        const body = request.body as Record<string, unknown> | null;
+        if (body !== null && typeof body === 'object' && 'turnLimit' in body && typeof body.turnLimit !== 'number') {
+          throw new AppError(400, 'INVALID_TURN_LIMIT', '轮数上限必须是 JSON 整数');
+        }
+      },
+      schema: {
+        params: AGENT_LIMIT_PARAMS_SCHEMA,
+        body: {
+          type: 'object',
+          properties: {
+            costLimit: POSITIVE_UNITS_SCHEMA,
+            turnLimit: { type: 'integer', minimum: 1, maximum: AGENT_BUDGET_MAX_TURN_LIMIT },
+            note: { type: 'string', maxLength: AGENT_LIMIT_OVERRIDE_NOTE_MAX_LENGTH },
+            password: STEP_UP_PASSWORD_SCHEMA,
+          },
+          required: ['costLimit', 'turnLimit', 'password'],
+          additionalProperties: false,
+        },
+      },
+    },
+    async (request, reply) => {
+      const { jobType } = request.params;
+      const body = request.body;
+      if (!agentJobTypes().some((definition) => definition.type === jobType)) {
+        throw new AppError(404, 'AGENT_JOB_TYPE_NOT_FOUND', '没有这个 Agent 任务类型');
+      }
+      const limits = { costLimit: BigInt(body.costLimit), turnLimit: body.turnLimit };
+      if (!isValidAgentTaskLimits(limits)) throw new AppError(400, 'AGENT_LIMIT_OUT_OF_RANGE', '费用上限不能超过 10,000 元，轮数上限不能超过 1,000,000');
+      await verifyStepUp(request, reply, body.password);
+      const context = tenantOf(request);
+      const orgId = request.params.orgId.toLowerCase();
+      const override = await setAgentLimitOverride(db, context, { orgId, jobType, limits, note: body.note ?? null });
+      request.log.info(
+        {
+          agentLimit: {
+            action: 'override_set',
+            orgId,
+            jobType,
+            costLimit: override.costLimit.toString(),
+            turnLimit: override.turnLimit,
+            operator: context.userId,
+          },
+        },
+        'agent limit override set',
+      );
+      return { override: limitOverrideResponse(override) };
+    },
+  );
+
+  // 删除覆盖值，之后入队的任务恢复起步值。恢复起步值也可能是放宽，同样要求重新输入密码。
+  // 不检查任务类型是否仍登记，以便清理已下线类型的覆盖值。
+  app.delete<{ Params: { orgId: string; jobType: string }; Body: { password: string } }>(
+    '/agent-limits/:orgId/:jobType',
+    {
+      schema: {
+        params: AGENT_LIMIT_PARAMS_SCHEMA,
+        body: {
+          type: 'object',
+          properties: { password: STEP_UP_PASSWORD_SCHEMA },
+          required: ['password'],
+          additionalProperties: false,
+        },
+      },
+    },
+    async (request, reply) => {
+      await verifyStepUp(request, reply, request.body.password);
+      const context = tenantOf(request);
+      const orgId = request.params.orgId.toLowerCase();
+      const { jobType } = request.params;
+      const deleted = await deleteAgentLimitOverride(db, context, { orgId, jobType });
+      if (!deleted) throw new AppError(404, 'AGENT_LIMIT_OVERRIDE_NOT_FOUND', '该组织没有为这个任务类型设置上限');
+      request.log.info({ agentLimit: { action: 'override_delete', orgId, jobType, operator: context.userId } }, 'agent limit override deleted');
+      return { deleted: true };
     },
   );
 }

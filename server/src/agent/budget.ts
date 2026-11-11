@@ -6,7 +6,9 @@
 //   不取回、不冻结、不调用服务商；没有登记上限的任务一律拒绝（不放行没有上限的 Agent 调用）；
 // - 达到任一上限后记下原因（exhausted_reason，只能设置一次），之后的请求都被拒绝；执行者据此把任务暂停为 task_cost_limit /
 //   task_turn_limit（JobTaskLimitError → finishRun），由发起人或组织管理员确认继续（src/jobs/store.ts 的 confirmTaskLimit，8.3b）：
-//   上限各加一份（入队时的上限）、清除原因，改法与确认人由数据库守卫限定（迁移 0034_agent_job_budget_confirm）。
+//   上限各加一份（入队时的上限）、清除原因，改法与确认人由数据库守卫限定（迁移 0034_agent_job_budget_confirm）；
+// - 按组织覆盖（8.3c，迁移 0035_agent_job_limit_overrides）：平台管理员可为某组织的某个 Agent 任务类型另设上限
+//   （src/agent/limitOverrides.ts），入队时取覆盖值，只影响之后入队的任务。
 import { sql, type Kysely, type Transaction } from 'kysely';
 import { TASK_COST_LIMIT_CODE, TASK_COST_LIMIT_MESSAGE, UNITS_PER_YUAN } from '../billing/ledger.ts';
 import { AGENT_BUDGET_MAX_COST_LIMIT, AGENT_BUDGET_MAX_TURN_LIMIT } from '../db/migrations/0033_agent_job_budgets.ts';
@@ -53,13 +55,29 @@ export function isValidAgentTaskLimits(limits: AgentTaskLimits): boolean {
   );
 }
 
-/** 入队的同一事务中为任务写入上限（RLS 只允许为本组织 queued 的任务写入）。 */
-export async function insertAgentJobBudget(trx: Transaction<Database>, job: { orgId: string; id: string }, limits: AgentTaskLimits): Promise<void> {
-  if (!isValidAgentTaskLimits(limits)) throw new TypeError('Agent 任务上限不合法');
+/**
+ * 入队的同一事务中为任务写入上限（RLS 只允许为本组织 queued 的任务写入）。平台管理员为本组织的该任务类型设置了覆盖值时
+ * （迁移 0035，8.3c）取覆盖值，否则取任务类型登记的起步值；“一份”额度由 0034 的写入触发器按写入的上限取值。
+ * 返回实际写入的上限。
+ */
+export async function insertAgentJobBudget(
+  trx: Transaction<Database>,
+  job: { orgId: string; id: string; type: string },
+  defaults: AgentTaskLimits,
+): Promise<AgentTaskLimits> {
+  if (!isValidAgentTaskLimits(defaults)) throw new TypeError('Agent 任务上限不合法');
+  const override = await trx
+    .selectFrom('agent_job_limit_overrides')
+    .select(['cost_limit', 'turn_limit'])
+    .where('org_id', '=', job.orgId)
+    .where('job_type', '=', job.type)
+    .executeTakeFirst();
+  const limits = override ? { costLimit: BigInt(override.cost_limit), turnLimit: override.turn_limit } : defaults;
   await trx
     .insertInto('agent_job_budgets')
     .values({ org_id: job.orgId, job_id: job.id, cost_limit: limits.costLimit.toString(), turn_limit: limits.turnLimit })
     .execute();
+  return limits;
 }
 
 export interface AgentJobBudget {

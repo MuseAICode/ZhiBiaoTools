@@ -1301,6 +1301,22 @@ export interface AgentJobBudgetsTable {
   updated_at: ColumnType<Date, never, never>;
 }
 
+/**
+ * Agent 任务上限按组织覆盖（迁移 0035_agent_job_limit_overrides，8.3c）：每个（组织, 任务类型）至多一行，入队时取覆盖值。
+ * 应用角色只读本组织的行；写入只经平台管理员函数。bigint 读出为字符串。
+ */
+export interface AgentJobLimitOverridesTable {
+  org_id: ColumnType<string, never, never>;
+  job_type: ColumnType<string, never, never>;
+  cost_limit: ColumnType<string, never, never>;
+  turn_limit: ColumnType<number, never, never>;
+  note: ColumnType<string | null, never, never>;
+  created_by: ColumnType<string, never, never>;
+  created_at: ColumnType<Date, never, never>;
+  updated_by: ColumnType<string, never, never>;
+  updated_at: ColumnType<Date, never, never>;
+}
+
 export interface Database {
   organizations: OrganizationsTable;
   users: UsersTable;
@@ -1378,4 +1394,5 @@ export interface Database {
   job_step_results: JobStepResultsTable;
   agent_job_tokens: AgentJobTokensTable;
   agent_job_budgets: AgentJobBudgetsTable;
+  agent_job_limit_overrides: AgentJobLimitOverridesTable;
 }
