@@ -88,6 +88,7 @@ const APPLICATION_TABLES = [
 ];
 const APP_FUNCTIONS = [
   'agent_job_budgets_guard',
+  'agent_job_budgets_insert_defaults',
   'agent_job_tokens_guard',
   'agent_token_lookup',
   'ai_admin_put_credential',
@@ -239,6 +240,7 @@ describe('迁移升级与回滚', () => {
       (await sql<{ prosrc: string }>`SELECT prosrc FROM pg_proc WHERE proname = 'ai_usage_begin'`.execute(testDb.admin)).rows.map((row) => row.prosrc);
     expectSuccess(await migrateToLatest(owner));
     expect((await source())[0]).toContain('ai_model_price');
+    expect(expectSuccess(await migrateDown(owner))).toEqual(['Down:0034_agent_job_budget_confirm']);
     expect(expectSuccess(await migrateDown(owner))).toEqual(['Down:0033_agent_job_budgets']);
     expect(expectSuccess(await migrateDown(owner))).toEqual(['Down:0032_job_step_tool_calls']);
     expect(expectSuccess(await migrateDown(owner))).toEqual(['Down:0031_agent_job_tokens']);

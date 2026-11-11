@@ -1282,16 +1282,21 @@ export interface AgentJobTokensTable {
 export type AgentBudgetExhaustedReason = (typeof AGENT_BUDGET_EXHAUSTED_REASONS)[number];
 
 /**
- * Agent 任务的费用与轮数上限（迁移 0033_agent_job_budgets）：入队时写入，上限不能改；轮数只能逐次加 1，
- * 达到上限的原因只能设置一次（触发器 AB001）。bigint 读出为字符串。
+ * Agent 任务的费用与轮数上限（迁移 0033_agent_job_budgets）：入队时写入；轮数只能逐次加 1，达到上限的原因只能设置一次；
+ * 上限只能经“确认继续”（0034）各加一份、同时清除原因（触发器 AB001）。bigint 读出为字符串。
  */
 export interface AgentJobBudgetsTable {
   org_id: Fixed<string>;
   job_id: Fixed<string>;
-  cost_limit: ColumnType<string, string, never>;
-  turn_limit: ColumnType<number, number, never>;
+  cost_limit: ColumnType<string, string, string>;
+  turn_limit: ColumnType<number, number, number>;
   turns_used: ColumnType<number, never, number>;
-  exhausted_reason: ColumnType<AgentBudgetExhaustedReason | null, never, AgentBudgetExhaustedReason>;
+  exhausted_reason: ColumnType<AgentBudgetExhaustedReason | null, never, AgentBudgetExhaustedReason | null>;
+  /** “一份”额度（迁移 0034_agent_job_budget_confirm）：写入时取入队时的上限，之后不能改；确认继续时上限各加一份。 */
+  cost_step: ColumnType<string, never, never>;
+  turn_step: ColumnType<number, never, never>;
+  /** 已确认继续的次数（0034）。 */
+  confirmations: ColumnType<number, never, number>;
   created_at: ColumnType<Date, never, never>;
   updated_at: ColumnType<Date, never, never>;
 }

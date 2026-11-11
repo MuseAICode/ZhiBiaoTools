@@ -10,7 +10,7 @@
 //     └──暂停──> paused ──继续──> queued；paused ──取消──> cancelled
 //   running ──调用模型时余额不足以冻结──> paused（pause_reason = insufficient_balance，6.4）；充值后继续即回到 queued
 //   running ──达到 Agent 任务的费用或轮数上限──> paused（pause_reason = task_cost_limit / task_turn_limit，8.3a）；
-//     不能经普通的“继续”恢复，须由发起人或组织管理员确认继续（8.3b）
+//     不能经普通的“继续”恢复，须由发起人或组织管理员确认继续（confirmTaskLimit，8.3b）：上限各加一份，回到 queued
 //
 // 用户发起的操作（新建、查询、取消、暂停、继续）经 withTenant；worker 的系统操作（认领、续租、结束、对账）经 withOrgContext，
 // 只设置组织、不代表任何用户。worker 的每一次写入都带 run_id 条件：租约被收回后，原执行者的写入只影响 0 行。
@@ -29,7 +29,9 @@ import {
 import type { AgentBudgetExhaustedReason, Database, JobEventKind, JobPauseReason, JobsTable, JobStatus, MemberRole } from '../db/schema.ts';
 import { insertAgentJobBudget, type AgentTaskLimits } from '../agent/budget.ts';
 import { assertJobStartBalance } from '../billing/usage.ts';
-import { AGENT_BUDGET_EXHAUSTED_REASONS } from '../db/migrations/0033_agent_job_budgets.ts';
+import { AGENT_BUDGET_EXHAUSTED_REASONS, AGENT_BUDGET_MAX_COST_LIMIT, AGENT_BUDGET_MAX_TURN_LIMIT } from '../db/migrations/0033_agent_job_budgets.ts';
+import { AGENT_BUDGET_CONFIRM_ROLES } from '../db/migrations/0034_agent_job_budget_confirm.ts';
+import { UNITS_PER_YUAN } from '../billing/ledger.ts';
 import { withOrgContext, withTenant, type TenantContext } from '../db/tenant.ts';
 import { AppError } from '../errors.ts';
 import { serializeJsonObject } from '../jsonObject.ts';
@@ -404,6 +406,76 @@ export async function requestResume(
   });
 }
 
+/** 计费单位 → “x.xx 元”（最多 4 位小数，去掉末尾的 0）。 */
+function formatYuan(units: bigint): string {
+  const negative = units < 0n;
+  const value = negative ? -units : units;
+  const fraction = (value % UNITS_PER_YUAN).toString().padStart(4, '0').replace(/0+$/, '');
+  return `${negative ? '-' : ''}${value / UNITS_PER_YUAN}${fraction ? `.${fraction}` : ''} 元`;
+}
+
+/**
+ * 达到费用或轮数上限后确认继续（8.3b，迁移 0034_agent_job_budget_confirm）：任务因上限暂停时，由任务发起人或组织的 owner / admin
+ * 确认，上限各加一份（与入队时的上限相同）、清除达到上限的原因，任务回到 queued（需要重新派发）。继续前照常检查最低启动余额，
+ * 不足时 402、什么都不改。确认记录（确认人、已花费金额、之前与新的上限）写入 resumed 事件。
+ *
+ * 任务行先加锁，并发确认只有第一个生效，之后的看到任务已不是因上限暂停，409 JOB_NOT_LIMIT_PAUSED；数据库守卫另外限定
+ * “一次达到上限只能加一份”和确认人（AB001），不依赖这里的检查。
+ */
+export async function confirmTaskLimit(db: Kysely<Database>, context: TenantContext, jobId: string): Promise<JobChange> {
+  return withTenant(db, context, async (trx) => {
+    const row = await lockJob(trx, jobId);
+    if (!row) throw jobNotFound();
+    if (isFinalStatus(row.status)) throw jobFinished();
+    if (row.status !== 'paused' || !isTaskLimitReason(row.pause_reason)) {
+      throw new AppError(409, 'JOB_NOT_LIMIT_PAUSED', '任务不是因达到费用或调用次数上限而暂停，不需要确认');
+    }
+    if (row.user_id !== context.userId && !(AGENT_BUDGET_CONFIRM_ROLES as readonly string[]).includes(context.role)) {
+      throw new AppError(403, 'JOB_CONFIRM_FORBIDDEN', '只有任务发起人或组织管理员可以确认继续');
+    }
+    const budget = await trx.selectFrom('agent_job_budgets').selectAll().where('job_id', '=', jobId).forUpdate().executeTakeFirst();
+    if (!budget) throw new AppError(409, 'AGENT_BUDGET_MISSING', '任务没有登记费用与轮数上限');
+    const costLimit = BigInt(budget.cost_limit) + BigInt(budget.cost_step);
+    const turnLimit = budget.turn_limit + budget.turn_step;
+    if (costLimit > AGENT_BUDGET_MAX_COST_LIMIT || turnLimit > AGENT_BUDGET_MAX_TURN_LIMIT) {
+      throw new AppError(409, 'TASK_LIMIT_MAX_REACHED', '本任务的费用或调用次数已达到可确认的最高上限，不能再继续，请取消后重新发起');
+    }
+    // 达到上限的任务都调用模型：继续前一律检查最低启动余额。
+    await assertJobStartBalance(trx);
+    await trx
+      .updateTable('agent_job_budgets')
+      .set({ cost_limit: costLimit.toString(), turn_limit: turnLimit, confirmations: budget.confirmations + 1, exhausted_reason: null })
+      .where('job_id', '=', jobId)
+      .execute();
+    const updated = await trx
+      .updateTable('jobs')
+      .set({ status: 'queued', pause_reason: null })
+      .where('id', '=', jobId)
+      .returningAll()
+      .executeTakeFirstOrThrow();
+    const job = toRecord(updated);
+    const billed = BigInt(row.billed_amount);
+    await appendEvent(
+      trx,
+      job,
+      'resumed',
+      `已确认继续：本任务已花费 ${formatYuan(billed)}，费用上限调整为 ${formatYuan(costLimit)}、调用次数上限调整为 ${turnLimit} 次`,
+      {
+        userId: context.userId,
+        confirmedReason: row.pause_reason,
+        billedAmount: billed.toString(),
+        turnsUsed: budget.turns_used,
+        previousCostLimit: budget.cost_limit,
+        costLimit: costLimit.toString(),
+        previousTurnLimit: budget.turn_limit,
+        turnLimit,
+        confirmations: budget.confirmations + 1,
+      },
+    );
+    return { job, dispatch: true };
+  });
+}
+
 // ---------------------------------------------------------------------------------------------------------------
 // worker 的系统操作（withOrgContext，带 run_id 的隔离条件）
 // ---------------------------------------------------------------------------------------------------------------
@@ -620,6 +692,13 @@ export async function finishRun(db: Kysely<Database>, run: RunRef, outcome: RunO
       return 'paused';
     }
     if (outcome.kind === 'task-limit' && row.status === 'running') {
+      // 确认继续（8.3b）要求已记下达到上限的原因；执行者记录失败时（markAgentBudgetExhausted 出错）在暂停前补上。
+      await trx
+        .updateTable('agent_job_budgets')
+        .set({ exhausted_reason: outcome.reason })
+        .where('job_id', '=', row.id)
+        .where('exhausted_reason', 'is', null)
+        .execute();
       const updated = await trx
         .updateTable('jobs')
         .set({ status: 'paused', pause_reason: outcome.reason, pause_requested: false, run_id: null, lease_expires_at: null })
