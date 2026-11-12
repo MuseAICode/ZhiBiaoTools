@@ -12,7 +12,8 @@
 //
 // 路由：GET /v1/session（8.2b）返回令牌当前的到期时间（令牌与租约中较早者），供沙箱内的入口（8.6）确认令牌有效，
 // 不返回组织、项目、用户等标识（沙箱不需要）；POST /v1/chat/completions（8.2c2，src/agent/chatCompletions.ts）经 AI 网关
-// 调用组织选用的模型。关闭时（worker 停止）先中止进行中的模型调用，这些调用不收费。
+// 调用组织选用的模型；POST /v1/tools/call（8.4a，src/agent/tools.ts）执行本任务类型登记可用的业务工具。关闭时（worker 停止）
+// 先中止进行中的模型调用（这些调用不收费）与工具调用。
 import Fastify, { LogController, type FastifyInstance, type FastifyRequest } from 'fastify';
 import type { Kysely } from 'kysely';
 import type { AiGateway } from '../ai/gateway.ts';
@@ -23,6 +24,7 @@ import { resolveJobModel } from '../jobs/chat.ts';
 import { createLoggerOptions } from '../logger.ts';
 import { beginAgentTurn, markAgentBudgetExhausted } from './budget.ts';
 import { registerAgentChatRoute } from './chatCompletions.ts';
+import { createAgentToolRegistry, registerAgentToolRoute, type AgentToolRegistry } from './tools.ts';
 import { DEFAULT_AGENT_GATEWAY_LIMITS } from './gateway.ts';
 import { AGENT_RELAY_KEY_HEADER, createRelayKeyVerifier, parseAgentBearer } from './token.ts';
 import { agentTenantContext, lookupAgentJobToken, type AgentTokenIdentity } from './tokenStore.ts';
@@ -41,6 +43,10 @@ export interface AgentEndpointOptions {
   gateway?: AiGateway | null;
   /** 平台的最大输出 token（AI_MAX_OUTPUT_TOKENS）。 */
   maxOutputTokens?: number;
+  /** 业务工具（8.4a）；不传时没有工具，所有工具调用 404。 */
+  tools?: AgentToolRegistry;
+  /** 任务类型登记可用的工具名（JobTypeDefinition.agentTools）；不传时所有任务类型都没有可用的工具。 */
+  toolsForJobType?: (jobType: string) => readonly string[];
 }
 
 /** 未给出 maxOutputTokens 时（测试）的平台最大输出 token，与 AI_MAX_OUTPUT_TOKENS 的默认值相同。 */
@@ -120,7 +126,7 @@ export async function buildAgentEndpointApp(options: AgentEndpointOptions): Prom
     return { status: 'active', expiresAt: identity.expiresAt.toISOString() };
   });
 
-  // 进行中的模型调用：关闭时统一中止（原因 shutdown，不收费），等它们释放冻结并结束响应（至多 CLOSE_DRAIN_MS），
+  // 进行中的模型调用与工具调用：关闭时统一中止（原因 shutdown，模型调用不收费），等它们释放冻结并结束响应（至多 CLOSE_DRAIN_MS），
   // 再由 forceCloseConnections 关闭全部连接（agent-gw 的长连接空闲时也不会拖住关闭）。
   const inFlight = new Set<AbortController>();
   let drained: (() => void) | null = null;
@@ -132,6 +138,14 @@ export async function buildAgentEndpointApp(options: AgentEndpointOptions): Prom
     for (const controller of inFlight) controller.abort('shutdown');
     await Promise.race([done, new Promise((resolve) => setTimeout(resolve, CLOSE_DRAIN_MS).unref())]);
   });
+  function track(controller: AbortController): () => void {
+    if (closing) controller.abort('shutdown');
+    inFlight.add(controller);
+    return () => {
+      inFlight.delete(controller);
+      if (inFlight.size === 0) drained?.();
+    };
+  }
   registerAgentChatRoute(app, {
     resolveModel: (context) => resolveJobModel(options.db, context),
     gateway: options.gateway ?? null,
@@ -143,14 +157,14 @@ export async function buildAgentEndpointApp(options: AgentEndpointOptions): Prom
     markCostLimit: async (identity) => {
       await markAgentBudgetExhausted(options.db, { tenant: agentTenantContext(identity), jobId: identity.jobId, runId: identity.runId }, 'task_cost_limit');
     },
-    track(controller) {
-      if (closing) controller.abort('shutdown');
-      inFlight.add(controller);
-      return () => {
-        inFlight.delete(controller);
-        if (inFlight.size === 0) drained?.();
-      };
-    },
+    track,
+  });
+  registerAgentToolRoute(app, {
+    db: options.db,
+    tools: options.tools ?? createAgentToolRegistry([]),
+    toolsForJobType: options.toolsForJobType ?? (() => []),
+    identityOf: agentIdentityOf,
+    track,
   });
 
   return app;

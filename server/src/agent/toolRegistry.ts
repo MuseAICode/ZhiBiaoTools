@@ -1,0 +1,7 @@
+// 生产环境登记的 Agent 业务工具（8.4a 起；src/agent/tools.ts）。8.4b 起的各工具在这里追加，测试用的工具只在 tests/ 中登记。
+// 每个 Agent 任务类型在 JobTypeDefinition.agentTools 中列出自己可用的工具，worker 启动时检查都已登记。
+import { createAgentToolRegistry, type AgentToolDefinition } from './tools.ts';
+
+export const AGENT_TOOLS: readonly AgentToolDefinition<any, any>[] = Object.freeze([]);
+
+export const agentToolRegistry = createAgentToolRegistry(AGENT_TOOLS);

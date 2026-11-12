@@ -36,13 +36,18 @@ export interface AgentGatewayRoute {
 export const AGENT_CHAT_PATH = '/v1/chat/completions';
 export const AGENT_CHAT_MAX_BODY_BYTES = 4 * 1024 * 1024;
 
+/** 业务工具 RPC（8.4a，src/agent/tools.ts）的路径与请求体上限；各工具另有自己的参数上限。 */
+export const AGENT_TOOL_CALL_PATH = '/v1/tools/call';
+export const AGENT_TOOL_MAX_BODY_BYTES = 1024 * 1024;
+
 /**
- * 转给 worker 的路由，worker 的内部入口有同样的路径：查询令牌状态的 /v1/session（8.2b）与模型调用（8.2c2）；
- * 业务工具 RPC（8.4）在这里登记后才能经过 agent-gw。
+ * 转给 worker 的路由，worker 的内部入口有同样的路径：查询令牌状态的 /v1/session（8.2b）、模型调用（8.2c2）与业务工具 RPC
+ * （8.4a，所有工具共用一个路径，工具名在请求体中，由 worker 按登记检查）。
  */
 export const AGENT_GATEWAY_ROUTES: readonly AgentGatewayRoute[] = Object.freeze([
   Object.freeze({ method: 'GET', path: '/v1/session' } as const),
   Object.freeze({ method: 'POST', path: AGENT_CHAT_PATH, bodyLimit: AGENT_CHAT_MAX_BODY_BYTES } as const),
+  Object.freeze({ method: 'POST', path: AGENT_TOOL_CALL_PATH, bodyLimit: AGENT_TOOL_MAX_BODY_BYTES } as const),
 ]);
 
 export interface AgentGatewayLimits {

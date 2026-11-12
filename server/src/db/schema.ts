@@ -1331,6 +1331,20 @@ export interface AgentJobRunsTable {
   ended_at: ColumnType<Date | null, never, Date | null>;
 }
 
+/**
+ * Agent 业务工具的调用计数（迁移 0037_agent_tool_calls，8.4a）：每个 Agent 任务、每个工具一行，calls 跨执行累计，
+ * window_* 是一分钟窗口的计数。只经 src/agent/tools.ts 的计数语句原子地加 1（触发器 AT101 检查只能逐次加 1），没有 DELETE。
+ */
+export interface AgentToolCallsTable {
+  org_id: ColumnType<string, string, never>;
+  job_id: ColumnType<string, string, never>;
+  tool: ColumnType<string, string, never>;
+  calls: ColumnType<number, never, number>;
+  window_started_at: ColumnType<Date, never, Date>;
+  window_calls: ColumnType<number, never, number>;
+  created_at: ColumnType<Date, never, never>;
+}
+
 export interface Database {
   organizations: OrganizationsTable;
   users: UsersTable;
@@ -1410,4 +1424,5 @@ export interface Database {
   agent_job_budgets: AgentJobBudgetsTable;
   agent_job_limit_overrides: AgentJobLimitOverridesTable;
   agent_job_runs: AgentJobRunsTable;
+  agent_tool_calls: AgentToolCallsTable;
 }

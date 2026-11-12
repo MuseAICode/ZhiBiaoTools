@@ -8,6 +8,7 @@ import type { TenantContext } from '../db/tenant.ts';
 import type { ObjectStore } from '../files/objectStore.ts';
 import type { SandboxDriver } from '../sandbox/driver.ts';
 import { JOB_TYPE_PATTERN } from '../db/migrations/0021_jobs.ts';
+import { AGENT_TOOL_NAME_PATTERN } from '../db/migrations/0037_agent_tool_calls.ts';
 
 /** BullMQ 队列（第 5.2 节），每个队列在 worker 中单独设置并发。 */
 export const JOB_QUEUES = ['parse', 'ai', 'agent', 'export'] as const;
@@ -99,6 +100,11 @@ export interface JobTypeDefinition<P = unknown> {
    * AGENT_TASK_LIMITS），入队时与任务一起写入；其他队列不能给出。
    */
   readonly agentLimits?: AgentTaskLimits;
+  /**
+   * Agent 任务可以调用的业务工具名（路线图 8.4a，src/agent/tools.ts）：只有 agent 队列的任务类型能给出；沙箱只能调用这里列出的工具，
+   * 其余一律 404。worker 启动时检查这些工具都已登记（src/agent/toolRegistry.ts）。
+   */
+  readonly agentTools?: readonly string[];
   /** 校验并归一化任务参数（入队时和执行前各一次），不合法时抛错。参数里只放 id 和少量选项。 */
   parseParams(raw: unknown): P;
   run(context: JobContext<P>): Promise<void>;
@@ -153,6 +159,8 @@ export interface JobTypeRegistry {
 }
 
 const TYPE_PATTERN = new RegExp(JOB_TYPE_PATTERN);
+const TOOL_NAME_PATTERN = new RegExp(AGENT_TOOL_NAME_PATTERN);
+const isValidAgentToolName = (name: unknown) => typeof name === 'string' && TOOL_NAME_PATTERN.test(name);
 
 export function createJobTypeRegistry(definitions: readonly JobTypeDefinition<any>[]): JobTypeRegistry {
   const byType = new Map<string, JobTypeDefinition>();
@@ -166,6 +174,13 @@ export function createJobTypeRegistry(definitions: readonly JobTypeDefinition<an
     }
     if (definition.agentLimits !== undefined && !isValidAgentTaskLimits(definition.agentLimits)) {
       throw new TypeError(`任务类型 ${definition.type} 的费用与轮数上限不合法`);
+    }
+    if (definition.agentTools !== undefined) {
+      if (definition.queue !== 'agent') throw new TypeError(`任务类型 ${definition.type}：只有 agent 队列的任务能登记业务工具`);
+      const names = definition.agentTools;
+      if (!Array.isArray(names) || !names.every(isValidAgentToolName) || new Set(names).size !== names.length) {
+        throw new TypeError(`任务类型 ${definition.type} 登记的业务工具不合法`);
+      }
     }
     byType.set(definition.type, definition);
   }
