@@ -453,7 +453,12 @@ describe('worker 中的任务调用', () => {
     const paused = await waitForStatus(job.id, 'paused');
     expect(paused).toMatchObject({ pause_reason: 'insufficient_balance', billed_amount: String(2n * CHARGE), checkpoint: { step: 2 }, run_id: null });
     expect(provider.requests).toHaveLength(2);
-    expect(notifier.jobs.at(-1)).toMatchObject({ id: job.id, status: 'paused', pauseReason: 'insufficient_balance', billedAmount: String(2n * CHARGE) });
+    // 推送在 finishRun 提交之后才发出：等到推送到达再检查（数据库已是 paused 时推送可能还没发出）。
+    const pushed = await waitFor(async () => {
+      const last = notifier.jobs.at(-1);
+      return last?.status === 'paused' ? last : null;
+    }, 15_000, 'paused 推送');
+    expect(pushed).toMatchObject({ id: job.id, status: 'paused', pauseReason: 'insufficient_balance', billedAmount: String(2n * CHARGE) });
     const events = await superuser.selectFrom('job_events').select(['kind', 'data']).where('job_id', '=', job.id).orderBy('id').execute();
     expect(events.at(-1)).toEqual({ kind: 'paused', data: { reason: 'insufficient_balance' } });
     // 已完成的两次调用按实际用量扣费；冻结失败的那次调用不写用量记录，暂停后没有任何进行中的冻结。
