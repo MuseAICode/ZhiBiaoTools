@@ -521,6 +521,7 @@ describe('回滚 0036', () => {
     await appDb.destroy();
     const owner = connect(testDb.ownerConfig);
     try {
+      expect((await migrateDown(owner)).results?.map((result) => result.migrationName)).toEqual(['0037_agent_tool_calls']);
       const down = await migrateDown(owner);
       expect(down.error).toBeUndefined();
       expect(down.results?.map((result) => result.migrationName)).toEqual(['0036_agent_job_runs']);

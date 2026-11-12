@@ -506,7 +506,7 @@ AI 网关（worker 内）── 解密 Key ──> 模型服务商
 
 ### 7.5 实现（路线图 6.5）：解析沙箱
 
-第 6 步先建本节的公共部分和断网的 `parse` 模板（路线图第 6 步“文件解析的隔离”方案 B），第 8 步在同一套机制上加 `agent` 模板（每个沙箱一个只通 `agent-gw` 的专用网络，见第 7.10 节；任务令牌见第 7.11 节（8.2a），`agent-gw` 见第 7.12 节（8.2b），AI 网关的工具调用见第 7.13 节（8.2c1），模型调用路由与业务工具 RPC 随路线图 8.2c2、8.4）。
+第 6 步先建本节的公共部分和断网的 `parse` 模板（路线图第 6 步“文件解析的隔离”方案 B），第 8 步在同一套机制上加 `agent` 模板（每个沙箱一个只通 `agent-gw` 的专用网络，见第 7.10 节；任务令牌见第 7.11 节（8.2a），`agent-gw` 见第 7.12 节（8.2b），AI 网关的工具调用见第 7.13 节（8.2c1），模型调用路由见第 7.14 节（8.2c2），业务工具 RPC 框架见第 7.15 节（8.4a））。
 
 - **接口**：`SandboxDriver`（`server/src/sandbox/driver.ts`）的 `create / copyIn / exec / copyOut / destroy`。worker 用 HTTP 客户端（`client.ts`），sandbox-runner 用 Docker 实现（`docker.ts`）；换成微虚拟机时只换后者。
 - **模板**（`templates.ts`）：镜像、网络、用户、只读、资源、可写目录、命令、取回规则都写死在代码中，调用方只选模板名；`parse` 的参数见第 7.4 节的表，取值为路线图第 6 步决定事项第 5 项的起步值。容器的主进程只是 `sleep`，命令经 exec 执行，超时或调用方中止时终止整个容器。
@@ -656,6 +656,21 @@ agent-gw 登记 `POST /v1/chat/completions`（请求体上限 4 MiB，`AGENT_CHA
 - **中止**：沙箱断开（agent-gw 随之中止转发）按已产生的用量收费（与用户取消相同）；worker 关闭时内部入口先以 `shutdown` 中止进行中的调用（不收费，`platform_interrupted`），至多等 5 秒释放冻结，再关闭全部连接（`forceCloseConnections`，agent-gw 的空闲长连接不拖住关闭）。
 - **任务上限（8.3a）**：每个请求先计入本任务的一轮（含取回已保存结果的），费用上限在冻结时检查，见第 10.11 节。
 - **测试**：`tests/agent/chatCompletions.test.ts`（网关用桩代替：Pi 请求形状的对照组、转换结果、SSE 格式、33 种顶层与 18 种消息级恶意样本、上限、失败与断开）；`tests/db/agentChat.test.ts`（真实数据库与 AI 网关、本机模拟服务商、经 agent-gw：按令牌记账、模型不采信、伪造字段与头部、步骤幂等、令牌无效与暂停、余额不足、请求体上限、断开与关闭的计费、日志中没有令牌与 Key）。顶层字段白名单、`max_tokens` 截断、关闭不收费、模型不采信、任务只按令牌做过变异检查。
+
+### 7.15 实现（路线图 8.4a）：业务工具 RPC 框架
+
+agent-gw 登记 `POST /v1/tools/call`（请求体上限 1 MiB，`AGENT_TOOL_MAX_BODY_BYTES`，agent-gw 与 worker 内部入口各自执行），所有工具共用这一个路径，请求体只有 `{ name, arguments }`。worker 内部入口上的路由（`src/agent/tools.ts`）按以下顺序处理，请求按攻击者的输入处理：
+
+1. **工具名**：只接受登记过（`src/agent/toolRegistry.ts`）、且本任务类型在 `JobTypeDefinition.agentTools` 中列出的工具；未登记与本任务类型不可用的一律 404 `AGENT_TOOL_NOT_FOUND`（响应相同），不执行、不计入。worker 启动时检查各任务类型列出的工具都已登记。
+2. **调用次数与频率**（迁移 `0037_agent_tool_calls`）：每个任务、每个工具一行计数，一条 `INSERT ... ON CONFLICT DO UPDATE` 原子地检查并加 1——任务仍是本次执行（`running`、`run_id` 相符）且登记了 Agent 上限、累计次数 < 工具的 `maxCallsPerJob`（跨执行累计）、当前一分钟窗口内 < `maxCallsPerMinute`；否则 429 `AGENT_TOOL_CALL_LIMIT` / `AGENT_TOOL_RATE_LIMIT`，或 409 `JOB_NOT_RUNNING`。**参数不合法的调用同样计入**（防止靠无效调用空耗 worker）。计数表强制 RLS，应用角色只能写入标识列、只能更新计数列，没有 DELETE；触发器 `AT101` 保证次数只能逐次加 1、窗口只能计数或从 `now()` 重新开始、标识不能改。
+3. **参数**：先按序列化后的字节数检查工具自己的 `maxArgumentBytes`（413），再按工具登记的 schema 校验（不做类型转换；400 `AGENT_TOOL_INVALID_ARGUMENTS`，说明只含参数中的位置与 schema 的要求，供模型修正，不回显请求内容）。schema 在登记时检查必须**封闭**：只允许 `type`、`properties`、`required`、`additionalProperties`（必须为 `false`）、`items`、`minItems` / `maxItems`、`uniqueItems`、`minLength` / `maxLength`、`pattern`、`format`（只有 `uuid`）、`enum`、`const`、`minimum` / `maximum`、`anyOf`、`description`；每个对象 `additionalProperties: false`，字符串必须有 `maxLength`，数组必须有 `items` 与 `maxItems`，嵌套 ≤ 16 层。因此请求中自称的 `org_id`、`project_id`、`job_id`、`user_id` 等字段（顶层或参数中）都是 400。
+4. **身份只按令牌**：处理函数拿到的上下文是令牌身份（组织、项目、任务、执行、发起用户、任务类型）与据此建立的 `TenantContext`（发起用户当前的角色与 RLS），以及数据库连接、中止信号与日志；头部中自称的身份不读取。
+5. **资源标识重新解析**：参数中的资源标识是不可信输入，处理函数在 `withTenant` 中按令牌的项目重新解析；8.4a 提供格式检查 `parseAgentResourceId`（小写 UUID）与产物的解析 `resolveProjectArtifact`（属于令牌的项目、已完成、未被替换），查不到一律 404 `AGENT_RESOURCE_NOT_FOUND`，不区分“不存在”“其他项目”“其他组织”。其他资源（目录节点、小节、模板等）的解析随使用它们的工具加入，规则相同。
+6. **结果与错误**：响应 `{ result }`（序列化后 ≤ 4 MiB，超出按内部错误）；处理函数抛出 `AppError` 原样返回，其他错误只返回通用文案。沙箱断开、worker 关闭时经中止信号通知处理函数。日志只记工具名、任务 id、令牌哈希前缀、耗时与结果码，不记参数与结果。
+
+8.4a 只有框架，生产环境还没有登记任何工具；`report-failure`（8.4b）、ask-user（8.4c）与各任务的业务工具随后在 `toolRegistry.ts` 中追加。
+
+- **测试**：`tests/agent/tools.test.ts`（工具名、上限、26 种不封闭的 schema 与对照组、请求体 schema、资源标识格式、任务类型登记的工具、agent-gw 路由）；`tests/db/agentTools.test.ts`（20 个用例，真实数据库，经 agent-gw：对照组与身份、伪造身份字段与头部、令牌失效、未登记与不可用的工具、参数类型 / 必填 / 范围 / 字节上限、本项目 / 其他项目 / 其他组织 / 未完成 / 已替换 / 不存在 / 格式不对的产物 id、累计次数与 20 个并发、频率窗口、计数的 RLS / 授权 / `AT101`、处理函数出错与中止、日志、回滚）。任务类型的工具白名单、次数上限、频率上限、`run_id` 条件、参数字节上限、产物解析的项目 / 状态 / 替换条件做过变异检查。
 
 ## 8. 部署架构
 

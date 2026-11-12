@@ -10,6 +10,8 @@
 // 清理任务（6.8）每小时一批：跨组织删除超过保留期的文件、产物、项目和任务记录，并把到期的冻结收尾（src/cleanup/）。
 import Fastify, { type FastifyInstance } from 'fastify';
 import { buildAgentEndpointApp } from './agent/endpoint.ts';
+import { agentToolRegistry } from './agent/toolRegistry.ts';
+import { assertAgentToolsRegistered } from './agent/tools.ts';
 import { createAiConcurrencyLimiter } from './ai/concurrency.ts';
 import { createAiGateway } from './ai/gateway.ts';
 import { KeyringError, loadFileKeyWrapper, type KeyWrapper } from './ai/keyring.ts';
@@ -92,6 +94,9 @@ const runner = createJobRunner({
   sandbox,
 });
 
+// 任务类型登记的工具都必须已定义（否则启动失败）。
+assertAgentToolsRegistered(jobTypeRegistry.types, agentToolRegistry);
+
 let cleanup: CleanupSchedule | null = null;
 const agentEndpoint: FastifyInstance | null = config.agentEndpoint ? await buildAgentEndpointApp({
       db: database.db,
@@ -100,6 +105,9 @@ const agentEndpoint: FastifyInstance | null = config.agentEndpoint ? await build
       // 模型调用（8.2c2）经同一个 AI 网关；未配置主密钥时返回 503。
       gateway,
       maxOutputTokens: config.ai.maxOutputTokens,
+      // 业务工具（8.4a）：每个任务类型只能调用自己登记的工具。
+      tools: agentToolRegistry,
+      toolsForJobType: (type) => jobTypeRegistry.get(type)?.agentTools ?? [],
     }) : null;
 
 app.addHook('onClose', async () => {
