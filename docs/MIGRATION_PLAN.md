@@ -2635,11 +2635,22 @@ CI 中用**脚本化的假模型**模拟“完全听从注入”的 Agent：读�
 1. 报告存为单独的表（每次执行一行），不复用 `agent_job_budgets.exhausted_reason`：后者表示“暂停、可确认继续”，报告表示“失败、不再继续”，语义不同；
 2. 有报告时除“成功”外的结果一律按报告失败（含达到上限与余额不足）：Agent 已表示无法继续，暂停后“确认继续”没有意义；执行者按成功返回时仍为成功（平台已校验并写入结果），8.6 的入口在报告后应中止 Pi 会话、不再按成功返回。
 
+以上 2 处差异已在 #83 确认。
+
+**决定事项（#83 确认，均按建议）**：
+
+1. 有报告时，达到上限或余额不足也按失败结束，不暂停、不能确认继续；
+2. 执行者按成功返回时记为成功；8.6 的入口在报告后中止 Pi 会话、不再按成功返回；
+3. 报告时正在进行的模型调用被中止时按“用户取消”收取已产生的用量（与 6.4a 的规则相同，只有 worker 关闭、租约丢失中止的不收费）；
+4. 工具上限起步值：每个任务 20 次、每分钟 10 次，原因至多 500 个字符；8.7 按真实任务核对。
+
+另：本 PR 在 8.3a 的轮数计数（`beginAgentTurn`）与 8.4a 的工具调用计数（`beginAgentToolCall`）中加了“本次执行没有失败报告”的条件，没有报告的执行计数不变，费用上限的检查（`ai_usage_begin`）与上限值不变。
+
 **登记给后续各项的事项**：
 
 - **8.4c**：“由用户决定是否终止”（桌面版 `requestTerminationDecision`）：Agent 调用 `report-failure` 时先经 ask-user 询问用户，用户确认终止才写入报告；用户选择继续时工具返回放宽后的执行要求（桌面版 `buildContinueInstruction`），同一会话再次请求终止须人工确认；失败交回父 Agent 的子会话仍直接报告；
 - **8.6**：沙箱内的 `report-failure` 桩调用本工具后立即结束 Pi 会话，不再调用任何工具；任务类型在 `agentTools` 中列出 `report-failure`；
-- **第 9 步**：失败说明（`error_code` 为 `AGENT_REPORTED_FAILURE` 时）是 AI 生成的文字，按纯文本显示（`allowRawHtml={false}`、`linkMode="text"`），并标明“由 AI 给出”，与 T10 的问题显示规则相同。
+- **第 9 步**：失败说明标注为“AI 给出的说明”、按纯文本显示、不自动识别链接 / 电话 / 邮箱（#83 确认，已登记到“第 8 步登记给第 9 步的事项”）。
 
 ### 第 9 步说明
 
@@ -2649,6 +2660,7 @@ CI 中用**脚本化的假模型**模拟“完全听从注入”的 Agent：读�
 - **达到任务上限后的确认继续页面**：发起人或组织管理员确认，显示已花费金额（接口随 8.3b；暂停事件已记下已扣费、上限与已用轮数，#77）。
 - **worker 的 Agent 内部入口只绑定 `agent-relay`**（#73）：生产部署时 `AGENT_ENDPOINT_HOST` 设为 worker 在 `agent-relay` 网络上的地址（或该网络只有 `agent-gw` 与 worker 且其他网络连不到 3200 端口），`agent-gw` 只挂载中继密钥 `agent_relay_key`（生产另行生成、只给 agent-gw 与 worker）、只在 `agent-relay` 上，`AGENT_GW_RESPONSE_TIMEOUT_MS` 不短于 `AI_UPSTREAM_TIMEOUT_MS`。
 - **Docker 地址池与沙箱上限**（#76）：生产 Docker 配置专用的 `default-address-pools`，可分配的子网数大于 `SANDBOX_MAX_ACTIVE`（每个 agent 沙箱一个专用网络；8.2d 起上限同时计入残留网络，网络数不超过上限），并留出宿主其他网络的余量；调大 `SANDBOX_MAX_ACTIVE` 前先核对。
+- **Agent 报告的失败原因的显示**（#83 确认）：任务失败、`error_code` 为 `AGENT_REPORTED_FAILURE` 时，失败说明（`error_message`）标注为“AI 给出的说明”，按纯文本显示（`allowRawHtml={false}`、`linkMode="text"`），**不自动识别链接、电话、邮箱**（不生成可点击的链接、拨号或发邮件入口），防止被注入的 Agent 借此诱导用户（威胁模型 T10、T11）。
 
 #### 品牌改名第一部分：用户可见文字和文档（#1）
 

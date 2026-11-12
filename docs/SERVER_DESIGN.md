@@ -680,7 +680,7 @@ agent-gw 登记 `POST /v1/tools/call`（请求体上限 1 MiB，`AGENT_TOOL_MAX_
 - **存储**（迁移 `0038_agent_failure_reports`）：每次执行（`run_id`）至多一行，只记第一次；强制 RLS，只能为本组织 `running`、`run_id` 相符的 Agent 任务写入，没有 UPDATE、DELETE；随任务删除。
 - **报告之后**：本次执行的模型调用（`beginAgentTurn`）与工具调用（`beginAgentToolCall`）一律 409 `JOB_NOT_RUNNING`，不计入轮数与次数。
 - **结束**：工具写入后经任务控制频道通知执行者；`renewRun` 返回 `agentFailureReported`，执行者中止本次执行。`finishRun` 中本次执行有报告时，除成功外的任何结果都以 `AGENT_REPORTED_FAILURE` 失败（`error_message` 为报告的原因，已请求取消的仍为取消）；执行者失联后由对账收回时同样失败、不再续跑。任务结束即令牌失效。
-- **显示**（第 9 步）：`AGENT_REPORTED_FAILURE` 的失败说明是 AI 生成的文字，前端按纯文本显示并标明来源（与 ask-user 的问题相同，威胁模型 T10、T11）。
+- **显示**（第 9 步，#83 确认）：`AGENT_REPORTED_FAILURE` 的失败说明标注为“AI 给出的说明”，前端按纯文本显示，不自动识别链接、电话、邮箱（威胁模型 T10、T11）。
 
 ## 8. 部署架构
 
