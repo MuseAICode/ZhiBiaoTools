@@ -56,7 +56,8 @@ import type {
 } from './migrations/0018_technical_plan.ts';
 import type { TECHNICAL_PLAN_CONTENT_MODES } from './migrations/0019_technical_plan_outline.ts';
 import type { JOB_EVENT_KINDS, JOB_STATUSES } from './migrations/0021_jobs.ts';
-import type { AGENT_BUDGET_EXHAUSTED_REASONS, JOB_PAUSE_REASONS } from './migrations/0033_agent_job_budgets.ts';
+import type { AGENT_BUDGET_EXHAUSTED_REASONS } from './migrations/0033_agent_job_budgets.ts';
+import type { JOB_PAUSE_REASONS } from './migrations/0036_agent_job_runs.ts';
 import type { ProjectKind } from '../projects/store.ts';
 
 type Timestamp = ColumnType<Date, Date | string, Date | string>;
@@ -1317,6 +1318,19 @@ export interface AgentJobLimitOverridesTable {
   updated_at: ColumnType<Date, never, never>;
 }
 
+/**
+ * Agent 任务的每次执行（迁移 0036_agent_job_runs，8.3d）：认领时写入，续租时推进 last_seen_at，结束时 ended_at = last_seen_at；
+ * 每日 Agent 运行时长按此现算。时间取数据库时间，应用角色只能写入标识；结束后整行不能再改（触发器 AR001）。
+ */
+export interface AgentJobRunsTable {
+  run_id: ColumnType<string, string, never>;
+  org_id: ColumnType<string, string, never>;
+  job_id: ColumnType<string, string, never>;
+  started_at: ColumnType<Date, never, never>;
+  last_seen_at: ColumnType<Date, never, Date>;
+  ended_at: ColumnType<Date | null, never, Date | null>;
+}
+
 export interface Database {
   organizations: OrganizationsTable;
   users: UsersTable;
@@ -1395,4 +1409,5 @@ export interface Database {
   agent_job_tokens: AgentJobTokensTable;
   agent_job_budgets: AgentJobBudgetsTable;
   agent_job_limit_overrides: AgentJobLimitOverridesTable;
+  agent_job_runs: AgentJobRunsTable;
 }

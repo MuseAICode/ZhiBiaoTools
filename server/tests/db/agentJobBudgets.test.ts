@@ -155,7 +155,7 @@ async function newProject(ctx: TenantContext): Promise<string> {
 async function runningAgentJob(ctx: TenantContext, type = 'test-agent-turns'): Promise<RunRef> {
   const job = await enqueueJob({ db: appDb, registry, dispatcher: null, log: logs.log }, ctx, { type, params: { steps: null }, projectId: await newProject(ctx) });
   const runId = randomUUID();
-  const claim = await claimJob(appDb, { orgId: ctx.orgId, jobId: job.id, runId, leaseMs: 60_000, orgRunningLimit: 100, attemptsFor: () => 5 });
+  const claim = await claimJob(appDb, { orgId: ctx.orgId, jobId: job.id, runId, leaseMs: 60_000, orgRunningLimit: 100, agentQuota: { orgAgentRunningLimit: 100 }, attemptsFor: () => 5 });
   expect(claim.kind).toBe('claimed');
   return { orgId: ctx.orgId, jobId: job.id, runId };
 }
@@ -547,6 +547,7 @@ describe('回滚 0033', () => {
     await appDb.destroy();
     const owner = connect(testDb.ownerConfig);
     try {
+      expect((await migrateDown(owner)).results?.map((result) => result.migrationName)).toEqual(['0036_agent_job_runs']);
       expect((await migrateDown(owner)).results?.map((result) => result.migrationName)).toEqual(['0035_agent_job_limit_overrides']);
       expect((await migrateDown(owner)).results?.map((result) => result.migrationName)).toEqual(['0034_agent_job_budget_confirm']);
       const down = await migrateDown(owner);

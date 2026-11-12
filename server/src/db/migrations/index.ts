@@ -36,6 +36,7 @@ import * as jobStepToolCalls from './0032_job_step_tool_calls.ts';
 import * as agentJobBudgets from './0033_agent_job_budgets.ts';
 import * as agentJobBudgetConfirm from './0034_agent_job_budget_confirm.ts';
 import * as agentJobLimitOverrides from './0035_agent_job_limit_overrides.ts';
+import * as agentJobRuns from './0036_agent_job_runs.ts';
 
 export const migrations: Readonly<Record<string, Migration>> = Object.freeze({
   '0001_identity': identity,
@@ -73,4 +74,5 @@ export const migrations: Readonly<Record<string, Migration>> = Object.freeze({
   '0033_agent_job_budgets': agentJobBudgets,
   '0034_agent_job_budget_confirm': agentJobBudgetConfirm,
   '0035_agent_job_limit_overrides': agentJobLimitOverrides,
+  '0036_agent_job_runs': agentJobRuns,
 });
