@@ -2,6 +2,7 @@
 // 放入失败（Redis 不可用、重启中）时任务仍是 queued，由 worker 的对账重新放入，不会丢失。
 import type { FastifyBaseLogger } from 'fastify';
 import type { Kysely } from 'kysely';
+import type { AgentQuotaOptions } from '../agent/quota.ts';
 import type { Database } from '../db/schema.ts';
 import type { TenantContext } from '../db/tenant.ts';
 import type { JobTypeRegistry } from './definitions.ts';
@@ -17,6 +18,8 @@ export interface JobServiceDependencies {
   log: Pick<FastifyBaseLogger, 'warn'>;
   /** 状态变化后的推送（6.3）；不提供时不推送。 */
   notifier?: JobNotifier;
+  /** Agent 任务的组织配额（8.3d）；不提供时取 src/agent/quota.ts 的常量（测试用）。 */
+  agentQuota?: AgentQuotaOptions;
 }
 
 async function dispatchBestEffort(deps: JobServiceDependencies, job: JobRecord): Promise<void> {
@@ -31,7 +34,8 @@ async function dispatchBestEffort(deps: JobServiceDependencies, job: JobRecord):
 
 /**
  * 入队：任务类型必须已登记，参数先经该类型校验。lock_key 冲突时抛 409 JOB_LOCKED；会调用模型的任务类型（billable）
- * 可用余额低于最低启动余额时抛 402 INSUFFICIENT_BALANCE（与写入在同一事务）。
+ * 可用余额低于最低启动余额时抛 402 INSUFFICIENT_BALANCE（与写入在同一事务）；Agent 任务在组织当日运行时长用完时抛
+ * 429 AGENT_DAILY_RUNTIME_EXHAUSTED（8.3d）。同时运行的 Agent 任务已满时照常入队，由 worker 按入队时间排队。
  */
 export async function enqueueJob(deps: JobServiceDependencies, context: TenantContext, input: NewJob): Promise<JobRecord> {
   return (await enqueueJobSuperseding(deps, context, input)).job;
@@ -42,7 +46,9 @@ export async function enqueueJobSuperseding(deps: JobServiceDependencies, contex
   const definition = deps.registry.get(input.type);
   if (!definition) throw new TypeError(`任务类型未登记：${input.type}`);
   definition.parseParams(input.params);
-  const inserted = await insertJobSuperseding(deps.db, context, { ...input, checkBalance: definition.billable === true, agentLimits: definition.agentLimits ?? null });
+  const inserted = await insertJobSuperseding(deps.db, context, { ...input, checkBalance: definition.billable === true, agentLimits: definition.agentLimits ?? null,
+    ...(deps.agentQuota ? { agentQuota: deps.agentQuota } : {}),
+  });
   const notifier = deps.notifier ?? NULL_JOB_NOTIFIER;
   for (const cancelled of inserted.superseded) await notifier.changed(cancelled);
   await notifier.changed(inserted.job);
@@ -64,7 +70,8 @@ export async function pauseJob(deps: JobServiceDependencies, context: TenantCont
 
 export async function resumeJob(deps: JobServiceDependencies, context: TenantContext, jobId: string): Promise<JobRecord> {
   // 从暂停继续前同样检查余额（余额不足暂停的任务充值后才能继续）。
-  const change = await requestResume(deps.db, context, jobId, (type) => deps.registry.get(type)?.billable === true);
+  // Agent 任务另检查组织当日的运行时长（8.3d）。
+  const change = await requestResume(deps.db, context, jobId, (type) => deps.registry.get(type)?.billable === true, deps.agentQuota);
   await (deps.notifier ?? NULL_JOB_NOTIFIER).changed(change.job);
   if (change.dispatch) await dispatchBestEffort(deps, change.job);
   return change.job;
@@ -75,7 +82,7 @@ export async function resumeJob(deps: JobServiceDependencies, context: TenantCon
  * 余额不足时 402，任务仍是 paused。
  */
 export async function confirmJobTaskLimit(deps: JobServiceDependencies, context: TenantContext, jobId: string): Promise<JobRecord> {
-  const change = await confirmTaskLimit(deps.db, context, jobId);
+  const change = await confirmTaskLimit(deps.db, context, jobId, deps.agentQuota);
   await (deps.notifier ?? NULL_JOB_NOTIFIER).changed(change.job);
   if (change.dispatch) await dispatchBestEffort(deps, change.job);
   return change.job;

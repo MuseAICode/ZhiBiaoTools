@@ -19,6 +19,8 @@
 // 每次调用带步骤键（6.4a）：结果与结算同一事务保存，续跑时同一步骤直接取回，不重复调用、不重复扣费。
 // Agent 任务（8.3a）：每次调用先计入一轮（beginAgentTurn），达到费用或轮数上限时任务退出（JobTaskLimitError）、
 // 暂停为 paused / task_cost_limit 或 task_turn_limit，由发起人或组织管理员确认继续（8.3b）。
+// Agent 任务的组织配额（8.3d，src/agent/quota.ts）：同一组织同时运行的 Agent 任务已满时认领延后（同组织并发已满的做法）；
+// 执行中每次续租时检查当日运行时长，用完即中止、暂停为 paused / agent_daily_runtime。
 import { randomUUID } from 'node:crypto';
 import { DelayedError, Worker, type Job, type RedisOptions as BullmqRedisOptions } from 'bullmq';
 import { Redis } from 'ioredis';
@@ -26,6 +28,7 @@ import type { FastifyBaseLogger } from 'fastify';
 import type { Kysely } from 'kysely';
 import { JOB_DISPATCH_BATCH_MAX } from '../db/migrations/0021_jobs.ts';
 import type { AiGateway } from '../ai/gateway.ts';
+import type { AgentQuotaOptions } from '../agent/quota.ts';
 import { beginAgentTurn, markAgentBudgetExhausted, TASK_COST_LIMIT_CODE, TASK_TURN_LIMIT_CODE } from '../agent/budget.ts';
 import type { Database } from '../db/schema.ts';
 import { AppError } from '../errors.ts';
@@ -91,6 +94,8 @@ export interface JobRunnerOptions {
   objectStore?: ObjectStore | null;
   /** 解析沙箱（经 sandbox-runner）；未配置时为 null。 */
   sandbox?: SandboxDriver | null;
+  /** Agent 任务的组织配额（8.3d）；不提供时取 src/agent/quota.ts 的常量（测试用）。 */
+  agentQuota?: AgentQuotaOptions;
 }
 
 export interface ReconcileResult {
@@ -115,7 +120,7 @@ const DEFAULT_REDIS_CHECK_INTERVAL_MS = 5_000;
 const FINISH_RETRIES = 3;
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
-type AbortReason = 'cancel' | 'pause' | 'lease-lost' | 'shutdown';
+type AbortReason = 'cancel' | 'pause' | 'lease-lost' | 'shutdown' | 'agent-runtime-limit';
 
 export function createJobRunner(options: JobRunnerOptions): JobRunner {
   const { db, registry, dispatcher, log } = options;
@@ -130,6 +135,7 @@ export function createJobRunner(options: JobRunnerOptions): JobRunner {
   const sentinelKey = `${prefix}:jobs:sentinel`;
   const notifier = options.notifier ?? NULL_JOB_NOTIFIER;
   const gateway = options.gateway ?? null;
+  const agentQuota = options.agentQuota;
 
   const workers: Worker<DispatchPayload>[] = [];
   const active = new Map<string, { controller: AbortController; done: Promise<void> }>();
@@ -172,11 +178,12 @@ export function createJobRunner(options: JobRunnerOptions): JobRunner {
         reason = 'lease-lost';
       } else if (state.status === 'cancelling') reason = 'cancel';
       else if (state.pauseRequested) reason = 'pause';
+      else if (state.agentRuntimeExhausted) reason = 'agent-runtime-limit';
       if (reason && !controller.signal.aborted) controller.abort(reason);
       return state;
     };
     const renew = () => {
-      renewRun(db, run, leaseMs).then(apply, (error: unknown) => log.warn({ err: error, jobId: job.id }, 'job lease renewal failed'));
+      renewRun(db, run, leaseMs, {}, agentQuota).then(apply, (error: unknown) => log.warn({ err: error, jobId: job.id }, 'job lease renewal failed'));
     };
     // 余额不足以冻结：之后的调用不再发起，执行结束后暂停（不中止进行中的其他调用，它们照常结算）。
     let balanceExhausted = false;
@@ -243,11 +250,11 @@ export function createJobRunner(options: JobRunnerOptions): JobRunner {
       sandbox: options.sandbox ?? null,
       signal: controller.signal,
       async setProgress(progress) {
-        if (!apply(await renewRun(db, run, leaseMs, { progress }))) throw new JobInterruptedError();
+        if (!apply(await renewRun(db, run, leaseMs, { progress }, agentQuota))) throw new JobInterruptedError();
         await notifier.progress(ref, progress);
       },
       async saveCheckpoint(checkpoint, progress) {
-        if (!apply(await renewRun(db, run, leaseMs, { checkpoint, ...(progress !== undefined ? { progress } : {}) }))) {
+        if (!apply(await renewRun(db, run, leaseMs, { checkpoint, ...(progress !== undefined ? { progress } : {}) }, agentQuota))) {
           throw new JobInterruptedError();
         }
         if (progress !== undefined) await notifier.progress(ref, progress);
@@ -273,6 +280,9 @@ export function createJobRunner(options: JobRunnerOptions): JobRunner {
         outcome = { kind: 'insufficient-balance' };
       } else if (limitReached && !lost) {
         outcome = { kind: 'task-limit', reason: limitReached.reason };
+      } else if (controller.signal.reason === 'agent-runtime-limit' && !lost) {
+        // 组织当日的 Agent 运行时长用完（8.3d）：暂停，次日可继续。期间请求了取消、暂停的，finishRun 按数据库中的请求收尾。
+        outcome = { kind: 'agent-runtime-limit' };
       } else if (controller.signal.aborted || error instanceof JobInterruptedError) {
         outcome = { kind: 'interrupted' };
       } else if (error instanceof JobError) {
@@ -317,6 +327,7 @@ export function createJobRunner(options: JobRunnerOptions): JobRunner {
       runId,
       leaseMs,
       orgRunningLimit,
+      ...(agentQuota ? { agentQuota } : {}),
       attemptsFor: (type) => {
         const definition = registry.get(type);
         return definition ? maxAttemptsOf(definition) : null;
@@ -327,7 +338,7 @@ export function createJobRunner(options: JobRunnerOptions): JobRunner {
       throw new DelayedError();
     }
     if (claim.kind === 'skipped') {
-      if (claim.reason === 'failed') await notifier.changedById(orgId, jobId);
+      if (claim.reason === 'failed' || claim.reason === 'paused') await notifier.changedById(orgId, jobId);
       return;
     }
     await notifier.changed(claim.job);

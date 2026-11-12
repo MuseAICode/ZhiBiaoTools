@@ -11,6 +11,9 @@
 //   running ──调用模型时余额不足以冻结──> paused（pause_reason = insufficient_balance，6.4）；充值后继续即回到 queued
 //   running ──达到 Agent 任务的费用或轮数上限──> paused（pause_reason = task_cost_limit / task_turn_limit，8.3a）；
 //     不能经普通的“继续”恢复，须由发起人或组织管理员确认继续（confirmTaskLimit，8.3b）：上限各加一份，回到 queued
+//   Agent 任务的组织配额（8.3d，src/agent/quota.ts）：同一组织同时运行的 Agent 任务已满时认领延后（留在 queued 排队）；
+//   当日 Agent 运行时长用完时 queued ──认领──> paused、running ──续租时发现──> paused（pause_reason = agent_daily_runtime），
+//   次日经普通的“继续”回到 queued；入队与继续时已用完的拒绝（429）
 //
 // 用户发起的操作（新建、查询、取消、暂停、继续）经 withTenant；worker 的系统操作（认领、续租、结束、对账）经 withOrgContext，
 // 只设置组织、不代表任何用户。worker 的每一次写入都带 run_id 条件：租约被收回后，原执行者的写入只影响 0 行。
@@ -28,6 +31,18 @@ import {
 } from '../db/migrations/0021_jobs.ts';
 import type { AgentBudgetExhaustedReason, Database, JobEventKind, JobPauseReason, JobsTable, JobStatus, MemberRole } from '../db/schema.ts';
 import { insertAgentJobBudget, type AgentTaskLimits } from '../agent/budget.ts';
+import {
+  AGENT_DAILY_RUNTIME_PAUSE_REASON,
+  assertAgentDailyRuntimeAvailable,
+  closeLostAgentJobRun,
+  endAgentJobRun,
+  isAgentDailyRuntimeExhausted,
+  isAgentJob,
+  shouldDeferAgentClaim,
+  startAgentJobRun,
+  touchAgentJobRun,
+  type AgentQuotaOptions,
+} from '../agent/quota.ts';
 import { assertJobStartBalance } from '../billing/usage.ts';
 import { AGENT_BUDGET_EXHAUSTED_REASONS, AGENT_BUDGET_MAX_COST_LIMIT, AGENT_BUDGET_MAX_TURN_LIMIT } from '../db/migrations/0033_agent_job_budgets.ts';
 import { AGENT_BUDGET_CONFIRM_ROLES } from '../db/migrations/0034_agent_job_budget_confirm.ts';
@@ -161,6 +176,8 @@ export interface NewJob {
   supersedeQueued?: boolean;
   /** Agent 任务的费用与轮数上限（JobTypeDefinition.agentLimits），与任务在同一事务中写入。 */
   agentLimits?: AgentTaskLimits | null;
+  /** Agent 任务的组织配额（8.3d）：给出 agentLimits 时，当日运行时长已用完则拒绝入队（429）。默认取 src/agent/quota.ts 的常量。 */
+  agentQuota?: AgentQuotaOptions;
 }
 
 export interface InsertedJob {
@@ -202,7 +219,10 @@ export async function insertJobSuperseding(db: Kysely<Database>, context: Tenant
         .returningAll()
         .executeTakeFirstOrThrow();
       const job = toRecord(row);
-      if (input.agentLimits) await insertAgentJobBudget(trx, job, input.agentLimits);
+      if (input.agentLimits) {
+        await assertAgentDailyRuntimeAvailable(trx, context.orgId, input.agentQuota);
+        await insertAgentJobBudget(trx, job, input.agentLimits);
+      }
       await appendEvent(trx, job, 'queued', null, { userId: context.userId });
       const superseded: JobRecord[] = [];
       if (input.supersedeQueued) {
@@ -369,12 +389,14 @@ export async function requestPause(db: Kysely<Database>, context: TenantContext,
 /**
  * 继续：paused 变回 queued（需要重新派发），清除暂停原因；running 且已请求暂停时撤销暂停请求。其他未结束状态原样返回；
  * 已结束时抛 409。会调用模型的任务类型（checkBalance 返回 true）从 paused 继续前检查最低启动余额，不足时抛 402、任务仍是 paused。
+ * Agent 任务从 paused 继续前检查组织当日的运行时长（8.3d），已用完时抛 429、任务仍是 paused。
  */
 export async function requestResume(
   db: Kysely<Database>,
   context: TenantContext,
   jobId: string,
   checkBalance: (type: string) => boolean = () => false,
+  agentQuota?: AgentQuotaOptions,
 ): Promise<JobChange> {
   return withTenant(db, context, async (trx) => {
     const row = await lockJob(trx, jobId);
@@ -386,6 +408,7 @@ export async function requestResume(
         throw new AppError(409, 'JOB_TASK_LIMIT_CONFIRM_REQUIRED', '任务已达到费用或调用次数上限，需由发起人或组织管理员确认后继续');
       }
       if (checkBalance(row.type)) await assertJobStartBalance(trx);
+      if (await isAgentJob(trx, jobId)) await assertAgentDailyRuntimeAvailable(trx, context.orgId, agentQuota);
       const updated = await trx
         .updateTable('jobs')
         .set({ status: 'queued', pause_reason: null })
@@ -422,7 +445,12 @@ function formatYuan(units: bigint): string {
  * 任务行先加锁，并发确认只有第一个生效，之后的看到任务已不是因上限暂停，409 JOB_NOT_LIMIT_PAUSED；数据库守卫另外限定
  * “一次达到上限只能加一份”和确认人（AB001），不依赖这里的检查。
  */
-export async function confirmTaskLimit(db: Kysely<Database>, context: TenantContext, jobId: string): Promise<JobChange> {
+export async function confirmTaskLimit(
+  db: Kysely<Database>,
+  context: TenantContext,
+  jobId: string,
+  agentQuota?: AgentQuotaOptions,
+): Promise<JobChange> {
   return withTenant(db, context, async (trx) => {
     const row = await lockJob(trx, jobId);
     if (!row) throw jobNotFound();
@@ -440,8 +468,9 @@ export async function confirmTaskLimit(db: Kysely<Database>, context: TenantCont
     if (costLimit > AGENT_BUDGET_MAX_COST_LIMIT || turnLimit > AGENT_BUDGET_MAX_TURN_LIMIT) {
       throw new AppError(409, 'TASK_LIMIT_MAX_REACHED', '本任务的费用或调用次数已达到可确认的最高上限，不能再继续，请取消后重新发起');
     }
-    // 达到上限的任务都调用模型：继续前一律检查最低启动余额。
+    // 达到上限的任务都调用模型：继续前一律检查最低启动余额；当日 Agent 运行时长用完时同样不能继续（8.3d）。
     await assertJobStartBalance(trx);
+    await assertAgentDailyRuntimeAvailable(trx, context.orgId, agentQuota);
     await trx
       .updateTable('agent_job_budgets')
       .set({ cost_limit: costLimit.toString(), turn_limit: turnLimit, confirmations: budget.confirmations + 1, exhausted_reason: null })
@@ -489,14 +518,19 @@ export interface ClaimOptions {
   orgRunningLimit: number;
   /** 任务类型是否已登记，以及最多开始执行几次；未登记时返回 null。 */
   attemptsFor: (type: string) => number | null;
+  /** Agent 任务的组织配额（8.3d），默认取 src/agent/quota.ts 的常量。 */
+  agentQuota?: AgentQuotaOptions;
 }
 
 export type ClaimResult =
   | { kind: 'claimed'; job: JobRecord; role: MemberRole }
-  /** 组织已有 orgRunningLimit 个任务在运行，留在 queued，稍后再试。 */
+  /** 组织已有 orgRunningLimit 个任务（Agent 任务另有组织并发上限，且按入队时间排队）在运行，留在 queued，稍后再试。 */
   | { kind: 'deferred' }
-  /** 任务不存在、不是 queued（已被认领、已暂停、已结束），或认领时判定失败；本次派发作废。 */
-  | { kind: 'skipped'; reason: 'missing' | 'not-queued' | 'failed' };
+  /**
+   * 任务不存在、不是 queued（已被认领、已暂停、已结束），或认领时判定失败、或因组织当日 Agent 运行时长用完而暂停（paused，8.3d）；
+   * 本次派发作废。
+   */
+  | { kind: 'skipped'; reason: 'missing' | 'not-queued' | 'failed' | 'paused' };
 
 async function failInTrx(trx: Trx, row: JobRow, code: string, message: string): Promise<void> {
   const updated = await trx
@@ -559,6 +593,22 @@ export async function claimJob(db: Kysely<Database>, options: ClaimOptions): Pro
       .executeTakeFirstOrThrow();
     if (Number(running.count) >= options.orgRunningLimit) return { kind: 'deferred' };
 
+    // Agent 任务的组织配额（8.3d）：并发已满或前面还有排队的 Agent 任务时延后；当日运行时长已用完时暂停，次日可继续。
+    const agent = await isAgentJob(trx, row.id);
+    if (agent) {
+      if (await shouldDeferAgentClaim(trx, { id: row.id, orgId: row.org_id }, options.agentQuota)) return { kind: 'deferred' };
+      if (await isAgentDailyRuntimeExhausted(trx, row.org_id, options.agentQuota)) {
+        const paused = await trx
+          .updateTable('jobs')
+          .set({ status: 'paused', pause_reason: AGENT_DAILY_RUNTIME_PAUSE_REASON })
+          .where('id', '=', row.id)
+          .returningAll()
+          .executeTakeFirstOrThrow();
+        await appendEvent(trx, toRecord(paused), 'paused', AGENT_DAILY_RUNTIME_PAUSE_MESSAGE, { reason: AGENT_DAILY_RUNTIME_PAUSE_REASON });
+        return { kind: 'skipped', reason: 'paused' };
+      }
+    }
+
     const updated = await trx
       .updateTable('jobs')
       .set({
@@ -572,6 +622,7 @@ export async function claimJob(db: Kysely<Database>, options: ClaimOptions): Pro
       .returningAll()
       .executeTakeFirstOrThrow();
     const job = toRecord(updated);
+    if (agent) await startAgentJobRun(trx, { orgId: job.orgId, jobId: job.id, runId: options.runId });
     await appendEvent(trx, job, 'started', null, { attempt: job.attempt });
     return { kind: 'claimed', job, role: membership.role };
   });
@@ -586,24 +637,28 @@ export interface RunRef {
 export interface RunState {
   status: JobStatus;
   pauseRequested: boolean;
+  /** Agent 任务（8.3d）：本组织当日的 Agent 运行时长已用完（含本次执行到现在为止），执行者应中止并暂停。 */
+  agentRuntimeExhausted: boolean;
 }
 
 /**
  * 续租，并可同时更新进度和 checkpoint。返回当前状态（执行者据此发现取消、暂停请求）；
  * 租约已不属于本执行者（被对账收回、任务已结束）时返回 null，什么都不写。
+ * Agent 任务另把本次执行计到现在（agent_job_runs.last_seen_at），并检查组织当日的运行时长（8.3d）。
  */
 export async function renewRun(
   db: Kysely<Database>,
   run: RunRef,
   leaseMs: number,
   update: { progress?: number; checkpoint?: Record<string, unknown> } = {},
+  agentQuota?: AgentQuotaOptions,
 ): Promise<RunState | null> {
   const checkpoint = update.checkpoint ? serialize(update.checkpoint, JOB_CHECKPOINT_MAX_BYTES, 'checkpoint') : undefined;
   if (update.progress !== undefined && !(Number.isInteger(update.progress) && update.progress >= 0 && update.progress <= 100)) {
     throw new TypeError('progress 必须是 0~100 的整数');
   }
-  const row = await withOrgContext(db, run.orgId, (trx) =>
-    trx
+  return withOrgContext(db, run.orgId, async (trx) => {
+    const row = await trx
       .updateTable('jobs')
       .set({
         lease_expires_at: leaseInterval(leaseMs),
@@ -613,9 +668,12 @@ export async function renewRun(
       .where('id', '=', run.jobId)
       .where('run_id', '=', run.runId)
       .returning(['status', 'pause_requested'])
-      .executeTakeFirst(),
-  );
-  return row ? { status: row.status, pauseRequested: row.pause_requested } : null;
+      .executeTakeFirst();
+    if (!row) return null;
+    const agent = await touchAgentJobRun(trx, run.runId);
+    const agentRuntimeExhausted = agent && (await isAgentDailyRuntimeExhausted(trx, run.orgId, agentQuota));
+    return { status: row.status, pauseRequested: row.pause_requested, agentRuntimeExhausted };
+  });
 }
 
 /** 执行者写一条日志，返回写入的事件；租约已丢失时返回 null，不写。 */
@@ -642,6 +700,8 @@ export function isTaskLimitReason(reason: JobPauseReason | null): reason is Agen
   return reason !== null && (AGENT_BUDGET_EXHAUSTED_REASONS as readonly string[]).includes(reason);
 }
 
+const AGENT_DAILY_RUNTIME_PAUSE_MESSAGE = '本组织今日的 Agent 运行时长已用完，任务已暂停，明日可继续';
+
 const TASK_LIMIT_PAUSE_MESSAGES: Readonly<Record<AgentBudgetExhaustedReason, string>> = {
   task_cost_limit: '本任务的费用已达到上限，任务已暂停，由发起人或组织管理员确认后可以继续',
   task_turn_limit: '本任务的模型调用次数已达到上限，任务已暂停，由发起人或组织管理员确认后可以继续',
@@ -655,7 +715,9 @@ export type RunOutcome =
   /** 调用模型时余额不足以冻结（6.4）：暂停为 paused / insufficient_balance，已请求取消时仍为 cancelled。 */
   | { kind: 'insufficient-balance' }
   /** 达到 Agent 任务的费用或轮数上限（8.3a）：暂停为 paused / 该原因，已请求取消时仍为 cancelled。 */
-  | { kind: 'task-limit'; reason: AgentBudgetExhaustedReason };
+  | { kind: 'task-limit'; reason: AgentBudgetExhaustedReason }
+  /** 组织当日的 Agent 运行时长用完（8.3d）：暂停为 paused / agent_daily_runtime，已请求取消时仍为 cancelled。 */
+  | { kind: 'agent-runtime-limit' };
 
 /**
  * 结束一次执行。成功即 succeeded（即使期间请求了取消，工作已完成）；失败即 failed，除非已请求取消（cancelled）；
@@ -667,6 +729,8 @@ export async function finishRun(db: Kysely<Database>, run: RunRef, outcome: RunO
   return withOrgContext(db, run.orgId, async (trx) => {
     const row = await trx.selectFrom('jobs').selectAll().where('id', '=', run.jobId).where('run_id', '=', run.runId).forUpdate().executeTakeFirst();
     if (!row) return null;
+    // Agent 任务的本次执行计到现在（8.3d；不是 Agent 任务时影响 0 行）。
+    await endAgentJobRun(trx, run.runId);
     if (outcome.kind === 'succeeded') {
       const updated = await trx
         .updateTable('jobs')
@@ -716,6 +780,16 @@ export async function finishRun(db: Kysely<Database>, run: RunRef, outcome: RunO
         billedAmount: updated.billed_amount,
         ...(budget ? { costLimit: budget.cost_limit, turnLimit: budget.turn_limit, turnsUsed: budget.turns_used } : {}),
       });
+      return 'paused';
+    }
+    if (outcome.kind === 'agent-runtime-limit' && row.status === 'running') {
+      const updated = await trx
+        .updateTable('jobs')
+        .set({ status: 'paused', pause_reason: AGENT_DAILY_RUNTIME_PAUSE_REASON, pause_requested: false, run_id: null, lease_expires_at: null })
+        .where('id', '=', row.id)
+        .returningAll()
+        .executeTakeFirstOrThrow();
+      await appendEvent(trx, toRecord(updated), 'paused', AGENT_DAILY_RUNTIME_PAUSE_MESSAGE, { reason: AGENT_DAILY_RUNTIME_PAUSE_REASON });
       return 'paused';
     }
     return releaseInTrx(trx, row, resumable, 'released');
@@ -803,6 +877,8 @@ export async function recoverJob(
       return { kind: 'dispatch', type: row.type, changed: false };
     }
     if ((row.status === 'running' || row.status === 'cancelling') && row.lease_expired) {
+      // 执行者失联：Agent 任务的本次执行只计到最后一次续租（8.3d）。
+      if (row.run_id) await closeLostAgentJobRun(trx, row.run_id);
       const status = await releaseInTrx(trx, row, resumable ?? false, 'recovered');
       return status === 'queued' ? { kind: 'dispatch', type: row.type, changed: true } : { kind: 'none', changed: true };
     }

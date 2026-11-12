@@ -204,7 +204,7 @@ describe('入队时取覆盖值', () => {
     const jobId = await enqueueAgent(context);
     await setAgentLimitOverride(appDb, ctxAdmin, { orgId: context.orgId, jobType: 'test-agent-outline', limits: { costLimit: 1n, turnLimit: 1 }, note: null });
     const run = { orgId: context.orgId, jobId, runId: randomUUID() };
-    const claim = await claimJob(appDb, { ...run, leaseMs: 60_000, orgRunningLimit: 100, attemptsFor: () => 5 });
+    const claim = await claimJob(appDb, { ...run, leaseMs: 60_000, orgRunningLimit: 100, agentQuota: { orgAgentRunningLimit: 100 }, attemptsFor: () => 5 });
     expect(claim.kind).toBe('claimed');
     expect(await finishRun(appDb, run, { kind: 'task-limit', reason: 'task_turn_limit' }, true)).toBe('paused');
     await confirmJobTaskLimit(offline(), context, jobId);
@@ -297,7 +297,7 @@ describe('权限（数据库）', () => {
 
     // 覆盖值等于硬上限时，确认继续再加一份会超出硬上限：409，上限不变。
     const run = { orgId: context.orgId, jobId, runId: randomUUID() };
-    expect((await claimJob(appDb, { ...run, leaseMs: 60_000, orgRunningLimit: 100, attemptsFor: () => 5 })).kind).toBe('claimed');
+    expect((await claimJob(appDb, { ...run, leaseMs: 60_000, orgRunningLimit: 100, agentQuota: { orgAgentRunningLimit: 100 }, attemptsFor: () => 5 })).kind).toBe('claimed');
     expect(await finishRun(appDb, run, { kind: 'task-limit', reason: 'task_turn_limit' }, true)).toBe('paused');
     await expectCode(confirmJobTaskLimit(offline(), context, jobId), 'TASK_LIMIT_MAX_REACHED');
     expect(await budgetRow(jobId)).toMatchObject({ cost_limit: MAX.costLimit.toString(), turn_limit: MAX.turnLimit, confirmations: 0 });
@@ -380,6 +380,7 @@ describe('回滚 0035', () => {
     const jobId = await enqueueAgent(context);
     const owner = connect(testDb.ownerConfig);
     try {
+      expect((await migrateDown(owner)).results?.map((result) => result.migrationName)).toEqual(['0036_agent_job_runs']);
       const down = await migrateDown(owner);
       expect(down.error).toBeUndefined();
       expect(down.results?.map((result) => result.migrationName)).toEqual(['0035_agent_job_limit_overrides']);

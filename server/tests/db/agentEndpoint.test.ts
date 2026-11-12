@@ -56,7 +56,7 @@ async function runningJob(member: Member): Promise<RunRef> {
   );
   const job = await insertJob(appDb, member.context, { type: 'test-agent', params: {}, projectId: project.id });
   const runId = randomUUID();
-  const result = await claimJob(appDb, { orgId: member.orgId, jobId: job.id, runId, leaseMs: LEASE_MS, orgRunningLimit: 100, attemptsFor: () => 5 });
+  const result = await claimJob(appDb, { orgId: member.orgId, jobId: job.id, runId, leaseMs: LEASE_MS, orgRunningLimit: 100, agentQuota: { orgAgentRunningLimit: 100 }, attemptsFor: () => 5 });
   expect(result.kind).toBe('claimed');
   return { orgId: member.orgId, jobId: job.id, runId };
 }
