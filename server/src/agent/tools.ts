@@ -25,6 +25,7 @@ import type { ArtifactStatus, Database } from '../db/schema.ts';
 import { withTenant, type TenantContext } from '../db/tenant.ts';
 import { AppError } from '../errors.ts';
 import { AGENT_TOOL_CALL_PATH, AGENT_TOOL_MAX_BODY_BYTES } from './gateway.ts';
+import { findAgentFailureReport, noAgentFailureReport } from './failureReport.ts';
 import { agentTenantContext, type AgentTokenIdentity } from './tokenStore.ts';
 
 export { AGENT_TOOL_CALL_PATH, AGENT_TOOL_MAX_BODY_BYTES } from './gateway.ts';
@@ -58,6 +59,8 @@ export interface AgentToolContext {
   /** 沙箱断开、worker 关闭时中止。 */
   readonly signal: AbortSignal;
   readonly log: FastifyBaseLogger;
+  /** 通知执行该任务的执行者立即续租一次（经任务控制频道），让它马上发现工具写下的状态（如失败报告）。失败时只写日志。 */
+  notifyExecutor(): Promise<void>;
 }
 
 export interface AgentToolDefinition<A = any, R = unknown> {
@@ -220,7 +223,7 @@ export interface AgentToolCallRef {
 
 /**
  * 计入一次工具调用：一条 INSERT ... ON CONFLICT DO UPDATE 原子地检查并递增——任务仍是本次执行（running、run_id 相符）且是
- * 登记了上限的 Agent 任务、累计次数小于上限、当前一分钟窗口内的次数小于频率上限（窗口已过则从 now() 重新计数）。
+ * 登记了上限的 Agent 任务、本次执行没有报告无法继续（8.4b）、累计次数小于上限、当前一分钟窗口内的次数小于频率上限（窗口已过则从 now() 重新计数）。
  * 计入成功返回 null，否则返回原因（不计入）。
  */
 export async function beginAgentToolCall(db: Kysely<Database>, ref: AgentToolCallRef): Promise<AgentToolCallOutcome | null> {
@@ -232,17 +235,21 @@ export async function beginAgentToolCall(db: Kysely<Database>, ref: AgentToolCal
       WHERE EXISTS (SELECT 1 FROM jobs j WHERE j.org_id = ${ref.tenant.orgId}::uuid AND j.id = ${ref.jobId}::uuid
                       AND j.status = 'running' AND j.run_id = ${ref.runId}::uuid)
         AND EXISTS (SELECT 1 FROM agent_job_budgets b WHERE b.org_id = ${ref.tenant.orgId}::uuid AND b.job_id = ${ref.jobId}::uuid)
+        AND ${noAgentFailureReport(ref.jobId, ref.runId)}
       ON CONFLICT (job_id, tool) DO UPDATE SET
         calls = agent_tool_calls.calls + 1,
         window_started_at = CASE WHEN agent_tool_calls.window_started_at <= now() - ${window} THEN now() ELSE agent_tool_calls.window_started_at END,
         window_calls = CASE WHEN agent_tool_calls.window_started_at <= now() - ${window} THEN 1 ELSE agent_tool_calls.window_calls + 1 END
       WHERE agent_tool_calls.calls < ${ref.maxCallsPerJob}
+        AND ${noAgentFailureReport(ref.jobId, ref.runId)}
         AND (agent_tool_calls.window_started_at <= now() - ${window} OR agent_tool_calls.window_calls < ${ref.maxCallsPerMinute})
       RETURNING calls`.execute(trx);
     if (counted.rows.length > 0) return null;
 
     const job = await trx.selectFrom('jobs').select(['status', 'run_id']).where('id', '=', ref.jobId).executeTakeFirst();
     if (!job || job.status !== 'running' || job.run_id !== ref.runId) return 'not-running';
+    // Agent 已报告无法继续（8.4b）：本次执行即将结束，之后的工具调用按不在执行中处理。
+    if ((await findAgentFailureReport(trx, ref.jobId, ref.runId)) !== null) return 'not-running';
     const row = await trx.selectFrom('agent_tool_calls').select('calls').where('job_id', '=', ref.jobId).where('tool', '=', ref.tool).executeTakeFirst();
     // 没有行：任务没有登记上限（不是 Agent 任务），按不在执行中处理。
     if (!row) return 'not-running';
@@ -299,6 +306,8 @@ export interface AgentToolRouteDependencies {
   identityOf: (request: FastifyRequest) => AgentTokenIdentity;
   /** 登记进行中的调用，worker 关闭时统一中止；返回注销函数。 */
   track: (controller: AbortController) => () => void;
+  /** 通知执行者立即检查该任务（src/events/publisher.ts 的 notifyJobControl）；不传时执行者在下一次定期续租时发现。 */
+  notifyJobControl?: (jobId: string) => Promise<void>;
   /** 测试用：替换计数。 */
   beginCall?: typeof beginAgentToolCall;
 }
@@ -409,7 +418,10 @@ export function registerAgentToolRoute(app: FastifyInstance, deps: AgentToolRout
       });
       let result: unknown;
       try {
-        result = await tool.run({ identity, tenant, db: deps.db, signal: controller.signal, log: request.log }, args);
+        const notifyExecutor = async () => {
+          await deps.notifyJobControl?.(identity.jobId).catch((error: unknown) => request.log.warn({ err: error, jobId: identity.jobId }, 'job control notify failed'));
+        };
+        result = await tool.run({ identity, tenant, db: deps.db, signal: controller.signal, log: request.log, notifyExecutor }, args);
       } catch (error) {
         logCall(error instanceof AppError ? error.code : 'error');
         throw error;

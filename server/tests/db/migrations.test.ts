@@ -9,6 +9,7 @@ import { SYSTEM_EXPORT_TEMPLATES } from '../../src/templates/systemTemplates.ts'
 import { connect, createTestDatabase, type TestDatabase } from './harness.ts';
 
 const APPLICATION_TABLES = [
+  'agent_failure_reports',
   'agent_job_budgets',
   'agent_job_limit_overrides',
   'agent_job_runs',
@@ -248,6 +249,7 @@ describe('迁移升级与回滚', () => {
       (await sql<{ prosrc: string }>`SELECT prosrc FROM pg_proc WHERE proname = 'ai_usage_begin'`.execute(testDb.admin)).rows.map((row) => row.prosrc);
     expectSuccess(await migrateToLatest(owner));
     expect((await source())[0]).toContain('ai_model_price');
+    expect(expectSuccess(await migrateDown(owner))).toEqual(['Down:0038_agent_failure_reports']);
     expect(expectSuccess(await migrateDown(owner))).toEqual(['Down:0037_agent_tool_calls']);
     expect(expectSuccess(await migrateDown(owner))).toEqual(['Down:0036_agent_job_runs']);
     expect(expectSuccess(await migrateDown(owner))).toEqual(['Down:0035_agent_job_limit_overrides']);

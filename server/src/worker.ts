@@ -108,6 +108,8 @@ const agentEndpoint: FastifyInstance | null = config.agentEndpoint ? await build
       // 业务工具（8.4a）：每个任务类型只能调用自己登记的工具。
       tools: agentToolRegistry,
       toolsForJobType: (type) => jobTypeRegistry.get(type)?.agentTools ?? [],
+      // 工具写下的状态（如 8.4b 的失败报告）经任务控制频道通知执行者立即检查。
+      notifyJobControl: (jobId) => publisher.notifyJobControl(jobId),
     }) : null;
 
 app.addHook('onClose', async () => {

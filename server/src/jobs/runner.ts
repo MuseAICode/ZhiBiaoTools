@@ -21,6 +21,8 @@
 // 暂停为 paused / task_cost_limit 或 task_turn_limit，由发起人或组织管理员确认继续（8.3b）。
 // Agent 任务的组织配额（8.3d，src/agent/quota.ts）：同一组织同时运行的 Agent 任务已满时认领延后（同组织并发已满的做法）；
 // 执行中每次续租时检查当日运行时长，用完即中止、暂停为 paused / agent_daily_runtime。
+// Agent 报告无法继续（8.4b，src/agent/failureReport.ts）：续租时发现本次执行有失败报告即中止（report-failure 写入后经控制频道
+// 立即触发一次续租），finishRun 按报告把任务标为失败（AGENT_REPORTED_FAILURE）。
 import { randomUUID } from 'node:crypto';
 import { DelayedError, Worker, type Job, type RedisOptions as BullmqRedisOptions } from 'bullmq';
 import { Redis } from 'ioredis';
@@ -120,7 +122,7 @@ const DEFAULT_REDIS_CHECK_INTERVAL_MS = 5_000;
 const FINISH_RETRIES = 3;
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
-type AbortReason = 'cancel' | 'pause' | 'lease-lost' | 'shutdown' | 'agent-runtime-limit';
+type AbortReason = 'cancel' | 'pause' | 'lease-lost' | 'shutdown' | 'agent-runtime-limit' | 'agent-reported-failure';
 
 export function createJobRunner(options: JobRunnerOptions): JobRunner {
   const { db, registry, dispatcher, log } = options;
@@ -177,6 +179,7 @@ export function createJobRunner(options: JobRunnerOptions): JobRunner {
         lost = true;
         reason = 'lease-lost';
       } else if (state.status === 'cancelling') reason = 'cancel';
+      else if (state.agentFailureReported) reason = 'agent-reported-failure';
       else if (state.pauseRequested) reason = 'pause';
       else if (state.agentRuntimeExhausted) reason = 'agent-runtime-limit';
       if (reason && !controller.signal.aborted) controller.abort(reason);

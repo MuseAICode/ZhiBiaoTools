@@ -31,6 +31,7 @@ import {
 } from '../db/migrations/0021_jobs.ts';
 import type { AgentBudgetExhaustedReason, Database, JobEventKind, JobPauseReason, JobsTable, JobStatus, MemberRole } from '../db/schema.ts';
 import { insertAgentJobBudget, type AgentTaskLimits } from '../agent/budget.ts';
+import { AGENT_REPORTED_FAILURE_CODE, AGENT_REPORTED_FAILURE_FALLBACK_MESSAGE, findAgentFailureReport } from '../agent/failureReport.ts';
 import {
   AGENT_DAILY_RUNTIME_PAUSE_REASON,
   assertAgentDailyRuntimeAvailable,
@@ -639,12 +640,14 @@ export interface RunState {
   pauseRequested: boolean;
   /** Agent 任务（8.3d）：本组织当日的 Agent 运行时长已用完（含本次执行到现在为止），执行者应中止并暂停。 */
   agentRuntimeExhausted: boolean;
+  /** Agent 任务（8.4b）：本次执行中 Agent 已报告无法继续（report-failure），执行者应中止；结束时任务以 AGENT_REPORTED_FAILURE 失败。 */
+  agentFailureReported: boolean;
 }
 
 /**
  * 续租，并可同时更新进度和 checkpoint。返回当前状态（执行者据此发现取消、暂停请求）；
  * 租约已不属于本执行者（被对账收回、任务已结束）时返回 null，什么都不写。
- * Agent 任务另把本次执行计到现在（agent_job_runs.last_seen_at），并检查组织当日的运行时长（8.3d）。
+ * Agent 任务另把本次执行计到现在（agent_job_runs.last_seen_at），并检查组织当日的运行时长（8.3d）与本次执行的失败报告（8.4b）。
  */
 export async function renewRun(
   db: Kysely<Database>,
@@ -672,7 +675,8 @@ export async function renewRun(
     if (!row) return null;
     const agent = await touchAgentJobRun(trx, run.runId);
     const agentRuntimeExhausted = agent && (await isAgentDailyRuntimeExhausted(trx, run.orgId, agentQuota));
-    return { status: row.status, pauseRequested: row.pause_requested, agentRuntimeExhausted };
+    const agentFailureReported = agent && (await findAgentFailureReport(trx, run.jobId, run.runId)) !== null;
+    return { status: row.status, pauseRequested: row.pause_requested, agentRuntimeExhausted, agentFailureReported };
   });
 }
 
@@ -741,6 +745,9 @@ export async function finishRun(db: Kysely<Database>, run: RunRef, outcome: RunO
       await appendEvent(trx, toRecord(updated), 'succeeded');
       return updated.status;
     }
+    // Agent 在本次执行中报告了无法继续（8.4b）：除成功外的任何结果（失败、中止、余额不足、达到上限、时长用完）都以
+    // AGENT_REPORTED_FAILURE 失败，原因取数据库中记下的报告；已请求取消的仍为取消（下面的 releaseInTrx）。
+    if (row.status === 'running' && (await failIfAgentReported(trx, row, run.runId))) return 'failed';
     if (outcome.kind === 'failed' && row.status === 'running') {
       await failInTrx(trx, row, outcome.code, outcome.message);
       return 'failed';
@@ -794,6 +801,14 @@ export async function finishRun(db: Kysely<Database>, run: RunRef, outcome: RunO
     }
     return releaseInTrx(trx, row, resumable, 'released');
   });
+}
+
+/** 本次执行有 Agent 的失败报告（8.4b）时把任务标为失败（AGENT_REPORTED_FAILURE，原因为报告的原因），返回是否已标为失败。 */
+async function failIfAgentReported(trx: Trx, row: JobRow, runId: string): Promise<boolean> {
+  const reason = await findAgentFailureReport(trx, row.id, runId);
+  if (reason === null) return false;
+  await failInTrx(trx, row, AGENT_REPORTED_FAILURE_CODE, reason || AGENT_REPORTED_FAILURE_FALLBACK_MESSAGE);
+  return true;
 }
 
 /**
@@ -879,6 +894,8 @@ export async function recoverJob(
     if ((row.status === 'running' || row.status === 'cancelling') && row.lease_expired) {
       // 执行者失联：Agent 任务的本次执行只计到最后一次续租（8.3d）。
       if (row.run_id) await closeLostAgentJobRun(trx, row.run_id);
+      // 失联前 Agent 已报告无法继续（8.4b）：不再续跑，以 AGENT_REPORTED_FAILURE 失败（已请求取消的仍为取消）。
+      if (row.status === 'running' && row.run_id && (await failIfAgentReported(trx, row, row.run_id))) return { kind: 'none', changed: true };
       const status = await releaseInTrx(trx, row, resumable ?? false, 'recovered');
       return status === 'queued' ? { kind: 'dispatch', type: row.type, changed: true } : { kind: 'none', changed: true };
     }

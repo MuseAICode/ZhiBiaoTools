@@ -15,6 +15,7 @@ import { AGENT_BUDGET_MAX_COST_LIMIT, AGENT_BUDGET_MAX_TURN_LIMIT } from '../db/
 import type { AgentBudgetExhaustedReason, Database } from '../db/schema.ts';
 import { withOrgContext, withTenant, type TenantContext } from '../db/tenant.ts';
 import { AppError } from '../errors.ts';
+import { findAgentFailureReport, noAgentFailureReport } from './failureReport.ts';
 
 export { TASK_COST_LIMIT_CODE } from '../billing/ledger.ts';
 
@@ -140,7 +141,7 @@ export interface AgentTurnRef {
 
 /**
  * 计入一轮模型调用请求（含取回已保存结果的请求）。在一条 UPDATE 中原子地检查并递增：任务仍是本次执行（running、run_id 相符）、
- * 尚未达到任何上限、已用轮数小于上限。达到轮数上限时记下 task_turn_limit 并抛 TASK_TURN_LIMIT；之前已达到任一上限时按该原因拒绝；
+ * 本次执行没有报告无法继续（8.4b）、尚未达到任何上限、已用轮数小于上限。达到轮数上限时记下 task_turn_limit 并抛 TASK_TURN_LIMIT；之前已达到任一上限时按该原因拒绝；
  * 没有登记上限时抛 AGENT_BUDGET_MISSING；任务已不在本次执行中时抛 JOB_NOT_RUNNING。都不调用服务商。
  */
 export async function beginAgentTurn(db: Kysely<Database>, ref: AgentTurnRef): Promise<{ turnsUsed: number; turnLimit: number }> {
@@ -150,6 +151,7 @@ export async function beginAgentTurn(db: Kysely<Database>, ref: AgentTurnRef): P
       WHERE b.org_id = ${ref.tenant.orgId}::uuid AND b.job_id = ${ref.jobId}::uuid
         AND b.exhausted_reason IS NULL AND b.turns_used < b.turn_limit
         AND EXISTS (SELECT 1 FROM jobs j WHERE j.org_id = b.org_id AND j.id = b.job_id AND j.status = 'running' AND j.run_id = ${ref.runId}::uuid)
+        AND ${noAgentFailureReport(ref.jobId, ref.runId)}
       RETURNING b.turns_used, b.turn_limit`.execute(trx);
     const row = advanced.rows[0];
     if (row) return { kind: 'ok' as const, turnsUsed: row.turns_used, turnLimit: row.turn_limit };
@@ -163,6 +165,8 @@ export async function beginAgentTurn(db: Kysely<Database>, ref: AgentTurnRef): P
       .executeTakeFirst();
     if (!current) return { kind: 'missing' as const };
     if (current.status !== 'running' || current.run_id !== ref.runId) return { kind: 'not-running' as const };
+    // Agent 已报告无法继续（8.4b）：本次执行即将结束，按不在执行中处理。
+    if ((await findAgentFailureReport(trx, ref.jobId, ref.runId)) !== null) return { kind: 'not-running' as const };
     if (current.exhausted_reason !== null) return { kind: 'exhausted' as const, reason: current.exhausted_reason };
     // 只剩“已用轮数达到上限”：记下原因（之后的请求直接按它拒绝）。
     await trx.updateTable('agent_job_budgets').set({ exhausted_reason: 'task_turn_limit' }).where('job_id', '=', ref.jobId).execute();
