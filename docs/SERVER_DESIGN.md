@@ -668,9 +668,19 @@ agent-gw 登记 `POST /v1/tools/call`（请求体上限 1 MiB，`AGENT_TOOL_MAX_
 5. **资源标识重新解析**：参数中的资源标识是不可信输入，处理函数在 `withTenant` 中按令牌的项目重新解析；8.4a 提供格式检查 `parseAgentResourceId`（小写 UUID）与产物的解析 `resolveProjectArtifact`（属于令牌的项目、已完成、未被替换），查不到一律 404 `AGENT_RESOURCE_NOT_FOUND`，不区分“不存在”“其他项目”“其他组织”。其他资源（目录节点、小节、模板等）的解析随使用它们的工具加入，规则相同。
 6. **结果与错误**：响应 `{ result }`（序列化后 ≤ 4 MiB，超出按内部错误）；处理函数抛出 `AppError` 原样返回，其他错误只返回通用文案。沙箱断开、worker 关闭时经中止信号通知处理函数。日志只记工具名、任务 id、令牌哈希前缀、耗时与结果码，不记参数与结果。
 
-8.4a 只有框架，生产环境还没有登记任何工具；`report-failure`（8.4b）、ask-user（8.4c）与各任务的业务工具随后在 `toolRegistry.ts` 中追加。
+8.4a 只有框架；`report-failure`（8.4b，见第 7.16 节）已登记，ask-user（8.4c）与各任务的业务工具随后在 `toolRegistry.ts` 中追加。处理函数的上下文另有 `notifyExecutor()`（8.4b），经任务控制频道通知执行者立即续租一次。
 
 - **测试**：`tests/agent/tools.test.ts`（工具名、上限、26 种不封闭的 schema 与对照组、请求体 schema、资源标识格式、任务类型登记的工具、agent-gw 路由）；`tests/db/agentTools.test.ts`（20 个用例，真实数据库，经 agent-gw：对照组与身份、伪造身份字段与头部、令牌失效、未登记与不可用的工具、参数类型 / 必填 / 范围 / 字节上限、本项目 / 其他项目 / 其他组织 / 未完成 / 已替换 / 不存在 / 格式不对的产物 id、累计次数与 20 个并发、频率窗口、计数的 RLS / 授权 / `AT101`、处理函数出错与中止、日志、回滚）。任务类型的工具白名单、次数上限、频率上限、`run_id` 条件、参数字节上限、产物解析的项目 / 状态 / 替换条件做过变异检查。
+
+### 7.16 实现（路线图 8.4b）：Agent 报告无法继续
+
+业务工具 `report-failure`（`src/agent/reportFailureTool.ts`）供 Agent 报告无法按要求继续的原因，与桌面版 `piTaskFailureTool.cjs` 的“直接报告”相同；“由用户决定是否终止”随 ask-user 在 8.4c 加入。
+
+- **参数**：只有 `reason`（1～500 个字符）。原因是沙箱给出的不可信文本，服务端规范化为纯文本（`normalizeAgentFailureReason`：去掉控制字符、双向文本控制与零宽字符，合并空行，首尾去空白，按码点截断），为空时 400；只作为纯文本保存与显示，不转义、不解析。
+- **存储**（迁移 `0038_agent_failure_reports`）：每次执行（`run_id`）至多一行，只记第一次；强制 RLS，只能为本组织 `running`、`run_id` 相符的 Agent 任务写入，没有 UPDATE、DELETE；随任务删除。
+- **报告之后**：本次执行的模型调用（`beginAgentTurn`）与工具调用（`beginAgentToolCall`）一律 409 `JOB_NOT_RUNNING`，不计入轮数与次数。
+- **结束**：工具写入后经任务控制频道通知执行者；`renewRun` 返回 `agentFailureReported`，执行者中止本次执行。`finishRun` 中本次执行有报告时，除成功外的任何结果都以 `AGENT_REPORTED_FAILURE` 失败（`error_message` 为报告的原因，已请求取消的仍为取消）；执行者失联后由对账收回时同样失败、不再续跑。任务结束即令牌失效。
+- **显示**（第 9 步，#83 确认）：`AGENT_REPORTED_FAILURE` 的失败说明标注为“AI 给出的说明”，前端按纯文本显示，不自动识别链接、电话、邮箱（威胁模型 T10、T11）。
 
 ## 8. 部署架构
 

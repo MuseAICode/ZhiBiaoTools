@@ -1345,6 +1345,18 @@ export interface AgentToolCallsTable {
   created_at: ColumnType<Date, never, never>;
 }
 
+/**
+ * Agent 报告无法继续（迁移 0038_agent_failure_reports，8.4b）：每次执行至多一行（只记第一次），reason 是规范化后的纯文本。
+ * 只能为本组织 running、run_id 相符的 Agent 任务写入，没有 UPDATE、DELETE。
+ */
+export interface AgentFailureReportsTable {
+  org_id: ColumnType<string, string, never>;
+  job_id: ColumnType<string, string, never>;
+  run_id: ColumnType<string, string, never>;
+  reason: ColumnType<string, string, never>;
+  created_at: ColumnType<Date, never, never>;
+}
+
 export interface Database {
   organizations: OrganizationsTable;
   users: UsersTable;
@@ -1425,4 +1437,5 @@ export interface Database {
   agent_job_limit_overrides: AgentJobLimitOverridesTable;
   agent_job_runs: AgentJobRunsTable;
   agent_tool_calls: AgentToolCallsTable;
+  agent_failure_reports: AgentFailureReportsTable;
 }
