@@ -583,6 +583,7 @@ describe('回滚 0034', () => {
     await database.destroy();
     const migrator = connect(testDb.ownerConfig);
     try {
+      expect((await migrateDown(migrator)).results?.map((result) => result.migrationName)).toEqual(['0035_agent_job_limit_overrides']);
       const down = await migrateDown(migrator);
       expect(down.error).toBeUndefined();
       expect(down.results?.map((result) => result.migrationName)).toEqual(['0034_agent_job_budget_confirm']);

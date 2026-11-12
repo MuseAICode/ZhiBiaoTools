@@ -547,6 +547,7 @@ describe('回滚 0033', () => {
     await appDb.destroy();
     const owner = connect(testDb.ownerConfig);
     try {
+      expect((await migrateDown(owner)).results?.map((result) => result.migrationName)).toEqual(['0035_agent_job_limit_overrides']);
       expect((await migrateDown(owner)).results?.map((result) => result.migrationName)).toEqual(['0034_agent_job_budget_confirm']);
       const down = await migrateDown(owner);
       expect(down.error).toBeUndefined();
