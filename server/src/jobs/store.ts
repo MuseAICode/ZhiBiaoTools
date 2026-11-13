@@ -45,6 +45,15 @@ import {
   type AgentQuotaOptions,
 } from '../agent/quota.ts';
 import { assertJobStartBalance } from '../billing/usage.ts';
+import {
+  AGENT_QUESTION_ANSWER_ROLES,
+  AGENT_QUESTION_TIMEOUT_SECONDS,
+  AGENT_WAITING_FOR_USER_PAUSE_REASON,
+  findPendingAgentQuestion,
+  hasExpiredAgentQuestion,
+  isWaitingForUserReason,
+  normalizeAgentCustomAnswer,
+} from '../agent/questions.ts';
 import { AGENT_BUDGET_EXHAUSTED_REASONS, AGENT_BUDGET_MAX_COST_LIMIT, AGENT_BUDGET_MAX_TURN_LIMIT } from '../db/migrations/0033_agent_job_budgets.ts';
 import { AGENT_BUDGET_CONFIRM_ROLES } from '../db/migrations/0034_agent_job_budget_confirm.ts';
 import { UNITS_PER_YUAN } from '../billing/ledger.ts';
@@ -408,6 +417,10 @@ export async function requestResume(
       if (isTaskLimitReason(row.pause_reason)) {
         throw new AppError(409, 'JOB_TASK_LIMIT_CONFIRM_REQUIRED', '任务已达到费用或调用次数上限，需由发起人或组织管理员确认后继续');
       }
+      // 等待回答超时而暂停的（8.4c1）：问题仍在等待时须先回答（回答后自动继续）；问题已不在等待（暂停前刚好被回答）时照常继续。
+      if (isWaitingForUserReason(row.pause_reason) && (await findPendingAgentQuestion(trx, jobId)) !== null) {
+        throw new AppError(409, 'JOB_ANSWER_REQUIRED', '任务正在等待回答 Agent 的问题，回答后会自动继续');
+      }
       if (checkBalance(row.type)) await assertJobStartBalance(trx);
       if (await isAgentJob(trx, jobId)) await assertAgentDailyRuntimeAvailable(trx, context.orgId, agentQuota);
       const updated = await trx
@@ -427,6 +440,74 @@ export async function requestResume(
       return { job, dispatch: false };
     }
     return { job: toRecord(row), dispatch: false };
+  });
+}
+
+export interface AgentAnswerInput {
+  questionId: string;
+  /** 选项序号（从 0 开始）。 */
+  optionIndex: number;
+  /** 选了“自定义输入”的选项时必填，其他选项不能给出。 */
+  customAnswer?: string;
+}
+
+export interface AnswerChange extends JobChange {
+  questionId: string;
+}
+
+/**
+ * 回答 Agent 的问题（ask-user，8.4c1，迁移 0039_agent_questions）：限任务发起人或组织的 owner / admin（数据库触发器再检查一次）。
+ * 问题须是本任务等待回答中的问题；任务已结束 409。任务因等待回答超时暂停（waiting_for_user）时，回答后任务回到 queued（需要派发），
+ * 继续前照常检查最低启动余额与当日运行时长，不足时 402 / 429、什么都不改（问题仍在等待）。任务执行中时只记下回答，等待中的
+ * ask-user 调用随即取回。
+ */
+export async function answerAgentQuestion(
+  db: Kysely<Database>,
+  context: TenantContext,
+  jobId: string,
+  input: AgentAnswerInput,
+  checkBalance: (type: string) => boolean = () => false,
+  agentQuota?: AgentQuotaOptions,
+): Promise<AnswerChange> {
+  return withTenant(db, context, async (trx) => {
+    const row = await lockJob(trx, jobId);
+    if (!row) throw jobNotFound();
+    if (isFinalStatus(row.status) || row.status === 'cancelling') throw jobFinished();
+    if (row.user_id !== context.userId && !(AGENT_QUESTION_ANSWER_ROLES as readonly string[]).includes(context.role)) {
+      throw new AppError(403, 'JOB_ANSWER_FORBIDDEN', '只有任务发起人或组织管理员可以回答');
+    }
+    const question = await trx
+      .selectFrom('agent_questions')
+      .select(['id', 'status', 'options'])
+      .where('id', '=', input.questionId)
+      .where('job_id', '=', jobId)
+      .forUpdate()
+      .executeTakeFirst();
+    if (!question) throw new AppError(404, 'AGENT_QUESTION_NOT_FOUND', '问题不存在');
+    if (question.status !== 'pending') throw new AppError(409, 'AGENT_QUESTION_NOT_PENDING', '该问题已回答或已失效');
+    const option = question.options[input.optionIndex];
+    if (!option) throw new AppError(400, 'AGENT_ANSWER_INVALID', '请选择一个有效选项');
+    let answerText: string | null = null;
+    if (option.custom) {
+      answerText = normalizeAgentCustomAnswer(input.customAnswer ?? '');
+      if (answerText.length === 0) throw new AppError(400, 'AGENT_ANSWER_INVALID', '请输入具体要求');
+    } else if (input.customAnswer !== undefined) {
+      throw new AppError(400, 'AGENT_ANSWER_INVALID', '该选项不需要输入具体要求');
+    }
+    const resume = row.status === 'paused' && isWaitingForUserReason(row.pause_reason);
+    if (resume) {
+      if (checkBalance(row.type)) await assertJobStartBalance(trx);
+      if (await isAgentJob(trx, jobId)) await assertAgentDailyRuntimeAvailable(trx, context.orgId, agentQuota);
+    }
+    await trx.updateTable('agent_questions').set({ status: 'answered', answer_option: input.optionIndex, answer_text: answerText }).where('id', '=', question.id).execute();
+    if (!resume) {
+      await appendEvent(trx, toRecord(row), 'log', '已回答 Agent 的问题', { questionId: question.id, userId: context.userId });
+      return { job: toRecord(row), dispatch: false, questionId: question.id };
+    }
+    const updated = await trx.updateTable('jobs').set({ status: 'queued', pause_reason: null }).where('id', '=', jobId).returningAll().executeTakeFirstOrThrow();
+    const job = toRecord(updated);
+    await appendEvent(trx, job, 'resumed', '已回答 Agent 的问题，任务继续', { questionId: question.id, userId: context.userId });
+    return { job, dispatch: true, questionId: question.id };
   });
 }
 
@@ -642,6 +723,8 @@ export interface RunState {
   agentRuntimeExhausted: boolean;
   /** Agent 任务（8.4b）：本次执行中 Agent 已报告无法继续（report-failure），执行者应中止；结束时任务以 AGENT_REPORTED_FAILURE 失败。 */
   agentFailureReported: boolean;
+  /** Agent 任务（8.4c1）：本次执行中等待用户回答已超时，执行者应中止并暂停为 waiting_for_user。 */
+  agentQuestionExpired: boolean;
 }
 
 /**
@@ -676,7 +759,9 @@ export async function renewRun(
     const agent = await touchAgentJobRun(trx, run.runId);
     const agentRuntimeExhausted = agent && (await isAgentDailyRuntimeExhausted(trx, run.orgId, agentQuota));
     const agentFailureReported = agent && (await findAgentFailureReport(trx, run.jobId, run.runId)) !== null;
-    return { status: row.status, pauseRequested: row.pause_requested, agentRuntimeExhausted, agentFailureReported };
+    const agentQuestionExpired =
+      agent && (await hasExpiredAgentQuestion(trx, run.jobId, run.runId, agentQuota?.agentQuestionTimeoutSeconds ?? AGENT_QUESTION_TIMEOUT_SECONDS));
+    return { status: row.status, pauseRequested: row.pause_requested, agentRuntimeExhausted, agentFailureReported, agentQuestionExpired };
   });
 }
 
@@ -704,6 +789,8 @@ export function isTaskLimitReason(reason: JobPauseReason | null): reason is Agen
   return reason !== null && (AGENT_BUDGET_EXHAUSTED_REASONS as readonly string[]).includes(reason);
 }
 
+const AGENT_WAITING_FOR_USER_PAUSE_MESSAGE = 'Agent 的问题长时间未回答，任务已暂停，回答后会自动继续';
+
 const AGENT_DAILY_RUNTIME_PAUSE_MESSAGE = '本组织今日的 Agent 运行时长已用完，任务已暂停，明日可继续';
 
 const TASK_LIMIT_PAUSE_MESSAGES: Readonly<Record<AgentBudgetExhaustedReason, string>> = {
@@ -721,7 +808,9 @@ export type RunOutcome =
   /** 达到 Agent 任务的费用或轮数上限（8.3a）：暂停为 paused / 该原因，已请求取消时仍为 cancelled。 */
   | { kind: 'task-limit'; reason: AgentBudgetExhaustedReason }
   /** 组织当日的 Agent 运行时长用完（8.3d）：暂停为 paused / agent_daily_runtime，已请求取消时仍为 cancelled。 */
-  | { kind: 'agent-runtime-limit' };
+  | { kind: 'agent-runtime-limit' }
+  /** 等待用户回答超时（8.4c1）：暂停为 paused / waiting_for_user，用户回答后自动继续；问题已被回答时按中止收尾（回到 queued）。 */
+  | { kind: 'waiting-for-user' };
 
 /**
  * 结束一次执行。成功即 succeeded（即使期间请求了取消，工作已完成）；失败即 failed，除非已请求取消（cancelled）；
@@ -797,6 +886,18 @@ export async function finishRun(db: Kysely<Database>, run: RunRef, outcome: RunO
         .returningAll()
         .executeTakeFirstOrThrow();
       await appendEvent(trx, toRecord(updated), 'paused', AGENT_DAILY_RUNTIME_PAUSE_MESSAGE, { reason: AGENT_DAILY_RUNTIME_PAUSE_REASON });
+      return 'paused';
+    }
+    // 等待回答超时（8.4c1）：问题仍在等待（本次执行的）才暂停；暂停前刚好被回答的按中止收尾（回到 queued，续跑时取回答案）。
+    // 已请求取消、暂停的按请求收尾（releaseInTrx）。
+    if (outcome.kind === 'waiting-for-user' && row.status === 'running' && !row.pause_requested && (await findPendingAgentQuestion(trx, row.id, run.runId)) !== null) {
+      const updated = await trx
+        .updateTable('jobs')
+        .set({ status: 'paused', pause_reason: AGENT_WAITING_FOR_USER_PAUSE_REASON, pause_requested: false, run_id: null, lease_expires_at: null })
+        .where('id', '=', row.id)
+        .returningAll()
+        .executeTakeFirstOrThrow();
+      await appendEvent(trx, toRecord(updated), 'paused', AGENT_WAITING_FOR_USER_PAUSE_MESSAGE, { reason: AGENT_WAITING_FOR_USER_PAUSE_REASON });
       return 'paused';
     }
     return releaseInTrx(trx, row, resumable, 'released');

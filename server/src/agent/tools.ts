@@ -61,6 +61,8 @@ export interface AgentToolContext {
   readonly log: FastifyBaseLogger;
   /** 通知执行该任务的执行者立即续租一次（经任务控制频道），让它马上发现工具写下的状态（如失败报告）。失败时只写日志。 */
   notifyExecutor(): Promise<void>;
+  /** 推送本任务的问题状态（ask-user，8.4c1；SSE 的 job.question 事件），前端据此读取问题。失败时只写日志。 */
+  notifyQuestion(questionId: string, status: 'pending' | 'answered'): Promise<void>;
 }
 
 export interface AgentToolDefinition<A = any, R = unknown> {
@@ -308,6 +310,8 @@ export interface AgentToolRouteDependencies {
   track: (controller: AbortController) => () => void;
   /** 通知执行者立即检查该任务（src/events/publisher.ts 的 notifyJobControl）；不传时执行者在下一次定期续租时发现。 */
   notifyJobControl?: (jobId: string) => Promise<void>;
+  /** 推送任务的问题状态（ask-user，8.4c1）；不传时不推送（前端在下一次读取任务时看到）。 */
+  notifyQuestion?: (identity: AgentTokenIdentity, questionId: string, status: 'pending' | 'answered') => Promise<void>;
   /** 测试用：替换计数。 */
   beginCall?: typeof beginAgentToolCall;
 }
@@ -421,7 +425,10 @@ export function registerAgentToolRoute(app: FastifyInstance, deps: AgentToolRout
         const notifyExecutor = async () => {
           await deps.notifyJobControl?.(identity.jobId).catch((error: unknown) => request.log.warn({ err: error, jobId: identity.jobId }, 'job control notify failed'));
         };
-        result = await tool.run({ identity, tenant, db: deps.db, signal: controller.signal, log: request.log, notifyExecutor }, args);
+        const notifyQuestion = async (questionId: string, status: 'pending' | 'answered') => {
+          await deps.notifyQuestion?.(identity, questionId, status).catch((error: unknown) => request.log.warn({ err: error, jobId: identity.jobId }, 'job question notify failed'));
+        };
+        result = await tool.run({ identity, tenant, db: deps.db, signal: controller.signal, log: request.log, notifyExecutor, notifyQuestion }, args);
       } catch (error) {
         logCall(error instanceof AppError ? error.code : 'error');
         throw error;

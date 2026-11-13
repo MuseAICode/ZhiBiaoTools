@@ -82,13 +82,14 @@ const objectStore = config.storage ? createS3ObjectStore(config.storage) : null;
 if (!objectStore) app.log.warn('S3_BUCKET is not set, document parse jobs will fail and expired files will not be cleaned up');
 const sandbox = config.sandbox ? createSandboxRunnerClient({ url: config.sandbox.url, token: config.sandbox.token }) : null;
 if (!sandbox) app.log.warn('SANDBOX_RUNNER_URL is not set, document parse jobs will fail');
+const jobNotifier = createJobNotifier({ db: database.db, publisher, log: app.log });
 const runner = createJobRunner({
   db: database.db,
   registry: jobTypeRegistry,
   dispatcher,
   connection: bullmqConnection(redisConfig, 'worker', 'bidtools-worker'),
   log: app.log,
-  notifier: createJobNotifier({ db: database.db, publisher, log: app.log }),
+  notifier: jobNotifier,
   gateway,
   objectStore,
   sandbox,
@@ -110,6 +111,9 @@ const agentEndpoint: FastifyInstance | null = config.agentEndpoint ? await build
       toolsForJobType: (type) => jobTypeRegistry.get(type)?.agentTools ?? [],
       // 工具写下的状态（如 8.4b 的失败报告）经任务控制频道通知执行者立即检查。
       notifyJobControl: (jobId) => publisher.notifyJobControl(jobId),
+      // ask-user（8.4c1）：问题的状态经 SSE 推送（job.question）。
+      notifyQuestion: (identity, questionId, status) =>
+        jobNotifier.question({ orgId: identity.orgId, id: identity.jobId, projectId: identity.projectId, type: identity.jobType }, questionId, status),
     }) : null;
 
 app.addHook('onClose', async () => {

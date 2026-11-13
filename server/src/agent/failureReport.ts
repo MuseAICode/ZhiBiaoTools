@@ -11,7 +11,7 @@
 // - 执行者在下一次续租时发现报告（工具写入后经任务控制频道立即触发一次续租），中止本次执行；结束时（finishRun）以及执行者失联后
 //   对账收回时（recoverJob），只要本次执行有报告，任务即以 AGENT_REPORTED_FAILURE 失败（已请求取消的仍为取消），不再暂停或续跑。
 //
-// 由用户决定是否终止（桌面版的 requestTerminationDecision）随 ask-user 在 8.4c 加入。
+// 由用户决定是否终止（桌面版的 requestTerminationDecision）随 8.4c2 加入（复用 8.4c1 的 ask-user 问题与回答，src/agent/questions.ts）。
 import { sql, type Transaction } from 'kysely';
 import { AGENT_FAILURE_REASON_MAX_LENGTH } from '../db/migrations/0038_agent_failure_reports.ts';
 import type { Database } from '../db/schema.ts';
@@ -31,23 +31,31 @@ const CONTROL_CHARS = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/g;
 const INVISIBLE_CHARS = /[\u061c\u200b-\u200f\u202a-\u202e\u2060-\u2064\u2066-\u206f\ufeff\u2028\u2029]/g;
 
 /**
- * 把 Agent 给出的原因规范化为纯文本：换行统一为 \n，制表符改为空格，去掉其他控制字符与不可见字符，去掉行尾空白，
- * 连续的空行至多保留一个，首尾去空白，超出 AGENT_FAILURE_REASON_MAX_LENGTH 个字符（按码点）的截断。结果可能为空。
- * 不做 HTML 转义：保存的是纯文本，显示时由前端按文本输出。
+ * 把沙箱给出的文本规范化为纯文本：换行统一为 \n，制表符改为空格，去掉其他控制字符与不可见字符，去掉行尾空白，
+ * 连续的空行至多保留一个，首尾去空白，超出 maxLength 个字符（按码点）的截断。singleLine 时换行改为空格、连续空白合并为一个。
+ * 结果可能为空。不做 HTML 转义：保存的是纯文本，显示时由前端按文本输出。ask-user（8.4c1）的问题、选项与回答同样经它规范化。
  */
-export function normalizeAgentFailureReason(raw: string): string {
-  const text = raw
+export function normalizeAgentPlainText(raw: string, maxLength: number, options: { singleLine?: boolean } = {}): string {
+  let text = raw
     .replace(/\r\n?/g, '\n')
     .replace(/\t/g, ' ')
     .replace(CONTROL_CHARS, '')
-    .replace(INVISIBLE_CHARS, '')
-    .split('\n')
-    .map((line) => line.trimEnd())
-    .join('\n')
-    .replace(/\n{3,}/g, '\n\n')
-    .trim();
+    .replace(INVISIBLE_CHARS, '');
+  text = options.singleLine
+    ? text.replace(/\s+/g, ' ').trim()
+    : text
+        .split('\n')
+        .map((line) => line.trimEnd())
+        .join('\n')
+        .replace(/\n{3,}/g, '\n\n')
+        .trim();
   const codePoints = Array.from(text);
-  return codePoints.length <= AGENT_FAILURE_REASON_MAX_LENGTH ? text : codePoints.slice(0, AGENT_FAILURE_REASON_MAX_LENGTH).join('').trimEnd();
+  return codePoints.length <= maxLength ? text : codePoints.slice(0, maxLength).join('').trimEnd();
+}
+
+/** Agent 给出的失败原因规范化为纯文本（normalizeAgentPlainText），至多 AGENT_FAILURE_REASON_MAX_LENGTH 个字符。 */
+export function normalizeAgentFailureReason(raw: string): string {
+  return normalizeAgentPlainText(raw, AGENT_FAILURE_REASON_MAX_LENGTH);
 }
 
 export interface AgentFailureReportRef {

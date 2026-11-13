@@ -122,7 +122,7 @@ const DEFAULT_REDIS_CHECK_INTERVAL_MS = 5_000;
 const FINISH_RETRIES = 3;
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
-type AbortReason = 'cancel' | 'pause' | 'lease-lost' | 'shutdown' | 'agent-runtime-limit' | 'agent-reported-failure';
+type AbortReason = 'cancel' | 'pause' | 'lease-lost' | 'shutdown' | 'agent-runtime-limit' | 'agent-reported-failure' | 'agent-question-timeout';
 
 export function createJobRunner(options: JobRunnerOptions): JobRunner {
   const { db, registry, dispatcher, log } = options;
@@ -182,6 +182,7 @@ export function createJobRunner(options: JobRunnerOptions): JobRunner {
       else if (state.agentFailureReported) reason = 'agent-reported-failure';
       else if (state.pauseRequested) reason = 'pause';
       else if (state.agentRuntimeExhausted) reason = 'agent-runtime-limit';
+      else if (state.agentQuestionExpired) reason = 'agent-question-timeout';
       if (reason && !controller.signal.aborted) controller.abort(reason);
       return state;
     };
@@ -286,6 +287,9 @@ export function createJobRunner(options: JobRunnerOptions): JobRunner {
       } else if (controller.signal.reason === 'agent-runtime-limit' && !lost) {
         // 组织当日的 Agent 运行时长用完（8.3d）：暂停，次日可继续。期间请求了取消、暂停的，finishRun 按数据库中的请求收尾。
         outcome = { kind: 'agent-runtime-limit' };
+      } else if (controller.signal.reason === 'agent-question-timeout' && !lost) {
+        // 等待用户回答超时（8.4c1）：暂停为 waiting_for_user，用户回答后自动继续。
+        outcome = { kind: 'waiting-for-user' };
       } else if (controller.signal.aborted || error instanceof JobInterruptedError) {
         outcome = { kind: 'interrupted' };
       } else if (error instanceof JobError) {

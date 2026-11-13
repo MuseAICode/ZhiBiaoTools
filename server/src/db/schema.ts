@@ -57,7 +57,7 @@ import type {
 import type { TECHNICAL_PLAN_CONTENT_MODES } from './migrations/0019_technical_plan_outline.ts';
 import type { JOB_EVENT_KINDS, JOB_STATUSES } from './migrations/0021_jobs.ts';
 import type { AGENT_BUDGET_EXHAUSTED_REASONS } from './migrations/0033_agent_job_budgets.ts';
-import type { JOB_PAUSE_REASONS } from './migrations/0036_agent_job_runs.ts';
+import type { AGENT_QUESTION_STATUSES, JOB_PAUSE_REASONS } from './migrations/0039_agent_questions.ts';
 import type { ProjectKind } from '../projects/store.ts';
 
 type Timestamp = ColumnType<Date, Date | string, Date | string>;
@@ -1357,6 +1357,38 @@ export interface AgentFailureReportsTable {
   created_at: ColumnType<Date, never, never>;
 }
 
+export type AgentQuestionStatus = (typeof AGENT_QUESTION_STATUSES)[number];
+
+/** Agent 问题的一个选项（服务端规范化后的纯文本）。 */
+export interface AgentQuestionOption {
+  label: string;
+  description: string;
+  custom: boolean;
+}
+
+/**
+ * Agent 向用户提问（迁移 0039_agent_questions，8.4c1）：每个任务同时至多一个未关闭的问题（pending / answered）。
+ * 状态的改法由触发器 AQ001 限定；answered_by、answered_at、consumed_at 与续跑接手时的 asked_at 由触发器填写；没有 DELETE。
+ */
+export interface AgentQuestionsTable {
+  id: ColumnType<string, never, never>;
+  org_id: ColumnType<string, string, never>;
+  job_id: ColumnType<string, string, never>;
+  run_id: ColumnType<string, string, string>;
+  content_hash: ColumnType<Buffer, Buffer, never>;
+  question: ColumnType<string, string, never>;
+  options: ColumnType<AgentQuestionOption[], string, never>;
+  status: ColumnType<AgentQuestionStatus, never, AgentQuestionStatus>;
+  asked_at: ColumnType<Date, never, never>;
+  answer_option: ColumnType<number | null, never, number>;
+  answer_text: ColumnType<string | null, never, string | null>;
+  answered_by: ColumnType<string | null, never, never>;
+  answered_at: ColumnType<Date | null, never, never>;
+  consumed_run_id: ColumnType<string | null, never, string>;
+  consumed_at: ColumnType<Date | null, never, never>;
+  created_at: ColumnType<Date, never, never>;
+}
+
 export interface Database {
   organizations: OrganizationsTable;
   users: UsersTable;
@@ -1438,4 +1470,5 @@ export interface Database {
   agent_job_runs: AgentJobRunsTable;
   agent_tool_calls: AgentToolCallsTable;
   agent_failure_reports: AgentFailureReportsTable;
+  agent_questions: AgentQuestionsTable;
 }

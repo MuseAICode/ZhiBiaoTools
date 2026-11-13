@@ -361,7 +361,7 @@ Markdown 中远程图片的下载（`docs/EXTERNAL_SERVICES.md` §2.9）URL 来�
 ### 5.6 取消、暂停与恢复
 
 - 取消 / 暂停：api 把 `jobs.status` 改为 `cancelling` / `paused`（执行中的暂停记为 `pause_requested`）并向控制频道 `{BullMQ 前缀}:jobs:control` 发布任务 id（6.3；原设计为每个任务一个 `cancel:{jobId}`）；worker 收到后对正在执行的该任务立即续租一次，从 `jobs` 读到请求，消息本身不被信任；worker 内每个任务持有 `AbortController`，收到信号后在下一个检查点退出（现有 `agentInterruption.cjs`、`pauseContentGeneration` 的语义保留）；
-- Agent 正在等用户回答（`ask-user`）时，任务状态为 `running` 并带 `waiting_for_user`，问题经 SSE 推送，回答经 `POST /api/jobs/:id/answer` 写入后通知 worker；等待超时按现有 `suppressQuestionAutoAnswer` / 自动确认规则处理；
+- Agent 正在等用户回答（`ask-user`）时，任务状态为 `running`，问题存进 `agent_questions`，经 SSE 的 `job.question` 事件通知、`GET /api/jobs/:id` 的 `pendingQuestion` 读取，回答经 `POST /api/jobs/:id/answer` 写入，等待中的工具调用随即取回；等待超过 10 分钟任务暂停为 `waiting_for_user`，回答后自动继续（8.4c1，见第 7.17 节）。桌面版的自动确认（到时自动选推荐项）不做，随第 9 步再定；
 - 恢复：worker 崩溃后租约过期，由对账收回并交给其他 worker，任务从 `jobs.checkpoint` 继续（现有“重启恢复”逻辑改成读 `jobs` 表；不依赖 BullMQ 的 stalled 检测，它在 Redis 被清空后无从发现）。6.2 中取消、暂停由执行者续租时从 `jobs` 读到；6.3 接入控制频道后立即送达，错过消息时仍在下一次续租时发现。Agent 任务的会话文件和工作区在对象存储中有快照（第 7.3 节），可以从最近一次快照恢复。
 
 ## 6. 文件上传、存储与下载
@@ -674,13 +674,25 @@ agent-gw 登记 `POST /v1/tools/call`（请求体上限 1 MiB，`AGENT_TOOL_MAX_
 
 ### 7.16 实现（路线图 8.4b）：Agent 报告无法继续
 
-业务工具 `report-failure`（`src/agent/reportFailureTool.ts`）供 Agent 报告无法按要求继续的原因，与桌面版 `piTaskFailureTool.cjs` 的“直接报告”相同；“由用户决定是否终止”随 ask-user 在 8.4c 加入。
+业务工具 `report-failure`（`src/agent/reportFailureTool.ts`）供 Agent 报告无法按要求继续的原因，与桌面版 `piTaskFailureTool.cjs` 的“直接报告”相同；“由用户决定是否终止”随 8.4c2 加入（复用第 7.17 节的 ask-user 机制）。
 
 - **参数**：只有 `reason`（1～500 个字符）。原因是沙箱给出的不可信文本，服务端规范化为纯文本（`normalizeAgentFailureReason`：去掉控制字符、双向文本控制与零宽字符，合并空行，首尾去空白，按码点截断），为空时 400；只作为纯文本保存与显示，不转义、不解析。
 - **存储**（迁移 `0038_agent_failure_reports`）：每次执行（`run_id`）至多一行，只记第一次；强制 RLS，只能为本组织 `running`、`run_id` 相符的 Agent 任务写入，没有 UPDATE、DELETE；随任务删除。
 - **报告之后**：本次执行的模型调用（`beginAgentTurn`）与工具调用（`beginAgentToolCall`）一律 409 `JOB_NOT_RUNNING`，不计入轮数与次数。
 - **结束**：工具写入后经任务控制频道通知执行者；`renewRun` 返回 `agentFailureReported`，执行者中止本次执行。`finishRun` 中本次执行有报告时，除成功外的任何结果都以 `AGENT_REPORTED_FAILURE` 失败（`error_message` 为报告的原因，已请求取消的仍为取消）；执行者失联后由对账收回时同样失败、不再续跑。任务结束即令牌失效。
 - **显示**（第 9 步，#83 确认）：`AGENT_REPORTED_FAILURE` 的失败说明标注为“AI 给出的说明”，前端按纯文本显示，不自动识别链接、电话、邮箱（威胁模型 T10、T11）。
+
+### 7.17 实现（路线图 8.4c1）：Agent 向用户提问
+
+业务工具 `ask-user`（`src/agent/askUserTool.ts`、`src/agent/questions.ts`）对应桌面版 `piUserQuestionTool.cjs`：Agent 在关键事项无法从材料中确定时提一个问题、等用户回答。
+
+- **参数**（与桌面版相同）：`question`（≤ 2,000 个字符）与 2～5 个 `options`（`label` ≤ 60、`description` ≤ 300、`custom`）。问题与选项是沙箱给出的不可信文本，服务端规范化为纯文本（问题保留分行，选项为单行；去掉控制字符、双向文本控制与零宽字符）；第一项是推荐项且不能要求输入、至多一个自定义输入选项、名称不重复，否则 400。
+- **存储**（迁移 `0039_agent_questions`）：每个问题一行，每个任务同时至多一个未关闭（`pending` / `answered`）的问题；`content_hash` 是规范化后问题与选项的 SHA-256。状态只能 `pending → answered → consumed`，另有续跑时新执行接手（`pending → pending`，重新计时）与作废旧执行的问题（`→ superseded`），由触发器 `AQ001` 强制：回答人限本组织成员中的任务发起人或 `owner` / `admin`（没有用户上下文一律拒绝），答案只能交给任务当前的执行，关闭后不能再改；回答人与各时间由触发器填写。强制 RLS，只能为本组织 `running`、`run_id` 相符的 Agent 任务提问，没有 DELETE，随任务删除。`jobs.pause_reason` 新增 `waiting_for_user`。
+- **等待**：一次工具调用至多等 50 秒（短于 agent-gw 的转发时限），每秒查一次；已回答即返回 `{ answered: true, answer, selected_option, is_custom }`（与桌面版相同），否则返回 `{ answered: false, pending: true }`，沙箱内的桩以相同参数再次调用继续等待（8.6）。同一次执行中重复提出同一个问题不新建；本次执行已有另一个问题在等待时 409 `AGENT_QUESTION_PENDING`；任务不在本次执行中 409 `JOB_NOT_RUNNING`。工具上限：每个任务 2,000 次、每分钟 20 次。
+- **超时**：`renewRun` 返回 `agentQuestionExpired`（本次执行的问题等待超过 `AGENT_QUESTION_TIMEOUT_SECONDS` = 10 分钟），执行者中止本次执行，`finishRun` 暂停为 `waiting_for_user`（释放沙箱与并发名额，令牌失效，之后的等待不计入每日运行时长）；暂停前问题刚好被回答的按中止收尾（回到 `queued`），已请求暂停 / 取消的按请求收尾。这样暂停的任务普通的“继续”返回 409 `JOB_ANSWER_REQUIRED`。
+- **回答**：`POST /api/jobs/:jobId/answer`（`{ questionId, optionIndex, customAnswer? }`），限任务发起人或 `owner` / `admin`（其他成员 403 `JOB_ANSWER_FORBIDDEN`）；选项序号越界、自定义选项没有输入、普通选项带输入 400，问题已回答或已作废 409，任务已结束 409。任务因等待超时暂停时，回答后回到 `queued` 并派发（照常检查最低启动余额与当日运行时长，不足时什么都不改），续跑时 Agent 再次提出同一个问题（按 `content_hash`）立即取回答案；续跑中提出了不同的问题时旧问题作废。回答写入任务事件（不含回答内容）。
+- **推送与读取**：SSE 新增 `job.question` 事件（`{ jobId, projectId, type, questionId, status }`，不含问题内容）；`GET /api/jobs/:jobId` 返回 `pendingQuestion`（问题、选项、提问时间与执行中超时暂停的时间）。
+- **显示**（第 9 步）：问题与选项标明“由 AI 生成”、按纯文本显示（`allowRawHtml={false}`、`linkMode="text"`），提示“不要在此输入密码等敏感信息”（威胁模型 T10）。
 
 ## 8. 部署架构
 
