@@ -19,10 +19,12 @@ import {
   openAgentQuestion,
   pollAgentQuestion,
   type AgentAnswer,
+  type AgentAnswerConsumedHook,
   type AgentQuestionInput,
   type AgentQuestionState,
+  type NormalizedAgentQuestion,
 } from './questions.ts';
-import type { AgentToolDefinition } from './tools.ts';
+import type { AgentToolContext, AgentToolDefinition } from './tools.ts';
 
 export const ASK_USER_TOOL_NAME = 'ask-user';
 
@@ -61,6 +63,41 @@ function sleep(ms: number, signal: AbortSignal): Promise<void> {
 export interface AskUserToolOptions {
   waitMs?: number;
   pollMs?: number;
+}
+
+export interface AgentAnswerWaitOptions {
+  waitMs: number;
+  pollMs: number;
+  /** 答案交给本次执行时在同一事务中调用（见 AgentAnswerConsumedHook）。 */
+  onConsumed?: AgentAnswerConsumedHook;
+}
+
+/**
+ * 提出问题并至多等待 waitMs（ask-user 与 8.4c2 的 request-termination 共用）：已回答返回答案，仍未回答返回 null
+ * （由沙箱内的桩以相同参数再次调用）；本次执行另有问题在等待 409 AGENT_QUESTION_PENDING，任务不在本次执行中 409 JOB_NOT_RUNNING。
+ */
+export async function waitForAgentAnswer(
+  context: AgentToolContext,
+  question: NormalizedAgentQuestion,
+  options: AgentAnswerWaitOptions,
+): Promise<AgentAnswer | null> {
+  const ref = { tenant: context.tenant, jobId: context.identity.jobId, runId: context.identity.runId };
+  let state: AgentQuestionState = await withTenant(context.db, context.tenant, (trx) => openAgentQuestion(trx, ref, question, options.onConsumed));
+  if (state.kind === 'pending' && state.created) {
+    context.log.info({ jobId: ref.jobId, tokenId: context.identity.logId, questionId: state.questionId }, 'agent asked user');
+    await context.notifyQuestion(state.questionId, 'pending');
+  }
+  const deadline = Date.now() + options.waitMs;
+  while (state.kind === 'pending' && Date.now() < deadline && !context.signal.aborted) {
+    await sleep(Math.min(options.pollMs, Math.max(deadline - Date.now(), 0)), context.signal);
+    if (context.signal.aborted) break;
+    const questionId: string = state.questionId;
+    state = await withTenant(context.db, context.tenant, (trx) => pollAgentQuestion(trx, ref, questionId, options.onConsumed));
+  }
+  if (state.kind === 'answered') return state.answer;
+  if (state.kind === 'conflict') throw new AppError(409, 'AGENT_QUESTION_PENDING', '已有一个问题在等待用户回答，请先等待该问题的回答');
+  if (state.kind === 'not-running') throw notRunning();
+  return null;
 }
 
 export function createAskUserTool(options: AskUserToolOptions = {}): AgentToolDefinition<AgentQuestionInput, AskUserResult> {
@@ -103,24 +140,8 @@ export function createAskUserTool(options: AskUserToolOptions = {}): AgentToolDe
     maxCallsPerJob: 2_000,
     maxCallsPerMinute: 20,
     async run(context, args) {
-      const question = normalizeAgentQuestion(args);
-      const ref = { tenant: context.tenant, jobId: context.identity.jobId, runId: context.identity.runId };
-      let state: AgentQuestionState = await withTenant(context.db, context.tenant, (trx) => openAgentQuestion(trx, ref, question));
-      if (state.kind === 'pending' && state.created) {
-        context.log.info({ jobId: ref.jobId, tokenId: context.identity.logId, questionId: state.questionId }, 'agent asked user');
-        await context.notifyQuestion(state.questionId, 'pending');
-      }
-      const deadline = Date.now() + waitMs;
-      while (state.kind === 'pending' && Date.now() < deadline && !context.signal.aborted) {
-        await sleep(Math.min(pollMs, Math.max(deadline - Date.now(), 0)), context.signal);
-        if (context.signal.aborted) break;
-        const questionId: string = state.questionId;
-        state = await withTenant(context.db, context.tenant, (trx) => pollAgentQuestion(trx, ref, questionId));
-      }
-      if (state.kind === 'answered') return state.answer;
-      if (state.kind === 'conflict') throw new AppError(409, 'AGENT_QUESTION_PENDING', '已有一个问题在等待用户回答，请先等待该问题的回答');
-      if (state.kind === 'not-running') throw notRunning();
-      return { answered: false, pending: true, message: PENDING_MESSAGE };
+      const answer = await waitForAgentAnswer(context, normalizeAgentQuestion(args), { waitMs, pollMs });
+      return answer ?? { answered: false, pending: true, message: PENDING_MESSAGE };
     },
   };
 }
