@@ -5,7 +5,9 @@
 //   job           任务的当前状态（与 GET /api/jobs/:jobId 的任务部分相同）。状态变化后重新读出再推送，
 //                 并发变化时到达顺序可能与提交顺序不同，前端按 updatedAt 取较新的一条；
 //   job.progress  执行中的进度：{ jobId, projectId, type, progress }；
-//   job.log       任务日志：{ jobId, projectId, type, event }，event 与 GET /api/jobs/:jobId 的 events 相同（不含事件数据）。
+//   job.log       任务日志：{ jobId, projectId, type, event }，event 与 GET /api/jobs/:jobId 的 events 相同（不含事件数据）；
+//   job.question  Agent 的问题（ask-user，8.4c1）：{ jobId, projectId, type, questionId, status }，status 为 pending（等待回答）
+//                 或 answered；不含问题内容，前端经 GET /api/jobs/:jobId 的 pendingQuestion 读取。
 // 推送是尽力而为，任何失败都只写日志，不影响任务；任务状态的权威始终是 jobs 表。
 import type { FastifyBaseLogger } from 'fastify';
 import type { Kysely } from 'kysely';
@@ -28,6 +30,7 @@ export interface JobNotifier {
   changedById(orgId: string, jobId: string): Promise<void>;
   progress(job: JobRef, progress: number): Promise<void>;
   logged(job: JobRef, event: JobEventRecord): Promise<void>;
+  question(job: JobRef, questionId: string, status: 'pending' | 'answered'): Promise<void>;
 }
 
 /** 未配置 Redis 时使用：什么都不推送。 */
@@ -36,6 +39,7 @@ export const NULL_JOB_NOTIFIER: JobNotifier = Object.freeze({
   async changedById() {},
   async progress() {},
   async logged() {},
+  async question() {},
 });
 
 export interface JobNotifierOptions {
@@ -81,6 +85,11 @@ export function createJobNotifier(options: JobNotifierOptions): JobNotifier {
           type: 'job.log',
           data: { jobId: job.id, projectId: job.projectId, type: job.type, event: jobEventBody(event) },
         }),
+      );
+    },
+    async question(job, questionId, status) {
+      await guarded(job.id, 'question', () =>
+        publisher.publish(job.orgId, { type: 'job.question', data: { jobId: job.id, projectId: job.projectId, type: job.type, questionId, status } }),
       );
     },
   };

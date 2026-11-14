@@ -27,6 +27,8 @@ export interface AgentQuotaOptions {
   orgAgentRunningLimit?: number;
   /** 每日运行时长上限（秒），默认 AGENT_DAILY_RUNTIME_SECONDS。 */
   agentDailyRuntimeSeconds?: number;
+  /** 等待用户回答多久后暂停（秒，ask-user，8.4c1），默认 AGENT_QUESTION_TIMEOUT_SECONDS（测试用）。 */
+  agentQuestionTimeoutSeconds?: number;
 }
 
 type Trx = Transaction<Database>;

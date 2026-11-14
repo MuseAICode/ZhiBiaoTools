@@ -8,7 +8,7 @@ import type { TenantContext } from '../db/tenant.ts';
 import type { JobTypeRegistry } from './definitions.ts';
 import { NULL_JOB_NOTIFIER, type JobNotifier } from './notify.ts';
 import type { JobDispatcher } from './queue.ts';
-import { confirmTaskLimit, insertJobSuperseding, requestCancel, requestPause, requestResume, type InsertedJob, type JobRecord, type NewJob } from './store.ts';
+import { answerAgentQuestion, confirmTaskLimit, insertJobSuperseding, requestCancel, requestPause, requestResume, type AgentAnswerInput, type InsertedJob, type JobRecord, type NewJob } from './store.ts';
 
 export interface JobServiceDependencies {
   db: Kysely<Database>;
@@ -84,6 +84,19 @@ export async function resumeJob(deps: JobServiceDependencies, context: TenantCon
 export async function confirmJobTaskLimit(deps: JobServiceDependencies, context: TenantContext, jobId: string): Promise<JobRecord> {
   const change = await confirmTaskLimit(deps.db, context, jobId, deps.agentQuota);
   await (deps.notifier ?? NULL_JOB_NOTIFIER).changed(change.job);
+  if (change.dispatch) await dispatchBestEffort(deps, change.job);
+  return change.job;
+}
+
+/**
+ * 回答 Agent 的问题（ask-user，8.4c1）：发起人或组织 owner / admin。任务因等待回答超时暂停时回到 queued 并派发
+ * （余额不足 402、当日运行时长用完 429，什么都不改）；执行中时等待中的工具调用随即取回回答。
+ */
+export async function answerJobQuestion(deps: JobServiceDependencies, context: TenantContext, jobId: string, input: AgentAnswerInput): Promise<JobRecord> {
+  const change = await answerAgentQuestion(deps.db, context, jobId, input, (type) => deps.registry.get(type)?.billable === true, deps.agentQuota);
+  const notifier = deps.notifier ?? NULL_JOB_NOTIFIER;
+  await notifier.changed(change.job);
+  await notifier.question(change.job, change.questionId, 'answered');
   if (change.dispatch) await dispatchBestEffort(deps, change.job);
   return change.job;
 }

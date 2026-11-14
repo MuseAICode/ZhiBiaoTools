@@ -14,6 +14,7 @@ const APPLICATION_TABLES = [
   'agent_job_limit_overrides',
   'agent_job_runs',
   'agent_job_tokens',
+  'agent_questions',
   'agent_tool_calls',
   'artifacts',
   'auth_tokens',
@@ -98,6 +99,7 @@ const APP_FUNCTIONS = [
   'agent_job_budgets_insert_defaults',
   'agent_job_runs_guard',
   'agent_job_tokens_guard',
+  'agent_questions_guard',
   'agent_token_lookup',
   'agent_tool_calls_guard',
   'ai_admin_put_credential',
@@ -249,6 +251,7 @@ describe('迁移升级与回滚', () => {
       (await sql<{ prosrc: string }>`SELECT prosrc FROM pg_proc WHERE proname = 'ai_usage_begin'`.execute(testDb.admin)).rows.map((row) => row.prosrc);
     expectSuccess(await migrateToLatest(owner));
     expect((await source())[0]).toContain('ai_model_price');
+    expect(expectSuccess(await migrateDown(owner))).toEqual(['Down:0039_agent_questions']);
     expect(expectSuccess(await migrateDown(owner))).toEqual(['Down:0038_agent_failure_reports']);
     expect(expectSuccess(await migrateDown(owner))).toEqual(['Down:0037_agent_tool_calls']);
     expect(expectSuccess(await migrateDown(owner))).toEqual(['Down:0036_agent_job_runs']);

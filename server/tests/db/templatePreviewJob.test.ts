@@ -79,6 +79,7 @@ function recordingNotifier(): { notifier: JobNotifier; changed: JobRecord[] } {
         changed.push(job);
       },
       async changedById() {},
+      async question() {},
       async progress() {},
       async logged() {},
     },

@@ -154,6 +154,7 @@ function captureNotifier(db: Kysely<Database>): JobNotifier & { jobs: ReturnType
       if (job) jobs.push(jobBody(job));
     },
     async progress() {},
+    async question() {},
     async logged() {},
   };
 }

@@ -49,6 +49,8 @@ export interface AgentEndpointOptions {
   toolsForJobType?: (jobType: string) => readonly string[];
   /** 通知执行者立即检查该任务（任务控制频道，8.4b 的失败报告用）；不传时执行者在下一次定期续租时发现。 */
   notifyJobControl?: (jobId: string) => Promise<void>;
+  /** 推送任务的问题状态（ask-user，8.4c1，SSE 的 job.question）；不传时不推送。 */
+  notifyQuestion?: (identity: AgentTokenIdentity, questionId: string, status: 'pending' | 'answered') => Promise<void>;
 }
 
 /** 未给出 maxOutputTokens 时（测试）的平台最大输出 token，与 AI_MAX_OUTPUT_TOKENS 的默认值相同。 */
@@ -168,6 +170,7 @@ export async function buildAgentEndpointApp(options: AgentEndpointOptions): Prom
     identityOf: agentIdentityOf,
     track,
     ...(options.notifyJobControl ? { notifyJobControl: options.notifyJobControl } : {}),
+    ...(options.notifyQuestion ? { notifyQuestion: options.notifyQuestion } : {}),
   });
 
   return app;
