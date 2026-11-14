@@ -4,8 +4,9 @@
 //   这里只拿到候选行的 id 和对象键，不传时间、保留期或组织；
 // - 先删对象、确认成功（或对象已不存在）后再删行；对象删除失败的行保留，下一批重试，不会出现“行已删、对象还在”；
 // - 孤儿对象：按前缀 org/ 分页列出，只考虑修改时间超过 7 天的、形如 org/{org}/files|artifacts/{id} 且数据库中没有对应行的键，
-//   每批从上次停下的位置继续，到末尾后从头开始；
+//   每批从上次停下的位置继续，到末尾后从头开始（0040 起也包括 org/{org}/agent-workspaces/{id}）；
 // - 模板样张（迁移 0027）：样张产物与其他产物同一路径（过期条件加上“创建超过 24 小时”），样张请求没有对象，24 小时后删行；
+// - Agent 工作区快照（迁移 0040）：与产物同一路径（先删对象、再删行，遗留的写入计入 uploading 类），在项目之前删除；
 // - 冻结到期收尾（ai_usage_expire_holds，属主 bidtools_billing）以应用角色调用，不经清理角色（原来在 api 的定时器中）；
 // - 每批按类别各记一行结构化日志：删除条数、对象数、失败数和耗时，不含对象键、文件名和内容。
 // 多个 worker 同时执行是安全的：删行的函数会重新检查条件，删除已不存在的对象不报错，只会多做一次。
@@ -17,7 +18,7 @@ import type { Database } from '../db/schema.ts';
 import type { ObjectLister, ObjectStore } from '../files/objectStore.ts';
 
 export const CLEANUP_CATEGORIES = [
-  'holds', 'artifacts', 'files', 'uploading', 'projects', 'orphans', 'jobs', 'job_events', 'template_preview_requests',
+  'holds', 'artifacts', 'files', 'uploading', 'agent_workspaces', 'projects', 'orphans', 'jobs', 'job_events', 'template_preview_requests',
 ] as const;
 export type CleanupCategory = (typeof CLEANUP_CATEGORIES)[number];
 
@@ -124,8 +125,11 @@ export function createCleaner(options: CleanerOptions): Cleaner {
     const artifacts = counter('artifacts');
     const files = counter('files');
     const uploading = counter('uploading');
+    const workspaces = counter('agent_workspaces');
     if (!objectStore) {
-      return [artifacts.finish({ skipped: true }), files.finish({ skipped: true }), uploading.finish({ skipped: true })];
+      return [
+        artifacts.finish({ skipped: true }), files.finish({ skipped: true }), uploading.finish({ skipped: true }), workspaces.finish({ skipped: true }),
+      ];
     }
     // 产物先于文件：来源文件的产物删完，文件才成为候选。
     const artifactCandidates = await sql<Candidate>`SELECT * FROM cleanup_artifact_candidates(${batchSize})`.execute(db);
@@ -146,7 +150,18 @@ export function createCleaner(options: CleanerOptions): Cleaner {
         signal,
       );
     }
-    return [artifacts.finish(), files.finish(), uploading.finish()];
+    // 快照只挂在项目下，与产物、文件互不依赖；项目要等它删完才能删除（cleanup_delete_projects 在之后执行）。
+    if (!signal?.aborted) {
+      const snapshotCandidates = await sql<Candidate>`SELECT * FROM cleanup_agent_workspace_candidates(${batchSize})`.execute(db);
+      await purge(
+        snapshotCandidates.rows,
+        async (id) => (await sql<{ ok: boolean }>`SELECT cleanup_delete_agent_workspace(${id}::uuid) AS ok`.execute(db)).rows[0]!.ok,
+        workspaces,
+        uploading,
+        signal,
+      );
+    }
+    return [artifacts.finish(), files.finish(), uploading.finish(), workspaces.finish()];
   }
 
   async function count(category: CleanupCategory, statement: () => Promise<number>): Promise<CleanupCategoryResult> {
@@ -207,7 +222,7 @@ export function createCleaner(options: CleanerOptions): Cleaner {
       const results: CleanupCategoryResult[] = [];
       const steps: [CleanupCategory[], () => Promise<CleanupCategoryResult | CleanupCategoryResult[]>][] = [
         [['holds'], () => count('holds', () => expireStaleHolds(db))],
-        [['artifacts', 'files', 'uploading'], () => artifactsAndFiles(signal)],
+        [['artifacts', 'files', 'uploading', 'agent_workspaces'], () => artifactsAndFiles(signal)],
         [['projects'], () => count('projects', async () =>
           (await sql<{ n: number }>`SELECT cleanup_delete_projects(${batchSize}) AS n`.execute(db)).rows[0]!.n)],
         [['orphans'], () => orphans(signal)],

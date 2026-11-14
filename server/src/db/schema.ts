@@ -1389,6 +1389,29 @@ export interface AgentQuestionsTable {
   created_at: ColumnType<Date, never, never>;
 }
 
+/**
+ * Agent 工作区快照（迁移 0040_agent_workspace_snapshots，8.5a）：每个项目、每类任务至多一个当前的快照（已完成、未被替换）。
+ * storage_key 是生成列 'org/{org_id}/agent-workspaces/{id}'；完成后内容不能改、只能标为已被替换一次（AW003），配额由触发器检查（AW001）；
+ * 应用角色只能删除写入中或已被替换的行。
+ */
+export interface AgentWorkspaceSnapshotsTable {
+  id: ColumnType<string, never, never>;
+  org_id: ColumnType<string, string, never>;
+  project_id: ColumnType<string, string, never>;
+  task_kind: ColumnType<string, string, never>;
+  storage_key: ColumnType<string, never, never>;
+  status: ColumnType<'writing' | 'ready', never, 'ready'>;
+  /** bigint，pg 返回字符串。 */
+  size_bytes: ColumnType<string | null, never, number>;
+  file_count: ColumnType<number | null, never, number>;
+  sha256: ColumnType<Buffer | null, never, Buffer>;
+  created_by: ColumnType<string, string, never>;
+  created_at: ColumnType<Date, never, never>;
+  completed_at: ColumnType<Date | null, never, never>;
+  /** 被新快照替换或被丢弃的时间（触发器写入 now()）；之后立即可由清理任务删除。 */
+  superseded_at: ColumnType<Date | null, never, Date>;
+}
+
 export interface Database {
   organizations: OrganizationsTable;
   users: UsersTable;
@@ -1471,4 +1494,5 @@ export interface Database {
   agent_tool_calls: AgentToolCallsTable;
   agent_failure_reports: AgentFailureReportsTable;
   agent_questions: AgentQuestionsTable;
+  agent_workspace_snapshots: AgentWorkspaceSnapshotsTable;
 }

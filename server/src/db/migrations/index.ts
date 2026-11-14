@@ -40,6 +40,7 @@ import * as agentJobRuns from './0036_agent_job_runs.ts';
 import * as agentToolCalls from './0037_agent_tool_calls.ts';
 import * as agentFailureReports from './0038_agent_failure_reports.ts';
 import * as agentQuestions from './0039_agent_questions.ts';
+import * as agentWorkspaceSnapshots from './0040_agent_workspace_snapshots.ts';
 
 export const migrations: Readonly<Record<string, Migration>> = Object.freeze({
   '0001_identity': identity,
@@ -81,4 +82,5 @@ export const migrations: Readonly<Record<string, Migration>> = Object.freeze({
   '0037_agent_tool_calls': agentToolCalls,
   '0038_agent_failure_reports': agentFailureReports,
   '0039_agent_questions': agentQuestions,
+  '0040_agent_workspace_snapshots': agentWorkspaceSnapshots,
 });

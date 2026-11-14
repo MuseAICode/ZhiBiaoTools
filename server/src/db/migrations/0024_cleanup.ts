@@ -59,7 +59,7 @@ function projectExpired(p: string): RawBuilder<unknown> {
   return sql`(${sql.ref(`${p}.deleted_at`)} <= now() - ${PROJECT_WINDOW})`;
 }
 
-function projectOfExpired(orgColumn: string, projectColumn: string): RawBuilder<unknown> {
+export function projectOfExpired(orgColumn: string, projectColumn: string): RawBuilder<unknown> {
   return sql`EXISTS (SELECT 1 FROM public.projects xp
     WHERE xp.org_id = ${sql.ref(orgColumn)} AND xp.id = ${sql.ref(projectColumn)} AND ${projectExpired('xp')})`;
 }
@@ -93,11 +93,69 @@ function fileFree(f: string): RawBuilder<unknown> {
   return sql`NOT EXISTS (SELECT 1 FROM public.artifacts ya WHERE ya.org_id = ${sql.ref(`${f}.org_id`)} AND ya.source_file_id = ${sql.ref(`${f}.id`)})`;
 }
 
-function projectFree(p: string): RawBuilder<unknown> {
+export function projectFree(p: string): RawBuilder<unknown> {
   const org = sql.ref(`${p}.org_id`);
   const id = sql.ref(`${p}.id`);
   return sql`NOT EXISTS (SELECT 1 FROM public.files yf WHERE yf.org_id = ${org} AND yf.project_id = ${id})
     AND NOT EXISTS (SELECT 1 FROM public.artifacts ya WHERE ya.org_id = ${org} AND ya.project_id = ${id})`;
+}
+
+/**
+ * cleanup_delete_projects：项目没有对象；其下有对象的行（free 列出的表）删完后删除，项目级表和任务记录由外键级联删除。
+ * 0040 起 free 加上 Agent 工作区快照，以 CREATE OR REPLACE 重建（回滚时用本迁移的 projectFree 恢复）。
+ */
+export function cleanupDeleteProjectsFunction(verb: 'CREATE' | 'CREATE OR REPLACE', free: (p: string) => RawBuilder<unknown>): RawBuilder<unknown> {
+  return sql`${sql.raw(verb)} FUNCTION cleanup_delete_projects(p_limit integer) RETURNS integer
+          LANGUAGE plpgsql VOLATILE ${SECURE}
+          AS $$
+          DECLARE
+            v_count integer;
+          BEGIN
+            DELETE FROM public.projects p WHERE p.id IN (
+              SELECT x.id FROM public.projects x
+              WHERE ${projectExpired('x')} AND ${free('x')}
+              ORDER BY x.deleted_at, x.id
+              LIMIT ${BATCH})
+              AND ${projectExpired('p')} AND ${free('p')};
+            GET DIAGNOSTICS v_count = ROW_COUNT;
+            RETURN v_count;
+          END
+          $$`;
+}
+
+/** 有对象的表：对象键的路径段（org/{org_id}/{segment}/{id}）与表名。 */
+export interface ObjectTable {
+  readonly segment: string;
+  readonly table: string;
+}
+
+/** 0024 的有对象的表。 */
+export const OBJECT_TABLES_0024: readonly ObjectTable[] = [
+  { segment: 'files', table: 'files' },
+  { segment: 'artifacts', table: 'artifacts' },
+];
+
+/**
+ * cleanup_unreferenced_keys：在给定的对象键中，返回形如 org/{org_id}/{segment}/{id}、却没有对应行的键。
+ * 只读；其他形式的键一律不返回（不删除不认识的对象）。0040 起加上 Agent 工作区快照。
+ */
+export function cleanupUnreferencedKeysFunction(verb: 'CREATE' | 'CREATE OR REPLACE', tables: readonly ObjectTable[]): RawBuilder<unknown> {
+  const segments = tables.map((entry) => entry.segment).join('|');
+  const pattern = `^org/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/(${segments})/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`;
+  const referenced = tables.map(
+    (entry) => sql`NOT EXISTS (SELECT 1 FROM ${sql.raw(`public.${entry.table}`)} r
+                WHERE r.id = split_part(k.key, '/', 4)::uuid AND r.storage_key = k.key)`,
+  );
+  return sql`${sql.raw(verb)} FUNCTION cleanup_unreferenced_keys(p_keys text[]) RETURNS SETOF text
+          LANGUAGE sql STABLE ${SECURE}
+          AS $$
+            SELECT k.key FROM (
+              SELECT DISTINCT key FROM unnest(p_keys[1:${sql.lit(CLEANUP_BATCH_MAX)}]) AS u(key)
+              WHERE key ~ ${sql.lit(pattern)}
+            ) k
+            WHERE ${sql.join(referenced, sql`
+              AND `)}
+          $$`;
 }
 
 // 0006 的 files_guard（down 时恢复）。
@@ -311,22 +369,7 @@ export async function up(db: Kysely<unknown>): Promise<void> {
             SELECT EXISTS (SELECT 1 FROM deleted)
           $$`,
     // 项目没有对象；其下的文件和产物删完后删除，项目级表和任务记录由外键级联删除。
-    sql`CREATE FUNCTION cleanup_delete_projects(p_limit integer) RETURNS integer
-          LANGUAGE plpgsql VOLATILE ${SECURE}
-          AS $$
-          DECLARE
-            v_count integer;
-          BEGIN
-            DELETE FROM public.projects p WHERE p.id IN (
-              SELECT x.id FROM public.projects x
-              WHERE ${projectExpired('x')} AND ${projectFree('x')}
-              ORDER BY x.deleted_at, x.id
-              LIMIT ${BATCH})
-              AND ${projectExpired('p')} AND ${projectFree('p')};
-            GET DIAGNOSTICS v_count = ROW_COUNT;
-            RETURN v_count;
-          END
-          $$`,
+    cleanupDeleteProjectsFunction('CREATE', projectFree),
     // 已结束超过 90 天的任务，其事件随之级联删除。用量记录只保留 job_id 的值（没有外键），不受影响。
     sql`CREATE FUNCTION cleanup_delete_jobs(p_limit integer) RETURNS integer
           LANGUAGE plpgsql VOLATILE ${SECURE}
@@ -362,18 +405,7 @@ export async function up(db: Kysely<unknown>): Promise<void> {
           $$`,
     // 孤儿对象：在给定的对象键中，返回形如 org/{org_id}/files/{id} 或 org/{org_id}/artifacts/{id}、却没有对应行的键。
     // 只读；其他形式的键一律不返回（不删除不认识的对象）。
-    sql`CREATE FUNCTION cleanup_unreferenced_keys(p_keys text[]) RETURNS SETOF text
-          LANGUAGE sql STABLE ${SECURE}
-          AS $$
-            SELECT k.key FROM (
-              SELECT DISTINCT key FROM unnest(p_keys[1:${sql.lit(CLEANUP_BATCH_MAX)}]) AS u(key)
-              WHERE key ~ '^org/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/(files|artifacts)/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
-            ) k
-            WHERE NOT EXISTS (SELECT 1 FROM public.files f
-                WHERE f.id = split_part(k.key, '/', 4)::uuid AND f.storage_key = k.key)
-              AND NOT EXISTS (SELECT 1 FROM public.artifacts a
-                WHERE a.id = split_part(k.key, '/', 4)::uuid AND a.storage_key = k.key)
-          $$`,
+    cleanupUnreferencedKeysFunction('CREATE', OBJECT_TABLES_0024),
     ...FUNCTIONS.map((signature) => sql`REVOKE ALL ON FUNCTION ${sql.raw(signature)} FROM PUBLIC`),
     ...FUNCTIONS.map((signature) => sql`GRANT EXECUTE ON FUNCTION ${sql.raw(signature)} TO ${app}`),
     sql`RESET ROLE`,

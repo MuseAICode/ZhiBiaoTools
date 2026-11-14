@@ -533,6 +533,7 @@ describe('回滚 0038', () => {
     await database.destroy();
     const owner = connect(testDb.ownerConfig);
     try {
+      expect((await migrateDown(owner)).results?.map((result) => result.migrationName)).toEqual(['0040_agent_workspace_snapshots']);
       expect((await migrateDown(owner)).results?.map((result) => result.migrationName)).toEqual(['0039_agent_questions']);
       const down = await migrateDown(owner);
       expect(down.error).toBeUndefined();
