@@ -592,7 +592,7 @@ Agent 任务的沙箱（路线图第 8 步“沙箱扩展”，决定事项第 1
   | `agent`（目录、全局事实、可研目录、模板提取） | 2 GiB | 1 核 | 256 | 30 分钟 | 45 分钟 | `/tmp` 256 MiB、`/workspace` 1 GiB | 文件数 ≤ 10,000、合计 ≤ 512 MiB、单个 ≤ 100 MiB、至多 8 层；取回只收普通文件和白名单扩展名（`md`、`txt`、`json`、`jsonl`、`html`、`mmd`、`svg`、`csv` 与 png / jpg / gif / webp），放入不限扩展名 |
   | `agent-content`（正文生成、章节重写、原方案还原） | 与 `agent` 完全相同 | | | 2 小时 | 135 分钟 | | |
 
-  8.1 没有登记可执行的命令（入口随 8.6，命令墙钟即任务墙钟）；单条 `bash` 命令 5 分钟由入口执行，只是 Agent 自身的约束，平台的控制是命令与沙箱的墙钟、cgroup 上限和网络。快照的路径规则（桌面版工作区有中文文件名，现有取回规则只收 ASCII 路径段）随 8.5 处理。
+  8.1 没有登记可执行的命令（入口随 8.6，命令墙钟即任务墙钟）；单条 `bash` 命令 5 分钟由入口执行，只是 Agent 自身的约束，平台的控制是命令与沙箱的墙钟、cgroup 上限和网络。快照的路径规则（桌面版工作区有中文文件名）见第 7.20 节（8.5b）。
 - **网络**（决定事项第 2 项 B1，取代第 7.4 节与第 8.1 节的共用网络 `sandbox-gw`）：创建 agent 沙箱时，sandbox-runner 先建一个与容器同名的专用网络——`internal: true`（没有出口路由）、网桥不分配 IPv4 地址（`com.docker.network.bridge.inhibit_ipv4`，宿主在这个网络上没有地址，沙箱连不到宿主上监听所有地址的服务）、不开 IPv6、不做地址伪装，标签与容器相同（模板、任务、到期时间）——再只把配置的 `agent-gw` 容器（`SANDBOX_AGENT_GATEWAY`）接入；网络必须是 internal、此时只有 `agent-gw` 一个成员，否则删除网络、按不可用处理。`agent-gw` 的地址写进沙箱的 `/etc/hosts`（`agent-gw`），不配置 DNS：runc 下 Docker 的内置 DNS 只认得网络中的两个容器、内部网络不向外转发查询，gVisor 下内置 DNS 不可用。网关必须是正在运行、不带沙箱标签的容器（防止把一个沙箱接进另一个沙箱的网络）。沙箱销毁时先删容器、再断开 `agent-gw` 并删除网络（容器已不存在时也删）；到期的网络与容器一起由 sweep 删除；创建中途失败时删除已建的网络。不同沙箱的网络之间由 Docker 的网桥隔离规则隔开，`agent-gw` 不转发。沙箱总数上限（`SANDBOX_MAX_ACTIVE`）同时计入专用网络（8.2d）：带沙箱标签的容器与网络按名称合并计数（同一沙箱的容器与网络同名，只算一个；只剩网络的残留单独算一个），网络数因此不超过上限、不会耗尽 Docker 的地址池；生产的 `default-address-pools` 须能分配多于上限的子网（第 9 步上线检查）。
 - **镜像**（`server/sandbox/agent/Dockerfile`）：Node 24 + `ripgrep`、`fd-find`（`fd` 链接到 `fdfind`）、`jq` 与 Debian 自带的 `/bin/sh`、coreutils，删除 npm / corepack / yarn 和 setuid 位；不含 Chromium、LibreOffice、OpenXmlHelper（偏离第 7.4 节，#70 确认）、编译器与网络工具。
 - **配置**：sandbox-runner 的 `SANDBOX_AGENT_IMAGE`（生产必须按摘要固定）与 `SANDBOX_AGENT_GATEWAY`（`agent-gw` 的容器名）；Agent 任务上线（8.6）之前可选，未配置时创建 agent 沙箱返回 `SANDBOX_UNAVAILABLE`。
@@ -711,9 +711,17 @@ agent-gw 登记 `POST /v1/tools/call`（请求体上限 1 MiB，`AGENT_TOOL_MAX_
 
 - **表** `agent_workspace_snapshots`：项目级（复合外键、不级联），`task_kind` 由服务端按任务类型给出；对象键为生成列 `org/{org}/agent-workspaces/{id}`；文件数 ≤ 10,000，归档 ≤ 512 MiB 加每个文件 1 KiB 的 ustar 头部与对齐（决定事项第 13 项）。不作为产物：不出现在产物接口中、不提供下载。
 - **写入**：登记 `writing` → 流式写对象（服务端计算大小与 SHA-256，超过上限即中止，413 `AGENT_WORKSPACE_TOO_LARGE`）→ 同一事务中替换同一项目、同一类任务当前的快照并完成（触发器检查组织存储配额，超出 413 `STORAGE_QUOTA_EXCEEDED`；登记超过 24 小时不能完成；完成后不能改、只能被替换一次）。失败时删除新对象与登记行，旧快照原样保留；成功后立即先删旧对象、再删旧行，失败的留给清理任务。部分唯一索引保证至多一个当前的快照。
-- **读取**：`openWorkspaceSnapshot` 核对大小与 SHA-256（对象缺失、截断、多出字节、篡改都抛错，多出的字节不交给调用方）；归档内容的逐项校验（只收普通文件、路径、扩展名、数量与大小）在放入沙箱前进行（8.5b）。
+- **读取**：`openWorkspaceSnapshot` 核对大小与 SHA-256（对象缺失、截断、多出字节、篡改都抛错，多出的字节不交给调用方）；归档内容的逐项校验（只收普通文件、路径、扩展名、数量与大小）在取回时与放入沙箱前各做一次（8.5b，第 7.20 节）。
 - **隔离与配额**：强制 RLS，本组织、所属项目未删除才可见可写；应用角色只能删除写入中或已被替换的行。配额函数 `files_org_usage_bytes` 加上已完成的快照（项目在恢复期内照常计入）。
 - **清理**：写入中超过 24 小时、已被替换、所属项目超过恢复期的快照由清理任务先删对象、再删行（新增 `cleanup_agent_workspace_candidates` / `cleanup_delete_agent_workspace` 与清理角色的 DELETE 策略）；项目要等其下的快照删完才删除；孤儿对象的判断包括快照的键。
+
+### 7.20 实现（路线图 8.5b）：工作区快照的取回与放入
+
+快照是 agent 沙箱整个 `/workspace` 的 tar 归档（Pi 会话文件由 8.6 的入口放在其中）。沙箱内与对象存储中的内容都不可信，校验两次（`src/agent/workspaceSandbox.ts`）：
+
+- **路径规则**（agent 工作区的 `pathSegments: 'unicode'`，parse / export 仍只收 ASCII）：UTF-8 严格解码；每段必须是 NFC，字符限于字母、数字（含汉字）、ASCII 的 `. _ - ( )` 与少量中文标点，首字符为字母、数字或左括号类；拒绝控制、格式（零宽、双向控制、BOM）、空白、默认可忽略等字符，NFKC 后再查一次分隔符与 `.`；每段 ≤ 100、整条 ≤ 255 个 UTF-8 字节且能写进 ustar 的 prefix + name；重复与文件 / 目录冲突按 NFKC + 大小写折叠判断。
+- **取回**：driver 的 `copyOutArchive` 按取回规则逐项校验沙箱内 tar 的输出，只用普通文件重新生成归档（头部由平台生成、不带扩展头），边取回边写入快照；任何一项不符整体拒绝（`SANDBOX_OUTPUT_REJECTED`），旧快照保留。worker 经 HTTP 时在 worker 端校验。
+- **放入**：核对大小与 SHA-256，再按取回规则（含扩展名白名单）重新校验与生成，文件数须与记录相同，源读完后才产出结束块；出错时销毁沙箱（`SANDBOX_INPUT_FAILED`）。sandbox-runner 照常按模板的放入规则再校验一次。
 
 ## 8. 部署架构
 

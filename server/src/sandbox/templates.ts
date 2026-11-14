@@ -48,6 +48,13 @@ export interface SandboxTransferLimits {
   readonly maxTotalBytes: number;
   /** 允许的扩展名（小写，不带点）；为 null 时不限制。 */
   readonly extensions: ReadonlySet<string> | null;
+  /**
+   * 路径段的规则（src/sandbox/archive.ts 的 validateRelativePath）。ascii（默认）：只收 [A-Za-z0-9._-]、首字符为字母或数字。
+   * unicode（agent 工作区，路线图 8.5b，#71 登记的中文文件名规则）：另收汉字等字母与数字，严格 UTF-8、NFC、按 NFKC 再查一次
+   * 分隔符与 .，拒绝控制 / 格式 / 零宽 / 双向控制 / 空白字符；段与整条路径按 UTF-8 字节限长，且能写进 ustar 的 name + prefix；
+   * 重复与冲突按 NFKC 加大小写折叠后的路径判断。
+   */
+  readonly pathSegments?: 'ascii' | 'unicode';
 }
 
 /** 模板中的命令：可执行文件和固定参数写死，调用方只能追加少量符合 argPattern 的参数。 */
@@ -241,7 +248,8 @@ const EXPORT_FEASIBILITY_TEMPLATE: SandboxTemplate = Object.freeze({
 /**
  * agent 工作区的放入与取回规则（/workspace，路线图第 8 步“工作区”与决定事项第 13 项）：只收普通文件，
  * 文件数 ≤ 10,000、合计 ≤ 512 MiB，扩展名限于 Agent 的正文、中间文件与会话文件会用到的文本与图片格式。
- * 快照的保存、取回与恢复（含中文路径段的处理）随 8.5，届时按实际用到的文件核对本表。
+ * 路径段允许中文文件名（桌面版工作区有“任务/*.json”“所选模板配置.json”等，8.5b），规则见 pathSegments。
+ * 工作区快照（src/agent/workspaceSandbox.ts）按这份规则取回，放回沙箱前再按同一份规则校验一次。
  */
 const AGENT_WORKSPACE: SandboxTransferLimits = Object.freeze({
   directory: '/workspace',
@@ -251,6 +259,7 @@ const AGENT_WORKSPACE: SandboxTransferLimits = Object.freeze({
   maxFileBytes: 100 * MIB,
   maxTotalBytes: 512 * MIB,
   extensions: new Set(['md', 'txt', 'json', 'jsonl', 'html', 'mmd', 'svg', 'csv', 'png', 'jpg', 'jpeg', 'gif', 'webp']),
+  pathSegments: 'unicode',
 });
 
 /**
