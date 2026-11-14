@@ -49,7 +49,10 @@ interface MemoryStore extends ObjectStore {
   failDelete: Set<string>;
   /** put 读完 body 之后、返回之前调用（模拟写对象期间发生的事）。 */
   afterPut: ((key: string) => Promise<void>) | null;
+  /** 每次删除前调用（核对“新快照提交后才删旧的”）。 */
+  beforeDelete: ((key: string) => Promise<void>) | null;
   putKeys: string[];
+  deleteKeys: string[];
 }
 
 function createMemoryStore(): MemoryStore {
@@ -57,7 +60,9 @@ function createMemoryStore(): MemoryStore {
     objects: new Map(),
     failDelete: new Set(),
     afterPut: null,
+    beforeDelete: null,
     putKeys: [],
+    deleteKeys: [],
     async put(key, body, options) {
       store.putKeys.push(key);
       const chunks: Buffer[] = [];
@@ -77,6 +82,8 @@ function createMemoryStore(): MemoryStore {
       return store.objects.has(key);
     },
     async delete(key) {
+      store.deleteKeys.push(key);
+      await store.beforeDelete?.(key);
       if (store.failDelete.has(key)) throw new Error('delete failed');
       store.objects.delete(key);
     },
@@ -252,6 +259,53 @@ describe('写入与替换', () => {
     expect(await findWorkspaceSnapshot(appDb, ctx, { projectId, taskKind: 'feasibility-outline' })).toEqual(otherKind);
     expect(await findWorkspaceSnapshot(appDb, ctx, { projectId: otherProject, taskKind: KIND })).toEqual(otherProjectSnapshot);
     for (const kept of [otherKind, otherProjectSnapshot, latest]) expect(store.objects.has(kept.storageKey)).toBe(true);
+  });
+
+  it('旧快照只在新快照完整写入并提交之后才删除：删除旧对象时，新快照已对其他连接可见、内容完整，旧行已被替换', async () => {
+    const ctx = await newOrg();
+    const projectId = await newProject(ctx);
+    const old = await write(ctx, { projectId, taskKind: KIND }, archive('old'));
+    const content = archive('new', 3000);
+    const seen: unknown[] = [];
+    store.beforeDelete = async (key) => {
+      if (key !== old.storageKey) return;
+      // 超级用户是另一条连接：只看得到已提交的数据。
+      const state = await superuser.selectFrom('agent_workspace_snapshots').select(['id', 'status', 'superseded_at', 'storage_key', 'size_bytes'])
+        .where('project_id', '=', projectId).orderBy('created_at').execute();
+      seen.push(state.map((row) => ({ old: row.id === old.id, status: row.status, superseded: row.superseded_at !== null, size: Number(row.size_bytes) })));
+      const fresh = state.find((row) => row.id !== old.id)!;
+      seen.push(store.objects.get(fresh.storage_key)?.equals(content));
+    };
+    try {
+      await write(ctx, { projectId, taskKind: KIND }, content);
+    } finally {
+      store.beforeDelete = null;
+    }
+    expect(seen).toEqual([
+      [{ old: true, status: 'ready', superseded: true, size: 2048 }, { old: false, status: 'ready', superseded: false, size: 3000 }],
+      true,
+    ]);
+  });
+
+  it('保存失败（超出配额、源出错、中止、超过大小上限）时从不删除旧快照的对象', async () => {
+    const ctx = await newOrg();
+    const projectId = await newProject(ctx);
+    const old = await write(ctx, { projectId, taskKind: KIND }, archive('old'));
+    async function* broken(): AsyncGenerator<Uint8Array> {
+      yield Buffer.alloc(10);
+      throw new Error('broken');
+    }
+    const aborted = new AbortController();
+    store.afterPut = async () => aborted.abort(new Error('abort'));
+    await expect(writeWorkspaceSnapshot(appDb, ctx, store, { projectId, taskKind: KIND, fileCount: 1 }, chunked(archive('x')), { signal: aborted.signal })).rejects.toThrow();
+    store.afterPut = null;
+    await expect(writeWorkspaceSnapshot(appDb, ctx, store, { projectId, taskKind: KIND, fileCount: 1 }, broken())).rejects.toThrow();
+    await expect(writeWorkspaceSnapshot(appDb, ctx, store, { projectId, taskKind: KIND, fileCount: 1 }, chunked(archive('x', 5000)), { maxArchiveBytes: 4000 })).rejects.toThrow();
+    await fillUsage(ctx.orgId, QUOTA - (await storageUsage(appDb, ctx)).used - 100);
+    await expect(write(ctx, { projectId, taskKind: KIND }, archive('big', 2048))).rejects.toMatchObject({ code: 'STORAGE_QUOTA_EXCEEDED' });
+    expect(store.deleteKeys).not.toContain(old.storageKey);
+    expect(store.objects.get(old.storageKey)).toEqual(archive('old'));
+    expect(await findWorkspaceSnapshot(appDb, ctx, { projectId, taskKind: KIND })).toMatchObject({ id: old.id });
   });
 
   it('旧快照的对象删除失败时保留它的行（已被替换、查不到），由清理任务重试', async () => {
@@ -610,6 +664,35 @@ describe('数据库的守卫', () => {
     const member = await newMember(ctx.orgId);
     await expect(asApp(ctx, (trx) => trx.insertInto('agent_workspace_snapshots')
       .values({ org_id: ctx.orgId, project_id: projectId, task_kind: KIND, created_by: member.userId }).execute())).rejects.toThrow(/row-level security/);
+  });
+
+  it('bidtools_storage 对计费账本、余额、价格表、用量记录、平台凭据、平台模型没有任何权限与策略；全部授权只有 4 张表的列级 SELECT', async () => {
+    const billing = ['billing_ledger', 'org_balances', 'model_prices', 'usage_records', 'provider_credentials', 'platform_models'];
+    for (const table of billing) {
+      for (const privilege of ['SELECT', 'INSERT', 'UPDATE', 'DELETE', 'TRUNCATE', 'REFERENCES', 'TRIGGER']) {
+        const { rows: granted } = await sql<{ ok: boolean }>`SELECT has_table_privilege(${STORAGE_ROLE}, ${`public.${table}`}, ${privilege}) AS ok`.execute(superuser);
+        expect(granted[0]!.ok, `${table} ${privilege}`).toBe(false);
+      }
+      for (const privilege of ['SELECT', 'INSERT', 'UPDATE', 'REFERENCES']) {
+        const { rows: granted } = await sql<{ ok: boolean }>`SELECT has_any_column_privilege(${STORAGE_ROLE}, ${`public.${table}`}, ${privilege}) AS ok`.execute(superuser);
+        expect(granted[0]!.ok, `${table} column ${privilege}`).toBe(false);
+      }
+    }
+    const policies = await sql<{ tablename: string; cmd: string }>`
+      SELECT tablename, cmd FROM pg_policies WHERE ${STORAGE_ROLE} = ANY (roles) ORDER BY tablename`.execute(superuser);
+    expect(policies.rows).toEqual([
+      { tablename: 'agent_workspace_snapshots', cmd: 'SELECT' }, { tablename: 'artifacts', cmd: 'SELECT' },
+      { tablename: 'files', cmd: 'SELECT' }, { tablename: 'projects', cmd: 'SELECT' },
+    ]);
+    const { rows: tables } = await sql<{ relname: string; privileges: string[] }>`
+      SELECT c.relname,
+        array(SELECT p FROM unnest(ARRAY['SELECT','INSERT','UPDATE','DELETE','TRUNCATE','REFERENCES','TRIGGER']) p WHERE has_table_privilege(${STORAGE_ROLE}, c.oid, p)
+              UNION SELECT 'column ' || p FROM unnest(ARRAY['SELECT','INSERT','UPDATE','REFERENCES']) p WHERE has_any_column_privilege(${STORAGE_ROLE}, c.oid, p)) AS privileges
+      FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+      WHERE n.nspname = 'public' AND c.relkind IN ('r', 'p', 'v', 'm', 'S') ORDER BY c.relname`.execute(superuser);
+    const granted = tables.filter((row) => row.privileges.length > 0);
+    expect(granted.map((row) => row.relname)).toEqual(['agent_workspace_snapshots', 'artifacts', 'files', 'projects']);
+    for (const row of granted) expect(row.privileges, row.relname).toEqual(['column SELECT']);
   });
 
   it('配额函数的属主仍是 bidtools_storage，只能统计当前上下文的组织（AR004）', async () => {
