@@ -48,9 +48,11 @@ export function tarEntry(options: TarEntryOptions): Buffer {
 /** PAX 扩展头（类型 x）：records 为键值对。 */
 export function paxEntry(records: Record<string, string>): Buffer {
   const lines = Object.entries(records).map(([key, value]) => {
+    // 记录长度按 UTF-8 字节计（中文路径）。
     const body = ` ${key}=${value}\n`;
-    let length = body.length + 1;
-    while (`${length}${body}`.length !== length) length = `${length}${body}`.length;
+    const bytes = (text: string) => Buffer.byteLength(text, 'utf8');
+    let length = bytes(body) + 1;
+    while (bytes(`${length}${body}`) !== length) length = bytes(`${length}${body}`);
     return `${length}${body}`;
   });
   return tarEntry({ name: 'PaxHeaders/entry', type: 'x', data: Buffer.from(lines.join(''), 'utf8') });

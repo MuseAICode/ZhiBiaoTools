@@ -6,12 +6,29 @@
 // 所以按不可信输入逐项校验，任何一项不符即整体拒绝：
 // - 只收普通文件（和目录，目录本身不产出），拒绝符号链接、硬链接、设备文件、FIFO、稀疏文件和其他类型；
 // - 路径相对、按段校验（不能有 ..、空段、反斜杠、控制字符），段数、文件数、单个文件和总大小在上限内，扩展名在白名单内；
-// - 同一路径不能出现两次；头部校验和必须正确；必须以结束块收尾（被截断的归档不收）。
+// - 同一路径不能出现两次，一个路径不能既是文件又是目录；头部校验和必须正确；必须以结束块收尾（被截断的归档不收）；
+// - 头部中的路径按 UTF-8 严格解码（非法字节序列拒绝）。agent 工作区（pathSegments 为 unicode，路线图 8.5b）的中文路径段规则
+//   见 validateUnicodeSegment，重复与冲突按 NFKC 加大小写折叠后的路径判断。
+// 重写（rewriteArchiveStream，8.5b 的工作区快照）：逐项校验后只用通过校验的普通文件按 createArchive 的写法重新生成归档。
 import type { SandboxTransferLimits } from './templates.ts';
 
 const BLOCK = 512;
 const SEGMENT_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 const MAX_PATH_LENGTH = 255;
+/**
+ * unicode 路径段（agent 工作区）：首字符为字母、数字（含汉字）或全角左括号、左方头括号、左书名号，其余为字母、数字、
+ * ASCII 的 . _ - ( ) 与少量中文标点（全角括号、方头括号、书名号、顿号、间隔号）。不收组合字符（\p{M}）、空白与符号；
+ * 全角的 ／ ＼ ． 等都不在其中。
+ */
+const UNICODE_SEGMENT_PATTERN = /^[\p{L}\p{N}（【《][\p{L}\p{N}._\-()（）【】《》、·]*$/u;
+/** 控制、格式（零宽、双向控制、BOM）、代理、私用、未分配、分隔符、空白与默认可忽略的字符，NFKC 之前与之后都不能出现。 */
+const UNICODE_FORBIDDEN = /[\p{C}\p{Z}\p{White_Space}\p{Default_Ignorable_Code_Point}]/u;
+/** unicode 路径段与整条路径的 UTF-8 字节上限：段不超过 ustar 的 name 字段，整条路径还须能拆进 prefix（155）+ name（100）。 */
+const MAX_UNICODE_SEGMENT_BYTES = 100;
+const MAX_UNICODE_PATH_BYTES = 255;
+const USTAR_NAME_BYTES = 100;
+const USTAR_PREFIX_BYTES = 155;
+const STRICT_UTF8 = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true });
 /** PAX / GNU 长名扩展头的大小上限：只用来带路径，不需要更多。 */
 const MAX_EXTENDED_HEADER_BYTES = 8 * 1024;
 
@@ -45,6 +62,69 @@ export class SandboxArchiveError extends Error {
   }
 }
 
+/**
+ * unicode 路径段（#71 登记的规则）：必须已是 NFC；不能含控制 / 格式 / 零宽 / 双向控制 / 空白字符；字符限于 UNICODE_SEGMENT_PATTERN；
+ * 再按 NFKC 检查一次（兼容形式的 ／ ＼ ． 等规范化后不能成为分隔符、. 或 ..，也不能以 . 开头）；不超过 100 个 UTF-8 字节。
+ */
+function validateUnicodeSegment(segment: string): void {
+  if (segment.normalize('NFC') !== segment) throw new SandboxArchiveError('path not normalized');
+  if (UNICODE_FORBIDDEN.test(segment) || !UNICODE_SEGMENT_PATTERN.test(segment)) throw new SandboxArchiveError('path segment not allowed');
+  const compat = segment.normalize('NFKC');
+  if (compat === '.' || compat === '..' || compat.startsWith('.') || compat.includes('/') || compat.includes('\\') || UNICODE_FORBIDDEN.test(compat)) {
+    throw new SandboxArchiveError('path segment not allowed');
+  }
+  if (Buffer.byteLength(segment, 'utf8') > MAX_UNICODE_SEGMENT_BYTES) throw new SandboxArchiveError('path too long');
+}
+
+/** 把路径拆成 ustar 的 prefix 与 name（按 UTF-8 字节）；放不下时返回 null。 */
+function splitUstarPath(path: string): { prefix: string; name: string } | null {
+  if (Buffer.byteLength(path, 'utf8') <= USTAR_NAME_BYTES) return { prefix: '', name: path };
+  for (let slash = path.indexOf('/'); slash !== -1; slash = path.indexOf('/', slash + 1)) {
+    const prefix = path.slice(0, slash);
+    const name = path.slice(slash + 1);
+    if (Buffer.byteLength(prefix, 'utf8') <= USTAR_PREFIX_BYTES && Buffer.byteLength(name, 'utf8') <= USTAR_NAME_BYTES) return { prefix, name };
+  }
+  return null;
+}
+
+/** 判断重复与冲突用的键：unicode 规则下按 NFKC 加大小写折叠（Ａ.md、a.md、A.md 是同一个名字），ascii 规则下按原样。 */
+function pathKey(path: string, limits: SandboxTransferLimits): string {
+  return limits.pathSegments === 'unicode' ? path.normalize('NFKC').toUpperCase().toLowerCase().normalize('NFKC') : path;
+}
+
+/** 已出现的文件与目录：同一路径不能出现两次（duplicate path），一个路径不能既是文件又是目录（path conflict）。 */
+class PathRegistry {
+  private readonly files = new Set<string>();
+  private readonly directories = new Set<string>();
+  private readonly limits: SandboxTransferLimits;
+
+  constructor(limits: SandboxTransferLimits) {
+    this.limits = limits;
+  }
+
+  private addParents(key: string, includeSelf: boolean): void {
+    const segments = key.split('/');
+    for (let index = 1; index <= segments.length - (includeSelf ? 0 : 1); index += 1) {
+      const parent = segments.slice(0, index).join('/');
+      if (this.files.has(parent)) throw new SandboxArchiveError('path conflict');
+      this.directories.add(parent);
+    }
+  }
+
+  addFile(path: string): void {
+    const key = pathKey(path, this.limits);
+    if (this.files.has(key)) throw new SandboxArchiveError('duplicate path');
+    if (this.directories.has(key)) throw new SandboxArchiveError('path conflict');
+    this.addParents(key, false);
+    this.files.add(key);
+  }
+
+  addDirectory(path: string): void {
+    if (path === '') return;
+    this.addParents(pathKey(path, this.limits), true);
+  }
+}
+
 /** 校验相对路径；返回规范化的路径（去掉开头的 ./），目录（以 / 结尾或 isDirectory）返回去掉末尾 / 的路径。 */
 export function validateRelativePath(raw: string, limits: SandboxTransferLimits, isDirectory: boolean): string {
   let path = raw;
@@ -57,12 +137,16 @@ export function validateRelativePath(raw: string, limits: SandboxTransferLimits,
     if (isDirectory) return '';
     throw new SandboxArchiveError('empty path');
   }
-  if (path.length > MAX_PATH_LENGTH) throw new SandboxArchiveError('path too long');
+  const unicode = limits.pathSegments === 'unicode';
+  if (unicode ? Buffer.byteLength(path, 'utf8') > MAX_UNICODE_PATH_BYTES : path.length > MAX_PATH_LENGTH) throw new SandboxArchiveError('path too long');
   const segments = path.split('/');
   for (const segment of segments) {
     if (segment === '..' || segment === '.') throw new SandboxArchiveError('path traversal');
-    if (!SEGMENT_PATTERN.test(segment)) throw new SandboxArchiveError('path segment not allowed');
+    if (unicode) validateUnicodeSegment(segment);
+    else if (!SEGMENT_PATTERN.test(segment)) throw new SandboxArchiveError('path segment not allowed');
   }
+  // 快照按 ustar 重新生成、不带扩展头（rewriteArchiveStream），所以 unicode 路径必须能写进 prefix + name。
+  if (unicode && !splitUstarPath(path)) throw new SandboxArchiveError('path too long');
   if (segments.length > (isDirectory ? limits.maxDepth - 1 : limits.maxDepth)) throw new SandboxArchiveError('path too deep');
   if (!isDirectory && limits.extensions) {
     const name = segments[segments.length - 1]!;
@@ -96,13 +180,13 @@ interface PlannedEntry {
 function planArchive(files: readonly SandboxInputFile[], limits: SandboxTransferLimits): PlannedEntry[] {
   if (files.length > limits.maxFiles) throw new SandboxArchiveError('too many files');
   const planned: PlannedEntry[] = [];
-  const seen = new Set<string>();
+  const seen = new PathRegistry(limits);
   let total = 0;
   for (const file of files) {
     const path = validateRelativePath(file.path, limits, false);
-    if (path.length > 100) throw new SandboxArchiveError('path too long');
-    if (seen.has(path)) throw new SandboxArchiveError('duplicate path');
-    seen.add(path);
+    // ascii 规则只写 name 字段（至多 100 字节）；unicode 规则已在 validateRelativePath 中确认能拆进 prefix + name。
+    if (limits.pathSegments !== 'unicode' && path.length > USTAR_NAME_BYTES) throw new SandboxArchiveError('path too long');
+    seen.addFile(path);
     const size = isStreamFile(file) ? file.size : file.data.length;
     if (!Number.isSafeInteger(size) || size < 0) throw new SandboxArchiveError('file size invalid');
     if (size > limits.maxFileBytes) throw new SandboxArchiveError('file too large');
@@ -118,8 +202,10 @@ function isStreamFile(file: SandboxInputFile): file is SandboxStreamFile {
 }
 
 function entryHeader(path: string, size: number): Buffer {
+  const split = splitUstarPath(path);
+  if (!split) throw new SandboxArchiveError('path too long');
   const header = Buffer.alloc(BLOCK);
-  writeString(header, 0, 100, path);
+  writeString(header, 0, USTAR_NAME_BYTES, split.name);
   writeOctal(header, 100, 8, 0o600);
   writeOctal(header, 108, 8, 0);
   writeOctal(header, 116, 8, 0);
@@ -129,6 +215,7 @@ function entryHeader(path: string, size: number): Buffer {
   header.write('0', 156, 1, 'ascii');
   header.write('ustar\0', 257, 6, 'ascii');
   header.write('00', 263, 2, 'ascii');
+  if (split.prefix) writeString(header, 345, USTAR_PREFIX_BYTES, split.prefix);
   let sum = 0;
   for (const byte of header) sum += byte;
   header.write(`${sum.toString(8).padStart(6, '0')}\0 `, 148, 8, 'ascii');
@@ -313,10 +400,19 @@ class ByteReader {
   }
 }
 
+/** 按 UTF-8 严格解码路径（非法字节序列拒绝，不把它们替换成 U+FFFD；BOM 保留，由路径段规则拒绝）。 */
+function decodePath(bytes: Buffer): string {
+  try {
+    return STRICT_UTF8.decode(bytes);
+  } catch {
+    throw new SandboxArchiveError('path encoding invalid');
+  }
+}
+
 function readString(header: Buffer, offset: number, length: number): string {
   const field = header.subarray(offset, offset + length);
   const end = field.indexOf(0);
-  return field.subarray(0, end === -1 ? length : end).toString('utf8');
+  return decodePath(field.subarray(0, end === -1 ? length : end));
 }
 
 function readOctal(header: Buffer, offset: number, length: number): number {
@@ -349,12 +445,11 @@ function parsePaxPath(data: Buffer): string | null {
     if (length <= space - offset + 1 || offset + length > data.length) throw new SandboxArchiveError('malformed pax header');
     const record = data.subarray(space + 1, offset + length);
     if (record[record.length - 1] !== 0x0a) throw new SandboxArchiveError('malformed pax header');
-    const text = record.subarray(0, -1).toString('utf8');
-    const equals = text.indexOf('=');
+    const body = record.subarray(0, -1);
+    const equals = body.indexOf(0x3d);
     if (equals <= 0) throw new SandboxArchiveError('malformed pax header');
-    const key = text.slice(0, equals);
-    const value = text.slice(equals + 1);
-    if (key === 'path') path = value;
+    const key = body.subarray(0, equals).toString('latin1');
+    if (key === 'path') path = decodePath(body.subarray(equals + 1));
     else if (key === 'size' || key === 'linkpath' || key.startsWith('GNU.sparse')) throw new SandboxArchiveError('pax key not supported');
     // 其他键（mtime、atime、ctime、uid、gid、uname、gname 等）不影响取回的内容，忽略。
     offset += length;
@@ -372,7 +467,7 @@ const DATA_CHUNK_BYTES = 64 * 1024;
 type ArchivePart = { kind: 'meta'; bytes: Buffer } | { kind: 'file'; path: string; size: number } | { kind: 'data'; bytes: Buffer };
 
 async function* scanArchive(reader: ByteReader, limits: SandboxTransferLimits): AsyncGenerator<ArchivePart> {
-  const seen = new Set<string>();
+  const seen = new PathRegistry(limits);
   let total = 0;
   let entries = 0;
   let files = 0;
@@ -408,27 +503,32 @@ async function* scanArchive(reader: ByteReader, limits: SandboxTransferLimits): 
         pendingPath ??= '';
       } else {
         const end = data.indexOf(0);
-        pendingPath = data.subarray(0, end === -1 ? data.length : end).toString('utf8');
+        pendingPath = decodePath(data.subarray(0, end === -1 ? data.length : end));
       }
       pendingMeta = [Buffer.from(header), Buffer.from(block)];
       continue;
     }
 
-    const magic = header.subarray(257, 263).toString('ascii');
-    let name = readString(header, 0, 100);
-    // POSIX ustar 的 prefix 字段；GNU 格式（magic 为 "ustar  "）的同一位置是其他字段，不能拼接。
-    if (magic === 'ustar\0') {
-      const prefix = readString(header, 345, 155);
-      if (prefix) name = `${prefix}/${name}`;
+    let name: string;
+    if (pendingPath) {
+      // 扩展头给出的路径取代头部的 name 与 prefix：GNU tar 在 name 字段中只放长名的前 100 个字节（可能截断在多字节字符中间），不解码。
+      name = pendingPath;
+    } else {
+      const magic = header.subarray(257, 263).toString('ascii');
+      name = readString(header, 0, 100);
+      // POSIX ustar 的 prefix 字段；GNU 格式（magic 为 "ustar  "）的同一位置是其他字段，不能拼接。
+      if (magic === 'ustar\0') {
+        const prefix = readString(header, 345, 155);
+        if (prefix) name = `${prefix}/${name}`;
+      }
     }
-    if (pendingPath) name = pendingPath;
     pendingPath = null;
     if (name.includes('\\') || /[\0-\x1f\x7f]/.test(name)) throw new SandboxArchiveError('path segment not allowed');
     if (name.startsWith('/')) throw new SandboxArchiveError('absolute path');
 
     if (type === '5') {
       if (size !== 0) throw new SandboxArchiveError('malformed header');
-      validateRelativePath(name.endsWith('/') ? name : `${name}/`, limits, true);
+      seen.addDirectory(validateRelativePath(name.endsWith('/') ? name : `${name}/`, limits, true));
       yield { kind: 'meta', bytes: Buffer.concat([...pendingMeta, header]) };
       pendingMeta = [];
       continue;
@@ -439,8 +539,7 @@ async function* scanArchive(reader: ByteReader, limits: SandboxTransferLimits): 
       );
     }
     const path = validateRelativePath(name, limits, false);
-    if (seen.has(path)) throw new SandboxArchiveError('duplicate path');
-    seen.add(path);
+    seen.addFile(path);
     files += 1;
     if (files > limits.maxFiles) throw new SandboxArchiveError('too many files');
     if (size > limits.maxFileBytes) throw new SandboxArchiveError('file too large');
@@ -520,4 +619,65 @@ export async function* validateArchiveStream(source: AsyncIterable<Uint8Array>, 
 /** 归档流的字节上限：文件总大小加上每个条目的头部、扩展头和对齐，再加结束块和 tar 的记录对齐（10 KiB）。 */
 export function maxArchiveBytes(limits: SandboxTransferLimits): number {
   return limits.maxTotalBytes + (limits.maxFiles * 4 + 16) * (BLOCK * 2 + MAX_EXTENDED_HEADER_BYTES) + 20 * BLOCK;
+}
+
+export interface RewrittenArchive {
+  /** 重新生成的归档字节；只能迭代一次。中途不符时抛 SandboxArchiveError，此时已产出的字节不含结束块。 */
+  readonly chunks: AsyncIterable<Buffer>;
+  /** 已产出的普通文件数；chunks 迭代完成之前读取抛错（不能把半截归档的文件数当作结果）。 */
+  readonly fileCount: number;
+}
+
+export interface RewriteArchiveOptions {
+  /** 归档中应有的文件数（取回快照时为写入时记下的数）；不符时在产出结束块之前抛 SandboxArchiveError('file count mismatch')。 */
+  expectedFileCount?: number;
+}
+
+/**
+ * 边读边校验 tar 归档，并只用通过校验的普通文件按 createArchive 的写法重新生成归档（路线图 8.5b 的工作区快照）：
+ * - 校验规则与 readArchive 相同（按 limits）；目录、PAX / GNU 扩展头不转出，头部由这里重新生成（权限 0600、属主 0、时间 0），
+ *   路径放在 ustar 的 name 与 prefix 中，不带扩展头；
+ * - 不在内存中缓存整个归档或整个文件；文件内容按源的分块（至多 64 KiB）转出；
+ * - 结束块之后的数据（tar 的记录对齐）读完并计入字节上限、不转出；源读完之后才产出结束块，所以源在结尾处出错
+ *   （例如快照的 SHA-256 核对失败）时下游收不到完整的归档；
+ * - 中途不符时抛 SandboxArchiveError：之前的条目可能已交给下游，调用方必须丢弃写到一半的结果（对象或沙箱）。
+ */
+export function rewriteArchiveStream(source: AsyncIterable<Uint8Array>, limits: SandboxTransferLimits, options: RewriteArchiveOptions = {}): RewrittenArchive {
+  let started = false;
+  let complete = false;
+  let fileCount = 0;
+  async function* generate(): AsyncGenerator<Buffer> {
+    if (started) throw new Error('archive stream can only be consumed once');
+    started = true;
+    const reader = new ByteReader(source, maxArchiveBytes(limits));
+    try {
+      let padding = 0;
+      for await (const part of scanArchive(reader, limits)) {
+        if (part.kind === 'file') {
+          if (padding > 0) yield Buffer.alloc(padding);
+          fileCount += 1;
+          padding = paddingFor(part.size);
+          yield entryHeader(part.path, part.size);
+        } else if (part.kind === 'data') {
+          yield part.bytes;
+        }
+      }
+      while (await reader.readSome(DATA_CHUNK_BYTES)) {
+        // 结束块之后的数据不转出。
+      }
+      if (options.expectedFileCount !== undefined && options.expectedFileCount !== fileCount) throw new SandboxArchiveError('file count mismatch');
+      if (padding > 0) yield Buffer.alloc(padding);
+      yield Buffer.alloc(BLOCK * 2);
+      complete = true;
+    } finally {
+      await reader.close();
+    }
+  }
+  return {
+    chunks: { [Symbol.asyncIterator]: () => generate() },
+    get fileCount() {
+      if (!complete) throw new Error('archive stream has not been fully consumed');
+      return fileCount;
+    },
+  };
 }

@@ -15,10 +15,12 @@ import { Readable, Transform } from 'node:stream';
 import type { FastifyBaseLogger } from 'fastify';
 import { createArchive, createArchiveStream, hasStreamFiles, maxArchiveBytes, readArchive, SandboxArchiveError, validateArchiveStream, type ArchiveStream, type SandboxFile } from './archive.ts';
 import { DockerApiError, type DockerApi } from './dockerApi.ts';
+import { toOutputArchive } from './outputArchive.ts';
 import {
   SandboxError,
   SANDBOX_BUSY_MESSAGE,
   SANDBOX_OUTPUT_PREVIEW_BYTES,
+  type SandboxArchiveTransfer,
   type SandboxDriver,
   type SandboxExecResult,
   type SandboxOperationOptions,
@@ -72,7 +74,7 @@ export interface ExecArgvOptions extends SandboxOperationOptions {
   stdin?: Buffer | Readable;
 }
 
-export interface DockerSandboxDriver extends SandboxDriver {
+export interface DockerSandboxDriver extends SandboxDriver, SandboxArchiveTransfer {
   /**
    * 放入归档（sandbox-runner 收到的请求体，可以是流）：边读边按模板的输入规则校验，只把通过校验的条目转给沙箱内的 tar，
    * 不在内存中缓存整个归档。中途不符时终止整个沙箱（之前的条目可能已放入），以 SANDBOX_BAD_REQUEST 失败，之后只能 destroy。
@@ -486,6 +488,14 @@ export function createDockerSandboxDriver(options: DockerSandboxDriverOptions): 
         }
         throw wrap(error, 'copy-out');
       }
+    },
+
+    async copyOutArchive(sandbox, operationOptions = {}) {
+      const stream = await copyOutRaw(sandbox, operationOptions);
+      return toOutputArchive(stream, templateOf(sandbox).output, {
+        signal: operationOptions.signal,
+        onRejected: (error) => log.warn({ reason: error.reason, sandboxId: sandbox.id }, 'sandbox output rejected'),
+      });
     },
 
     copyOutRaw,

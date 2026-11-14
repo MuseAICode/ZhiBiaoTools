@@ -1,10 +1,10 @@
 import { Readable } from 'node:stream';
 import type { FastifyInstance } from 'fastify';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { createSandboxRunnerClient } from '../../src/sandbox/client.ts';
+import { createSandboxRunnerClient, type SandboxRunnerClient } from '../../src/sandbox/client.ts';
 import type { DockerSandboxDriver } from '../../src/sandbox/docker.ts';
 import type { DockerApi } from '../../src/sandbox/dockerApi.ts';
-import { SandboxError, type SandboxDriver, type SandboxRef } from '../../src/sandbox/driver.ts';
+import { SandboxError, type SandboxRef } from '../../src/sandbox/driver.ts';
 import { createHash } from 'node:crypto';
 import { request as httpRequest } from 'node:http';
 import { setTimeout as sleep } from 'node:timers/promises';
@@ -20,6 +20,8 @@ const OTHER_JOB = '00000000-0000-4000-8000-000000000001';
 const SANDBOX_ID = '11111111-2222-4333-8444-555555555555';
 /** export-document 模板的沙箱（输入至多 128 MiB），用于大请求体。 */
 const EXPORT_IDS = Array.from({ length: 4 }, (_, index) => `22222222-2222-4333-8444-55555555555${index}`);
+/** agent 模板的沙箱（工作区快照的放入与取回，8.5b）。 */
+const AGENT_ID = '33333333-2222-4333-8444-555555555555';
 
 /** 不访问 Docker 的 driver 桩：只认 SANDBOX_ID + JOB_ID，记录调用。 */
 function fakeDriver() {
@@ -67,6 +69,9 @@ function fakeDriver() {
     async copyOut() {
       throw new Error('not used');
     },
+    async copyOutArchive() {
+      throw new Error('not used');
+    },
     async copyOutRaw(sandbox) {
       calls.push(`copyOut:${sandbox.id}`);
       return Readable.from([output]);
@@ -78,6 +83,7 @@ function fakeDriver() {
       if (jobId !== JOB_ID) throw new SandboxError('SANDBOX_NOT_FOUND', '沙箱不存在');
       if (id === SANDBOX_ID) return ref;
       if (EXPORT_IDS.includes(id)) return { ...ref, id, template: 'export-document' };
+      if (id === AGENT_ID) return { ...ref, id, template: 'agent' };
       throw new SandboxError('SANDBOX_NOT_FOUND', '沙箱不存在');
     },
     async destroy(sandbox) {
@@ -105,7 +111,7 @@ const fakeDocker = { ping: async () => {}, runtimes: async () => ['runc', 'runsc
 describe('sandbox-runner http api', () => {
   let app: FastifyInstance;
   let fake: ReturnType<typeof fakeDriver>;
-  let client: SandboxDriver;
+  let client: SandboxRunnerClient;
   const logs = createLogCapture();
 
   // 服务端仍在处理的请求（方法、路径、开始时间），以及每个连接最后一个请求：结束时用来说明是哪个请求或连接没有结束，
@@ -502,6 +508,76 @@ describe('sandbox-runner http api', () => {
     await expect(client.copyOut(ref)).rejects.toMatchObject({ code: 'SANDBOX_OUTPUT_REJECTED' });
     fake.setOutput(tarEntry({ name: 'x.md', data: Buffer.from('x') }));
     await expect(client.copyOut(ref)).rejects.toMatchObject({ code: 'SANDBOX_OUTPUT_REJECTED' });
+  });
+
+  it('工作区归档经客户端流式放入（不声明长度）与取回，取回时在 worker 端逐项校验并重新生成（8.5b）', async () => {
+    const ref: SandboxRef = { id: AGENT_ID, template: 'agent', jobId: JOB_ID, expiresAt: new Date('2030-01-01T00:00:00Z') };
+    const archive = createArchive(
+      [
+        { path: '任务/大纲.json', data: Buffer.from('{"a":1}') },
+        { path: 'images/a.png', data: Buffer.alloc(300_000, 9) },
+      ],
+      SANDBOX_TEMPLATES.agent.input,
+    );
+    async function* chunked() {
+      for (let offset = 0; offset < archive.length; offset += 50_000) yield archive.subarray(offset, offset + 50_000);
+    }
+    await client.copyInArchive(ref, chunked());
+    expect(fake.received.get(AGENT_ID)).toEqual({ bytes: archive.length, sha256: createHash('sha256').update(archive).digest('hex') });
+
+    // 取回：带目录、GNU 长名与 tar 记录对齐的原始归档，worker 收到的是重新生成的、只含普通文件的归档。
+    fake.setOutput(
+      Buffer.concat([
+        tarEntry({ name: './', type: '5', format: 'gnu' }),
+        tarEntry({ name: '././@LongLink', type: 'L', data: Buffer.from('./任务/大纲.json\0', 'utf8'), format: 'gnu' }),
+        tarEntry({ name: 'ignored', data: Buffer.from('{"a":1}'), format: 'gnu' }),
+        tarEntry({ name: './images/a.png', data: Buffer.alloc(300_000, 9), format: 'gnu' }),
+        END_OF_ARCHIVE,
+        Buffer.alloc(8 * 1024),
+      ]),
+    );
+    const output = await client.copyOutArchive(ref);
+    const chunks: Buffer[] = [];
+    for await (const chunk of output.chunks) chunks.push(chunk);
+    expect(Buffer.concat(chunks).equals(archive)).toBe(true);
+    expect(output.fileCount).toBe(2);
+  });
+
+  it('工作区归档的取回不信任 sandbox-runner：恶意条目在 worker 端被拒绝，收不到结束块（8.5b）', async () => {
+    const ref: SandboxRef = { id: AGENT_ID, template: 'agent', jobId: JOB_ID, expiresAt: new Date('2030-01-01T00:00:00Z') };
+    const good = tarEntry({ name: '任务/a.json', data: Buffer.from('{}') });
+    for (const bad of [
+      tarEntry({ name: 'x.md', type: '2', linkname: '/etc/shadow' }),
+      tarEntry({ name: 'x.md', type: '1', linkname: '任务/a.json' }),
+      tarEntry({ name: '../../x.md', data: Buffer.from('x') }),
+      tarEntry({ name: 'x\u202e.md', data: Buffer.from('x') }),
+      tarEntry({ name: 'run.sh', data: Buffer.from('x') }),
+    ]) {
+      fake.setOutput(Buffer.concat([good, bad, END_OF_ARCHIVE]));
+      const output = await client.copyOutArchive(ref);
+      const chunks: Buffer[] = [];
+      let failure: unknown;
+      try {
+        for await (const chunk of output.chunks) chunks.push(chunk);
+      } catch (error) {
+        failure = error;
+      }
+      expect(failure).toMatchObject({ code: 'SANDBOX_OUTPUT_REJECTED' });
+      expect(Buffer.concat(chunks).length).toBeLessThanOrEqual(512 + 2);
+      expect(() => output.fileCount).toThrow();
+    }
+    // 被截断：同样拒绝。
+    fake.setOutput(good);
+    const truncated = await client.copyOutArchive(ref);
+    await expect((async () => {
+      for await (const _chunk of truncated.chunks) {
+        // 读完。
+      }
+    })()).rejects.toMatchObject({ code: 'SANDBOX_OUTPUT_REJECTED' });
+    // 放入：不合规的归档由 sandbox-runner 拒绝（SANDBOX_BAD_REQUEST）。
+    await expect(client.copyInArchive(ref, Readable.from([Buffer.concat([tarEntry({ name: 'x.md', type: '2', linkname: '/etc' }), END_OF_ARCHIVE])]))).rejects.toMatchObject({
+      code: 'SANDBOX_BAD_REQUEST',
+    });
   });
 
   it('maps runner errors to sandbox error codes and a wrong token to unavailable', async () => {

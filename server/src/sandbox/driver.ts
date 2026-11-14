@@ -48,6 +48,31 @@ export interface SandboxDriver {
   destroy(sandbox: SandboxRef): Promise<void>;
 }
 
+/** 取回的工作区归档（copyOutArchive）：已逐项校验并重新生成，只含普通文件。 */
+export interface SandboxOutputArchive {
+  /**
+   * 归档的字节，只能迭代一次。中途不符时抛 SandboxError（SANDBOX_OUTPUT_REJECTED，cause 为 SandboxArchiveError），
+   * 连接中断、沙箱内的 tar 失败时 SANDBOX_FAILED，中止时 SANDBOX_ABORTED；出错时已产出的字节不含结束块，调用方必须丢弃。
+   */
+  readonly chunks: AsyncIterable<Buffer>;
+  /** 归档中的文件数；chunks 迭代完成之前读取抛错。 */
+  readonly fileCount: number;
+}
+
+/**
+ * 以整个归档为单位的放入与取回（路线图 8.5b 的 agent 工作区快照）：sandbox-runner 进程内的 driver 与 worker 的 HTTP 客户端都实现。
+ * 不在内存中缓存整个归档或整个文件（快照至多 512 MiB）。
+ */
+export interface SandboxArchiveTransfer {
+  /**
+   * 放入一个 tar 归档：边读边按模板的输入规则校验（sandbox-runner 端），只把通过校验的条目转给沙箱内的 tar。
+   * 中途不符或源出错时沙箱被终止（之前的条目可能已放入），之后只能 destroy；调用方据自己记下的源错误判断失败原因。
+   */
+  copyInArchive(sandbox: SandboxRef, archive: Buffer | AsyncIterable<Uint8Array>, options?: SandboxOperationOptions): Promise<void>;
+  /** 取回模板输出目录的归档，按模板的取回规则逐项校验，只用通过校验的普通文件重新生成（src/sandbox/archive.ts 的 rewriteArchiveStream）。 */
+  copyOutArchive(sandbox: SandboxRef, options?: SandboxOperationOptions): Promise<SandboxOutputArchive>;
+}
+
 export const SANDBOX_ERROR_CODES = [
   /** 模板、命令或参数不合法，或输入文件不符合模板规则。 */
   'SANDBOX_BAD_REQUEST',

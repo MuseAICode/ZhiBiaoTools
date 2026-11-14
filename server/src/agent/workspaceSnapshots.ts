@@ -5,7 +5,7 @@
 //   超过上限即中止）→ 在同一事务中把同一项目、同一类任务当前的快照标为已被替换并标记完成（触发器检查配额）。
 //   任何一步失败都删除新对象和登记行，旧快照原样保留；成功后再删除被替换的旧快照（先删对象、再删行），删除失败的留给清理任务；
 // - 快照只用于续跑，内容来自沙箱（不可信）：这里只保证“取回的字节就是写入时的字节”（openWorkspaceSnapshot 核对大小与 SHA-256），
-//   归档内容的逐项校验在放入沙箱时进行（8.5b）；
+//   归档内容的逐项校验在从沙箱取回时与放入沙箱前各做一次（8.5b，src/agent/workspaceSandbox.ts）；
 // - 任务成功完成或用户重置该类任务时调用 discardWorkspaceSnapshot（8.5c 接上）。
 // 本模块不写日志，不在错误中带对象键。
 import { createHash } from 'node:crypto';
@@ -117,7 +117,8 @@ export interface WriteWorkspaceSnapshotOptions {
 }
 
 /**
- * 写入一个快照并替换同一项目、同一类任务当前的快照。body 是已按快照规则生成的 tar 归档（8.5b），fileCount 是其中的文件数。
+ * 写入一个快照并替换同一项目、同一类任务当前的快照。body 是已按快照规则生成的 tar 归档（8.5b），fileCount 是其中的文件数；
+ * 边取回边写入时文件数要等 body 读完才知道，可以给一个函数，在 body 读完之后、完成之前调用（抛错或超出范围时按失败处理）。
  * 超过大小上限 413 AGENT_WORKSPACE_TOO_LARGE，超出组织配额 413 STORAGE_QUOTA_EXCEEDED；项目不存在、已删除或属于其他组织时
  * 登记被 RLS 拒绝。失败时不留下新对象和登记行，旧快照原样保留。
  */
@@ -125,14 +126,17 @@ export async function writeWorkspaceSnapshot(
   db: Kysely<Database>,
   context: TenantContext,
   store: ObjectStore,
-  input: WorkspaceSnapshotTarget & { fileCount: number },
+  input: WorkspaceSnapshotTarget & { fileCount: number | (() => number) },
   body: AsyncIterable<Uint8Array>,
   options: WriteWorkspaceSnapshotOptions = {},
 ): Promise<WorkspaceSnapshotRecord> {
   assertTarget(input);
-  if (!Number.isSafeInteger(input.fileCount) || input.fileCount < 0 || input.fileCount > AGENT_WORKSPACE_MAX_FILES) {
-    throw new TypeError('fileCount 超出范围');
-  }
+  const checkFileCount = (value: number): number => {
+    if (!Number.isSafeInteger(value) || value < 0 || value > AGENT_WORKSPACE_MAX_FILES) throw new TypeError('fileCount 超出范围');
+    return value;
+  };
+  if (typeof input.fileCount === 'number') checkFileCount(input.fileCount);
+  else if (typeof input.fileCount !== 'function') throw new TypeError('fileCount 超出范围');
   const maxBytes = Math.min(options.maxArchiveBytes ?? AGENT_WORKSPACE_MAX_ARCHIVE_BYTES, AGENT_WORKSPACE_MAX_ARCHIVE_BYTES);
   options.signal?.throwIfAborted();
 
@@ -172,6 +176,7 @@ export async function writeWorkspaceSnapshot(
     }
     if (failure !== undefined) throw failure;
     options.signal?.throwIfAborted();
+    const fileCount = checkFileCount(typeof input.fileCount === 'number' ? input.fileCount : input.fileCount());
     const sha256 = hash.digest();
     ({ record, superseded } = await withTenant(db, context, async (trx) => {
       const lockKey = `agent_workspace:${context.orgId}:${input.projectId}:${input.taskKind}`;
@@ -188,7 +193,7 @@ export async function writeWorkspaceSnapshot(
         .execute();
       const row = await trx
         .updateTable('agent_workspace_snapshots')
-        .set({ status: 'ready', size_bytes: size, file_count: input.fileCount, sha256 })
+        .set({ status: 'ready', size_bytes: size, file_count: fileCount, sha256 })
         .where('id', '=', pending.id)
         .where('status', '=', 'writing')
         .returningAll()

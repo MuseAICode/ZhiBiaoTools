@@ -7,6 +7,14 @@ import { END_OF_ARCHIVE, paxEntry, tarEntry, tarStream } from './tarFixtures.ts'
 const output = SANDBOX_TEMPLATES.parse.output;
 const input = SANDBOX_TEMPLATES.parse.input;
 
+/** 改写头部后重新计算校验和。 */
+function rechecksum(entry: Buffer): void {
+  entry.fill(0x20, 148, 156);
+  let sum = 0;
+  for (let index = 0; index < 512; index += 1) sum += entry[index]!;
+  entry.write(`${sum.toString(8).padStart(6, '0')}\0 `, 148, 8, 'ascii');
+}
+
 async function rejectReason(stream: Readable, limits: SandboxTransferLimits = output): Promise<string> {
   try {
     await readArchive(stream, limits);
@@ -77,38 +85,22 @@ describe('readArchive', () => {
     expect(await rejectReason(tarStream(tarEntry({ name, data: Buffer.from('x') }), END_OF_ARCHIVE))).toBe(reason);
   });
 
-  // 8.1 登记的中文文件名要求（#71）：放宽规则随 8.5b；在此之前 agent 模板与其他模板一样只收 ASCII 路径段，
-  // 非 ASCII 的名字（含借全角 / 兼容字符、零宽与双向控制字符、组合字符伪装的分隔符与 .、..）一律整体拒绝。
-  it.each([
-    ['任务/大纲.json'],
-    ['所选模板配置.json'],
-    ['a\uff0fb.md'], // 全角 ／
-    ['a\u2215b.md'], // ∕ DIVISION SLASH
-    ['a\uff3cb.md'], // 全角 ＼
-    ['\uff0e\uff0e/x.md'], // 全角 ．．
-    ['\u2024\u2024/x.md'], // ONE DOT LEADER
-    ['x\u200b.md'], // 零宽空格
-    ['x\u202e.md'], // RLO
-    ['x\u2066.md'], // LRI
-    ['e\u0301.md'], // NFD 组合字符
-    ['\u00e9.md'], // NFC é
-    ['x\ufeff.md'], // BOM
-    ['x\ufffd.md'], // 非法 UTF-8 解码后的替换字符
-  ])('agent 模板在 8.5b 之前拒绝非 ASCII 路径 %j', async (name) => {
-    for (const limits of [SANDBOX_TEMPLATES.agent.output, SANDBOX_TEMPLATES.agent.input, output]) {
-      expect(await rejectReason(tarStream(tarEntry({ name, data: Buffer.from('x') }), END_OF_ARCHIVE), limits)).toBe('path segment not allowed');
-    }
-  });
-
-  it('非法 UTF-8 字节序列的路径同样被拒绝', async () => {
+  it('非法 UTF-8 字节序列的路径一律被拒绝（严格解码，不替换为 U+FFFD）', async () => {
     const entry = tarEntry({ name: 'placeholder.md', data: Buffer.from('x') });
     Buffer.from([0x78, 0xc3, 0x28, 0x2e, 0x6d, 0x64, 0, 0, 0, 0, 0, 0, 0, 0]).copy(entry, 0);
-    // 重新计算校验和。
-    entry.fill(0x20, 148, 156);
-    let sum = 0;
-    for (let index = 0; index < 512; index += 1) sum += entry[index]!;
-    entry.write(`${sum.toString(8).padStart(6, '0')}\0 `, 148, 8, 'ascii');
-    expect(await rejectReason(tarStream(entry, END_OF_ARCHIVE), SANDBOX_TEMPLATES.agent.output)).toBe('path segment not allowed');
+    rechecksum(entry);
+    for (const limits of [SANDBOX_TEMPLATES.agent.output, SANDBOX_TEMPLATES.agent.input, output]) {
+      expect(await rejectReason(tarStream(entry, END_OF_ARCHIVE), limits)).toBe('path encoding invalid');
+    }
+    // PAX 的 path 与 GNU 长名同样严格解码。
+    const pax = paxEntry({ path: 'x' });
+    const record = Buffer.from('9 path=\xff\n', 'latin1');
+    record.copy(pax, 512);
+    pax.write(`${record.length.toString(8).padStart(11, '0')}\0`, 124, 12, 'ascii');
+    rechecksum(pax);
+    expect(await rejectReason(tarStream(pax.subarray(0, 1024), tarEntry({ name: 'x.md' }), END_OF_ARCHIVE), SANDBOX_TEMPLATES.agent.output)).toBe('path encoding invalid');
+    const gnu = tarEntry({ name: '././@LongLink', type: 'L', data: Buffer.from([0x78, 0xe4, 0xb8, 0x2e, 0x6d, 0x64, 0]), format: 'gnu' });
+    expect(await rejectReason(tarStream(gnu, tarEntry({ name: 'x.md', format: 'gnu' }), END_OF_ARCHIVE), SANDBOX_TEMPLATES.agent.output)).toBe('path encoding invalid');
   });
 
   it('rejects traversal hidden in the ustar prefix, a PAX path or a GNU long name', async () => {

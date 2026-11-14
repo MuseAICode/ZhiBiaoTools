@@ -2,7 +2,8 @@
 // worker 不挂载 Docker socket，只持有调用 sandbox-runner 的共享令牌。取回的归档在这里按模板校验
 // （src/sandbox/archive.ts），不信任 sandbox-runner 转出的内容（它来自沙箱）。
 import { createArchive, createArchiveStream, hasStreamFiles, readArchive, SandboxArchiveError, type ArchiveStream, type SandboxFile } from './archive.ts';
-import { isSandboxErrorCode, SandboxError, SANDBOX_BUSY_MESSAGE, type SandboxDriver, type SandboxExecResult, type SandboxRef } from './driver.ts';
+import { isSandboxErrorCode, SandboxError, SANDBOX_BUSY_MESSAGE, type SandboxArchiveTransfer, type SandboxDriver, type SandboxExecResult, type SandboxRef } from './driver.ts';
+import { toOutputArchive } from './outputArchive.ts';
 import { SANDBOX_JOB_HEADER } from './runnerApp.ts';
 import { isSandboxTemplateName, SANDBOX_TEMPLATES } from './templates.ts';
 
@@ -18,7 +19,9 @@ const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
 /** exec 等由模板限时的操作，客户端的超时比模板上限多留这么多。 */
 const TEMPLATE_TIMEOUT_MARGIN_MS = 30_000;
 
-export function createSandboxRunnerClient(options: SandboxRunnerClientOptions): SandboxDriver {
+export type SandboxRunnerClient = SandboxDriver & SandboxArchiveTransfer;
+
+export function createSandboxRunnerClient(options: SandboxRunnerClientOptions): SandboxRunnerClient {
   const base = options.url.replace(/\/+$/, '');
   const requestTimeoutMs = options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
 
@@ -109,6 +112,33 @@ export function createSandboxRunnerClient(options: SandboxRunnerClientOptions): 
         if (failure instanceof SandboxArchiveError) throw new SandboxError('SANDBOX_BAD_REQUEST', '输入文件不符合沙箱规则', { cause: failure });
         throw new SandboxError('SANDBOX_INPUT_FAILED', '读取放入沙箱的文件失败', { cause: failure });
       }
+    },
+
+    async copyInArchive(sandbox, archive, operationOptions = {}) {
+      // sandbox-runner 按模板的输入规则边读边校验；流式的归档不声明长度（由 sandbox-runner 在读取中按上限检查）。
+      const timeoutMs = SANDBOX_TEMPLATES[sandbox.template].transferTimeoutMs + TEMPLATE_TIMEOUT_MARGIN_MS;
+      const headers: Record<string, string> = { 'content-type': 'application/x-tar', ...jobHeader(sandbox) };
+      if (Buffer.isBuffer(archive)) headers['content-length'] = String(archive.length);
+      await send(sandboxPath(sandbox, '/input'), {
+        method: 'PUT',
+        headers,
+        body: Buffer.isBuffer(archive) ? new Uint8Array(archive.buffer, archive.byteOffset, archive.byteLength) : ReadableStream.from(archive),
+        duplex: 'half',
+        timeoutMs,
+        signal: operationOptions.signal,
+      } as Parameters<typeof send>[1]);
+    },
+
+    async copyOutArchive(sandbox, operationOptions = {}) {
+      const response = await send(sandboxPath(sandbox, '/output'), {
+        method: 'GET',
+        headers: jobHeader(sandbox),
+        timeoutMs: SANDBOX_TEMPLATES[sandbox.template].transferTimeoutMs + TEMPLATE_TIMEOUT_MARGIN_MS,
+        signal: operationOptions.signal,
+      });
+      if (!response.body) throw new SandboxError('SANDBOX_FAILED', '沙箱服务的响应不合法');
+      // 不信任 sandbox-runner 转出的内容（它来自沙箱）：在这里逐项校验并重新生成。
+      return toOutputArchive(response.body, SANDBOX_TEMPLATES[sandbox.template].output, { signal: operationOptions.signal });
     },
 
     async exec(sandbox, command, args, operationOptions = {}) {
