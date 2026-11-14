@@ -15,7 +15,7 @@ import type { Redis } from 'ioredis';
 import { sql, type Kysely } from 'kysely';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { createAskUserTool } from '../../src/agent/askUserTool.ts';
-import { AGENT_TASK_LIMITS } from '../../src/agent/budget.ts';
+import { AGENT_TASK_LIMITS, beginAgentTurn } from '../../src/agent/budget.ts';
 import { buildAgentEndpointApp } from '../../src/agent/endpoint.ts';
 import { AGENT_FAILURE_REASON_MAX_LENGTH, AGENT_REPORTED_FAILURE_CODE } from '../../src/agent/failureReport.ts';
 import { buildAgentGateway } from '../../src/agent/gateway.ts';
@@ -43,6 +43,7 @@ import { createJobRunner, type JobRunner } from '../../src/jobs/runner.ts';
 import { answerJobQuestion, enqueueJob, type JobServiceDependencies } from '../../src/jobs/service.ts';
 import { claimJob, finishRun, insertJob, renewRun, type RunRef } from '../../src/jobs/store.ts';
 import { bullmqConnection } from '../../src/redis.ts';
+import { AppError } from '../../src/errors.ts';
 import { createLogCapture, fastHasher } from '../helpers.ts';
 import { rawRedis, redisConfig, testLogger, uniquePrefix, waitFor, wipeQueueKeys } from './jobFixtures.ts';
 import { connect, createTestDatabase, type TestDatabase } from './harness.ts';
@@ -112,14 +113,27 @@ interface Member {
   context: TenantContext;
 }
 
-async function newOrg(role: MemberRole = 'owner'): Promise<Member> {
+async function newOrg(): Promise<Member> {
   const orgId = randomUUID();
   await superuser.insertInto('organizations').values({ id: orgId, name: orgId, kind: 'team' }).execute();
+  return addMember(orgId, 'owner');
+}
+
+async function addMember(orgId: string, role: MemberRole): Promise<Member> {
   const hasher = await fastHasher();
   const userId = randomUUID();
   await superuser.insertInto('users').values({ id: userId, email: `${userId}@example.com`, password_hash: await hasher.hash(PASSWORD), email_verified_at: new Date() }).execute();
   await superuser.insertInto('org_memberships').values({ org_id: orgId, user_id: userId, role }).execute();
   return { orgId, userId, context: { orgId, userId, role } };
+}
+
+async function expectCode(promise: Promise<unknown>, code: string): Promise<void> {
+  const error = await promise.then(
+    () => null,
+    (caught: unknown) => caught,
+  );
+  expect(error, `应当失败：${code}`).not.toBeNull();
+  expect(error instanceof AppError ? error.code : (error as { code?: unknown }).code).toBe(code);
 }
 
 async function newProject(member: Member): Promise<string> {
@@ -437,6 +451,80 @@ describe('request-termination 工具', () => {
     expect(text).toContain('agent terminated by user decision');
     expect(text).not.toContain(token);
     expect(text).not.toContain(REASON_MARKER);
+  });
+});
+
+describe('回答人、计费与不可信原因', () => {
+  it('普通成员回答终止问题 → 403，不写报告、任务仍在执行、问题仍在等待；对照组：发起人（普通成员）与 admin 能回答', async () => {
+    const owner = await newOrg();
+    const creator = await addMember(owner.orgId, 'member');
+    const admin = await addMember(owner.orgId, 'admin');
+    const bystander = await addMember(owner.orgId, 'member');
+    for (const answerer of [creator, admin]) {
+      const { run, token } = await tokenFor(creator);
+      const { pending, questionId } = await requestAndWait(token, run.jobId);
+      for (const optionIndex of [TERMINATE, CONTINUE]) {
+        await expectCode(answerJobQuestion(deps(), bystander.context, run.jobId, { questionId, optionIndex }), 'JOB_ANSWER_FORBIDDEN');
+      }
+      // 越权回答没有生效：这次等待仍返回 pending，没有报告，任务仍在执行。
+      expect((await pending).body.result).toMatchObject({ answered: false, pending: true });
+      expect((await questionsOf(run.jobId))[0]).toMatchObject({ id: questionId, status: 'pending', answer_option: null });
+      expect(await reportsOf(run.jobId)).toEqual([]);
+      expect(await jobRow(run.jobId)).toMatchObject({ status: 'running', run_id: run.runId });
+      expect(await renewRun(appDb, run, LEASE_MS)).toMatchObject({ status: 'running', agentFailureReported: false });
+      expect(notified).not.toContain(run.jobId);
+      // 对照组：发起人或 admin 选择终止后生效。
+      await answerJobQuestion(deps(), answerer.context, run.jobId, { questionId, optionIndex: TERMINATE });
+      expect((await terminate(token)).body.result).toEqual({ terminated: true, reason: REASON });
+      expect(await reportsOf(run.jobId)).toHaveLength(1);
+    }
+  });
+
+  it('等待期间不计轮数、不扣费、没有用量记录；终止后模型调用 409、轮数不变；对照组：未终止的任务照常计入模型调用', async () => {
+    const owner = await newOrg();
+    const { run, token } = await tokenFor(owner);
+    for (let index = 0; index < 3; index += 1) {
+      expect((await terminate(token)).body.result, `第 ${index + 1} 次`).toMatchObject({ answered: false, pending: true });
+    }
+    const budgetOf = () => superuser.selectFrom('agent_job_budgets').select(['turns_used', 'exhausted_reason']).where('job_id', '=', run.jobId).executeTakeFirstOrThrow();
+    const billedOf = async () => BigInt((await superuser.selectFrom('jobs').select('billed_amount').where('id', '=', run.jobId).executeTakeFirstOrThrow()).billed_amount);
+    const usageOf = () => superuser.selectFrom('usage_records').select('id').where('job_id', '=', run.jobId).execute();
+    expect(await budgetOf()).toEqual({ turns_used: 0, exhausted_reason: null });
+    expect(await billedOf()).toBe(0n);
+    expect(await usageOf()).toEqual([]);
+    expect(await superuser.selectFrom('agent_tool_calls').select(['tool', 'calls']).where('job_id', '=', run.jobId).execute()).toEqual([{ tool: REQUEST_TERMINATION_TOOL_NAME, calls: 3 }]);
+
+    const [question] = await questionsOf(run.jobId);
+    await answerJobQuestion(deps(), owner.context, run.jobId, { questionId: question!.id, optionIndex: TERMINATE });
+    expect((await terminate(token)).body.result).toMatchObject({ terminated: true });
+    const turn = await beginAgentTurn(appDb, { tenant: owner.context, jobId: run.jobId, runId: run.runId }).catch((error: unknown) => error);
+    expect(turn).toMatchObject({ statusCode: 409, code: 'JOB_NOT_RUNNING' });
+    expect(await budgetOf()).toEqual({ turns_used: 0, exhausted_reason: null });
+    expect(await billedOf()).toBe(0n);
+    expect(await usageOf()).toEqual([]);
+
+    // 对照组：另一个未终止的任务照常计入模型调用（上面的 409 不是因为模型调用本来就不可用）。
+    const other = await tokenFor(owner);
+    expect(await beginAgentTurn(appDb, { tenant: owner.context, jobId: other.run.jobId, runId: other.run.runId })).toMatchObject({ turnsUsed: 1 });
+  });
+
+  it('原因中的控制字符、双向文本控制与零宽字符在问题与失败报告中都被去掉', async () => {
+    const owner = await newOrg();
+    const { run, token } = await tokenFor(owner);
+    const dirty = `\u0000资料\u0007不足\u202e，\u2066无法\u200b继续\ufeff\u001b[31m\u0085。\r\n\r\n\r\n第二段\u2028\t说明 `;
+    const clean = '资料不足，无法继续[31m。\n\n第二段 说明';
+    const { pending, questionId } = await requestAndWait(token, run.jobId, dirty);
+    const [question] = await questionsOf(run.jobId);
+    const forbidden = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f\u061c\u200b-\u200f\u202a-\u202e\u2060-\u2064\u2066-\u206f\ufeff\u2028\u2029\r\t]/;
+    expect(question!.question).not.toMatch(forbidden);
+    expect(question!.question).toContain(`继续：\n\n${clean}\n\n继续执行`);
+    await answerJobQuestion(deps(), owner.context, run.jobId, { questionId, optionIndex: TERMINATE });
+    expect((await pending).body.result).toEqual({ terminated: true, reason: clean });
+    const [report] = await reportsOf(run.jobId);
+    expect(report!.reason).toBe(`${clean}${TERMINATED_BY_USER_SUFFIX}`);
+    expect(report!.reason).not.toMatch(forbidden);
+    expect(await finishRun(appDb, run, { kind: 'interrupted' }, true)).toBe('failed');
+    expect((await jobRow(run.jobId)).error_message).toBe(`${clean}${TERMINATED_BY_USER_SUFFIX}`);
   });
 });
 
