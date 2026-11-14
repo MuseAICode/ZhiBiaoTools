@@ -1,6 +1,6 @@
 // 清理任务（路线图 6.8，迁移 0024_cleanup、src/cleanup/）的数据库测试，按“决定事项（#23）”第 9、10 项逐条验证：
 // 1. 只删除超过保留期的数据（文件、产物、项目 7 天恢复期，遗留 uploading / writing 24 小时，jobs 90 天、job_events 30 天，
-//    样张 24 小时，整本导出被替换即删、否则 7 天），
+//    样张 24 小时，整本导出被替换即删、否则 7 天，Agent 工作区快照（迁移 0040）被替换即删、遗留写入 24 小时、项目超过恢复期），
 //    恢复期内的行一律不动；删除条件在 SECURITY DEFINER 函数和策略中，调用方传入 id 删不掉未过期的行，也不能传入时间；
 // 2. 先删对象、成功后再删行；对象删除失败的行保留、下一批重试；孤儿对象只删除超过保留期、没有对应行的；
 // 3. 每批按类别各记一行结构化日志（条数、对象数、失败数、耗时），不含对象键和文件名；
@@ -42,11 +42,13 @@ const MARKDOWN = 'text/markdown; charset=utf-8';
 /** 计费相关的表：清理角色对它们不能有任何权限（决定事项第 9 项）。 */
 const BILLING_TABLES = ['billing_ledger', 'org_balances', 'model_prices', 'usage_records', 'provider_credentials', 'platform_models'];
 /** 清理角色有权限的表（其余一律没有）。 */
-const CLEANUP_TABLES = ['artifacts', 'files', 'job_events', 'jobs', 'projects', 'template_preview_requests'];
+const CLEANUP_TABLES = ['agent_workspace_snapshots', 'artifacts', 'files', 'job_events', 'jobs', 'projects', 'template_preview_requests'];
 const TABLE_PRIVILEGES = ['SELECT', 'INSERT', 'UPDATE', 'DELETE', 'TRUNCATE', 'REFERENCES', 'TRIGGER'];
 const COLUMN_PRIVILEGES = ['SELECT', 'INSERT', 'UPDATE', 'REFERENCES'];
 const CLEANUP_FUNCTIONS = [
+  'cleanup_agent_workspace_candidates',
   'cleanup_artifact_candidates',
+  'cleanup_delete_agent_workspace',
   'cleanup_delete_artifact',
   'cleanup_delete_file',
   'cleanup_delete_job_events',
@@ -200,6 +202,34 @@ async function insertArtifact(
   return { id: row.id, key: row.storage_key };
 }
 
+/** 超级用户直接写入 Agent 工作区快照（迁移 0040）并写入对象（时间可回拨）。 */
+async function insertSnapshot(
+  ctx: TenantContext,
+  projectId: string,
+  options: { writing?: boolean; createdAgo?: number; superseded?: boolean; taskKind?: string } = {},
+): Promise<{ id: string; key: string }> {
+  const writing = options.writing ?? false;
+  const row = await superuser
+    .insertInto('agent_workspace_snapshots')
+    .values({
+      org_id: ctx.orgId,
+      project_id: projectId,
+      task_kind: options.taskKind ?? 'technical-plan-outline',
+      status: writing ? 'writing' : 'ready',
+      size_bytes: writing ? null : 1024,
+      file_count: writing ? null : 0,
+      sha256: writing ? null : Buffer.alloc(32),
+      completed_at: writing ? null : ago(options.createdAgo ?? 0),
+      created_by: ctx.userId,
+      created_at: ago(options.createdAgo ?? 0),
+      superseded_at: options.superseded ? ago(60_000) : null,
+    })
+    .returning(['id', 'storage_key'])
+    .executeTakeFirstOrThrow();
+  await store.put(row.storage_key, Readable.from(Buffer.alloc(1024)), { contentType: 'application/x-tar' });
+  return { id: row.id, key: row.storage_key };
+}
+
 /** 超级用户直接写入样张请求（时间可回拨）。 */
 async function insertPreviewRequest(ctx: TenantContext, createdAgo: number): Promise<string> {
   const row = await superuser
@@ -343,7 +373,7 @@ describe('角色与权限', () => {
     expect([...new Set(policies.rows.map((row) => row.tablename))]).toEqual(CLEANUP_TABLES);
   });
 
-  it('除 files、artifacts、projects、jobs、job_events、template_preview_requests 外，对任何表都没有权限；对这六张表只有 SELECT（列级）和 DELETE', async () => {
+  it('除 files、artifacts、projects、jobs、job_events、template_preview_requests、agent_workspace_snapshots 外，对任何表都没有权限；对这七张表只有 SELECT（列级）和 DELETE', async () => {
     const { rows } = await sql<{ relname: string; privileges: string[] }>`
       SELECT c.relname,
         array(SELECT p FROM unnest(${TABLE_PRIVILEGES}::text[]) p WHERE has_table_privilege(${CLEANUP_ROLE}, c.oid, p)
@@ -552,6 +582,57 @@ describe('只删除超过保留期的数据', () => {
     }
   });
 
+  it('Agent 工作区快照（迁移 0040）：被替换的立即连同对象删除，遗留的写入超过 24 小时删除（计入 uploading 类），当前的与未满 24 小时的写入不动', async () => {
+    const ctx = await newOrg();
+    const project = await insertProject(ctx);
+    const superseded = await insertSnapshot(ctx, project, { superseded: true, createdAgo: HOUR });
+    const staleWriting = await insertSnapshot(ctx, project, { writing: true, createdAgo: 24 * HOUR + 60_000 });
+    const recentWriting = await insertSnapshot(ctx, project, { writing: true, createdAgo: 24 * HOUR - HOUR });
+    const current = await insertSnapshot(ctx, project, { createdAgo: 400 * DAY });
+    const otherKind = await insertSnapshot(ctx, project, { createdAgo: 400 * DAY, taskKind: 'feasibility-outline' });
+
+    const results = byCategory(await newCleaner().cleaner.runBatch());
+    expect(results.agent_workspaces).toMatchObject({ deleted: 1, objects: 1, failed: 0 });
+    expect(results.uploading).toMatchObject({ deleted: 1, objects: 1, failed: 0 });
+    for (const gone of [superseded, staleWriting]) {
+      expect(await exists('agent_workspace_snapshots', gone.id)).toBe(false);
+      expect(store.objects.has(gone.key)).toBe(false);
+    }
+    for (const kept of [recentWriting, current, otherKind]) {
+      expect(await exists('agent_workspace_snapshots', kept.id)).toBe(true);
+      expect(store.objects.has(kept.key)).toBe(true);
+    }
+    // 登记超过 24 小时后不能再完成写入（AW005）：清理任务删掉对象之后，这一行不会再变成已完成。
+    await expectSqlError(
+      superuser.updateTable('agent_workspace_snapshots')
+        .set({ status: 'ready', size_bytes: 1024, file_count: 0, sha256: Buffer.alloc(32) })
+        .where('id', '=', (await insertSnapshot(ctx, project, { writing: true, createdAgo: 24 * HOUR + 60_000 })).id).execute(),
+      'AW005',
+    );
+  });
+
+  it('Agent 工作区快照（迁移 0040）：项目删除超过 7 天时先删其下快照（含对象），再删项目；恢复期内的项目连同快照不动', async () => {
+    const ctx = await newOrg();
+    const expiredProject = await insertProject(ctx, 7 * DAY + HOUR);
+    const recentProject = await insertProject(ctx, 7 * DAY - HOUR);
+    const expired = await insertSnapshot(ctx, expiredProject);
+    const recent = await insertSnapshot(ctx, recentProject);
+
+    // 快照没删之前项目删不掉（外键不级联，cleanup_delete_projects 跳过还有快照的项目）。
+    expect((await sql<{ n: number }>`SELECT cleanup_delete_projects(1000) AS n`.execute(appDb)).rows[0]!.n).toBe(0);
+    expect(await exists('projects', expiredProject)).toBe(true);
+
+    const results = byCategory(await newCleaner().cleaner.runBatch());
+    expect(results.agent_workspaces).toMatchObject({ deleted: 1, objects: 1, failed: 0 });
+    expect(results.projects).toMatchObject({ deleted: 1 });
+    expect(await exists('agent_workspace_snapshots', expired.id)).toBe(false);
+    expect(store.objects.has(expired.key)).toBe(false);
+    expect(await exists('projects', expiredProject)).toBe(false);
+    expect(await exists('agent_workspace_snapshots', recent.id)).toBe(true);
+    expect(store.objects.has(recent.key)).toBe(true);
+    expect(await exists('projects', recentProject)).toBe(true);
+  });
+
   it('遗留的 uploading 文件、writing 产物：登记超过 24 小时的删除（计入 uploading 类），未满 24 小时的不动；过期后不能再完成上传或写入', async () => {
     const ctx = await newOrg();
     const staleUpload = await insertFile(ctx, { uploading: true, createdAgo: 24 * HOUR + 60_000 });
@@ -713,6 +794,32 @@ describe('调用方不能绕过删除条件', () => {
     expect(store.objects.has(current.key)).toBe(true);
   });
 
+  it('Agent 工作区快照（迁移 0040）：当前的、未满 24 小时的写入、项目在恢复期内的，按 id、传入极端上限、以清理角色直接 DELETE、执行整批都删不掉', async () => {
+    const ctx = await newOrg();
+    const project = await insertProject(ctx);
+    const recentProject = await insertProject(ctx, 7 * DAY - HOUR);
+    const kept = [
+      await insertSnapshot(ctx, project, { createdAgo: 400 * DAY }),
+      await insertSnapshot(ctx, project, { writing: true, createdAgo: 23 * HOUR }),
+      await insertSnapshot(ctx, recentProject, { createdAgo: 400 * DAY }),
+    ];
+    for (const snapshot of kept) {
+      expect((await sql<{ ok: boolean }>`SELECT cleanup_delete_agent_workspace(${snapshot.id}::uuid) AS ok`.execute(appDb)).rows[0]!.ok).toBe(false);
+    }
+    for (const limit of [-1, 0, 2_147_483_647, null]) {
+      const candidates = await sql<{ id: string }>`SELECT id FROM cleanup_agent_workspace_candidates(${limit}::integer)`.execute(appDb);
+      expect(candidates.rows.map((row) => row.id).filter((id) => kept.some((snapshot) => snapshot.id === id))).toEqual([]);
+    }
+    await expect(sql`SELECT cleanup_delete_agent_workspace(${kept[0]!.id}::uuid, now())`.execute(appDb)).rejects.toThrow();
+    const deleted = await asCleanupRole(async (trx) => Number((await trx.deleteFrom('agent_workspace_snapshots').executeTakeFirst()).numDeletedRows));
+    expect(deleted).toBe(0);
+    await newCleaner().cleaner.runBatch();
+    for (const snapshot of kept) {
+      expect(await exists('agent_workspace_snapshots', snapshot.id)).toBe(true);
+      expect(store.objects.has(snapshot.key)).toBe(true);
+    }
+  });
+
   it('即使绕过函数、以清理角色直接 DELETE，策略也只放行过期的行', async () => {
     const ctx = await newOrg();
     const project = await insertProject(ctx, 6 * DAY);
@@ -850,6 +957,31 @@ describe('对象存储：先删对象，成功后再删行', () => {
     }
   });
 
+  it('Agent 工作区快照（迁移 0040）同样先删对象、成功后再删行：对象删除失败时行与对象都保留，下一批重试成功', async () => {
+    const ctx = await newOrg();
+    const project = await insertProject(ctx);
+    const target = await insertSnapshot(ctx, project, { superseded: true });
+    const rowPresentAtDelete: boolean[] = [];
+    store.beforeDelete = async (key) => {
+      if (key === target.key) rowPresentAtDelete.push(await exists('agent_workspace_snapshots', target.id));
+    };
+    store.failDelete = new Set([target.key]);
+    const { cleaner } = newCleaner();
+    try {
+      expect(byCategory(await cleaner.runBatch()).agent_workspaces).toMatchObject({ deleted: 0, objects: 0, failed: 1 });
+      expect(await exists('agent_workspace_snapshots', target.id)).toBe(true);
+      expect(store.objects.has(target.key)).toBe(true);
+      store.failDelete.clear();
+      expect(byCategory(await cleaner.runBatch()).agent_workspaces).toMatchObject({ deleted: 1, objects: 1, failed: 0 });
+      expect(rowPresentAtDelete).toEqual([true, true]);
+      expect(await exists('agent_workspace_snapshots', target.id)).toBe(false);
+      expect(store.objects.has(target.key)).toBe(false);
+    } finally {
+      store.beforeDelete = null;
+      store.failDelete.clear();
+    }
+  });
+
   it('未配置对象存储时有对象的行一律不删（不留孤儿对象），没有对象的项目、任务记录照常清理', async () => {
     const ctx = await newOrg();
     const file = await insertFile(ctx, { deletedAgo: 8 * DAY });
@@ -857,7 +989,7 @@ describe('对象存储：先删对象，成功后再删行', () => {
     const project = await insertProject(ctx, 8 * DAY);
     const job = await insertJob(ctx, { finishedAgo: 100 * DAY });
     const results = byCategory(await newCleaner({ objectStore: null }).cleaner.runBatch());
-    for (const category of ['artifacts', 'files', 'uploading', 'orphans'] as const) {
+    for (const category of ['artifacts', 'files', 'uploading', 'agent_workspaces', 'orphans'] as const) {
       expect(results[category]).toMatchObject({ deleted: 0, objects: 0, failed: 0, skipped: true });
     }
     expect(results.projects.deleted).toBe(1);
@@ -867,27 +999,34 @@ describe('对象存储：先删对象，成功后再删行', () => {
     expect(await exists('projects', project)).toBe(false);
   });
 
-  it('孤儿对象：只删除超过 7 天、形如 org/{org}/files|artifacts/{id} 且没有对应行的对象', async () => {
+  it('孤儿对象：只删除超过 7 天、形如 org/{org}/files|artifacts|agent-workspaces/{id} 且没有对应行的对象', async () => {
     const ctx = await newOrg();
     const live = await insertFile(ctx);
+    const snapshot = await insertSnapshot(ctx, await insertProject(ctx));
     const recentDeleted = await insertFile(ctx, { deletedAgo: 6 * DAY });
     const backdate = (key: string, ageMs: number) => store.objects.set(key, { body: Buffer.from('x'), lastModified: ago(ageMs) });
     backdate(live.key, 30 * DAY);
     backdate(recentDeleted.key, 30 * DAY);
+    backdate(snapshot.key, 30 * DAY);
+    const oldOrphanSnapshot = `org/${ctx.orgId}/agent-workspaces/${randomUUID()}`;
+    // 快照的 id 放在产物的路径下：键与行的 storage_key 不符，仍是孤儿。
+    const snapshotIdAsArtifact = `org/${ctx.orgId}/artifacts/${snapshot.id}`;
     const oldOrphanFile = `org/${ctx.orgId}/files/${randomUUID()}`;
     const oldOrphanArtifact = `org/${ctx.orgId}/artifacts/${randomUUID()}`;
     const youngOrphan = `org/${ctx.orgId}/files/${randomUUID()}`;
     // 另一个组织前缀下、id 与本组织文件相同的对象：键不同，仍是孤儿。
     const otherOrgSameId = `org/${randomUUID()}/files/${live.id}`;
     const unknownShapes = [`org/${ctx.orgId}/exports/${randomUUID()}`, `org/${ctx.orgId}/files/${randomUUID()}/extra`, `org/${ctx.orgId}/files/NOT-A-UUID`];
-    for (const key of [oldOrphanFile, oldOrphanArtifact, otherOrgSameId, ...unknownShapes]) backdate(key, ORPHAN_MIN_AGE_MS + HOUR);
+    for (const key of [oldOrphanFile, oldOrphanArtifact, otherOrgSameId, oldOrphanSnapshot, snapshotIdAsArtifact, ...unknownShapes]) {
+      backdate(key, ORPHAN_MIN_AGE_MS + HOUR);
+    }
     backdate(youngOrphan, ORPHAN_MIN_AGE_MS - HOUR);
     backdate('tmp/other', 30 * DAY);
 
     const results = byCategory(await newCleaner().cleaner.runBatch());
-    expect(results.orphans).toMatchObject({ deleted: 3, objects: 3, failed: 0 });
-    expect([oldOrphanFile, oldOrphanArtifact, otherOrgSameId].some((key) => store.objects.has(key))).toBe(false);
-    for (const key of [live.key, recentDeleted.key, youngOrphan, 'tmp/other', ...unknownShapes]) expect(store.objects.has(key), key).toBe(true);
+    expect(results.orphans).toMatchObject({ deleted: 5, objects: 5, failed: 0 });
+    expect([oldOrphanFile, oldOrphanArtifact, otherOrgSameId, oldOrphanSnapshot, snapshotIdAsArtifact].some((key) => store.objects.has(key))).toBe(false);
+    for (const key of [live.key, recentDeleted.key, snapshot.key, youngOrphan, 'tmp/other', ...unknownShapes]) expect(store.objects.has(key), key).toBe(true);
   });
 
   it('孤儿对象分批扫描：每批从上次停下的位置继续，到末尾后从头开始；删除失败计入 failed', async () => {
@@ -909,7 +1048,7 @@ describe('对象存储：先删对象，成功后再删行', () => {
 describe('日志', () => {
   beforeEach(drain);
 
-  it('每批按九个类别各记一行结构化日志：删除条数、对象数、失败数、耗时，不含对象键、文件名和 id', async () => {
+  it('每批按十个类别各记一行结构化日志：删除条数、对象数、失败数、耗时，不含对象键、文件名和 id', async () => {
     const ctx = await newOrg();
     const secretName = `机密投标-${randomBytes(4).toString('hex')}.pdf`;
     const file = await insertFile(ctx, { deletedAgo: 8 * DAY, name: secretName });

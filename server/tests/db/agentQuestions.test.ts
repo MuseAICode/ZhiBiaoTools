@@ -767,6 +767,7 @@ describe('回滚 0039', () => {
     await database.destroy();
     const migrator = connect(testDb.ownerConfig);
     try {
+      expect((await migrateDown(migrator)).results?.map((result) => result.migrationName)).toEqual(['0040_agent_workspace_snapshots']);
       const down = await migrateDown(migrator);
       expect(down.error).toBeUndefined();
       expect(down.results?.map((result) => result.migrationName)).toEqual(['0039_agent_questions']);

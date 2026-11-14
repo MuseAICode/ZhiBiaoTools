@@ -583,6 +583,7 @@ describe('回滚 0034', () => {
     await database.destroy();
     const migrator = connect(testDb.ownerConfig);
     try {
+      expect((await migrateDown(migrator)).results?.map((result) => result.migrationName)).toEqual(['0040_agent_workspace_snapshots']);
       expect((await migrateDown(migrator)).results?.map((result) => result.migrationName)).toEqual(['0039_agent_questions']);
       expect((await migrateDown(migrator)).results?.map((result) => result.migrationName)).toEqual(['0038_agent_failure_reports']);
       expect((await migrateDown(migrator)).results?.map((result) => result.migrationName)).toEqual(['0037_agent_tool_calls']);
