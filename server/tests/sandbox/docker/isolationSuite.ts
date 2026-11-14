@@ -118,6 +118,14 @@ function hostThreads(): number {
   return Number(readFileSync('/proc/loadavg', 'utf8').split(' ')[3]!.split('/')[1]);
 }
 
+/**
+ * gVisor 下沙箱内的进程数到达 pids 上限时，runsc 自己（Sentry / gofer 的线程同在容器的 cgroup 中）也可能建不出线程，
+ * exec 的控制通道随之断开：exec 以非 0 返回，stderr 为 runsc 的 urpc 错误（例如 `waiting on PID 3 in sandbox …: urpc method
+ * "containerManager.WaitPID" failed: EOF`），容器却仍在运行。这是上限生效的一种表现，不是测试环境的偶发故障；调用方（worker）在任何
+ * 非 0 退出后都销毁沙箱，测试按同样的方式处理并断言资源确实被收回。
+ */
+const CONTROL_CHANNEL_LOST = /urpc method "[^"]+" failed|waiting on PID \d+ in sandbox/;
+
 /** 在 operation 执行期间每 100 ms 采样一次，返回采到的最小值和最大值。 */
 async function sampleDuring<T>(read: () => number, operation: Promise<T>): Promise<{ result: T; min: number; max: number }> {
   let min = read();
@@ -138,6 +146,16 @@ async function sampleDuring<T>(read: () => number, operation: Promise<T>): Promi
 export function defineIsolationSuite(target: IsolationTarget, harness: IsolationHarness = createIsolationHarness(target.template, target.image)) {
   const template = SANDBOX_TEMPLATES[target.template];
   const { driver, createSandbox, run, sh, probe, weakenedDriver, expectHostHealthy } = harness;
+
+  /** 显式销毁沙箱，断言容器已删除、宿主线程数在 10 秒内回落到 before 附近、宿主照常可用。 */
+  const destroyAndExpectReclaimed = async (ref: SandboxRef, before: number) => {
+    await driver.destroy(ref);
+    expect(await docker.inspectContainer(`zhibiao-sandbox-${ref.id}`)).toBeNull();
+    const deadline = Date.now() + 10_000;
+    while (hostThreads() - before >= 64 && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 200));
+    expect(hostThreads() - before).toBeLessThan(64);
+    await expectHostHealthy();
+  };
   const inputDirectory = template.input.directory;
   const outputDirectory = template.output.directory;
   const ext = target.outputExtension;
@@ -340,9 +358,23 @@ export function defineIsolationSuite(target: IsolationTarget, harness: Isolation
 
     it('limits the number of processes', async () => {
       const ref = await createSandbox();
-      const result = await probe<{ spawned: number; error: string | null }>(ref, spawnMany);
-      expect(result.spawned).toBeLessThan(template.pidsLimit);
-      expect(result.error).not.toBeNull();
+      const before = hostThreads();
+      const { result, max } = await sampleDuring(hostThreads, run(ref, ['node', '-e', spawnMany]));
+      const controlLost = result.exitCode !== 0 && CONTROL_CHANNEL_LOST.test(result.stderr);
+      console.info(JSON.stringify({ runtime: sandboxEnv.runtime, template: target.template, pidsLimit: { exitCode: result.exitCode, controlLost, hostThreadDelta: max - before, stderr: result.stderr.slice(0, 200) } }));
+      // 宿主线程的增量受 pids 上限约束（两种结果都要满足）。
+      expect(max - before).toBeLessThan(template.pidsLimit + 64);
+      if (controlLost) {
+        // 只有 gVisor 会出现（runc 下 exec 由 Docker 守护进程执行，不受容器的 pids 上限影响）；对照组（去掉上限）不会出现，
+        // 且必须全部启动，证明是上限而不是别的原因使控制通道断开。
+        expect(sandboxEnv.runtime).toBe('runsc');
+      } else {
+        expect(result.exitCode, result.stderr).toBe(0);
+        const outcome = JSON.parse(result.stdout) as { spawned: number; error: string | null };
+        expect(outcome.spawned).toBeLessThan(template.pidsLimit);
+        expect(outcome.error).not.toBeNull();
+      }
+      await destroyAndExpectReclaimed(ref, before);
     });
 
     it('control: without the pids limit the same processes start', async () => {
@@ -351,6 +383,7 @@ export function defineIsolationSuite(target: IsolationTarget, harness: Isolation
       });
       const ref = await createSandbox(weakened);
       const result = await probe<{ spawned: number; error: string | null }>(ref, spawnMany, weakened);
+      // 没有上限时全部启动，控制通道也不会断开（probe 要求 exec 以 0 返回）。
       expect(result.spawned).toBe(attempts);
     });
 
@@ -370,14 +403,9 @@ export function defineIsolationSuite(target: IsolationTarget, harness: Isolation
       if (result.timedOut) expect(sandboxAlive).toBe(false);
       // 宿主线程的增量受 pids 上限约束（runc 下沙箱内的进程即宿主进程；gVisor 下是 Sentry 的线程，同样在容器的 cgroup 中）。
       expect(max - before).toBeLessThan(template.pidsLimit + 64);
-      // gVisor 下炸弹会使 runsc 的控制通道断开（exec 以 128 返回），容器却仍在运行；调用方在任何非 0 退出后都必须销毁沙箱，
-      // 销毁后容器不存在、宿主线程数回落。
-      await driver.destroy(ref);
-      expect(await docker.inspectContainer(`zhibiao-sandbox-${ref.id}`)).toBeNull();
-      const deadline = Date.now() + 10_000;
-      while (hostThreads() - before >= 64 && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 200));
-      expect(hostThreads() - before).toBeLessThan(64);
-      await expectHostHealthy();
+      // gVisor 下炸弹会使 runsc 的控制通道断开（exec 以 128 返回，见 CONTROL_CHANNEL_LOST），容器却仍在运行；调用方在任何非 0 退出后
+      // 都必须销毁沙箱，销毁后容器不存在、宿主线程数回落。
+      await destroyAndExpectReclaimed(ref, before);
     });
 
     it('stops writes when a scratch directory is full and does not touch the host disk', async () => {
