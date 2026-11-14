@@ -14,11 +14,11 @@ import type { FastifyInstance } from 'fastify';
 import type { Redis } from 'ioredis';
 import { sql, type Kysely } from 'kysely';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
-import { createAskUserTool } from '../../src/agent/askUserTool.ts';
+import { ASK_USER_WAIT_MS, askUserTool, createAskUserTool } from '../../src/agent/askUserTool.ts';
 import { AGENT_TASK_LIMITS } from '../../src/agent/budget.ts';
 import { buildAgentEndpointApp } from '../../src/agent/endpoint.ts';
 import { buildAgentGateway } from '../../src/agent/gateway.ts';
-import { normalizeAgentQuestion } from '../../src/agent/questions.ts';
+import { AGENT_QUESTION_MAX_LENGTH, AGENT_QUESTION_TIMEOUT_SECONDS, normalizeAgentQuestion } from '../../src/agent/questions.ts';
 import { reportFailureTool } from '../../src/agent/reportFailureTool.ts';
 import { AGENT_RELAY_KEY_HEADER } from '../../src/agent/token.ts';
 import { issueAgentJobToken, lookupAgentJobToken } from '../../src/agent/tokenStore.ts';
@@ -300,6 +300,17 @@ describe('规范化与选项规则（纯函数）', () => {
   });
 });
 
+describe('等待调用与工具上限（常量）', () => {
+  it('一个问题从提问到超时暂停的重复等待调用远低于每分钟与每任务上限', () => {
+    // 10 分钟 / 50 秒 = 12 次，加上首次与边界共至多 13 次；任一分钟内至多 2 次（50 秒一次，加上同一分钟内的首次）。
+    const callsPerQuestion = Math.ceil((AGENT_QUESTION_TIMEOUT_SECONDS * 1000) / ASK_USER_WAIT_MS) + 1;
+    expect(callsPerQuestion).toBe(13);
+    expect(Math.ceil(60_000 / ASK_USER_WAIT_MS) + 1).toBeLessThanOrEqual(askUserTool.maxCallsPerMinute / 5);
+    // 每任务累计上限够约 150 个问题都等到超时（跨执行累计）。
+    expect(askUserTool.maxCallsPerJob / callsPerQuestion).toBeGreaterThanOrEqual(150);
+  });
+});
+
 describe('ask-user 工具', () => {
   it('对照组：提问后等待，回答后同一调用取回答案（字段与桌面版相同），推送问题状态；只影响令牌的任务', async () => {
     const owner = await newOrg();
@@ -340,6 +351,29 @@ describe('ask-user 工具', () => {
     expect((await ask(token)).body.result).toMatchObject({ answered: false });
     expect((await questionsOf(run.jobId)).map((row) => row.status)).toEqual(['consumed', 'pending']);
   });
+
+  it('连续 13 次等待调用（相当于等满 10 分钟）都成功：计入工具调用次数，不计入模型轮数、不产生费用与用量记录', async () => {
+    const owner = await newOrg();
+    const { run, token } = await tokenFor(owner);
+    for (let index = 0; index < 13; index += 1) {
+      const response = await ask(token);
+      expect(response.status, `第 ${index + 1} 次`).toBe(200);
+      expect(response.body.result).toMatchObject({ answered: false, pending: true });
+    }
+    expect(await questionsOf(run.jobId)).toHaveLength(1);
+    const calls = await superuser.selectFrom('agent_tool_calls').select(['tool', 'calls']).where('job_id', '=', run.jobId).execute();
+    expect(calls).toEqual([{ tool: 'ask-user', calls: 13 }]);
+    const budget = await superuser.selectFrom('agent_job_budgets').select('turns_used').where('job_id', '=', run.jobId).executeTakeFirstOrThrow();
+    expect(budget.turns_used).toBe(0);
+    const job = await superuser.selectFrom('jobs').select('billed_amount').where('id', '=', run.jobId).executeTakeFirstOrThrow();
+    expect(BigInt(job.billed_amount)).toBe(0n);
+    const usage = await superuser.selectFrom('usage_records').select('id').where('job_id', '=', run.jobId).execute();
+    expect(usage).toEqual([]);
+    // 之后回答，第 14 次调用取回答案（仍在上限内）。
+    const [question] = await questionsOf(run.jobId);
+    await answerJobQuestion(deps(), owner.context, run.jobId, { questionId: question!.id, optionIndex: 0 });
+    expect((await ask(token)).body.result).toMatchObject({ answered: true });
+  }, 60_000);
 
   it('本次执行已有另一个问题在等待 → 409 AGENT_QUESTION_PENDING，不新建', async () => {
     const owner = await newOrg();
@@ -440,6 +474,24 @@ describe('回答', () => {
     const other = await tokenFor(owner);
     await expectCode(answerJobQuestion(deps(), owner.context, other.run.jobId, { questionId: id, optionIndex: 0 }), 'AGENT_QUESTION_NOT_FOUND');
     expect((await questionsOf(run.jobId))[0]).toMatchObject({ status: 'pending' });
+  });
+
+  it('自定义回答按不可信文本清理：去掉控制、双向与零宽字符，统一换行、合并空行、首尾去空白，按码点截断到 2,000 个字符', async () => {
+    const owner = await newOrg();
+    const ch = (code: number) => String.fromCodePoint(code);
+    const cases: [string, string][] = [
+      [`  第一行${ch(0)}${ch(0x7)}${ch(0x9b)}\r\n\r\n\r\n第二${ch(0x202e)}行${ch(0x200b)}${ch(0xfeff)}\t结束${ch(0x2028)}  `, '第一行\n\n第二行 结束'],
+      ['<script>alert(1)</script> [链接](javascript:x)', '<script>alert(1)</script> [链接](javascript:x)'],
+      ['𠀀'.repeat(AGENT_QUESTION_MAX_LENGTH + 5), '𠀀'.repeat(AGENT_QUESTION_MAX_LENGTH)],
+    ];
+    for (const [raw, expected] of cases) {
+      const { run, token } = await tokenFor(owner);
+      const pending = ask(token);
+      const question = await waitFor(async () => (await questionsOf(run.jobId))[0], 5_000, '问题写入');
+      await answerJobQuestion(deps(), owner.context, run.jobId, { questionId: question.id, optionIndex: 2, customAnswer: raw });
+      expect((await questionsOf(run.jobId))[0]!.answer_text).toBe(expected);
+      expect((await pending).body.result).toMatchObject({ answered: true, answer: expected, is_custom: true });
+    }
   });
 
   it('任务已结束（取消）→ 409 JOB_FINISHED', async () => {
