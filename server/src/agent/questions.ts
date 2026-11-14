@@ -132,9 +132,17 @@ async function lockCurrentRun(trx: Trx, ref: AgentQuestionRef): Promise<boolean>
   return (await findAgentFailureReport(trx, ref.jobId, ref.runId)) === null;
 }
 
-async function consume(trx: Trx, ref: AgentQuestionRef, row: QuestionRow): Promise<AgentQuestionState> {
+/**
+ * 答案交给本次执行时、在同一个事务中调用（任务行已锁住，任务仍是本次执行且没有失败报告）。8.4c2 的 request-termination
+ * 据此在用户选择终止时写入失败报告：抛出错误时整个事务回滚，问题仍为 answered。
+ */
+export type AgentAnswerConsumedHook = (trx: Trx, answer: AgentAnswer) => Promise<void>;
+
+async function consume(trx: Trx, ref: AgentQuestionRef, row: QuestionRow, onConsumed?: AgentAnswerConsumedHook): Promise<AgentQuestionState> {
   await trx.updateTable('agent_questions').set({ status: 'consumed', consumed_run_id: ref.runId }).where('id', '=', row.id).execute();
-  return { kind: 'answered', questionId: row.id, answer: answerOf(row) };
+  const answer = answerOf(row);
+  await onConsumed?.(trx, answer);
+  return { kind: 'answered', questionId: row.id, answer };
 }
 
 const QUESTION_COLUMNS = ['id', 'run_id', 'content_hash', 'status', 'options', 'answer_option', 'answer_text'] as const;
@@ -143,7 +151,12 @@ const QUESTION_COLUMNS = ['id', 'run_id', 'content_hash', 'status', 'options', '
  * 提出问题（在 withTenant 的事务中调用）。同一个问题（按 content_hash）已回答的直接取回答案；等待中的继续等待
  * （续跑时由本次执行接手、重新计时）；旧执行的另一个问题作废后新建；本次执行已有另一个问题在等待时返回 conflict。
  */
-export async function openAgentQuestion(trx: Trx, ref: AgentQuestionRef, question: NormalizedAgentQuestion): Promise<AgentQuestionState> {
+export async function openAgentQuestion(
+  trx: Trx,
+  ref: AgentQuestionRef,
+  question: NormalizedAgentQuestion,
+  onConsumed?: AgentAnswerConsumedHook,
+): Promise<AgentQuestionState> {
   if (!(await lockCurrentRun(trx, ref))) return { kind: 'not-running' };
   const open = (await trx
     .selectFrom('agent_questions')
@@ -153,7 +166,7 @@ export async function openAgentQuestion(trx: Trx, ref: AgentQuestionRef, questio
     .forUpdate()
     .executeTakeFirst()) as QuestionRow | undefined;
   if (open && open.content_hash.equals(question.contentHash)) {
-    if (open.status === 'answered') return consume(trx, ref, open);
+    if (open.status === 'answered') return consume(trx, ref, open, onConsumed);
     if (open.run_id === ref.runId) return { kind: 'pending', questionId: open.id, created: false };
     await trx.updateTable('agent_questions').set({ run_id: ref.runId, status: 'pending' }).where('id', '=', open.id).execute();
     return { kind: 'pending', questionId: open.id, created: true };
@@ -182,13 +195,13 @@ export async function openAgentQuestion(trx: Trx, ref: AgentQuestionRef, questio
 }
 
 /** 等待中检查一次（在 withTenant 的事务中调用）：已回答即取回答案；问题被作废、任务不在本次执行中时 not-running。 */
-export async function pollAgentQuestion(trx: Trx, ref: AgentQuestionRef, questionId: string): Promise<AgentQuestionState> {
+export async function pollAgentQuestion(trx: Trx, ref: AgentQuestionRef, questionId: string, onConsumed?: AgentAnswerConsumedHook): Promise<AgentQuestionState> {
   if (!(await lockCurrentRun(trx, ref))) return { kind: 'not-running' };
   const row = (await trx.selectFrom('agent_questions').select(QUESTION_COLUMNS).where('id', '=', questionId).where('job_id', '=', ref.jobId).forUpdate().executeTakeFirst()) as
     | QuestionRow
     | undefined;
   if (!row) return { kind: 'not-running' };
-  if (row.status === 'answered') return consume(trx, ref, row);
+  if (row.status === 'answered') return consume(trx, ref, row, onConsumed);
   if (row.status === 'pending' && row.run_id === ref.runId) return { kind: 'pending', questionId: row.id, created: false };
   return { kind: 'not-running' };
 }

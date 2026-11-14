@@ -11,7 +11,8 @@
 // - 执行者在下一次续租时发现报告（工具写入后经任务控制频道立即触发一次续租），中止本次执行；结束时（finishRun）以及执行者失联后
 //   对账收回时（recoverJob），只要本次执行有报告，任务即以 AGENT_REPORTED_FAILURE 失败（已请求取消的仍为取消），不再暂停或续跑。
 //
-// 由用户决定是否终止（桌面版的 requestTerminationDecision）随 8.4c2 加入（复用 8.4c1 的 ask-user 问题与回答，src/agent/questions.ts）。
+// 由用户决定是否终止（桌面版的 requestTerminationDecision）是另一个工具 request-termination（8.4c2，src/agent/requestTerminationTool.ts，
+// 复用 8.4c1 的问题与回答）：用户选择终止时同样写入这里的报告。一个任务类型只登记两者之一。
 import { sql, type Transaction } from 'kysely';
 import { AGENT_FAILURE_REASON_MAX_LENGTH } from '../db/migrations/0038_agent_failure_reports.ts';
 import type { Database } from '../db/schema.ts';

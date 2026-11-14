@@ -162,6 +162,12 @@ const TYPE_PATTERN = new RegExp(JOB_TYPE_PATTERN);
 const TOOL_NAME_PATTERN = new RegExp(AGENT_TOOL_NAME_PATTERN);
 const isValidAgentToolName = (name: unknown) => typeof name === 'string' && TOOL_NAME_PATTERN.test(name);
 
+/**
+ * 只能登记其中一个的业务工具：report-failure（8.4b，直接报告失败，供失败交回父 Agent 的任务）与 request-termination
+ * （8.4c2，由用户决定是否终止）。两者都登记时被注入的 Agent 可以绕过用户的决定直接结束任务。
+ */
+export const AGENT_EXCLUSIVE_TOOLS: readonly (readonly string[])[] = [['report-failure', 'request-termination']];
+
 export function createJobTypeRegistry(definitions: readonly JobTypeDefinition<any>[]): JobTypeRegistry {
   const byType = new Map<string, JobTypeDefinition>();
   for (const definition of definitions) {
@@ -180,6 +186,11 @@ export function createJobTypeRegistry(definitions: readonly JobTypeDefinition<an
       const names = definition.agentTools;
       if (!Array.isArray(names) || !names.every(isValidAgentToolName) || new Set(names).size !== names.length) {
         throw new TypeError(`任务类型 ${definition.type} 登记的业务工具不合法`);
+      }
+      for (const group of AGENT_EXCLUSIVE_TOOLS) {
+        if (group.filter((name) => names.includes(name)).length > 1) {
+          throw new TypeError(`任务类型 ${definition.type}：业务工具 ${group.join('、')} 只能登记其中一个`);
+        }
       }
     }
     byType.set(definition.type, definition);

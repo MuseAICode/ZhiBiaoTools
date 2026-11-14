@@ -674,7 +674,7 @@ agent-gw 登记 `POST /v1/tools/call`（请求体上限 1 MiB，`AGENT_TOOL_MAX_
 
 ### 7.16 实现（路线图 8.4b）：Agent 报告无法继续
 
-业务工具 `report-failure`（`src/agent/reportFailureTool.ts`）供 Agent 报告无法按要求继续的原因，与桌面版 `piTaskFailureTool.cjs` 的“直接报告”相同；“由用户决定是否终止”随 8.4c2 加入（复用第 7.17 节的 ask-user 机制）。
+业务工具 `report-failure`（`src/agent/reportFailureTool.ts`）供 Agent 报告无法按要求继续的原因，与桌面版 `piTaskFailureTool.cjs` 的“直接报告”相同；“由用户决定是否终止”是另一个工具 `request-termination`（8.4c2，第 7.18 节），一个任务类型只登记两者之一。
 
 - **参数**：只有 `reason`（1～500 个字符）。原因是沙箱给出的不可信文本，服务端规范化为纯文本（`normalizeAgentFailureReason`：去掉控制字符、双向文本控制与零宽字符，合并空行，首尾去空白，按码点截断），为空时 400；只作为纯文本保存与显示，不转义、不解析。
 - **存储**（迁移 `0038_agent_failure_reports`）：每次执行（`run_id`）至多一行，只记第一次；强制 RLS，只能为本组织 `running`、`run_id` 相符的 Agent 任务写入，没有 UPDATE、DELETE；随任务删除。
@@ -693,6 +693,17 @@ agent-gw 登记 `POST /v1/tools/call`（请求体上限 1 MiB，`AGENT_TOOL_MAX_
 - **回答**：`POST /api/jobs/:jobId/answer`（`{ questionId, optionIndex, customAnswer? }`），限任务发起人或 `owner` / `admin`（其他成员 403 `JOB_ANSWER_FORBIDDEN`）；选项序号越界、自定义选项没有输入、普通选项带输入 400，问题已回答或已作废 409，任务已结束 409。任务因等待超时暂停时，回答后回到 `queued` 并派发（照常检查最低启动余额与当日运行时长，不足时什么都不改），续跑时 Agent 再次提出同一个问题（按 `content_hash`）立即取回答案；续跑中提出了不同的问题时旧问题作废。回答写入任务事件（不含回答内容）。
 - **推送与读取**：SSE 新增 `job.question` 事件（`{ jobId, projectId, type, questionId, status }`，不含问题内容）；`GET /api/jobs/:jobId` 返回 `pendingQuestion`（问题、选项、提问时间与执行中超时暂停的时间）。
 - **显示**（第 9 步）：问题与选项标明“由 AI 生成”、按纯文本显示（`allowRawHtml={false}`、`linkMode="text"`），提示“不要在此输入密码等敏感信息”（威胁模型 T10）。
+
+### 7.18 实现（路线图 8.4c2）：Agent 请求终止、由用户决定
+
+业务工具 `request-termination`（`src/agent/requestTerminationTool.ts`）对应桌面版 `piTaskFailureTool.cjs` 的 `requestTerminationDecision` 分支：Agent 判断无法按要求继续时请求终止，是否终止由用户决定。
+
+- **与 `report-failure` 二选一**：失败交回父 Agent 的任务（桌面版 `failure_handled_by_parent`）登记 `report-failure`（第 7.16 节，直接报告）；其余任务登记 `request-termination`。`createJobTypeRegistry` 拒绝同时登记两者的任务类型（否则被注入的 Agent 可以绕过用户的决定直接结束任务）。沙箱内面向模型的工具名仍为 `report-failure`，桩按任务类型登记的工具转发（8.6）。
+- **参数**：只有 `reason`（与 `report-failure` 相同，1～500 个字符，按纯文本规范化，为空 400）。问题与三个选项（“降低质量继续”（推荐）、“终止任务”、“补充处理要求”（自定义输入））由服务端按桌面版的固定文字生成，Agent 不能提供或修改选项。
+- **提问与等待**：经第 7.17 节的同一套存储、等待、超时暂停与回答接口（`agent_questions`、`POST /api/jobs/:jobId/answer`、`job.question`）；未回答返回 `{ answered: false, pending: true }`，桩以相同参数再次调用；本次执行已有另一个问题在等待 409 `AGENT_QUESTION_PENDING`。上限：每个任务 300 次、每分钟 20 次（一次请求等到超时约 13 次调用）。
+- **用户选择终止**：在取回答案的同一个事务中（任务行已锁住，仍是本次执行且没有报告）写入失败报告（第 7.16 节的 `agent_failure_reports`，原因后附“（已按您的选择终止任务）”，原因截短使合计不超过 500 个字符）；写入失败时整个事务回滚，问题仍为已回答，下次调用重试。随后通知执行者，任务以 `AGENT_REPORTED_FAILURE` 失败；工具返回 `{ terminated: true, reason }`。
+- **用户选择继续**：返回 `{ terminated: false, selected_option, user_reply?, instruction }`，`instruction` 是放宽后的执行要求（桌面版 `buildContinueInstruction` 的文字，补充要求附在最后）；不写报告。之后再次请求终止仍新建问题、由用户回答（桌面版此时不自动作答；Web 版没有自动确认，自然满足）。
+- **续跑**：等待超时暂停后回答，续跑时 Agent 以相同的 `reason` 再次请求即取回答案（按 `content_hash`）；选择终止的报告记在新的执行上。
 
 ## 8. 部署架构
 

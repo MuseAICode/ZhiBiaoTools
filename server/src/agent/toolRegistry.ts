@@ -2,6 +2,7 @@
 // 每个 Agent 任务类型在 JobTypeDefinition.agentTools 中列出自己可用的工具，worker 启动时检查都已登记。
 import { askUserTool } from './askUserTool.ts';
 import { reportFailureTool } from './reportFailureTool.ts';
+import { requestTerminationTool } from './requestTerminationTool.ts';
 import { createAgentToolRegistry, type AgentToolDefinition } from './tools.ts';
 
 export const AGENT_TOOLS: readonly AgentToolDefinition<any, any>[] = Object.freeze([
@@ -9,6 +10,8 @@ export const AGENT_TOOLS: readonly AgentToolDefinition<any, any>[] = Object.free
   reportFailureTool,
   // 8.4c1：Agent 向用户提问，等待回答（超过 10 分钟任务暂停为 waiting_for_user）。
   askUserTool,
+  // 8.4c2：Agent 请求终止，由用户决定是否终止（与 report-failure 二选一登记）。
+  requestTerminationTool,
 ]);
 
 export const agentToolRegistry = createAgentToolRegistry(AGENT_TOOLS);
