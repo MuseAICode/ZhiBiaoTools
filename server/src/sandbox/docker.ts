@@ -465,12 +465,15 @@ export function createDockerSandboxDriver(options: DockerSandboxDriverOptions): 
 
     copyInArchive,
 
-    async exec(sandbox, command, args, operationOptions = {}) {
+    async exec(sandbox, command, args, execOptions = {}) {
       const resolved = resolveCommand(templateOf(sandbox), command, args);
       if (!resolved) throw new SandboxError('SANDBOX_BAD_REQUEST', '沙箱命令或参数不合法');
+      const { input, ...operationOptions } = execOptions;
+      // 标准输入只给登记了上限的命令（agent 的入口），其余命令的标准输入不接上。
+      if (input !== undefined && !(Buffer.isBuffer(input) && input.length <= resolved.maxInputBytes)) throw new SandboxError('SANDBOX_BAD_REQUEST', '沙箱命令的输入不合法');
       try {
         const { containerId } = await resolveContainer(sandbox.id, sandbox.jobId);
-        return await runExec(containerId, resolved.argv, { timeoutMs: resolved.timeoutMs, ...operationOptions }, null);
+        return await runExec(containerId, resolved.argv, { timeoutMs: resolved.timeoutMs, ...operationOptions, ...(input !== undefined ? { stdin: input } : {}) }, null);
       } catch (error) {
         throw wrap(error, 'exec');
       }

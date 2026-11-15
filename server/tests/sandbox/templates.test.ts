@@ -46,7 +46,7 @@ describe('parse template', () => {
   });
 
   it('only resolves registered commands with well-formed arguments', () => {
-    expect(resolveCommand(parse, 'parse', ['docx'])).toEqual({ argv: ['node', '/opt/parse/entry.mjs', 'docx'], timeoutMs: 600_000 });
+    expect(resolveCommand(parse, 'parse', ['docx'])).toEqual({ argv: ['node', '/opt/parse/entry.mjs', 'docx'], timeoutMs: 600_000, maxInputBytes: 0 });
     expect(resolveCommand(parse, 'sh', [])).toBeNull();
     expect(resolveCommand(parse, 'toString', [])).toBeNull();
     expect(resolveCommand(parse, '__proto__', [])).toBeNull();
@@ -126,9 +126,9 @@ describe('export templates', () => {
   });
 
   it('only runs the export entry with the mode fixed by the template', () => {
-    expect(resolveCommand(SANDBOX_TEMPLATES['export-preview'], 'export', [])).toEqual({ argv: ['node', '/opt/export/entry.mjs', 'preview'], timeoutMs: 60_000 });
-    expect(resolveCommand(SANDBOX_TEMPLATES['export-document'], 'export', [])).toEqual({ argv: ['node', '/opt/export/entry.mjs', 'document'], timeoutMs: 1_200_000 });
-    expect(resolveCommand(SANDBOX_TEMPLATES['export-feasibility'], 'export', [])).toEqual({ argv: ['node', '/opt/export/entry.mjs', 'feasibility'], timeoutMs: 1_200_000 });
+    expect(resolveCommand(SANDBOX_TEMPLATES['export-preview'], 'export', [])).toEqual({ argv: ['node', '/opt/export/entry.mjs', 'preview'], timeoutMs: 60_000, maxInputBytes: 0 });
+    expect(resolveCommand(SANDBOX_TEMPLATES['export-document'], 'export', [])).toEqual({ argv: ['node', '/opt/export/entry.mjs', 'document'], timeoutMs: 1_200_000, maxInputBytes: 0 });
+    expect(resolveCommand(SANDBOX_TEMPLATES['export-feasibility'], 'export', [])).toEqual({ argv: ['node', '/opt/export/entry.mjs', 'feasibility'], timeoutMs: 1_200_000, maxInputBytes: 0 });
     expect(resolveCommand(SANDBOX_TEMPLATES['export-feasibility'], 'export', ['document'])).toBeNull();
     expect(resolveCommand(SANDBOX_TEMPLATES['export-preview'], 'export', ['document'])).toBeNull();
     expect(resolveCommand(SANDBOX_TEMPLATES['export-preview'], 'export', [''])).toBeNull();
@@ -175,16 +175,30 @@ describe('agent templates (8.1)', () => {
     expect(template.output.extensions!.has('html')).toBe(true);
     for (const extension of ['sh', 'js', 'mjs', 'exe', 'so', 'docx', '']) expect(template.output.extensions!.has(extension), extension).toBe(false);
     expect(template.input).toMatchObject({ directory: '/workspace', maxFiles: 10_000, maxTotalBytes: 512 * MIB, extensions: null });
-    // 入口随 8.6 登记，8.1 没有可执行的命令。
-    expect(template.commands).toEqual({});
+    // 8.6a：只有入口命令 run，不接受参数，请求（含任务令牌）经标准输入传入，至多 1 MiB；命令墙钟即任务墙钟。
+    expect(Object.keys(template.commands)).toEqual(['run']);
+    const wallClock = name === 'agent' ? 30 * 60_000 : 120 * 60_000;
+    expect(resolveCommand(template, 'run', [])).toEqual({ argv: ['/usr/local/bin/node', '/opt/agent/entry.mjs'], timeoutMs: wallClock, maxInputBytes: MIB });
+    expect(template.lifetimeMs).toBeGreaterThanOrEqual(wallClock + 2 * template.transferTimeoutMs);
+    for (const args of [[''], ['--eval=process.exit()'], ['/workspace/x.mjs'], ['agt_' + 'a'.repeat(43)]]) expect(resolveCommand(template, 'run', args), args[0]).toBeNull();
     expect(resolveCommand(template, 'sh', ['-c', 'id'])).toBeNull();
+    expect(resolveCommand(template, 'toString', [])).toBeNull();
   });
 
-  it('agent-content differs from agent only in its lifetime (task wall clock 2 hours instead of 30 minutes)', () => {
-    const { name, lifetimeMs, ...content } = SANDBOX_TEMPLATES['agent-content'];
-    const { name: agentName, lifetimeMs: agentLifetime, ...agent } = SANDBOX_TEMPLATES.agent;
+  it('only the agent entry accepts a request on standard input', () => {
+    for (const template of Object.values(SANDBOX_TEMPLATES)) {
+      for (const [name, command] of Object.entries(template.commands)) {
+        expect(command.maxInputBytes ?? 0, `${template.name}:${name}`).toBe(template.image === 'agent' ? MIB : 0);
+      }
+    }
+  });
+
+  it('agent-content differs from agent only in its lifetime and entry wall clock (task wall clock 2 hours instead of 30 minutes)', () => {
+    const { name, lifetimeMs, commands, ...content } = SANDBOX_TEMPLATES['agent-content'];
+    const { name: agentName, lifetimeMs: agentLifetime, commands: agentCommands, ...agent } = SANDBOX_TEMPLATES.agent;
     expect([name, agentName]).toEqual(['agent-content', 'agent']);
     expect(content).toEqual(agent);
+    expect({ ...commands.run, timeoutMs: 0 }).toEqual({ ...agentCommands.run, timeoutMs: 0 });
     expect(agentLifetime).toBeGreaterThanOrEqual(30 * 60_000 + 2 * agent.transferTimeoutMs);
     expect(lifetimeMs).toBeGreaterThanOrEqual(120 * 60_000 + 2 * agent.transferTimeoutMs);
   });

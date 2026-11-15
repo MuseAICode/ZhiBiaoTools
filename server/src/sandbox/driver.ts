@@ -30,6 +30,14 @@ export interface SandboxOperationOptions {
   signal?: AbortSignal;
 }
 
+export interface SandboxExecOptions extends SandboxOperationOptions {
+  /**
+   * 经标准输入交给命令的请求（路线图 8.6a，agent 的入口）：只有模板中登记了 maxInputBytes 的命令接收，大小不超过它；
+   * 其他命令带了、或超过上限时 SANDBOX_BAD_REQUEST，不执行。内容可能含任务令牌，不写进任何日志。
+   */
+  input?: Buffer;
+}
+
 export interface SandboxDriver {
   /** 按模板新建一个沙箱（一个任务一个，用完即毁）。 */
   create(template: SandboxTemplateName, options: { jobId: string } & SandboxOperationOptions): Promise<SandboxRef>;
@@ -40,8 +48,8 @@ export interface SandboxDriver {
    * SANDBOX_BAD_REQUEST。
    */
   copyIn(sandbox: SandboxRef, files: readonly SandboxInputFile[], options?: SandboxOperationOptions): Promise<void>;
-  /** 执行模板中登记的命令（如 parse），只能追加符合模板规则的参数。 */
-  exec(sandbox: SandboxRef, command: string, args: readonly string[], options?: SandboxOperationOptions): Promise<SandboxExecResult>;
+  /** 执行模板中登记的命令（如 parse），只能追加符合模板规则的参数；登记了 maxInputBytes 的命令可以经 input 接收请求。 */
+  exec(sandbox: SandboxRef, command: string, args: readonly string[], options?: SandboxExecOptions): Promise<SandboxExecResult>;
   /** 取回模板输出目录（parse 为 /output）中的文件，按模板逐项校验（src/sandbox/archive.ts），不符即整体拒绝。 */
   copyOut(sandbox: SandboxRef, options?: SandboxOperationOptions): Promise<SandboxFile[]>;
   /** 销毁沙箱；已不存在时也成功。 */

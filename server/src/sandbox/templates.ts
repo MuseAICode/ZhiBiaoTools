@@ -64,6 +64,11 @@ export interface SandboxCommand {
   readonly argPattern: RegExp;
   /** 单次执行的墙钟上限，超过即终止整个沙箱。 */
   readonly timeoutMs: number;
+  /**
+   * 经标准输入交给命令的请求（SandboxExecOptions.input）的字节上限；不给出（或为 0）时命令不接收标准输入，带了即拒绝。
+   * 只有 agent 的入口接收（路线图 8.6a：任务令牌与提示词经标准输入传入，不出现在 argv、容器环境与日志中）。
+   */
+  readonly maxInputBytes?: number;
 }
 
 export interface SandboxTemplate {
@@ -270,9 +275,26 @@ const AGENT_WORKSPACE: SandboxTransferLimits = Object.freeze({
  * /tmp 256 MiB（tmpfs 计入内存上限）。
  *
  * 任务墙钟按任务类型（正文生成 2 小时，其余 30 分钟），分成两个模板：沙箱最长存活为墙钟加放入、取回的时限，到期由 sandbox-runner
- * 销毁，不论 Agent 是否还在运行。Agent 的入口命令（命令墙钟即任务墙钟）随 8.6 登记；单条 bash 命令 5 分钟由入口执行，
- * 它只是 Agent 自身的约束，平台的控制是命令与沙箱的墙钟、cgroup 上限与网络。
+ * 销毁，不论 Agent 是否还在运行。单条 bash 命令 5 分钟由入口执行，它只是 Agent 自身的约束，平台的控制是命令与沙箱的墙钟、
+ * cgroup 上限与网络。
+ *
+ * 入口命令 run（8.6a，AGENT_ENTRY_COMMAND）：node /opt/agent/entry.mjs，不接受参数；请求（含任务令牌）经标准输入传入，
+ * 至多 AGENT_ENTRY_MAX_INPUT_BYTES；命令墙钟即任务墙钟（一次执行至多用完整个任务的墙钟，沙箱的最长存活兜底）。
  */
+export const AGENT_ENTRY_COMMAND = 'run';
+/** 入口请求（JSON，UTF-8）的上限：提示词与工具清单都在其中，Agent 读写的文件经工作区放入，不经请求。 */
+export const AGENT_ENTRY_MAX_INPUT_BYTES = 1024 * 1024;
+
+function agentEntryCommand(timeoutMs: number): SandboxCommand {
+  return Object.freeze({
+    argv: Object.freeze(['/usr/local/bin/node', '/opt/agent/entry.mjs']),
+    maxArgs: 0,
+    argPattern: /^$/,
+    timeoutMs,
+    maxInputBytes: AGENT_ENTRY_MAX_INPUT_BYTES,
+  });
+}
+
 const AGENT_TEMPLATE: SandboxTemplate = Object.freeze({
   name: 'agent',
   image: 'agent' as const,
@@ -290,16 +312,17 @@ const AGENT_TEMPLATE: SandboxTemplate = Object.freeze({
   // 放入的是 worker 选定的本任务文件与已经过取回校验的工作区快照，与 parse / export 相同不限扩展名；其余规则与取回相同。
   input: Object.freeze({ ...AGENT_WORKSPACE, extensions: null }),
   output: AGENT_WORKSPACE,
-  commands: Object.freeze({}),
+  commands: Object.freeze({ [AGENT_ENTRY_COMMAND]: agentEntryCommand(30 * 60_000) }),
   transferTimeoutMs: 5 * 60_000,
 });
 
-/** agent-content：正文生成（含章节重写、原方案还原）的 Agent 任务，任务墙钟 2 小时，其余与 agent 完全相同。 */
+/** agent-content：正文生成（含章节重写、原方案还原）的 Agent 任务，任务墙钟 2 小时（沙箱最长存活与入口命令的墙钟），其余与 agent 完全相同。 */
 const AGENT_CONTENT_TEMPLATE: SandboxTemplate = Object.freeze({
   ...AGENT_TEMPLATE,
   name: 'agent-content',
   // 任务墙钟 2 小时 + 放入与取回各 5 分钟，再留出余量。
   lifetimeMs: 135 * 60_000,
+  commands: Object.freeze({ [AGENT_ENTRY_COMMAND]: agentEntryCommand(120 * 60_000) }),
 });
 
 export const SANDBOX_TEMPLATES: Readonly<Record<SandboxTemplateName, SandboxTemplate>> = Object.freeze({
@@ -315,15 +338,15 @@ export function isSandboxTemplateName(value: unknown): value is SandboxTemplateN
   return typeof value === 'string' && (SANDBOX_TEMPLATE_NAMES as readonly string[]).includes(value);
 }
 
-/** 校验命令参数并拼出完整的 argv；不合法时返回 null。 */
-export function resolveCommand(template: SandboxTemplate, name: string, args: readonly unknown[]): { argv: string[]; timeoutMs: number } | null {
+/** 校验命令参数并拼出完整的 argv；不合法时返回 null。maxInputBytes 为该命令经标准输入接收的请求上限（0 为不接收）。 */
+export function resolveCommand(template: SandboxTemplate, name: string, args: readonly unknown[]): { argv: string[]; timeoutMs: number; maxInputBytes: number } | null {
   if (!Object.hasOwn(template.commands, name)) return null;
   const command = template.commands[name]!;
   if (args.length > command.maxArgs) return null;
   for (const arg of args) {
     if (typeof arg !== 'string' || !command.argPattern.test(arg)) return null;
   }
-  return { argv: [...command.argv, ...(args as string[])], timeoutMs: command.timeoutMs };
+  return { argv: [...command.argv, ...(args as string[])], timeoutMs: command.timeoutMs, maxInputBytes: command.maxInputBytes ?? 0 };
 }
 
 export interface ContainerSpecOptions {

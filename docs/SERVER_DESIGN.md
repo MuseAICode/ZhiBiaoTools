@@ -733,6 +733,15 @@ agent-gw 登记 `POST /v1/tools/call`（请求体上限 1 MiB，`AGENT_TOOL_MAX_
 - **恢复** `restore(sandbox)`：由任务（8.6 的入口）在续跑、创建沙箱后调用；没有快照返回 `null`。快照不可用（`SANDBOX_INPUT_FAILED`，沙箱已被销毁）时丢弃该快照，任务以 `AGENT_WORKSPACE_RESTORE_FAILED` 失败，不自动从头开始（从头开始会重新调用模型、重新扣费，由用户决定是否重新发起）。
 - **丢弃**：任务成功完成后执行者丢弃该类别的快照（`keepAfterSuccess` 的除外，供之后的同类任务接着用，例如调整沿用生成的会话），失败只写日志；用户重置某类任务时由业务的重置入口调用 `discardAgentWorkspaceSnapshots`（8.7 起接入）。
 
+### 7.22 实现（路线图 8.6a）：agent 沙箱的入口与请求通道
+
+worker 经 sandbox-runner 执行 agent 模板登记的唯一命令 `run`（`node /opt/agent/entry.mjs`，不接受参数；命令墙钟即任务墙钟：`agent` 30 分钟、`agent-content` 2 小时）。
+
+- **请求只经标准输入**：模板命令新增 `maxInputBytes`（只有 agent 的 `run` 为 1 MiB，其余命令为 0、带了即拒绝）；`SandboxDriver.exec` 的 `input` 经 sandbox-runner 的 `POST /v1/sandboxes/:id/exec`（`input` 为严格的 base64）转为 exec 的标准输入。任务令牌只在请求中，不出现在 argv、容器环境（模板写死的三项）、Docker 记录的 exec 参数、工作区与 sandbox-runner / worker 的日志中；入口不把令牌放进自己的环境（之后由入口启动的 Agent 命令不会继承它）。令牌是本沙箱访问平台的凭据，沙箱内的代码（含 Agent）能拿到它不扩大权限（只对本任务、本次执行有效），所以这里的要求是“不落盘、不进日志、不进参数”，不把它当作对沙箱保密的秘密。
+- **协议**（`server/sandbox/agent/protocol.mjs`，只用 Node 内置模块）：请求为一个 UTF-8 的 JSON 对象，字段恰好是登记的那几个（版本、`action`、令牌），多余的一律拒绝；结果为标准输出上恰好一行 JSON，至多 16 KiB，退出码 0 表示成功、1 表示按协议报告的失败，失败只有固定代码（`BAD_REQUEST` / `TOKEN_INVALID` / `GATEWAY_UNAVAILABLE` / `GATEWAY_FAILED` / `INTERNAL`）与固定说明，不含请求、令牌与 agent-gw 的响应正文。
+- **worker 一侧**（`src/agent/entry.ts`）按不可信输入解析结果：超时、被终止、其他退出码、被截断、不是恰好一行、退出码与结果不一致、字段或取值不符一律 `AGENT_ENTRY_FAILED`；入口给出的说明文字不采用。
+- 8.6a 只有 `action = session`：入口经 `/etc/hosts` 中的 agent-gw 调用 `GET /v1/session`（第 7.12 节），确认令牌有效并返回到期时间（时限 15 秒、响应体至多 4 KiB、不跟随重定向）。Pi 会话（`action = prompt`）随 8.6b 加入同一协议。
+
 ## 8. 部署架构
 
 ### 8.0 部署位置（已决定，第 9 节第 13、14 项）
