@@ -272,6 +272,7 @@ async function runServer(type: string, params: unknown, options: { checkpoint?: 
     },
     objectStore: null,
     sandbox: null,
+    agentWorkspace: null,
   };
   try {
     await definition.run(context);

@@ -14,6 +14,7 @@
 //   Agent 任务的组织配额（8.3d，src/agent/quota.ts）：同一组织同时运行的 Agent 任务已满时认领延后（留在 queued 排队）；
 //   当日 Agent 运行时长用完时 queued ──认领──> paused、running ──续租时发现──> paused（pause_reason = agent_daily_runtime），
 //   次日经普通的“继续”回到 queued；入队与继续时已用完的拒绝（429）
+//   running ──保存 Agent 工作区快照时超出组织存储配额──> paused（pause_reason = storage_quota，8.5c）；用户删除文件后经普通的“继续”回到 queued
 //
 // 用户发起的操作（新建、查询、取消、暂停、继续）经 withTenant；worker 的系统操作（认领、续租、结束、对账）经 withOrgContext，
 // 只设置组织、不代表任何用户。worker 的每一次写入都带 run_id 条件：租约被收回后，原执行者的写入只影响 0 行。
@@ -57,6 +58,7 @@ import {
 import { AGENT_BUDGET_EXHAUSTED_REASONS, AGENT_BUDGET_MAX_COST_LIMIT, AGENT_BUDGET_MAX_TURN_LIMIT } from '../db/migrations/0033_agent_job_budgets.ts';
 import { AGENT_BUDGET_CONFIRM_ROLES } from '../db/migrations/0034_agent_job_budget_confirm.ts';
 import { UNITS_PER_YUAN } from '../billing/ledger.ts';
+import { STORAGE_QUOTA_PAUSE_REASON } from '../db/migrations/0041_job_pause_storage_quota.ts';
 import { withOrgContext, withTenant, type TenantContext } from '../db/tenant.ts';
 import { AppError } from '../errors.ts';
 import { serializeJsonObject } from '../jsonObject.ts';
@@ -76,7 +78,10 @@ export interface JobRecord {
   errorCode: string | null;
   errorMessage: string | null;
   attempt: number;
-  /** 暂停原因：insufficient_balance（运行中余额不足，6.4）、task_cost_limit / task_turn_limit（达到任务上限，8.3a）；用户手动暂停时为 null。 */
+  /**
+   * 暂停原因：insufficient_balance（运行中余额不足，6.4）、task_cost_limit / task_turn_limit（达到任务上限，8.3a）、agent_daily_runtime（8.3d）、
+   * waiting_for_user（8.4c1）、storage_quota（保存工作区快照时存储配额已满，8.5c）；用户手动暂停时为 null。
+   */
   pauseReason: JobPauseReason | null;
   /** 本任务已扣费的合计（计费单位），在结算的同一事务中累加。 */
   billedAmount: bigint;
@@ -791,6 +796,8 @@ export function isTaskLimitReason(reason: JobPauseReason | null): reason is Agen
 
 const AGENT_WAITING_FOR_USER_PAUSE_MESSAGE = 'Agent 的问题长时间未回答，任务已暂停，回答后会自动继续';
 
+const STORAGE_QUOTA_PAUSE_MESSAGE = '组织存储空间已满，无法保存 Agent 的工作区，任务已暂停，请删除不需要的文件后继续';
+
 const AGENT_DAILY_RUNTIME_PAUSE_MESSAGE = '本组织今日的 Agent 运行时长已用完，任务已暂停，明日可继续';
 
 const TASK_LIMIT_PAUSE_MESSAGES: Readonly<Record<AgentBudgetExhaustedReason, string>> = {
@@ -810,7 +817,9 @@ export type RunOutcome =
   /** 组织当日的 Agent 运行时长用完（8.3d）：暂停为 paused / agent_daily_runtime，已请求取消时仍为 cancelled。 */
   | { kind: 'agent-runtime-limit' }
   /** 等待用户回答超时（8.4c1）：暂停为 paused / waiting_for_user，用户回答后自动继续；问题已被回答时按中止收尾（回到 queued）。 */
-  | { kind: 'waiting-for-user' };
+  | { kind: 'waiting-for-user' }
+  /** 保存 Agent 工作区快照时超出组织存储配额（8.5c）：暂停为 paused / storage_quota，已请求取消时仍为 cancelled。 */
+  | { kind: 'storage-quota' };
 
 /**
  * 结束一次执行。成功即 succeeded（即使期间请求了取消，工作已完成）；失败即 failed，除非已请求取消（cancelled）；
@@ -876,6 +885,16 @@ export async function finishRun(db: Kysely<Database>, run: RunRef, outcome: RunO
         billedAmount: updated.billed_amount,
         ...(budget ? { costLimit: budget.cost_limit, turnLimit: budget.turn_limit, turnsUsed: budget.turns_used } : {}),
       });
+      return 'paused';
+    }
+    if (outcome.kind === 'storage-quota' && row.status === 'running') {
+      const updated = await trx
+        .updateTable('jobs')
+        .set({ status: 'paused', pause_reason: STORAGE_QUOTA_PAUSE_REASON, pause_requested: false, run_id: null, lease_expires_at: null })
+        .where('id', '=', row.id)
+        .returningAll()
+        .executeTakeFirstOrThrow();
+      await appendEvent(trx, toRecord(updated), 'paused', STORAGE_QUOTA_PAUSE_MESSAGE, { reason: STORAGE_QUOTA_PAUSE_REASON });
       return 'paused';
     }
     if (outcome.kind === 'agent-runtime-limit' && row.status === 'running') {

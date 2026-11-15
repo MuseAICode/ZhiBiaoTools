@@ -723,6 +723,16 @@ agent-gw 登记 `POST /v1/tools/call`（请求体上限 1 MiB，`AGENT_TOOL_MAX_
 - **取回**：driver 的 `copyOutArchive` 按取回规则逐项校验沙箱内 tar 的输出，只用普通文件重新生成归档（头部由平台生成、不带扩展头），边取回边写入快照；任何一项不符整体拒绝（`SANDBOX_OUTPUT_REJECTED`），旧快照保留。worker 经 HTTP 时在 worker 端校验。
 - **放入**：核对大小与 SHA-256，再按取回规则（含扩展名白名单）重新校验与生成，文件数须与记录相同，源读完后才产出结束块；出错时销毁沙箱（`SANDBOX_INPUT_FAILED`）。sandbox-runner 照常按模板的放入规则再校验一次。
 
+### 7.21 实现（路线图 8.5c）：工作区快照接入续跑
+
+任务类型登记 `agentWorkspace: { taskKind, keepAfterSuccess? }`（只有 agent 队列，类别规则同 0040 的 `task_kind`，几个任务类型可以共用一个类别）后，执行者给任务上下文提供 `context.agentWorkspace`（`src/agent/workspaceJob.ts`；任务不属于项目、worker 未配置对象存储或 sandbox-runner 时为 `null`）。组织、用户与项目一律取自任务记录。
+
+- **检查点** `saveCheckpoint(sandbox, checkpoint, progress?)`：先取回 `/workspace` 保存为快照（第 7.20 节），成功后再保存 `jobs.checkpoint`。快照保存失败时 checkpoint 不前进、旧快照保留，二者仍是上一个检查点的一对。
+- **超出组织存储配额**：抛 `JobStorageQuotaError`，执行者把任务暂停为 `storage_quota`（迁移 `0041_job_pause_storage_quota`，任务吞掉错误也照样暂停），之后本次执行的检查点不再取回；用户删除文件后经普通的“继续”从上一个检查点续跑。
+- **工作区不符合规则**（`SANDBOX_OUTPUT_REJECTED`）：任务以 `AGENT_WORKSPACE_REJECTED` 失败，失败说明只写类别（文件类型、链接或特殊文件、命名、数量或大小、归档格式），不含文件名与内容；不自动改名、不跳过文件。超过快照大小上限以 `AGENT_WORKSPACE_TOO_LARGE` 失败。
+- **恢复** `restore(sandbox)`：由任务（8.6 的入口）在续跑、创建沙箱后调用；没有快照返回 `null`。快照不可用（`SANDBOX_INPUT_FAILED`，沙箱已被销毁）时丢弃该快照，任务以 `AGENT_WORKSPACE_RESTORE_FAILED` 失败，不自动从头开始（从头开始会重新调用模型、重新扣费，由用户决定是否重新发起）。
+- **丢弃**：任务成功完成后执行者丢弃该类别的快照（`keepAfterSuccess` 的除外，供之后的同类任务接着用，例如调整沿用生成的会话），失败只写日志；用户重置某类任务时由业务的重置入口调用 `discardAgentWorkspaceSnapshots`（8.7 起接入）。
+
 ## 8. 部署架构
 
 ### 8.0 部署位置（已决定，第 9 节第 13、14 项）
