@@ -139,6 +139,7 @@ async function runJob(member: TenantContext, projectId: string, fileId: string, 
     },
     objectStore: memoryStore,
     sandbox,
+    agentWorkspace: null,
   };
   const started = Date.now();
   try {

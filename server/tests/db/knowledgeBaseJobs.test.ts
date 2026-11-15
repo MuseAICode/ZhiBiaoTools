@@ -340,6 +340,7 @@ async function runPrepare(member: Member, documentId: string, run: RunOptions = 
     },
     objectStore: memoryStore,
     sandbox: run.sandbox ?? fakeSandbox({ kind: 'output', markdown: SAMPLE }),
+    agentWorkspace: null,
   };
   try {
     await definition.run(context);

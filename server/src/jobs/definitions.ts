@@ -3,12 +3,14 @@
 import type { Kysely } from 'kysely';
 import type { ChatDelta, ChatRequest, ChatResult } from '../ai/gateway.ts';
 import { isValidAgentTaskLimits, type AgentTaskLimits } from '../agent/budget.ts';
+import type { JobAgentWorkspace } from '../agent/workspaceJob.ts';
 import type { AgentBudgetExhaustedReason, Database } from '../db/schema.ts';
 import type { TenantContext } from '../db/tenant.ts';
 import type { ObjectStore } from '../files/objectStore.ts';
 import type { SandboxDriver } from '../sandbox/driver.ts';
 import { JOB_TYPE_PATTERN } from '../db/migrations/0021_jobs.ts';
 import { AGENT_TOOL_NAME_PATTERN } from '../db/migrations/0037_agent_tool_calls.ts';
+import { AGENT_WORKSPACE_TASK_KIND_PATTERN } from '../db/migrations/0040_agent_workspace_snapshots.ts';
 
 /** BullMQ 队列（第 5.2 节），每个队列在 worker 中单独设置并发。 */
 export const JOB_QUEUES = ['parse', 'ai', 'agent', 'export'] as const;
@@ -78,6 +80,23 @@ export interface JobContext<P> {
    * 任务进程内不运行任何文档解析器。exec 的任何非 0 结果之后都要销毁沙箱，任务在 finally 中 destroy。
    */
   readonly sandbox: SandboxDriver | null;
+  /**
+   * Agent 工作区快照（8.5c，src/agent/workspaceJob.ts）：任务类型登记了 agentWorkspace、任务属于项目、worker 配置了对象存储与
+   * 能整体放入与取回归档的 sandbox-runner 时提供，否则为 null。续跑时 restore 放入上次的快照，检查点经 saveCheckpoint 先保存快照、
+   * 再保存 checkpoint；超出组织存储配额时任务暂停为 storage_quota。
+   */
+  readonly agentWorkspace: JobAgentWorkspace | null;
+}
+
+/** Agent 任务的工作区快照登记（8.5c）。 */
+export interface AgentWorkspaceRegistration {
+  /**
+   * 任务类别（迁移 0040 的 task_kind，例如 technical-plan-outline）：每个项目、每个类别只保留最近一次快照。几个任务类型可以登记
+   * 同一类别（例如生成与调整共用一个工作区）。
+   */
+  readonly taskKind: string;
+  /** 任务成功完成后保留快照（之后的同类任务还要接着用）；默认成功即丢弃。 */
+  readonly keepAfterSuccess?: boolean;
 }
 
 export interface JobTypeDefinition<P = unknown> {
@@ -105,6 +124,8 @@ export interface JobTypeDefinition<P = unknown> {
    * 其余一律 404。worker 启动时检查这些工具都已登记（src/agent/toolRegistry.ts）。
    */
   readonly agentTools?: readonly string[];
+  /** Agent 工作区快照（8.5c）：只有 agent 队列的任务类型能登记。 */
+  readonly agentWorkspace?: AgentWorkspaceRegistration;
   /** 校验并归一化任务参数（入队时和执行前各一次），不合法时抛错。参数里只放 id 和少量选项。 */
   parseParams(raw: unknown): P;
   run(context: JobContext<P>): Promise<void>;
@@ -145,6 +166,17 @@ export class JobTaskLimitError extends Error {
   }
 }
 
+/**
+ * 保存 Agent 工作区快照时超出组织存储配额（8.5c）：任务应立即退出，执行者把任务暂停为 paused / storage_quota，
+ * 用户删除不需要的文件后经普通的“继续”从上一个检查点续跑。
+ */
+export class JobStorageQuotaError extends Error {
+  constructor(options?: ErrorOptions) {
+    super('organization storage quota exceeded while saving the agent workspace', options);
+    this.name = 'JobStorageQuotaError';
+  }
+}
+
 /** 租约已丢失（被对账收回或任务已被别人结束）：当前执行者的写入不再生效，应立即退出。 */
 export class JobInterruptedError extends Error {
   constructor() {
@@ -161,6 +193,7 @@ export interface JobTypeRegistry {
 const TYPE_PATTERN = new RegExp(JOB_TYPE_PATTERN);
 const TOOL_NAME_PATTERN = new RegExp(AGENT_TOOL_NAME_PATTERN);
 const isValidAgentToolName = (name: unknown) => typeof name === 'string' && TOOL_NAME_PATTERN.test(name);
+const TASK_KIND_PATTERN = new RegExp(AGENT_WORKSPACE_TASK_KIND_PATTERN);
 
 /**
  * 只能登记其中一个的业务工具：report-failure（8.4b，直接报告失败，供失败交回父 Agent 的任务）与 request-termination
@@ -191,6 +224,13 @@ export function createJobTypeRegistry(definitions: readonly JobTypeDefinition<an
         if (group.filter((name) => names.includes(name)).length > 1) {
           throw new TypeError(`任务类型 ${definition.type}：业务工具 ${group.join('、')} 只能登记其中一个`);
         }
+      }
+    }
+    if (definition.agentWorkspace !== undefined) {
+      if (definition.queue !== 'agent') throw new TypeError(`任务类型 ${definition.type}：只有 agent 队列的任务能登记工作区快照`);
+      const { taskKind, keepAfterSuccess } = (definition.agentWorkspace ?? {}) as Partial<AgentWorkspaceRegistration>;
+      if (typeof taskKind !== 'string' || !TASK_KIND_PATTERN.test(taskKind) || (keepAfterSuccess !== undefined && typeof keepAfterSuccess !== 'boolean')) {
+        throw new TypeError(`任务类型 ${definition.type} 登记的工作区快照不合法`);
       }
     }
     byType.set(definition.type, definition);

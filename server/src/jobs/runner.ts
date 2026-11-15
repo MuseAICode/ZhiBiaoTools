@@ -23,6 +23,8 @@
 // 执行中每次续租时检查当日运行时长，用完即中止、暂停为 paused / agent_daily_runtime。
 // Agent 报告无法继续（8.4b，src/agent/failureReport.ts）：续租时发现本次执行有失败报告即中止（report-failure 写入后经控制频道
 // 立即触发一次续租），finishRun 按报告把任务标为失败（AGENT_REPORTED_FAILURE）。
+// Agent 工作区快照（8.5c，src/agent/workspaceJob.ts）：登记了 agentWorkspace 的任务经 context.agentWorkspace 在检查点保存快照、
+// 续跑时放入；保存时超出组织存储配额，任务退出、暂停为 paused / storage_quota；任务成功完成后丢弃快照（登记 keepAfterSuccess 的除外）。
 import { randomUUID } from 'node:crypto';
 import { DelayedError, Worker, type Job, type RedisOptions as BullmqRedisOptions } from 'bullmq';
 import { Redis } from 'ioredis';
@@ -32,6 +34,8 @@ import { JOB_DISPATCH_BATCH_MAX } from '../db/migrations/0021_jobs.ts';
 import type { AiGateway } from '../ai/gateway.ts';
 import type { AgentQuotaOptions } from '../agent/quota.ts';
 import { beginAgentTurn, markAgentBudgetExhausted, TASK_COST_LIMIT_CODE, TASK_TURN_LIMIT_CODE } from '../agent/budget.ts';
+import { createJobAgentWorkspace, isWorkspaceSandboxDriver } from '../agent/workspaceJob.ts';
+import { discardWorkspaceSnapshot } from '../agent/workspaceSnapshots.ts';
 import type { Database } from '../db/schema.ts';
 import { AppError } from '../errors.ts';
 import type { ObjectStore } from '../files/objectStore.ts';
@@ -42,6 +46,7 @@ import {
   JobBalanceExhaustedError,
   JobError,
   JobInterruptedError,
+  JobStorageQuotaError,
   JobTaskLimitError,
   maxAttemptsOf,
   ORG_RUNNING_JOB_LIMIT,
@@ -193,6 +198,8 @@ export function createJobRunner(options: JobRunnerOptions): JobRunner {
     let balanceExhausted = false;
     // 达到 Agent 任务上限：之后的调用不再发起，执行结束后暂停。
     let taskLimit: JobTaskLimitError | null = null;
+    // 保存工作区快照时超出组织存储配额（8.5c）：执行结束后暂停（任务吞掉了错误也一样）。
+    let storageQuotaExceeded = false;
     const tenant = { orgId: job.orgId, userId: job.userId, role };
     const turnRef = { tenant, jobId: job.id, runId };
     const ai: JobAi = {
@@ -252,6 +259,7 @@ export function createJobRunner(options: JobRunnerOptions): JobRunner {
       ai,
       objectStore: options.objectStore ?? null,
       sandbox: options.sandbox ?? null,
+      agentWorkspace: null,
       signal: controller.signal,
       async setProgress(progress) {
         if (!apply(await renewRun(db, run, leaseMs, { progress }, agentQuota))) throw new JobInterruptedError();
@@ -273,10 +281,30 @@ export function createJobRunner(options: JobRunnerOptions): JobRunner {
       },
     };
 
+    const workspaceRegistration = definition.agentWorkspace;
+    const objectStore = options.objectStore ?? null;
+    const sandboxDriver = options.sandbox ?? null;
+    const agentWorkspace =
+      workspaceRegistration && job.projectId && objectStore && isWorkspaceSandboxDriver(sandboxDriver)
+        ? createJobAgentWorkspace({
+            db,
+            store: objectStore,
+            driver: sandboxDriver,
+            tenant,
+            projectId: job.projectId,
+            taskKind: workspaceRegistration.taskKind,
+            signal: controller.signal,
+            saveCheckpoint: (checkpoint, progress) => context.saveCheckpoint(checkpoint, progress),
+            onStorageQuotaExceeded: () => {
+              storageQuotaExceeded = true;
+            },
+          })
+        : null;
+
     let outcome: RunOutcome;
     try {
       const params = definition.parseParams(job.params);
-      await definition.run({ ...context, params });
+      await definition.run({ ...context, agentWorkspace, params });
       outcome = { kind: 'succeeded' };
     } catch (error) {
       const limitReached = error instanceof JobTaskLimitError ? error : taskLimit;
@@ -284,6 +312,9 @@ export function createJobRunner(options: JobRunnerOptions): JobRunner {
         outcome = { kind: 'insufficient-balance' };
       } else if (limitReached && !lost) {
         outcome = { kind: 'task-limit', reason: limitReached.reason };
+      } else if ((storageQuotaExceeded || error instanceof JobStorageQuotaError) && !lost) {
+        // 保存工作区快照时超出组织存储配额（8.5c）：暂停为 storage_quota，用户删除文件后继续。
+        outcome = { kind: 'storage-quota' };
       } else if (controller.signal.reason === 'agent-runtime-limit' && !lost) {
         // 组织当日的 Agent 运行时长用完（8.3d）：暂停，次日可继续。期间请求了取消、暂停的，finishRun 按数据库中的请求收尾。
         outcome = { kind: 'agent-runtime-limit' };
@@ -313,6 +344,12 @@ export function createJobRunner(options: JobRunnerOptions): JobRunner {
       return;
     }
     log.info({ jobId: job.id, jobType: job.type, status, attempt: job.attempt }, 'job run finished');
+    // 成功完成后不再需要续跑：丢弃工作区快照（8.5c）。失败只写日志（快照留到下一次同类任务替换、用户重置或项目删除）。
+    if (status === 'succeeded' && workspaceRegistration && !workspaceRegistration.keepAfterSuccess && job.projectId && objectStore) {
+      await discardWorkspaceSnapshot(db, tenant, objectStore, { projectId: job.projectId, taskKind: workspaceRegistration.taskKind }).catch((error: unknown) =>
+        log.warn({ err: error, jobId: job.id, jobType: job.type }, 'agent workspace snapshot discard failed'),
+      );
+    }
     await notifier.changedById(job.orgId, job.id);
     if (status === 'queued' && !closing) {
       await dispatcher
