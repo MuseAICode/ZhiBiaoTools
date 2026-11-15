@@ -53,12 +53,6 @@ jobs:
       - name: Build (tsc --noEmit + vite build)
         run: npm run build
 
-      # 8.6b：agent 沙箱入口中的 Pi 会话（sandbox/agent/pi.mjs）的单元测试（tests/agent/piSession.test.ts）加载真实的 Pi 运行时，
-      # 按 sandbox/agent/package-lock.json 安装（与镜像相同：不执行安装脚本、不装可选依赖）。
-      - name: Install agent sandbox dependencies (Pi runtime, for unit tests)
-        working-directory: server/sandbox/agent
-        run: npm ci --omit=optional --ignore-scripts --no-audit --no-fund
-
       - name: Unit tests (Vitest)
         run: npm run test
 
