@@ -1,26 +1,50 @@
-// agent 沙箱入口的协议（路线图第 8 步 8.6a）：
+// agent 沙箱入口的协议（路线图第 8 步 8.6a、8.6b）：
 // - 沙箱内（server/sandbox/agent/protocol.mjs）：请求的严格解析（大小、UTF-8、字段、令牌格式），经 agent-gw 的 GET /v1/session
 //   确认令牌（只带 Authorization、不跟随重定向，401 / 其他状态 / 超大或不合法的响应 / 连不上 / 超时各自的代码），结果恰好一行、
 //   失败只有固定的说明，任何输出中都没有令牌；
 // - worker 一侧（src/agent/entry.ts）：请求只经标准输入（不在参数中），结果按不可信输入逐项检查，不符一律 AGENT_ENTRY_FAILED；
-// - 两侧对同一份结果的理解一致：protocol.mjs 写出的每一种结果，entry.ts 都按同样的意思解析。
-// 真实沙箱中经 /etc/hosts 中的 agent-gw 访问、令牌不出现在进程的环境与参数中，见 tests/sandbox/docker/agentEntry.test.ts。
+// - 两侧对同一份结果的理解一致：protocol.mjs 写出的每一种结果，entry.ts 都按同样的意思解析；
+// - prompt 请求（8.6b）：字段恰好是登记的那几个、取值在范围内，先确认令牌再交给 Pi 会话（这里用桩代替 pi.mjs），Pi 会话抛出的
+//   其他异常一律 INTERNAL、不带出说明；worker 一侧的编码与结果检查（会话文件名、轮数不超过请求的上限、结束原因）。
+// 真实的 Pi 会话（pi.mjs）经真实的模型调用路由见 tests/agent/piSession.test.ts；真实沙箱中经 /etc/hosts 中的 agent-gw 访问、令牌不出现在进程的环境与参数中，见 tests/sandbox/docker/agentEntry.test.ts。
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { PassThrough, Readable, Writable } from 'node:stream';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import {
+  CONTEXT_WINDOW_RANGE,
   ENTRY_ERROR_MESSAGES,
+  EntryError,
   formatResult,
   GATEWAY_BASE_URL,
   MAX_REQUEST_BYTES,
+  MAX_OUTPUT_TOKENS_RANGE,
+  MAX_PROMPT_CHARS,
   MAX_RESULT_BYTES,
+  MAX_TURNS_PER_PROMPT,
+  NATIVE_TOOLS,
   parseRequest,
+  type PromptRequest,
+  type RunPrompt,
+  SESSION_FILE_PATTERN,
   querySession,
   readRequest,
   runEntry,
 } from '../../sandbox/agent/protocol.mjs';
-import { AGENT_ENTRY_MAX_RESULT_BYTES, encodeAgentEntryRequest, parseAgentEntryResult, runAgentEntry } from '../../src/agent/entry.ts';
+import {
+  AGENT_CONTEXT_WINDOW_RANGE,
+  AGENT_ENTRY_ERROR_CODES,
+  AGENT_ENTRY_MAX_RESULT_BYTES,
+  AGENT_MAX_OUTPUT_TOKENS_RANGE,
+  AGENT_MAX_TURNS_PER_PROMPT,
+  AGENT_NATIVE_TOOLS,
+  AGENT_PROMPT_MAX_CHARS,
+  AGENT_SESSION_FILE_PATTERN,
+  type AgentPromptRequest,
+  encodeAgentEntryRequest,
+  parseAgentEntryResult,
+  runAgentEntry,
+} from '../../src/agent/entry.ts';
 import { generateAgentToken } from '../../src/agent/token.ts';
 import { JobError } from '../../src/jobs/definitions.ts';
 import type { SandboxExecResult, SandboxRef } from '../../src/sandbox/driver.ts';
@@ -78,9 +102,15 @@ function sink() {
   return { stream, text: () => Buffer.concat(chunks).toString('utf8') };
 }
 
-async function run(stdin: Buffer | Readable, options: { baseUrl?: string; timeoutMs?: number } = {}) {
+async function run(stdin: Buffer | Readable, options: { baseUrl?: string; timeoutMs?: number; runPrompt?: RunPrompt } = {}) {
   const stdout = sink();
-  const exitCode = await runEntry({ stdin: Buffer.isBuffer(stdin) ? Readable.from([stdin]) : stdin, stdout: stdout.stream, baseUrl: options.baseUrl ?? baseUrl, ...(options.timeoutMs ? { timeoutMs: options.timeoutMs } : {}) });
+  const exitCode = await runEntry({
+    stdin: Buffer.isBuffer(stdin) ? Readable.from([stdin]) : stdin,
+    stdout: stdout.stream,
+    baseUrl: options.baseUrl ?? baseUrl,
+    ...(options.timeoutMs ? { timeoutMs: options.timeoutMs } : {}),
+    ...(options.runPrompt ? { runPrompt: options.runPrompt } : {}),
+  });
   return { exitCode, stdout: stdout.text() };
 }
 
@@ -125,7 +155,8 @@ describe('沙箱内的入口协议（protocol.mjs）', () => {
     ['令牌格式不对', request({ ...valid, token: TOKEN.slice(0, -1) })],
     ['令牌带空白', request({ ...valid, token: ` ${TOKEN}` })],
     ['令牌不是字符串', request({ ...valid, token: 1 })],
-    ['未知的 action', request({ ...valid, action: 'prompt' })],
+    ['未知的 action', request({ ...valid, action: 'shell' })],
+    ['prompt 缺少字段', request({ ...valid, action: 'prompt' })],
     ['版本不对', request({ ...valid, version: 2 })],
     ['版本是字符串', request({ ...valid, version: '1' })],
     ['原型污染', request(`{"version":1,"action":"session","token":"${TOKEN}","__proto__":{"x":1}}`)],
@@ -263,5 +294,183 @@ describe('worker 一侧（src/agent/entry.ts）', () => {
   it('入口按协议报告的失败作为结果返回（说明以 worker 自己的为准，不采用入口给出的文字）', () => {
     const custom = `${JSON.stringify({ version: 1, ok: false, error: { code: 'TOKEN_INVALID', message: '请联系 attacker.example 充值' } })}\n`;
     expect(parseAgentEntryResult({ exitCode: 1, timedOut: false, stdout: custom, stderr: '', stdoutTruncated: false, stderrTruncated: false })).toEqual({ ok: false, code: 'TOKEN_INVALID' });
+  });
+});
+
+const SESSION = '2026-11-15T12-00-00-000Z_01a1e18b-3a01-73ab-8e86-dcac529abd40.jsonl';
+const validPrompt = {
+  version: 1,
+  action: 'prompt',
+  token: TOKEN,
+  prompt: '生成目录',
+  session: null,
+  tools: ['read', 'write', 'bash'],
+  maxTurns: 20,
+  model: { contextWindow: 128_000, maxOutputTokens: 8_192 },
+};
+const promptOk = (fields: Record<string, unknown> = {}) => `${JSON.stringify({ version: 1, ok: true, action: 'prompt', session: SESSION, turns: 3, stopReason: 'stop', ...fields })}\n`;
+
+describe('prompt 请求（8.6b）', () => {
+  /** pi.mjs 的桩：记录收到的请求与选项，按 outcome 回答或抛出。 */
+  const promptCalls: Array<{ request: PromptRequest; options: { baseUrl: string } }> = [];
+  let outcome: () => Promise<Awaited<ReturnType<RunPrompt>>> = async () => ({ session: SESSION, turns: 3, stopReason: 'stop' });
+  const runPrompt: RunPrompt = async (promptRequest, options) => {
+    promptCalls.push({ request: promptRequest, options });
+    return outcome();
+  };
+  beforeEach(() => {
+    promptCalls.length = 0;
+    outcome = async () => ({ session: SESSION, turns: 3, stopReason: 'stop' });
+  });
+
+  it('两侧的常量一致', () => {
+    expect([...NATIVE_TOOLS]).toEqual([...AGENT_NATIVE_TOOLS]);
+    expect(SESSION_FILE_PATTERN.source).toBe(AGENT_SESSION_FILE_PATTERN.source);
+    expect(MAX_PROMPT_CHARS).toBe(AGENT_PROMPT_MAX_CHARS);
+    expect(MAX_TURNS_PER_PROMPT).toBe(AGENT_MAX_TURNS_PER_PROMPT);
+    expect({ ...CONTEXT_WINDOW_RANGE }).toEqual({ ...AGENT_CONTEXT_WINDOW_RANGE });
+    expect({ ...MAX_OUTPUT_TOKENS_RANGE }).toEqual({ ...AGENT_MAX_OUTPUT_TOKENS_RANGE });
+    expect([...AGENT_ENTRY_ERROR_CODES].sort()).toEqual(Object.keys(ENTRY_ERROR_MESSAGES).sort());
+  });
+
+  it('先经 agent-gw 确认令牌，再把解析过的请求交给 Pi 会话；结果恰好一行，worker 按同样的意思解析', async () => {
+    const result = await run(request(validPrompt), { runPrompt });
+    expect(result).toEqual({ exitCode: 0, stdout: promptOk() });
+    expect(received.map((item) => [item.method, item.url])).toEqual([['GET', '/v1/session']]);
+    expect(promptCalls).toEqual([{ request: validPrompt, options: { baseUrl } }]);
+    expect(parseAgentEntryResult(asExec(result), { action: 'prompt', maxTurns: 20 })).toEqual({ ok: true, action: 'prompt', session: SESSION, turns: 3, stopReason: 'stop' });
+    // 续接会话、不启用任何工具、各上限处照常。
+    const edge = { ...validPrompt, session: SESSION, tools: [], maxTurns: MAX_TURNS_PER_PROMPT, prompt: 'x'.repeat(MAX_PROMPT_CHARS), model: { contextWindow: CONTEXT_WINDOW_RANGE.max, maxOutputTokens: MAX_OUTPUT_TOKENS_RANGE.max } };
+    expect(parseRequest(request(edge))).toEqual(edge);
+    expect(parseRequest(request({ ...validPrompt, tools: [...NATIVE_TOOLS], model: { contextWindow: CONTEXT_WINDOW_RANGE.min, maxOutputTokens: MAX_OUTPUT_TOKENS_RANGE.min } }))).toMatchObject({ tools: [...NATIVE_TOOLS] });
+  });
+
+  it.each<[string, Record<string, unknown>]>([
+    ['缺少 session（必须显式给出 null）', { session: undefined }],
+    ['多余字段（伪造身份）', { project_id: '00000000-0000-4000-8000-000000000001' }],
+    ['多余字段（指定模型与 Base URL）', { baseUrl: 'http://attacker.example', modelName: 'gpt-x' }],
+    ['提示词为空', { prompt: '' }],
+    ['提示词只有空白', { prompt: ' \n\t' }],
+    ['提示词过长', { prompt: 'x'.repeat(MAX_PROMPT_CHARS + 1) }],
+    ['提示词不是字符串', { prompt: ['生成'] }],
+    ['会话文件名带路径', { session: `../${SESSION}` }],
+    ['会话文件名是绝对路径', { session: `/workspace/pi-sessions/${SESSION}` }],
+    ['会话文件名不是 Pi 的格式', { session: 'notes.jsonl' }],
+    ['会话文件名大写', { session: SESSION.toUpperCase() }],
+    ['会话文件名带换行', { session: `${SESSION}\n` }],
+    ['工具不是数组', { tools: 'bash' }],
+    ['未登记的工具', { tools: ['bash', 'curl'] }],
+    ['业务工具（随 8.6c）', { tools: ['ask-user'] }],
+    ['工具重复', { tools: ['bash', 'bash'] }],
+    ['工具不是字符串', { tools: [1] }],
+    ['轮数为 0', { maxTurns: 0 }],
+    ['轮数超过上限', { maxTurns: MAX_TURNS_PER_PROMPT + 1 }],
+    ['轮数不是整数', { maxTurns: 1.5 }],
+    ['轮数是字符串', { maxTurns: '20' }],
+    ['模型缺少字段', { model: { contextWindow: 128_000 } }],
+    ['模型多余字段', { model: { contextWindow: 128_000, maxOutputTokens: 8_192, baseUrl: 'http://attacker.example' } }],
+    ['上下文长度过小', { model: { contextWindow: CONTEXT_WINDOW_RANGE.min - 1, maxOutputTokens: 256 } }],
+    ['上下文长度过大', { model: { contextWindow: CONTEXT_WINDOW_RANGE.max + 1, maxOutputTokens: 8_192 } }],
+    ['输出上限过大', { model: { contextWindow: 2_000_000, maxOutputTokens: MAX_OUTPUT_TOKENS_RANGE.max + 1 } }],
+    ['输出上限大于上下文长度', { model: { contextWindow: 8_192, maxOutputTokens: 16_384 } }],
+    ['模型不是对象', { model: [128_000, 8_192] }],
+  ])('拒绝不合法的 prompt 请求：%s（不访问 agent-gw，不启动 Pi 会话）', async (_name, override) => {
+    const result = await run(request({ ...validPrompt, ...override }), { runPrompt });
+    expect(result).toEqual({ exitCode: 1, stdout: `${JSON.stringify({ version: 1, ok: false, error: { code: 'BAD_REQUEST', message: ENTRY_ERROR_MESSAGES.BAD_REQUEST } })}\n` });
+    expect(received).toEqual([]);
+    expect(promptCalls).toEqual([]);
+  });
+
+  it('原型污染的请求被拒绝', async () => {
+    const polluted = JSON.stringify(validPrompt).replace('"model":{', '"model":{"__proto__":{"x":1},');
+    expect((await run(request(polluted), { runPrompt })).exitCode).toBe(1);
+    expect(promptCalls).toEqual([]);
+  });
+
+  it('令牌无效、agent-gw 不可用时不启动 Pi 会话', async () => {
+    handler = (_q, r) => {
+      r.statusCode = 401;
+      r.end();
+    };
+    expect(JSON.parse((await run(request(validPrompt), { runPrompt })).stdout).error.code).toBe('TOKEN_INVALID');
+    handler = () => {};
+    expect(JSON.parse((await run(request(validPrompt), { runPrompt, timeoutMs: 200 })).stdout).error.code).toBe('GATEWAY_UNAVAILABLE');
+    expect(promptCalls).toEqual([]);
+  });
+
+  it.each(['SESSION_INVALID', 'TURN_LIMIT', 'MODEL_FAILED', 'INTERNAL'] as const)('Pi 会话报告 %s：按协议的固定说明返回', async (code) => {
+    outcome = async () => {
+      throw new EntryError(code);
+    };
+    const result = await run(request(validPrompt), { runPrompt });
+    expect(result).toEqual({ exitCode: 1, stdout: `${JSON.stringify({ version: 1, ok: false, error: { code, message: ENTRY_ERROR_MESSAGES[code] } })}\n` });
+    expect(parseAgentEntryResult(asExec(result), { action: 'prompt', maxTurns: 20 })).toEqual({ ok: false, code });
+  });
+
+  it('Pi 会话抛出的其他异常一律 INTERNAL，不带出说明；没有注入 Pi 会话时同样', async () => {
+    outcome = async () => {
+      throw new Error(`upstream said: ${TOKEN} sk-secret`);
+    };
+    const result = await run(request(validPrompt), { runPrompt });
+    expect(JSON.parse(result.stdout).error.code).toBe('INTERNAL');
+    for (const leaked of [TOKEN, 'sk-secret', 'upstream']) expect(result.stdout).not.toContain(leaked);
+    expect(JSON.parse((await run(request(validPrompt))).stdout).error.code).toBe('INTERNAL');
+  });
+
+  describe('worker 一侧', () => {
+    const promptRequest: AgentPromptRequest = { action: 'prompt', token: TOKEN, prompt: '生成目录', session: null, tools: ['read', 'write', 'bash'], maxTurns: 20, model: { contextWindow: 128_000, maxOutputTokens: 8_192 } };
+
+    it('编码：与入口解析的字段一致；不合法的请求不执行', async () => {
+      expect(encodeAgentEntryRequest(promptRequest)).toEqual(request(validPrompt));
+      expect(parseRequest(encodeAgentEntryRequest({ ...promptRequest, session: SESSION }))).toEqual({ ...validPrompt, session: SESSION });
+      const calls: unknown[] = [];
+      const sandbox: SandboxRef = { id: 'sandbox', template: 'agent', jobId: 'job', expiresAt: new Date() };
+      const driver = {
+        async exec(_ref: SandboxRef, _command: string, _args: readonly string[], options: { input?: Buffer } = {}) {
+          calls.push(options.input);
+          return asExec(await run(options.input ?? Buffer.alloc(0), { runPrompt }));
+        },
+      };
+      expect(await runAgentEntry(driver, sandbox, promptRequest)).toEqual({ ok: true, action: 'prompt', session: SESSION, turns: 3, stopReason: 'stop' });
+      for (const bad of [
+        { prompt: ' ' },
+        { prompt: 'x'.repeat(AGENT_PROMPT_MAX_CHARS + 1) },
+        { session: '../escape.jsonl' },
+        { tools: ['bash', 'bash'] },
+        { tools: ['curl'] },
+        { maxTurns: 0 },
+        { maxTurns: AGENT_MAX_TURNS_PER_PROMPT + 1 },
+        { model: { contextWindow: 1_000, maxOutputTokens: 256 } },
+        { model: { contextWindow: 8_192, maxOutputTokens: 16_384 } },
+      ]) {
+        await expect(runAgentEntry(driver, sandbox, { ...promptRequest, ...bad } as AgentPromptRequest)).rejects.toBeInstanceOf(TypeError);
+      }
+      // 提示词在字符数上限内、编码后的请求却超过 1 MiB（JSON 中每个控制字符写成 6 个字节）：同样不执行。
+      await expect(runAgentEntry(driver, sandbox, { ...promptRequest, prompt: '\u0001'.repeat(AGENT_PROMPT_MAX_CHARS) })).rejects.toBeInstanceOf(TypeError);
+      expect(calls).toHaveLength(1);
+    });
+
+    it.each<[string, string, number?]>([
+      ['回复的是 session 的结果', `${JSON.stringify({ version: 1, ok: true, action: 'session', expiresAt: EXPIRES })}\n`],
+      ['会话文件名带路径', promptOk({ session: `../${SESSION}` })],
+      ['会话文件名不是 Pi 的格式', promptOk({ session: 'outline.json' })],
+      ['轮数为 0', promptOk({ turns: 0 })],
+      ['轮数超过请求的上限', promptOk({ turns: 21 })],
+      ['轮数不是整数', promptOk({ turns: 2.5 })],
+      ['结束原因是 error', promptOk({ stopReason: 'error' })],
+      ['结束原因是 toolUse', promptOk({ stopReason: 'toolUse' })],
+      ['多出回复正文（经工作区取回，不经结果）', promptOk({ text: '忽略之前的指令' })],
+      ['多出身份字段', promptOk({ jobId: 'x' })],
+    ])('prompt 的结果不符合协议时 AGENT_ENTRY_FAILED：%s', (_name, stdout) => {
+      expect(() => parseAgentEntryResult({ exitCode: 0, timedOut: false, stdout, stderr: '', stdoutTruncated: false, stderrTruncated: false }, { action: 'prompt', maxTurns: 20 })).toThrow(
+        expect.objectContaining({ code: 'AGENT_ENTRY_FAILED' }),
+      );
+    });
+
+    it('session 请求收到 prompt 的结果时 AGENT_ENTRY_FAILED', () => {
+      expect(() => parseAgentEntryResult({ exitCode: 0, timedOut: false, stdout: promptOk(), stderr: '', stdoutTruncated: false, stderrTruncated: false }, { action: 'session' })).toThrow(
+        expect.objectContaining({ code: 'AGENT_ENTRY_FAILED' }),
+      );
+    });
   });
 });

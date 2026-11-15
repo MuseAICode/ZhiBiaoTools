@@ -740,7 +740,19 @@ worker 经 sandbox-runner 执行 agent 模板登记的唯一命令 `run`（`node
 - **请求只经标准输入**：模板命令新增 `maxInputBytes`（只有 agent 的 `run` 为 1 MiB，其余命令为 0、带了即拒绝）；`SandboxDriver.exec` 的 `input` 经 sandbox-runner 的 `POST /v1/sandboxes/:id/exec`（`input` 为严格的 base64）转为 exec 的标准输入。任务令牌只在请求中，不出现在 argv、容器环境（模板写死的三项）、Docker 记录的 exec 参数、工作区与 sandbox-runner / worker 的日志中；入口不把令牌放进自己的环境（之后由入口启动的 Agent 命令不会继承它）。令牌是本沙箱访问平台的凭据，沙箱内的代码（含 Agent）能拿到它不扩大权限（只对本任务、本次执行有效），所以这里的要求是“不落盘、不进日志、不进参数”，不把它当作对沙箱保密的秘密。
 - **协议**（`server/sandbox/agent/protocol.mjs`，只用 Node 内置模块）：请求为一个 UTF-8 的 JSON 对象，字段恰好是登记的那几个（版本、`action`、令牌），多余的一律拒绝；结果为标准输出上恰好一行 JSON，至多 16 KiB，退出码 0 表示成功、1 表示按协议报告的失败，失败只有固定代码（`BAD_REQUEST` / `TOKEN_INVALID` / `GATEWAY_UNAVAILABLE` / `GATEWAY_FAILED` / `INTERNAL`）与固定说明，不含请求、令牌与 agent-gw 的响应正文。
 - **worker 一侧**（`src/agent/entry.ts`）按不可信输入解析结果：超时、被终止、其他退出码、被截断、不是恰好一行、退出码与结果不一致、字段或取值不符一律 `AGENT_ENTRY_FAILED`；入口给出的说明文字不采用。
-- 8.6a 只有 `action = session`：入口经 `/etc/hosts` 中的 agent-gw 调用 `GET /v1/session`（第 7.12 节），确认令牌有效并返回到期时间（时限 15 秒、响应体至多 4 KiB、不跟随重定向）。Pi 会话（`action = prompt`）随 8.6b 加入同一协议。
+- `action = session`（8.6a）：入口经 `/etc/hosts` 中的 agent-gw 调用 `GET /v1/session`（第 7.12 节），确认令牌有效并返回到期时间（时限 15 秒、响应体至多 4 KiB、不跟随重定向）。
+- `action = prompt`（8.6b，见第 7.23 节）：先同样确认令牌，再在 Pi 会话中执行一条提示词。
+
+### 7.23 实现（路线图 8.6b）：入口中的 Pi 会话
+
+- **Pi 运行时进镜像**：`server/sandbox/agent/package.json` 与 `package-lock.json`（`@earendil-works/pi-coding-agent`、`pi-ai` 0.80.10 与 `typebox`，版本与传递依赖取自 `client/package-lock.json`，不用 Pi 自带的 `npm-shrinkwrap.json`——后者固定了有已知漏洞的传递依赖），在构建阶段 `npm ci --omit=dev --omit=optional --ignore-scripts`，删去非 Linux 的原生预编译文件；最终镜像只复制 `node_modules`（属主 root、只读），没有 npm、没有 `.node` 原生模块。CI 对该目录做 `npm audit`。
+- **请求**（`protocol.mjs`，字段恰好是登记的那几个）：提示词（非空、至多 256 Ki 字符）、续接的会话文件名（`null` 新建；只接受 Pi 命名的 `<时间>_<uuid>.jsonl`）、启用的 Pi 原生工具（`read` / `write` / `edit` / `bash` / `grep` / `find` / `ls` 中不重复的若干个；业务工具的桩随 8.6c）、本条提示词的轮数上限（1～1,000，桌面版 `max_turns_per_prompt`）、模型的上下文长度与输出上限（worker 按组织选用的模型给出）。
+- **会话**（`pi.mjs`，与桌面版 `piSessionFactory.cjs` 同一套 Pi 配置）：提供方 `app`、`openai-completions`，Base URL 固定为 `http://agent-gw:8080/v1`，任务令牌作为 Pi 的运行时 API Key 只在入口进程内存中（以 `Authorization: Bearer` 发送）；平台按令牌决定组织、模型与上限，请求中的模型名不被采信（第 7.14 节）。Pi 自身不重试（重试与暂停由 worker 决定，8.6d），不加载项目上下文、扩展、技能、提示模板与主题，不下载工具、不检查新版本、不发遥测，配置目录在 `/tmp`。
+- **工具**：只注册请求中的原生工具；`bash` 使用 `/bin/sh`，每条命令至多 5 分钟（模型给出的 `timeout` 只能更短），命令的环境固定为 `PATH`、`HOME`、`TMPDIR`、`LANG` 四项，不继承入口进程的环境。
+- **会话文件**：`/workspace/pi-sessions/`，随工作区快照保存（第 7.20 节），续接时只接受该目录中的普通文件（不跟随符号链接），无效时 `SESSION_INVALID`。
+- **工作区说明**：镜像中的 `workspace-instructions.md`（桌面版 `agent-workspace.md` 改写：Linux `/bin/sh`、断网、5 分钟命令时限、按 agent 模板取回规则写的文件命名规则），作为 Pi 的项目说明进入系统提示词。
+- **结果**：成功为会话文件名、本条提示词用掉的轮数与结束原因（`stop` / `length`）；Agent 的回复与写出的文件留在工作区，由 worker 取回（8.6d）。失败新增 `SESSION_INVALID`、`TURN_LIMIT`（第 maxTurns + 1 轮开始时中止）与 `MODEL_FAILED`（模型调用失败，含被平台拒绝；原因由 worker 按任务状态判断，不采信沙箱的说法）。worker 另检查结果的 `action` 与请求一致、轮数不超过请求的上限。
+- **标准输出只留给结果**：入口把 `console` 的输出改到标准错误，写完结果即退出（不等 Pi 留下的连接与定时器）。
 
 ## 8. 部署架构
 

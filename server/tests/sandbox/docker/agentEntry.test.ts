@@ -1,14 +1,18 @@
-// agent 沙箱入口（路线图第 8 步 8.6a）在真实沙箱中的验证（CI 中在 gVisor 下运行）：
+// agent 沙箱入口（路线图第 8 步 8.6a、8.6b）在真实沙箱中的验证（CI 中在 gVisor 下运行）：
 // - 模板的 run 命令执行镜像中的 /opt/agent/entry.mjs，请求经标准输入传入，经 /etc/hosts 中的 agent-gw 确认令牌；
 //   agent-gw 这里是一个桩容器（只认一个令牌，与 agentIsolation.test.ts 的桩相同不是沙箱），真实的 agent-gw 与 worker 入口
 //   按令牌查身份见 tests/db/agentEndpoint.test.ts；
 // - 令牌只在标准输入中：入口运行期间，沙箱内的其他进程在 /proc 中（各进程的环境与参数）、exec 的参数（Docker 记录的
 //   ProcessConfig）、容器的环境、/workspace 与 /tmp 中都找不到它；
 // - 不合法的调用：没有请求（BAD_REQUEST）、请求超过上限与带参数（sandbox-runner 拒绝，不执行）、令牌无效（TOKEN_INVALID）、
-//   agent-gw 不可用（GATEWAY_UNAVAILABLE）。
+//   agent-gw 不可用（GATEWAY_UNAVAILABLE）；
+// - prompt（8.6b）：镜像中的 Pi 运行时经 agent-gw 的 POST /v1/chat/completions 调用模型（桩按脚本回答：先让 Agent 执行一条 bash
+//   命令，再结束），令牌只在 Authorization 中；Agent 执行的命令中，沙箱内所有进程的环境与参数里都没有令牌，命令的环境固定；
+//   会话文件在 /workspace/pi-sessions/ 中、可续接，工作区（结果文件与会话文件）按 agent 模板的规则取回。
+//   真实的模型调用路由（schema、字段转换）见 tests/agent/piSession.test.ts。
 import { randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { runAgentEntry } from '../../../src/agent/entry.ts';
+import { AGENT_SESSION_FILE_PATTERN, type AgentPromptRequest, runAgentEntry } from '../../../src/agent/entry.ts';
 import { generateAgentToken } from '../../../src/agent/token.ts';
 import { AGENT_ENTRY_COMMAND, AGENT_ENTRY_MAX_INPUT_BYTES } from '../../../src/sandbox/templates.ts';
 import { dockerRequest, sandboxEnv } from './env.ts';
@@ -27,14 +31,77 @@ const EXPIRES = '2026-11-15T12:30:00.000Z';
 const harness = createIsolationHarness('agent', image, gatewayName);
 const { driver, createSandbox, run } = harness;
 
-/** agent-gw 的桩：GET /v1/session 只认 TOKEN 与 SLOW_TOKEN（Bearer），其余 401；记录收到的 Authorization。 */
+/** 桩让 Agent 执行的 bash 命令：/tmp/probe.cjs 拿到令牌的两半（命令自己的参数中没有完整的令牌）。 */
+const PROBE_COMMAND = `node /tmp/probe.cjs ${TOKEN.slice(0, 20)} ${TOKEN.slice(20)} && printf ok > /workspace/结果.txt`;
+/** 在沙箱中找令牌：其他进程的环境与参数（跳过自己）；并给出自己的环境变量名（即 bash 命令的环境）。 */
+const PROBE_SCRIPT = `
+  const fs = require('fs');
+  const token = process.argv[2] + process.argv[3];
+  const found = [], processes = [];
+  for (const pid of fs.readdirSync('/proc').filter((name) => /^\\d+$/.test(name) && Number(name) !== process.pid)) {
+    let cmdline = '';
+    try { cmdline = fs.readFileSync('/proc/' + pid + '/cmdline', 'latin1'); } catch {}
+    processes.push(cmdline.split('\\0').join(' ').trim());
+    for (const file of ['environ', 'cmdline']) {
+      try { if (fs.readFileSync('/proc/' + pid + '/' + file, 'latin1').includes(token)) found.push(pid + '/' + file); } catch {}
+    }
+  }
+  // 纵深防御评估（#90 登记）的测量，只记录、不断言：Agent 的命令能否读取入口（Pi）进程的内存并从中找到令牌。
+  const memory = {};
+  const entryPid = fs.readdirSync('/proc').find((name) => /^\\d+$/.test(name) && (() => { try { return fs.readFileSync('/proc/' + name + '/cmdline', 'latin1').includes('/opt/agent/entry.mjs'); } catch { return false; } })());
+  let maps = '';
+  try { maps = fs.readFileSync('/proc/' + entryPid + '/maps', 'utf8'); memory.maps = 'readable'; } catch (error) { memory.maps = error.code || 'error'; }
+  let fd;
+  try { fd = fs.openSync('/proc/' + entryPid + '/mem', 'r'); memory.mem = 'opened'; } catch (error) { memory.mem = error.code || 'error'; }
+  memory.tokenFound = false;
+  if (fd !== undefined) {
+    const needle = Buffer.from(token);
+    for (const line of maps.split('\\n')) {
+      const match = /^([0-9a-f]+)-([0-9a-f]+) rw/.exec(line);
+      if (!match || memory.tokenFound) continue;
+      for (let at = BigInt('0x' + match[1]), end = BigInt('0x' + match[2]); at < end && !memory.tokenFound; at += 1048576n) {
+        const length = Number(end - at < 1048576n ? end - at : 1048576n);
+        const buffer = Buffer.alloc(length);
+        try { fs.readSync(fd, buffer, 0, length, at); } catch (error) { memory.readError = error.code || 'error'; continue; }
+        if (buffer.includes(needle)) memory.tokenFound = true;
+      }
+    }
+  }
+  process.stdout.write(JSON.stringify({ found, processes, env: Object.keys(process.env).sort(), memory }));`;
+
+/**
+ * agent-gw 的桩：GET /v1/session 只认 TOKEN 与 SLOW_TOKEN（Bearer），其余 401；记录收到的 Authorization。
+ * POST /v1/chat/completions（只认 TOKEN）：最后一条消息是用户的提示词时回答一次 bash 工具调用（PROBE_COMMAND），否则回答“完成”；
+ * 记录每个请求的 Authorization、请求体中是否出现令牌、消息条数与 tool 消息的内容。
+ */
 const GATEWAY_STUB = `
   const http = require('http');
   const seen = [];
+  const sse = (res, delta, finish) => {
+    res.writeHead(200, { 'content-type': 'text/event-stream' });
+    const chunk = (d, f) => res.write('data: ' + JSON.stringify({ id: 'c1', object: 'chat.completion.chunk', created: 1, model: 'm', choices: [{ index: 0, delta: d, finish_reason: f }] }) + '\\n\\n');
+    chunk(Object.assign({ role: 'assistant' }, delta), null);
+    chunk({}, finish);
+    res.end('data: [DONE]\\n\\n');
+  };
   http.createServer((req, res) => {
     if (req.url === '/seen') return res.end(JSON.stringify(seen));
-    seen.push({ method: req.method, url: req.url, authorization: req.headers.authorization || null });
+    let raw = '';
+    req.on('data', (chunk) => (raw += chunk));
+    req.on('end', () => handle(req, res, raw));
+  }).listen(8080, '0.0.0.0');
+  function handle(req, res, raw) {
     const token = (req.headers.authorization || '').replace(/^Bearer /, '');
+    if (req.method === 'POST' && req.url === '/v1/chat/completions') {
+      const body = JSON.parse(raw);
+      seen.push({ method: req.method, url: req.url, authorization: req.headers.authorization || null, bodyHasToken: raw.includes(process.env.TOKEN), messages: body.messages.length, tools: (body.tools || []).map((tool) => tool.function.name).sort(), toolResults: body.messages.filter((m) => m.role === 'tool').map((m) => m.content) });
+      if (token !== process.env.TOKEN) { res.statusCode = 401; return res.end('{"error":{"code":"AGENT_TOKEN_INVALID"}}'); }
+      if (body.messages[body.messages.length - 1].role === 'user') {
+        return sse(res, { tool_calls: [{ index: 0, id: 'call_1', type: 'function', function: { name: 'bash', arguments: JSON.stringify({ command: process.env.PROBE_COMMAND }) } }] }, 'tool_calls');
+      }
+      return sse(res, { content: '完成' }, 'stop');
+    }
+    seen.push({ method: req.method, url: req.url, authorization: req.headers.authorization || null });
     const answer = () => {
       if (req.method !== 'GET' || req.url !== '/v1/session' || (token !== process.env.TOKEN && token !== process.env.SLOW_TOKEN)) {
         res.statusCode = 401;
@@ -44,22 +111,32 @@ const GATEWAY_STUB = `
       res.end(JSON.stringify({ status: 'active', expiresAt: '${EXPIRES}' }));
     };
     if (token === process.env.SLOW_TOKEN) setTimeout(answer, ${SLOW_MS}); else answer();
-  }).listen(8080, '0.0.0.0');`;
+  }`;
 
-async function gatewaySeen(ref: Parameters<typeof run>[0]): Promise<Array<{ method: string; url: string; authorization: string | null }>> {
+interface Seen {
+  method: string;
+  url: string;
+  authorization: string | null;
+  bodyHasToken?: boolean;
+  messages?: number;
+  tools?: string[];
+  toolResults?: string[];
+}
+
+async function gatewaySeen(ref: Parameters<typeof run>[0]): Promise<Seen[]> {
   const result = await run(ref, ['node', '-e', `require('http').get('http://agent-gw:8080/seen', (r) => { let b = ''; r.on('data', (d) => b += d); r.on('end', () => process.stdout.write(b)); })`]);
   expect(result.exitCode, result.stderr).toBe(0);
   return JSON.parse(result.stdout);
 }
 
-describe.runIf(sandboxEnv.agentImage)('agent 入口（8.6a）', () => {
+describe.runIf(sandboxEnv.agentImage)('agent 入口（8.6a、8.6b）', () => {
   beforeAll(async () => {
     expect((await dockerRequest('POST', '/networks/create', { Name: gatewayHomeNetwork, Internal: true })).status).toBe(201);
     const created = await dockerRequest('POST', `/containers/create?name=${gatewayName}`, {
       Image: image,
       Entrypoint: ['node'],
       Cmd: ['-e', GATEWAY_STUB],
-      Env: [`TOKEN=${TOKEN}`, `SLOW_TOKEN=${SLOW_TOKEN}`],
+      Env: [`TOKEN=${TOKEN}`, `SLOW_TOKEN=${SLOW_TOKEN}`, `PROBE_COMMAND=${PROBE_COMMAND}`],
       User: '10001:10001',
       HostConfig: { NetworkMode: gatewayHomeNetwork, Runtime: 'runc', CapDrop: ['ALL'] },
     });
@@ -139,6 +216,65 @@ describe.runIf(sandboxEnv.agentImage)('agent 入口（8.6a）', () => {
     expect(execs.some((exec) => exec.ProcessConfig.arguments.includes('/opt/agent/entry.mjs'))).toBe(true);
     for (const exec of execs) expect(JSON.stringify(exec.ProcessConfig)).not.toContain(SLOW_TOKEN);
     expect(await entry).toEqual({ ok: true, action: 'session', expiresAt: new Date(EXPIRES) });
+  });
+
+  it('prompt：Pi 经 agent-gw 调用模型并执行 bash 命令；命令的环境固定，沙箱内任何进程的环境与参数中都没有令牌', async () => {
+    const ref = await createSandbox();
+    const written = await run(ref, ['node', '-e', `require('fs').writeFileSync('/tmp/probe.cjs', ${JSON.stringify(PROBE_SCRIPT)})`]);
+    expect(written.exitCode, written.stderr).toBe(0);
+    const request: AgentPromptRequest = {
+      action: 'prompt',
+      token: TOKEN,
+      prompt: '按任务说明检查工作区',
+      session: null,
+      tools: ['read', 'write', 'edit', 'bash', 'grep', 'find', 'ls'],
+      maxTurns: 5,
+      model: { contextWindow: 128_000, maxOutputTokens: 8_192 },
+    };
+    const result = await runAgentEntry(driver, ref, request);
+    expect(result).toEqual({ ok: true, action: 'prompt', session: expect.stringMatching(AGENT_SESSION_FILE_PATTERN), turns: 2, stopReason: 'stop' });
+    const session = (result as { session: string }).session;
+    const chats = (await gatewaySeen(ref)).filter((item) => item.url === '/v1/chat/completions');
+    expect(chats).toHaveLength(2);
+    for (const chat of chats) expect(chat).toMatchObject({ method: 'POST', authorization: `Bearer ${TOKEN}`, bodyHasToken: false });
+    expect(chats[0]!.tools).toEqual(['bash', 'edit', 'find', 'grep', 'ls', 'read', 'write']);
+    const probe = JSON.parse(chats[1]!.toolResults![0]!) as { found: string[]; processes: string[]; env: string[]; memory: Record<string, unknown> };
+    // 纵深防御评估的测量（见路线图 8.6b“纵深防御评估”）：只记录，不断言。
+    console.info(JSON.stringify({ runtime: sandboxEnv.runtime, template: 'agent', agentCommandReadsEntryMemory: probe.memory }));
+    // 入口（Pi）在运行，bash 命令在它之下运行。
+    expect(probe.processes).toContain('/usr/local/bin/node /opt/agent/entry.mjs');
+    expect(probe.found).toEqual([]);
+    expect(probe.env).toEqual(['HOME', 'LANG', 'PATH', 'PWD', 'TMPDIR']);
+
+    // 续接会话：带上之前的对话，写回同一个会话文件。
+    const resumed = await runAgentEntry(driver, ref, { ...request, prompt: '继续', session });
+    expect(resumed).toEqual({ ok: true, action: 'prompt', session, turns: 2, stopReason: 'stop' });
+    const resumedChats = (await gatewaySeen(ref)).filter((item) => item.url === '/v1/chat/completions').slice(2);
+    expect(resumedChats[0]!.messages).toBeGreaterThan(chats[1]!.messages!);
+
+    // 工作区按 agent 模板的规则取回：结果文件与会话文件（都是普通文件、扩展名在白名单中），其中没有令牌。
+    const files = await driver.copyOut(ref);
+    expect(files.map((file) => file.path).sort()).toEqual([`pi-sessions/${session}`, '结果.txt']);
+    expect(files.find((file) => file.path === '结果.txt')!.data.toString()).toBe('ok');
+    for (const file of files) expect(file.data.toString('latin1')).not.toContain(TOKEN);
+  });
+
+  it('prompt：续接的会话文件不存在时 SESSION_INVALID；令牌无效时不启动 Pi 会话', async () => {
+    const ref = await createSandbox();
+    const request: AgentPromptRequest = {
+      action: 'prompt',
+      token: TOKEN,
+      prompt: '继续',
+      session: '2026-11-15T12-00-00-000Z_01a1e18b-3a01-73ab-8e86-dcac529abd40.jsonl',
+      tools: [],
+      maxTurns: 5,
+      model: { contextWindow: 128_000, maxOutputTokens: 8_192 },
+    };
+    const before = (await gatewaySeen(ref)).length;
+    expect(await runAgentEntry(driver, ref, request)).toEqual({ ok: false, code: 'SESSION_INVALID' });
+    expect(await runAgentEntry(driver, ref, { ...request, session: null, token: generateAgentToken() })).toEqual({ ok: false, code: 'TOKEN_INVALID' });
+    const after = (await gatewaySeen(ref)).slice(before);
+    expect(after.map((item) => item.url)).toEqual(['/v1/session', '/v1/session']);
   });
 
   // 放在最后：停止桩之后本文件的其他用例无法再访问 agent-gw。

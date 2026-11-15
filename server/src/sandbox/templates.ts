@@ -269,7 +269,7 @@ const AGENT_WORKSPACE: SandboxTransferLimits = Object.freeze({
 
 /**
  * agent：Agent 任务（路线图第 8 步 8.1，决定事项第 3 项的起步值）。镜像只有 Node 24、rg / fd / jq、/bin/sh 与基本 coreutils
- * （Pi 运行时随 8.6），不含 Chromium、LibreOffice、OpenXmlHelper、编译器和网络工具。隔离参数与 parse 相同（gVisor、非 root、
+ * 与 Pi 运行时（8.6b），不含 Chromium、LibreOffice、OpenXmlHelper、编译器和网络工具。隔离参数与 parse 相同（gVisor、非 root、
  * cap-drop ALL、no-new-privileges、只读根文件系统、不挂载宿主目录、不注入宿主环境变量），只有网络不同：每个沙箱一个专用的
  * internal 网络，只通 agent-gw（见 SandboxNetworkKind）。资源：CPU 1 核、内存 2 GiB（无 swap）、pids 256、/workspace 1 GiB、
  * /tmp 256 MiB（tmpfs 计入内存上限）。

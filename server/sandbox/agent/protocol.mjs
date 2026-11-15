@@ -7,7 +7,11 @@
 // 结果写到**标准输出**：恰好一行 JSON（以换行结束），至多 MAX_RESULT_BYTES；退出码 0 表示 ok，1 表示按协议报告的失败。
 // 失败只给出固定的错误代码与固定的说明，不含请求、令牌、网关的响应正文。worker 按不可信输入解析结果（src/agent/entry.ts）。
 //
-// 8.6a 只有 action = session：经 agent-gw 的 GET /v1/session 确认令牌有效，返回令牌的到期时间。Pi 会话（action = prompt）随 8.6b。
+// 两种请求（action）：
+// - session（8.6a）：经 agent-gw 的 GET /v1/session 确认令牌有效，返回令牌的到期时间；
+// - prompt（8.6b）：先同样确认令牌，再在 Pi 会话中执行**一条**提示词（新建会话或续接 /workspace/pi-sessions/ 中的会话文件），
+//   返回会话文件名、本条提示词用掉的轮数与结束原因。Pi 会话的实现在 pi.mjs，由 entry.mjs 注入（runPrompt），本文件不加载 Pi。
+//   提示词、工具清单、轮数上限与模型的上下文长度都由 worker 给出；Agent 的回复与写出的文件留在工作区，由 worker 取回（8.6d）。
 import { request as httpRequest } from 'node:http';
 
 export const PROTOCOL_VERSION = 1;
@@ -21,6 +25,17 @@ export const GATEWAY_TIMEOUT_MS = 15_000;
 const MAX_GATEWAY_RESPONSE_BYTES = 4 * 1024;
 
 const TOKEN_PATTERN = /^agt_[A-Za-z0-9_-]{43}$/;
+/** Pi 原生工具（桌面版 NATIVE_AGENT_TOOLS）：prompt 请求的 tools 只能从中选（业务工具的桩随 8.6c）。 */
+export const NATIVE_TOOLS = Object.freeze(['read', 'write', 'edit', 'bash', 'grep', 'find', 'ls']);
+/** Pi 新建会话时的文件名（SessionManager：ISO 时间中的 : 与 . 换成 -，加会话 id）；续接时只接受这种名字。 */
+export const SESSION_FILE_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.jsonl$/;
+/** 一条提示词至多这么多字符（请求整体另有 MAX_REQUEST_BYTES）。 */
+export const MAX_PROMPT_CHARS = 256 * 1024;
+/** 一条提示词之内至多的轮数（桌面版 max_turns_per_prompt；任务的轮数与费用上限另由平台按令牌执行，8.3a）。 */
+export const MAX_TURNS_PER_PROMPT = 1_000;
+/** 模型的上下文长度与输出上限的取值范围（worker 按组织选用的模型给出；平台另把 max_tokens 截到 AI_MAX_OUTPUT_TOKENS）。 */
+export const CONTEXT_WINDOW_RANGE = Object.freeze({ min: 8_192, max: 2_000_000 });
+export const MAX_OUTPUT_TOKENS_RANGE = Object.freeze({ min: 256, max: 131_072 });
 const ISO_INSTANT_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
 
 export const ENTRY_ERROR_MESSAGES = Object.freeze({
@@ -28,6 +43,9 @@ export const ENTRY_ERROR_MESSAGES = Object.freeze({
   TOKEN_INVALID: '任务令牌无效',
   GATEWAY_UNAVAILABLE: '无法连接平台入口',
   GATEWAY_FAILED: '平台入口的响应不合法',
+  SESSION_INVALID: 'Agent 会话文件无效',
+  TURN_LIMIT: '本条提示词的轮数达到上限',
+  MODEL_FAILED: '模型调用失败',
   INTERNAL: '入口内部错误',
 });
 
@@ -57,7 +75,35 @@ export async function readRequest(stream, maxBytes = MAX_REQUEST_BYTES) {
 
 const isPlainObject = (value) => typeof value === 'object' && value !== null && !Array.isArray(value) && Object.getPrototypeOf(value) === Object.prototype;
 
-/** 严格解析请求：严格 UTF-8、一个 JSON 对象、字段恰好是登记的那几个（多余的、缺少的、类型不对的一律拒绝）。 */
+const hasExactKeys = (value, keys) => {
+  const actual = Object.keys(value).sort();
+  const expected = [...keys].sort();
+  return actual.length === expected.length && actual.every((key, index) => key === expected[index]);
+};
+
+const isIntegerIn = (value, { min, max }) => Number.isSafeInteger(value) && value >= min && value <= max;
+
+function parsePromptFields(value) {
+  if (!hasExactKeys(value, ['version', 'action', 'token', 'prompt', 'session', 'tools', 'maxTurns', 'model'])) throw new EntryError('BAD_REQUEST');
+  const { prompt, session, tools, maxTurns, model } = value;
+  if (typeof prompt !== 'string' || prompt.trim() === '' || prompt.length > MAX_PROMPT_CHARS) throw new EntryError('BAD_REQUEST');
+  if (session !== null && (typeof session !== 'string' || !SESSION_FILE_PATTERN.test(session))) throw new EntryError('BAD_REQUEST');
+  if (!Array.isArray(tools) || tools.length > NATIVE_TOOLS.length || new Set(tools).size !== tools.length) throw new EntryError('BAD_REQUEST');
+  if (!tools.every((name) => typeof name === 'string' && NATIVE_TOOLS.includes(name))) throw new EntryError('BAD_REQUEST');
+  if (!isIntegerIn(maxTurns, { min: 1, max: MAX_TURNS_PER_PROMPT })) throw new EntryError('BAD_REQUEST');
+  if (!isPlainObject(model) || !hasExactKeys(model, ['contextWindow', 'maxOutputTokens'])) throw new EntryError('BAD_REQUEST');
+  if (!isIntegerIn(model.contextWindow, CONTEXT_WINDOW_RANGE) || !isIntegerIn(model.maxOutputTokens, MAX_OUTPUT_TOKENS_RANGE)) throw new EntryError('BAD_REQUEST');
+  if (model.maxOutputTokens > model.contextWindow) throw new EntryError('BAD_REQUEST');
+  return {
+    prompt,
+    session,
+    tools: [...tools],
+    maxTurns,
+    model: { contextWindow: model.contextWindow, maxOutputTokens: model.maxOutputTokens },
+  };
+}
+
+/** 严格解析请求：严格 UTF-8、一个 JSON 对象、字段恰好是该 action 登记的那几个（多余的、缺少的、类型不对的一律拒绝）。 */
 export function parseRequest(bytes) {
   let text;
   try {
@@ -71,12 +117,14 @@ export function parseRequest(bytes) {
   } catch {
     throw new EntryError('BAD_REQUEST');
   }
-  if (!isPlainObject(value)) throw new EntryError('BAD_REQUEST');
-  const keys = Object.keys(value).sort();
-  if (keys.join(',') !== 'action,token,version') throw new EntryError('BAD_REQUEST');
-  if (value.version !== PROTOCOL_VERSION || value.action !== 'session') throw new EntryError('BAD_REQUEST');
+  if (!isPlainObject(value) || value.version !== PROTOCOL_VERSION) throw new EntryError('BAD_REQUEST');
   if (typeof value.token !== 'string' || !TOKEN_PATTERN.test(value.token)) throw new EntryError('BAD_REQUEST');
-  return { version: PROTOCOL_VERSION, action: 'session', token: value.token };
+  if (value.action === 'session') {
+    if (!hasExactKeys(value, ['version', 'action', 'token'])) throw new EntryError('BAD_REQUEST');
+    return { version: PROTOCOL_VERSION, action: 'session', token: value.token };
+  }
+  if (value.action === 'prompt') return { version: PROTOCOL_VERSION, action: 'prompt', token: value.token, ...parsePromptFields(value) };
+  throw new EntryError('BAD_REQUEST');
 }
 
 /**
@@ -131,7 +179,7 @@ export function querySession({ baseUrl = GATEWAY_BASE_URL, token, timeoutMs = GA
   });
 }
 
-/** 一行结果（以换行结束）。超过 MAX_RESULT_BYTES 时改报 INTERNAL（8.6a 的结果都很短，不会发生）。 */
+/** 一行结果（以换行结束）。超过 MAX_RESULT_BYTES 时改报 INTERNAL（结果只有固定的字段与会话文件名，不会发生）。 */
 export function formatResult(result) {
   const line = `${JSON.stringify({ version: PROTOCOL_VERSION, ...result })}\n`;
   if (Buffer.byteLength(line) <= MAX_RESULT_BYTES) return line;
@@ -143,13 +191,23 @@ function errorResult(error) {
   return { ok: false, error: { code, message: ENTRY_ERROR_MESSAGES[code] } };
 }
 
-/** 执行一次入口请求，把结果写到 stdout，返回退出码（0 为 ok，1 为失败）。 */
-export async function runEntry({ stdin, stdout, baseUrl = GATEWAY_BASE_URL, timeoutMs = GATEWAY_TIMEOUT_MS }) {
+/**
+ * 执行一次入口请求，把结果写到 stdout，返回退出码（0 为 ok，1 为失败）。
+ * runPrompt（pi.mjs 的 runPiPrompt）只在 prompt 请求、令牌确认有效之后调用，返回 { session, turns, stopReason }，
+ * 失败时抛 EntryError（其他异常一律按 INTERNAL 报告，不带出说明）。
+ */
+export async function runEntry({ stdin, stdout, baseUrl = GATEWAY_BASE_URL, timeoutMs = GATEWAY_TIMEOUT_MS, runPrompt }) {
   let result;
   try {
     const request = parseRequest(await readRequest(stdin));
     const session = await querySession({ baseUrl, token: request.token, timeoutMs });
-    result = { ok: true, action: 'session', expiresAt: session.expiresAt };
+    if (request.action === 'session') {
+      result = { ok: true, action: 'session', expiresAt: session.expiresAt };
+    } else {
+      if (typeof runPrompt !== 'function') throw new EntryError('INTERNAL');
+      const outcome = await runPrompt(request, { baseUrl });
+      result = { ok: true, action: 'prompt', session: outcome.session, turns: outcome.turns, stopReason: outcome.stopReason };
+    }
   } catch (error) {
     result = errorResult(error);
   }
