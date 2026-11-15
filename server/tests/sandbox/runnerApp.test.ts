@@ -30,6 +30,8 @@ function fakeDriver() {
   const ref: SandboxRef = Object.freeze({ id: SANDBOX_ID, template: 'parse', jobId: JOB_ID, expiresAt: new Date('2030-01-01T00:00:00Z') });
   /** 每个沙箱收到（通过校验、转给“tar”）的字节数与 SHA-256。 */
   const received = new Map<string, { bytes: number; sha256: string }>();
+  /** exec 收到的标准输入（8.6a 的 agent 入口请求）。 */
+  const inputs: Buffer[] = [];
   /** 模拟沙箱内 tar 的写入速度：每转出这么多字节让出一次事件循环。 */
   let consumeDelayEvery = 0;
   const driver: DockerSandboxDriver = {
@@ -61,9 +63,13 @@ function fakeDriver() {
       }
       received.set(sandbox.id, { bytes, sha256: hash.digest('hex') });
     },
-    async exec(sandbox, command, args) {
-      if (!resolveCommand(SANDBOX_TEMPLATES.parse, command, args)) throw new SandboxError('SANDBOX_BAD_REQUEST', '沙箱命令或参数不合法');
-      calls.push(`exec:${sandbox.id}:${command}:${args.join(',')}`);
+    async exec(sandbox, command, args, options = {}) {
+      // 与真实 driver 相同：按沙箱的模板检查命令与参数，标准输入只给登记了上限的命令。
+      const resolved = resolveCommand(SANDBOX_TEMPLATES[sandbox.template], command, args);
+      if (!resolved) throw new SandboxError('SANDBOX_BAD_REQUEST', '沙箱命令或参数不合法');
+      if (options.input !== undefined && options.input.length > resolved.maxInputBytes) throw new SandboxError('SANDBOX_BAD_REQUEST', '沙箱命令的输入不合法');
+      if (options.input !== undefined) inputs.push(options.input);
+      calls.push(`exec:${sandbox.id}:${command}:${args.join(',')}${options.input !== undefined ? `:input=${options.input.length}` : ''}`);
       return { exitCode: 0, timedOut: false, stdout: 'done', stderr: '', stdoutTruncated: false, stderrTruncated: false };
     },
     async copyOut() {
@@ -97,6 +103,7 @@ function fakeDriver() {
     driver,
     calls,
     received,
+    inputs,
     setOutput(value: Buffer) {
       output = value;
     },
@@ -160,6 +167,7 @@ describe('sandbox-runner http api', () => {
   });
   beforeEach(() => {
     fake.calls.length = 0;
+    fake.inputs.length = 0;
     fake.received.clear();
     fake.setConsumeDelay(0);
     fake.setOutput(Buffer.concat([tarEntry({ name: 'content.md', data: Buffer.from('ok') }), END_OF_ARCHIVE]));
@@ -210,6 +218,42 @@ describe('sandbox-runner http api', () => {
     const ok = await exec({ command: 'parse', args: ['docx'] });
     expect(ok.statusCode).toBe(200);
     expect(fake.calls).toEqual([`exec:${SANDBOX_ID}:parse:docx`]);
+  });
+
+  it('passes a request on standard input only to commands registered with an input limit (8.6a)', async () => {
+    const exec = (id: string, payload: unknown) =>
+      app.inject({ method: 'POST', url: `/v1/sandboxes/${id}/exec`, headers: { ...auth, ...job }, payload: payload as object });
+    const request = Buffer.from(JSON.stringify({ version: 1, action: 'session', token: 'agt_' + 'a'.repeat(43), 说明: '中文' }));
+    const ok = await exec(AGENT_ID, { command: 'run', args: [], input: request.toString('base64') });
+    expect(ok.statusCode).toBe(200);
+    expect(fake.inputs).toEqual([request]);
+    // 上限处（1 MiB）照常转交，超过一个字节即拒绝（请求体本身仍在路由的上限内）。
+    const limit = SANDBOX_TEMPLATES.agent.commands.run!.maxInputBytes!;
+    expect((await exec(AGENT_ID, { command: 'run', args: [], input: Buffer.alloc(limit, 0x61).toString('base64') })).statusCode).toBe(200);
+    const tooLarge = await exec(AGENT_ID, { command: 'run', args: [], input: Buffer.alloc(limit + 1, 0x61).toString('base64') });
+    expect(tooLarge.statusCode).toBe(400);
+    expect(tooLarge.json().error.code).toBe('SANDBOX_BAD_REQUEST');
+    // base64 不规范（非标准字母表、缺补位、多余补位、空白、补位不规范）一律 400，不交给 driver。
+    for (const input of ['YWJj!', 'YWJjZA', 'YWJj====', 'YWJj\n', 'YWJjZB==', 'YWJj-_', 1]) {
+      expect((await exec(AGENT_ID, { command: 'run', args: [], input })).statusCode, String(input)).toBe(400);
+    }
+    // 不接收标准输入的命令（parse）带了即拒绝；不带时照常执行。
+    expect((await exec(SANDBOX_ID, { command: 'parse', args: ['docx'], input: 'YQ==' })).json().error.code).toBe('SANDBOX_BAD_REQUEST');
+    expect(fake.calls).toEqual([`exec:${AGENT_ID}:run::input=${request.length}`, `exec:${AGENT_ID}:run::input=${limit}`]);
+    expect(fake.inputs).toHaveLength(2);
+    // 请求可能含任务令牌：sandbox-runner 的日志中没有它。
+    expect(logs.text()).not.toContain(request.toString('base64'));
+    expect(logs.text()).not.toContain('agt_');
+  });
+
+  it('sends the request through the client and keeps it out of the arguments (8.6a)', async () => {
+    const agentRef: SandboxRef = { id: AGENT_ID, template: 'agent', jobId: JOB_ID, expiresAt: new Date('2030-01-01T00:00:00Z') };
+    const request = Buffer.from('{"中文":"请求"}');
+    expect((await client.exec(agentRef, 'run', [], { input: request })).stdout).toBe('done');
+    expect(fake.inputs).toEqual([request]);
+    expect(fake.calls).toEqual([`exec:${AGENT_ID}:run::input=${request.length}`]);
+    await expect(client.exec(agentRef, 'run', [], { input: Buffer.alloc(SANDBOX_TEMPLATES.agent.commands.run!.maxInputBytes! + 1) })).rejects.toMatchObject({ code: 'SANDBOX_BAD_REQUEST' });
+    await expect(client.exec({ ...agentRef, id: SANDBOX_ID, template: 'parse' }, 'parse', ['docx'], { input: request })).rejects.toMatchObject({ code: 'SANDBOX_BAD_REQUEST' });
   });
 
   it('rejects input archives that are not plain files', async () => {

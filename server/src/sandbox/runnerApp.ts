@@ -4,7 +4,7 @@
 // 接口只接受“模板名 + 任务 id”和模板中登记的命令名与参数，不接受镜像、挂载、网络、环境变量或任意 Docker 参数：
 //   POST   /v1/sandboxes                 { template, jobId }        → 201 { id, template, jobId, expiresAt }
 //   PUT    /v1/sandboxes/:id/input       tar（只含普通文件，流式校验转发） → 204
-//   POST   /v1/sandboxes/:id/exec        { command, args }          → 200 执行结果
+//   POST   /v1/sandboxes/:id/exec        { command, args, input? }  → 200 执行结果（input：标准输入的 base64，只有登记了上限的命令接收）
 //   GET    /v1/sandboxes/:id/output                                  → 200 tar（原样转出，由 worker 校验）
 //   DELETE /v1/sandboxes/:id                                         → 204
 // 后四个接口用 X-Sandbox-Job 头带任务 id，与创建时不符按不存在处理。
@@ -33,6 +33,20 @@ import { createLoggerOptions } from '../logger.ts';
 
 export const SANDBOX_JOB_HEADER = 'x-sandbox-job';
 const JSON_BODY_LIMIT = 1024 * 1024;
+/** 命令经标准输入接收的请求的最大字节数（各模板命令的 maxInputBytes 中最大的，8.6a 的 agent 入口为 1 MiB）。 */
+const MAX_EXEC_INPUT_BYTES = Math.max(0, ...Object.values(SANDBOX_TEMPLATES).flatMap((template) => Object.values(template.commands).map((command) => command.maxInputBytes ?? 0)));
+/** input 的 base64 至多这么长（每 3 字节 4 个字符）。 */
+const MAX_EXEC_INPUT_BASE64 = Math.ceil(MAX_EXEC_INPUT_BYTES / 3) * 4;
+/** 执行命令的请求体上限：base64 的 input 加命令名与参数。 */
+const EXEC_BODY_LIMIT = MAX_EXEC_INPUT_BASE64 + 64 * 1024;
+const BASE64_PATTERN = /^[A-Za-z0-9+/]*={0,2}$/;
+
+/** 严格解码 base64（长度为 4 的倍数、只含标准字母表、补位规范，重新编码后与原文相同）；不合法时返回 null。 */
+function decodeBase64(value: string): Buffer | null {
+  if (value.length % 4 !== 0 || !BASE64_PATTERN.test(value)) return null;
+  const decoded = Buffer.from(value, 'base64');
+  return decoded.toString('base64') === value ? decoded : null;
+}
 /** 放入归档时等待客户端下一块数据的上限。worker 从对象存储按需读取配图，正常情况下块与块之间远小于它。 */
 export const DEFAULT_INPUT_IDLE_TIMEOUT_MS = 60_000;
 /** 关闭时等待在途请求处理完的上限，之后关闭全部连接（sandbox-runner 的退出时限为 10 秒）。 */
@@ -260,17 +274,22 @@ export async function buildSandboxRunnerApp(options: SandboxRunnerAppOptions): P
           properties: {
             command: { type: 'string', maxLength: 64 },
             args: { type: 'array', maxItems: 32, items: { type: 'string', maxLength: 256 } },
+            input: { type: 'string', maxLength: MAX_EXEC_INPUT_BASE64 },
           },
           required: ['command', 'args'],
           additionalProperties: false,
         },
       },
+      bodyLimit: EXEC_BODY_LIMIT,
     },
     async (request, reply) => {
       const ref = await lookup(request);
-      const body = request.body as { command: string; args: string[] };
+      const body = request.body as { command: string; args: string[]; input?: string };
+      // input 可能含任务令牌：不写日志，解码失败只回 400（大小与命令是否接收由 driver 按模板检查）。
+      const input = body.input === undefined ? undefined : decodeBase64(body.input);
+      if (input === null) throw new AppError(400, 'SANDBOX_BAD_REQUEST', '沙箱命令的输入不合法');
       try {
-        return await driver.exec(ref, body.command, body.args, { signal: abortOnDisconnect(reply) });
+        return await driver.exec(ref, body.command, body.args, { signal: abortOnDisconnect(reply), ...(input !== undefined ? { input } : {}) });
       } catch (error) {
         throw toAppError(error);
       }

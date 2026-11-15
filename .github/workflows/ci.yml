@@ -259,7 +259,7 @@ jobs:
             --build-context desktop=../client/electron \
             sandbox/export
 
-      # 8.1：agent 沙箱镜像（Node 24 + rg / fd / jq，无 npm 依赖；Pi 运行时随 8.6）。
+      # 8.1：agent 沙箱镜像（Node 24 + rg / fd / jq，无 npm 依赖）；8.6a 起含入口 /opt/agent/entry.mjs（只用 Node 内置模块）；Pi 运行时随 8.6b。
       - name: Build agent sandbox image
         run: docker build -t zhibiao-agent:ci sandbox/agent
 

@@ -147,7 +147,7 @@ export function createSandboxRunnerClient(options: SandboxRunnerClientOptions): 
       const response = await send(sandboxPath(sandbox, '/exec'), {
         method: 'POST',
         headers: { 'content-type': 'application/json', ...jobHeader(sandbox) },
-        body: JSON.stringify({ command, args }),
+        body: JSON.stringify({ command, args, ...(operationOptions.input !== undefined ? { input: operationOptions.input.toString('base64') } : {}) }),
         timeoutMs: timeoutMs + TEMPLATE_TIMEOUT_MARGIN_MS,
         signal: operationOptions.signal,
       });

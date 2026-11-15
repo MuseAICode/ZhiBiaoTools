@@ -1,6 +1,6 @@
 // Agent 任务令牌的格式（路线图第 8 步 8.2a）：不依赖数据库，agent-gw（8.2b）只用这里的格式检查，不持有数据库连接。
 //
-// 令牌是 256 位随机数，base64url 编码后加前缀 agt_（共 47 个字符），只经模板注入沙箱内 Pi 进程的环境；库中只存 SHA-256。
+// 令牌是 256 位随机数，base64url 编码后加前缀 agt_（共 47 个字符），只经入口请求的标准输入传给沙箱内的入口（8.6a），不进参数、环境与日志；库中只存 SHA-256。
 // 日志中只记哈希的前 12 个十六进制字符（agentTokenLogId），不记令牌原文。
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 
