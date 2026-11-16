@@ -293,7 +293,7 @@ jobs:
         working-directory: server/sandbox/parse
         run: npm audit --audit-level=high
 
-      # agent 沙箱镜像中的 Pi 运行时（@earendil-works/pi-coding-agent、pi-ai，8.6b），版本取自 client/package-lock.json。
+      # agent 沙箱镜像中的 Pi 运行时（@earendil-works/pi-coding-agent、pi-ai，8.6b）与 json-validation 用的 ajv（8.6c2a），版本取自 client/package-lock.json。
       - name: npm audit agent sandbox dependencies (fail on high)
         working-directory: server/sandbox/agent
         run: npm audit --audit-level=high

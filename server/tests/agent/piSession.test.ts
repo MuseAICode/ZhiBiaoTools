@@ -239,6 +239,36 @@ describe('Pi 会话（pi.mjs）', () => {
     expect(toolResults(calls[1]!).join('\n')).toMatch(/not found|not available|unknown/i);
   });
 
+  it('json-validation（8.6c2a）：只在请求中时注册；预置 Schema 优先于 Agent 给出的 schema；结果交回模型，失败时为工具错误', async () => {
+    writeFileSync(join(workspaceDir, '目录.json'), JSON.stringify({ items: [{ title: '概述' }] }));
+    writeFileSync(join(workspaceDir, '其他.json'), JSON.stringify({ count: 'x' }));
+    replies = [
+      // 预置了 Schema：Agent 给出的宽松 schema 被忽略。
+      { toolCalls: [{ name: 'json-validation', arguments: { file_path: '目录.json', schema: true } }] },
+      // 没有预置：按 Agent 给出的 schema 校验。
+      { toolCalls: [{ name: 'json-validation', arguments: { file_path: '其他.json', schema: { type: 'object', properties: { count: { type: 'integer' } } } } }] },
+      // 没有预置、也没有给出 schema；路径超出工作区。
+      { toolCalls: [{ name: 'json-validation', arguments: { file_path: '其他.json' } }, { name: 'json-validation', arguments: { file_path: '../outside.json' } }] },
+      { content: '完成' },
+    ];
+    const jsonSchemas = { '目录.json': { type: 'object', required: ['items'], properties: { items: { type: 'array', minItems: 2 } } } };
+    const outcome = await prompt({ tools: ['read', 'json-validation'], jsonSchemas });
+    expect(outcome.turns).toBe(4);
+    expect(calls[0]!.tools?.map((tool) => tool.name).sort()).toEqual(['json-validation', 'read']);
+    const results = calls.slice(1).map((call) => toolResults(call).slice(-1)[0] ?? '');
+    const parsed = [JSON.parse(results[0]!), JSON.parse(results[1]!)];
+    expect(parsed[0]).toMatchObject({ valid: false, stage: 'validation', file_path: '目录.json', errors: [{ instancePath: '/items', keyword: 'minItems' }] });
+    expect(parsed[1]).toMatchObject({ valid: false, stage: 'validation', file_path: '其他.json', errors: [{ instancePath: '/count', keyword: 'type' }] });
+    const last = toolResults(calls[3]!).slice(-2).map((text) => JSON.parse(text));
+    expect(last[0]).toMatchObject({ valid: false, stage: 'schema' });
+    expect(last[0].errors[0].message).toContain('必须提供 schema');
+    expect(last[1]).toMatchObject({ valid: false, stage: 'read' });
+    // 不在请求中时不注册。
+    calls.length = 0;
+    await prompt({ tools: ['read'] });
+    expect(calls[0]!.tools?.map((tool) => tool.name)).toEqual(['read']);
+  });
+
   it('bash 命令的时限：模型给出的更短时限照常生效；更长的截到 5 分钟', async () => {
     expect(bashTimeoutSeconds(undefined)).toBe(BASH_COMMAND_TIMEOUT_SECONDS);
     expect(bashTimeoutSeconds(BASH_COMMAND_TIMEOUT_SECONDS * 10)).toBe(BASH_COMMAND_TIMEOUT_SECONDS);

@@ -13,6 +13,9 @@
 //
 // 业务工具（8.6c1）：prompt 请求的 tools 中可以有业务工具（AGENT_BUSINESS_TOOLS），入口为它们登记桩。阶段的限制在 worker 一侧：
 // runAgentPrompt 在执行入口之前写下本条提示词可用的业务工具（src/agent/toolScope.ts，迁移 0042），工具调用的计数语句只放行它们。
+//
+// 本地工具（8.6c2a）：json-validation 在沙箱内执行（#82 决定事项第 3 项），不经 worker、不写进阶段；jsonSchemas 为指定文件预置的
+// Schema（只在 json-validation 启用时可以给出），worker 只检查形状、不编译。Agent 的自查结果不被采信，结果提交时另按固定规则校验（8.6d）。
 import type { Kysely } from 'kysely';
 import type { Database } from '../db/schema.ts';
 import { isWellFormedAgentToken } from './token.ts';
@@ -49,7 +52,14 @@ export type AgentNativeTool = (typeof AGENT_NATIVE_TOOLS)[number];
 /** 入口有桩的业务工具（与 protocol.mjs 的 BUSINESS_TOOLS 相同，名字是 src/agent/toolRegistry.ts 中登记的工具名）。 */
 export const AGENT_BUSINESS_TOOLS = ['ask-user', 'report-failure', 'request-termination'] as const;
 export type AgentBusinessTool = (typeof AGENT_BUSINESS_TOOLS)[number];
-export type AgentPromptTool = AgentNativeTool | AgentBusinessTool;
+/** 入口在沙箱内执行的本地工具（与 protocol.mjs 的 LOCAL_TOOLS 相同）。 */
+export const AGENT_LOCAL_TOOLS = ['json-validation'] as const;
+export type AgentLocalTool = (typeof AGENT_LOCAL_TOOLS)[number];
+export type AgentPromptTool = AgentNativeTool | AgentLocalTool | AgentBusinessTool;
+/** jsonSchemas 的上限与键的规则（与 protocol.mjs 的 MAX_JSON_SCHEMAS、isWorkspaceRelativePath 相同）。 */
+export const AGENT_MAX_JSON_SCHEMAS = 32;
+const WORKSPACE_PATH_MAX_BYTES = 255;
+const WORKSPACE_PATH_MAX_DEPTH = 8;
 /** 只能出现其中之一的业务工具（request-termination 面向模型的名字也是 report-failure）。 */
 export const AGENT_EXCLUSIVE_PROMPT_TOOLS = [['report-failure', 'request-termination']] as const;
 /** 与 protocol.mjs 相同的上限（两侧各自检查）。 */
@@ -77,6 +87,8 @@ export interface AgentPromptRequest {
   maxTurns: number;
   /** 组织选用的模型的上下文长度与输出上限。 */
   model: { contextWindow: number; maxOutputTokens: number };
+  /** json-validation 为指定文件预置的 Schema（工作区相对路径 → JSON Schema）；省略或为空时不预置。 */
+  jsonSchemas?: Readonly<Record<string, unknown>>;
 }
 export type AgentEntryRequest = AgentSessionRequest | AgentPromptRequest;
 
@@ -88,18 +100,45 @@ export type AgentEntryResult =
 const isIntegerIn = (value: unknown, range: { min: number; max: number }): value is number =>
   typeof value === 'number' && Number.isSafeInteger(value) && value >= range.min && value <= range.max;
 
+/** 规范的工作区相对路径（与 protocol.mjs 的 isWorkspaceRelativePath 相同）。 */
+export function isAgentWorkspaceRelativePath(value: unknown): value is string {
+  if (typeof value !== 'string' || value === '' || Buffer.byteLength(value, 'utf8') > WORKSPACE_PATH_MAX_BYTES) return false;
+  if (/[\\\u0000-\u001f\u007f]/u.test(value)) return false;
+  const segments = value.split('/');
+  return segments.length <= WORKSPACE_PATH_MAX_DEPTH && segments.every((segment) => segment !== '' && segment !== '.' && segment !== '..');
+}
+
+function jsonSchemasField(jsonSchemas: AgentPromptRequest['jsonSchemas'], tools: readonly AgentPromptTool[]): Record<string, unknown> {
+  if (jsonSchemas === undefined) return {};
+  if (!isPlainObject(jsonSchemas)) throw new TypeError('invalid agent json schemas');
+  const entries = Object.entries(jsonSchemas);
+  if (entries.length === 0) return {};
+  if (!tools.includes('json-validation') || entries.length > AGENT_MAX_JSON_SCHEMAS) throw new TypeError('invalid agent json schemas');
+  for (const [path, schema] of entries) {
+    if (!isAgentWorkspaceRelativePath(path) || (typeof schema !== 'boolean' && !isPlainObject(schema))) throw new TypeError('invalid agent json schemas');
+  }
+  return { jsonSchemas: Object.fromEntries(entries) };
+}
+
 function promptFields(request: AgentPromptRequest): Record<string, unknown> {
-  const { prompt, session, tools, maxTurns, model } = request;
+  const { prompt, session, tools, maxTurns, model, jsonSchemas } = request;
   if (typeof prompt !== 'string' || prompt.trim() === '' || prompt.length > AGENT_PROMPT_MAX_CHARS) throw new TypeError('invalid agent prompt');
   if (session !== null && !AGENT_SESSION_FILE_PATTERN.test(session)) throw new TypeError('invalid agent session file');
-  const known: readonly string[] = [...AGENT_NATIVE_TOOLS, ...AGENT_BUSINESS_TOOLS];
+  const known: readonly string[] = [...AGENT_NATIVE_TOOLS, ...AGENT_LOCAL_TOOLS, ...AGENT_BUSINESS_TOOLS];
   if (new Set(tools).size !== tools.length || !tools.every((tool) => known.includes(tool))) throw new TypeError('invalid agent tools');
   if (AGENT_EXCLUSIVE_PROMPT_TOOLS.some((group) => group.filter((name) => tools.includes(name)).length > 1)) throw new TypeError('invalid agent tools');
   if (!isIntegerIn(maxTurns, { min: 1, max: AGENT_MAX_TURNS_PER_PROMPT })) throw new TypeError('invalid agent max turns');
   if (!isIntegerIn(model.contextWindow, AGENT_CONTEXT_WINDOW_RANGE) || !isIntegerIn(model.maxOutputTokens, AGENT_MAX_OUTPUT_TOKENS_RANGE) || model.maxOutputTokens > model.contextWindow) {
     throw new TypeError('invalid agent model limits');
   }
-  return { prompt, session, tools: [...tools], maxTurns, model: { contextWindow: model.contextWindow, maxOutputTokens: model.maxOutputTokens } };
+  return {
+    prompt,
+    session,
+    tools: [...tools],
+    maxTurns,
+    model: { contextWindow: model.contextWindow, maxOutputTokens: model.maxOutputTokens },
+    ...jsonSchemasField(jsonSchemas, tools),
+  };
 }
 
 /** 编码请求：令牌格式不对、字段不合法、超过上限时抛 TypeError（调用方的错误，不执行）。 */

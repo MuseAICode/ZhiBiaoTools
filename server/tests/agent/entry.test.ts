@@ -24,6 +24,9 @@ import {
   MAX_TURNS_PER_PROMPT,
   BUSINESS_TOOLS,
   EXCLUSIVE_BUSINESS_TOOLS,
+  isWorkspaceRelativePath,
+  LOCAL_TOOLS,
+  MAX_JSON_SCHEMAS,
   NATIVE_TOOLS,
   parseRequest,
   type PromptRequest,
@@ -39,6 +42,8 @@ import {
   AGENT_ENTRY_ERROR_CODES,
   AGENT_EXCLUSIVE_PROMPT_TOOLS,
   AGENT_ENTRY_MAX_RESULT_BYTES,
+  AGENT_LOCAL_TOOLS,
+  AGENT_MAX_JSON_SCHEMAS,
   AGENT_MAX_OUTPUT_TOKENS_RANGE,
   AGENT_MAX_TURNS_PER_PROMPT,
   AGENT_NATIVE_TOOLS,
@@ -46,6 +51,7 @@ import {
   AGENT_SESSION_FILE_PATTERN,
   type AgentPromptRequest,
   encodeAgentEntryRequest,
+  isAgentWorkspaceRelativePath,
   parseAgentEntryResult,
   runAgentEntry,
 } from '../../src/agent/entry.ts';
@@ -312,6 +318,8 @@ const validPrompt = {
   maxTurns: 20,
   model: { contextWindow: 128_000, maxOutputTokens: 8_192 },
 };
+/** parseRequest 的结果：没有预置 Schema 时 jsonSchemas 为 {}（8.6c2a）。 */
+const parsedPrompt = (value: Record<string, unknown>) => ({ jsonSchemas: {}, ...value });
 const promptOk = (fields: Record<string, unknown> = {}) => `${JSON.stringify({ version: 1, ok: true, action: 'prompt', session: SESSION, turns: 3, stopReason: 'stop', ...fields })}\n`;
 
 describe('prompt 请求（8.6b）', () => {
@@ -330,6 +338,8 @@ describe('prompt 请求（8.6b）', () => {
   it('两侧的常量一致', () => {
     expect([...NATIVE_TOOLS]).toEqual([...AGENT_NATIVE_TOOLS]);
     expect([...BUSINESS_TOOLS]).toEqual([...AGENT_BUSINESS_TOOLS]);
+    expect([...LOCAL_TOOLS]).toEqual([...AGENT_LOCAL_TOOLS]);
+    expect(MAX_JSON_SCHEMAS).toBe(AGENT_MAX_JSON_SCHEMAS);
     expect(EXCLUSIVE_BUSINESS_TOOLS.map((group) => [...group])).toEqual(AGENT_EXCLUSIVE_PROMPT_TOOLS.map((group) => [...group]));
     expect(SESSION_FILE_PATTERN.source).toBe(AGENT_SESSION_FILE_PATTERN.source);
     expect(MAX_PROMPT_CHARS).toBe(AGENT_PROMPT_MAX_CHARS);
@@ -343,16 +353,39 @@ describe('prompt 请求（8.6b）', () => {
     const result = await run(request(validPrompt), { runPrompt });
     expect(result).toEqual({ exitCode: 0, stdout: promptOk() });
     expect(received.map((item) => [item.method, item.url])).toEqual([['GET', '/v1/session']]);
-    expect(promptCalls).toEqual([{ request: validPrompt, options: { baseUrl } }]);
+    expect(promptCalls).toEqual([{ request: parsedPrompt(validPrompt), options: { baseUrl } }]);
     expect(parseAgentEntryResult(asExec(result), { action: 'prompt', maxTurns: 20 })).toEqual({ ok: true, action: 'prompt', session: SESSION, turns: 3, stopReason: 'stop' });
     // 续接会话、不启用任何工具、各上限处照常。
     const edge = { ...validPrompt, session: SESSION, tools: [], maxTurns: MAX_TURNS_PER_PROMPT, prompt: 'x'.repeat(MAX_PROMPT_CHARS), model: { contextWindow: CONTEXT_WINDOW_RANGE.max, maxOutputTokens: MAX_OUTPUT_TOKENS_RANGE.max } };
-    expect(parseRequest(request(edge))).toEqual(edge);
+    expect(parseRequest(request(edge))).toEqual(parsedPrompt(edge));
     expect(parseRequest(request({ ...validPrompt, tools: [...NATIVE_TOOLS], model: { contextWindow: CONTEXT_WINDOW_RANGE.min, maxOutputTokens: MAX_OUTPUT_TOKENS_RANGE.min } }))).toMatchObject({ tools: [...NATIVE_TOOLS] });
     // 业务工具（8.6c1）：原生工具加 ask-user 与 report-failure / request-termination 之一。
     for (const tools of [[...NATIVE_TOOLS, 'ask-user', 'report-failure'], [...NATIVE_TOOLS, 'ask-user', 'request-termination'], ['request-termination']]) {
       expect(parseRequest(request({ ...validPrompt, tools }))).toMatchObject({ tools });
     }
+  });
+
+  it('本地工具 json-validation 与预置 Schema（8.6c2a）', () => {
+    const tools = [...NATIVE_TOOLS, 'json-validation', 'ask-user', 'report-failure'];
+    const jsonSchemas = { '目录.json': { type: 'object', required: ['items'] }, 'output/结果.json': true, 'a/b/c/d/e/f/g/h.json': false };
+    expect(parseRequest(request({ ...validPrompt, tools }))).toMatchObject({ tools, jsonSchemas: {} });
+    expect(parseRequest(request({ ...validPrompt, tools, jsonSchemas }))).toMatchObject({ tools, jsonSchemas });
+    expect(parseRequest(request({ ...validPrompt, tools, jsonSchemas: {} }))).toMatchObject({ jsonSchemas: {} });
+    const many = Object.fromEntries(Array.from({ length: MAX_JSON_SCHEMAS }, (_, index) => [`f${index}.json`, true]));
+    expect(Object.keys((parseRequest(request({ ...validPrompt, tools, jsonSchemas: many })) as PromptRequest).jsonSchemas ?? {})).toHaveLength(MAX_JSON_SCHEMAS);
+    // 键为 __proto__ 时作为自有属性保存，不改原型。
+    const proto = parseRequest(request(JSON.stringify({ ...validPrompt, tools, jsonSchemas: {} }).replace('"jsonSchemas":{}', '"jsonSchemas":{"__proto__":{"type":"object"}}')));
+    expect(proto.action === 'prompt' && Object.getPrototypeOf(proto.jsonSchemas)).toBe(Object.prototype);
+    expect(proto.action === 'prompt' && Object.hasOwn(proto.jsonSchemas ?? {}, '__proto__')).toBe(true);
+  });
+
+  it('工作区相对路径的规则两侧相同', () => {
+    const cases: unknown[] = [
+      'a.json', '目录/结果.json', 'a/b', 'x'.repeat(255), `${'a/'.repeat(7)}b`,
+      '', '/a.json', 'a/', 'a//b', './a', 'a/./b', '../a', 'a/../b', '..', '.', 'a\\b', 'a\nb', 'a\u0000b', 'a\u007fb', 'x'.repeat(256), '汉'.repeat(86), `${'a/'.repeat(8)}b`, 1, null, ['a'],
+    ];
+    for (const value of cases) expect(isAgentWorkspaceRelativePath(value)).toBe(isWorkspaceRelativePath(value));
+    expect(cases.filter((value) => isWorkspaceRelativePath(value))).toEqual(['a.json', '目录/结果.json', 'a/b', 'x'.repeat(255), `${'a/'.repeat(7)}b`]);
   });
 
   it.each<[string, Record<string, unknown>]>([
@@ -385,6 +418,16 @@ describe('prompt 请求（8.6b）', () => {
     ['输出上限过大', { model: { contextWindow: 2_000_000, maxOutputTokens: MAX_OUTPUT_TOKENS_RANGE.max + 1 } }],
     ['输出上限大于上下文长度', { model: { contextWindow: 8_192, maxOutputTokens: 16_384 } }],
     ['模型不是对象', { model: [128_000, 8_192] }],
+    ['预置 Schema 而没有启用 json-validation', { jsonSchemas: { 'a.json': true } }],
+    ['预置 Schema 为空对象而没有启用 json-validation', { jsonSchemas: {} }],
+    ['预置 Schema 不是对象', { tools: ['json-validation'], jsonSchemas: [['a.json', true]] }],
+    ['预置 Schema 为 null', { tools: ['json-validation'], jsonSchemas: null }],
+    ['预置 Schema 的路径是绝对路径', { tools: ['json-validation'], jsonSchemas: { '/workspace/a.json': true } }],
+    ['预置 Schema 的路径超出工作区', { tools: ['json-validation'], jsonSchemas: { '../a.json': true } }],
+    ['预置 Schema 的路径带反斜杠', { tools: ['json-validation'], jsonSchemas: { 'a\\..\\b.json': true } }],
+    ['预置 Schema 的值不是 schema', { tools: ['json-validation'], jsonSchemas: { 'a.json': 'object' } }],
+    ['预置 Schema 的值是数组', { tools: ['json-validation'], jsonSchemas: { 'a.json': [] } }],
+    ['预置 Schema 过多', { tools: ['json-validation'], jsonSchemas: Object.fromEntries(Array.from({ length: MAX_JSON_SCHEMAS + 1 }, (_, index) => [`f${index}.json`, true])) }],
   ])('拒绝不合法的 prompt 请求：%s（不访问 agent-gw，不启动 Pi 会话）', async (_name, override) => {
     const result = await run(request({ ...validPrompt, ...override }), { runPrompt });
     expect(result).toEqual({ exitCode: 1, stdout: `${JSON.stringify({ version: 1, ok: false, error: { code: 'BAD_REQUEST', message: ENTRY_ERROR_MESSAGES.BAD_REQUEST } })}\n` });
@@ -433,7 +476,13 @@ describe('prompt 请求（8.6b）', () => {
 
     it('编码：与入口解析的字段一致；不合法的请求不执行', async () => {
       expect(encodeAgentEntryRequest(promptRequest)).toEqual(request(validPrompt));
-      expect(parseRequest(encodeAgentEntryRequest({ ...promptRequest, session: SESSION }))).toEqual({ ...validPrompt, session: SESSION });
+      expect(parseRequest(encodeAgentEntryRequest({ ...promptRequest, session: SESSION }))).toEqual(parsedPrompt({ ...validPrompt, session: SESSION }));
+      // 预置 Schema：只在启用 json-validation 时编码，空的不编码；入口解析出相同的内容。
+      const jsonSchemas = { '目录.json': { type: 'object' }, 'b.json': true };
+      const withSchemas = { ...promptRequest, tools: ['read', 'json-validation'] as const, jsonSchemas };
+      expect(parseRequest(encodeAgentEntryRequest(withSchemas))).toMatchObject({ tools: ['read', 'json-validation'], jsonSchemas });
+      expect(JSON.parse(encodeAgentEntryRequest({ ...withSchemas, jsonSchemas: {} }).toString('utf8'))).not.toHaveProperty('jsonSchemas');
+      expect(JSON.parse(encodeAgentEntryRequest(promptRequest).toString('utf8'))).not.toHaveProperty('jsonSchemas');
       const calls: unknown[] = [];
       const sandbox: SandboxRef = { id: 'sandbox', template: 'agent', jobId: 'job', expiresAt: new Date() };
       const driver = {
@@ -455,6 +504,11 @@ describe('prompt 请求（8.6b）', () => {
         { maxTurns: AGENT_MAX_TURNS_PER_PROMPT + 1 },
         { model: { contextWindow: 1_000, maxOutputTokens: 256 } },
         { model: { contextWindow: 8_192, maxOutputTokens: 16_384 } },
+        { jsonSchemas: { 'a.json': true } },
+        { tools: ['json-validation'], jsonSchemas: { '../a.json': true } },
+        { tools: ['json-validation'], jsonSchemas: { 'a.json': 'object' } },
+        { tools: ['json-validation'], jsonSchemas: [] },
+        { tools: ['json-validation'], jsonSchemas: Object.fromEntries(Array.from({ length: AGENT_MAX_JSON_SCHEMAS + 1 }, (_, index) => [`f${index}.json`, true])) },
       ]) {
         await expect(runAgentEntry(driver, sandbox, { ...promptRequest, ...bad } as AgentPromptRequest)).rejects.toBeInstanceOf(TypeError);
       }

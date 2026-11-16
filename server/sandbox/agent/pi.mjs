@@ -10,6 +10,8 @@
 // - **业务工具**（8.6c1）：请求清单中的 ask-user / report-failure / request-termination 登记为桩（tools.mjs），调用经 agent-gw 交给
 //   worker；报告失败、用户选择终止、令牌失效或本次执行已结束时立即结束会话，入口报告 REPORTED_FAILURE / TOKEN_INVALID / RUN_ENDED。
 //   阶段的限制在 worker 一侧（迁移 0042），这里只登记 worker 给出的桩；
+// - **本地工具**（8.6c2a）：请求清单中有 json-validation 时登记（jsonValidation.mjs），在沙箱内的工作线程中执行，不经 worker；
+//   请求的 jsonSchemas 为指定文件预置的 Schema；
 // - **bash**：/bin/sh；每条命令最多 BASH_COMMAND_TIMEOUT_SECONDS（模型给出的 timeout 只能更短）；命令的环境是固定的几项
 //   （BASH_ENV），不继承入口进程的环境；
 // - **会话文件**：/workspace/pi-sessions/（随工作区快照保存，续跑时由 worker 放回）；续接时只接受 Pi 命名的普通文件；
@@ -21,6 +23,7 @@
 import { lstatSync, mkdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { BUSINESS_TOOLS, EntryError, SESSION_FILE_PATTERN } from './protocol.mjs';
+import { createJsonValidationTool, JSON_VALIDATION_TOOL_NAME } from './jsonValidation.mjs';
 import { callBusinessTool, createBusinessToolStubs, modelToolName } from './tools.mjs';
 
 export const WORKSPACE_DIR = '/workspace';
@@ -181,6 +184,9 @@ export async function runPiPrompt(request, { baseUrl, workspaceDir = WORKSPACE_D
   const businessNames = request.tools.filter((name) => BUSINESS_TOOLS.includes(name));
   const call = callTool ?? ((name, args, signal) => callBusinessTool({ baseUrl, token: request.token, name, args, signal }));
   const businessTools = createBusinessToolStubs({ Type: typebox.Type, names: businessNames, call, end }).map((tool) => codingAgent.defineTool(tool));
+  const localTools = request.tools.includes(JSON_VALIDATION_TOOL_NAME)
+    ? [codingAgent.defineTool(createJsonValidationTool({ Type: typebox.Type, workspaceDir, presetSchemas: request.jsonSchemas ?? {} }))]
+    : [];
   ({ session } = await codingAgent.createAgentSession({
     cwd: workspaceDir,
     agentDir,
@@ -190,7 +196,7 @@ export async function runPiPrompt(request, { baseUrl, workspaceDir = WORKSPACE_D
     // tools 同时限定注册范围（含 customTools）：只注册请求中的工具；bash 用上面的定义替换 Pi 的默认实现，不在清单中时不注册；
     // 业务工具按面向模型的名字登记（request-termination 为 report-failure）。
     tools: request.tools.map(modelToolName),
-    customTools: [bashTool, ...businessTools],
+    customTools: [bashTool, ...localTools, ...businessTools],
     resourceLoader,
     settingsManager,
     sessionManager,

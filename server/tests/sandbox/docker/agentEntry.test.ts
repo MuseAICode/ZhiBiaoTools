@@ -79,7 +79,8 @@ const ASK_USER_ANSWER = { answered: true, answer: '按评分项', selected_optio
 /**
  * agent-gw 的桩：GET /v1/session 只认 TOKEN 与 SLOW_TOKEN（Bearer），其余 401；记录收到的 Authorization。
  * POST /v1/chat/completions（只认 TOKEN）：最后一条消息是用户的提示词时回答一次 bash 工具调用（PROBE_COMMAND），否则回答“完成”；
- * 用户的提示词含“调用业务工具”时改为回答一次 ask-user 工具调用（8.6c1）。
+ * 用户的提示词含“调用业务工具”时改为回答一次 ask-user 工具调用（8.6c1）；含“校验 JSON”时回答两次 json-validation 工具调用（8.6c2a：
+ * 一次用预置的 Schema、一次用模型给出的 schema）。
  * POST /v1/tools/call（只认 TOKEN）：回答 ask-user 已被回答，记录请求体。
  * 记录每个请求的 Authorization、请求体中是否出现令牌、消息条数与 tool 消息的内容。
  */
@@ -108,6 +109,12 @@ const GATEWAY_STUB = `
       const last = body.messages[body.messages.length - 1];
       if (last.role === 'user' && JSON.stringify(last.content).includes('调用业务工具')) {
         return sse(res, { tool_calls: [{ index: 0, id: 'call_2', type: 'function', function: { name: 'ask-user', arguments: JSON.stringify(${JSON.stringify(ASK_USER_ARGUMENTS)}) } }] }, 'tool_calls');
+      }
+      if (last.role === 'user' && JSON.stringify(last.content).includes('校验 JSON')) {
+        return sse(res, { tool_calls: [
+          { index: 0, id: 'call_3', type: 'function', function: { name: 'json-validation', arguments: JSON.stringify({ file_path: '目录.json' }) } },
+          { index: 1, id: 'call_4', type: 'function', function: { name: 'json-validation', arguments: JSON.stringify({ file_path: '目录.json', schema: { type: 'object', required: ['items'] } }) } },
+        ] }, 'tool_calls');
       }
       if (last.role === 'user') {
         return sse(res, { tool_calls: [{ index: 0, id: 'call_1', type: 'function', function: { name: 'bash', arguments: JSON.stringify({ command: process.env.PROBE_COMMAND }) } }] }, 'tool_calls');
@@ -301,6 +308,33 @@ describe.runIf(sandboxEnv.agentImage)('agent 入口（8.6a、8.6b）', () => {
     expect(chats).toHaveLength(2);
     expect(chats[0]!.tools).toEqual(['ask-user', 'read']);
     expect(chats[1]!.toolResults!.map((content) => JSON.parse(content))).toEqual([ASK_USER_ANSWER]);
+  });
+
+  it('prompt：本地工具 json-validation（8.6c2a）在沙箱内的工作线程中用镜像中的 Ajv 校验，不经 agent-gw；预置 Schema 优先', async () => {
+    const ref = await createSandbox();
+    const written = await run(ref, ['node', '-e', `require('fs').writeFileSync('/workspace/目录.json', JSON.stringify({ items: ['概述'] }))`]);
+    expect(written.exitCode, written.stderr).toBe(0);
+    const before = (await gatewaySeen(ref)).length;
+    const request: AgentPromptRequest = {
+      action: 'prompt',
+      token: TOKEN,
+      prompt: '校验 JSON 结果',
+      session: null,
+      tools: ['read', 'json-validation'],
+      maxTurns: 5,
+      model: { contextWindow: 128_000, maxOutputTokens: 8_192 },
+      jsonSchemas: { '目录.json': { type: 'object', properties: { items: { type: 'array', minItems: 2 } } } },
+    };
+    const result = await runAgentEntry(driver, ref, request);
+    expect(result).toEqual({ ok: true, action: 'prompt', session: expect.stringMatching(AGENT_SESSION_FILE_PATTERN), turns: 2, stopReason: 'stop' });
+    const seen = (await gatewaySeen(ref)).slice(before);
+    expect(seen.filter((item) => item.url === '/v1/tools/call')).toEqual([]);
+    const chats = seen.filter((item) => item.url === '/v1/chat/completions');
+    expect(chats[0]!.tools).toEqual(['json-validation', 'read']);
+    // 两次调用都按预置的 Schema（minItems 2）校验：模型给出的 schema 被忽略。
+    const results = chats[1]!.toolResults!.map((content) => JSON.parse(content));
+    expect(results).toHaveLength(2);
+    for (const item of results) expect(item).toMatchObject({ valid: false, stage: 'validation', file_path: '目录.json', errors: [{ instancePath: '/items', keyword: 'minItems' }] });
   });
 
   it('prompt：续接的会话文件不存在时 SESSION_INVALID；令牌无效时不启动 Pi 会话', async () => {
