@@ -8,6 +8,11 @@ export const GATEWAY_BASE_URL: string;
 export const GATEWAY_TIMEOUT_MS: number;
 export const NATIVE_TOOLS: readonly ['read', 'write', 'edit', 'bash', 'grep', 'find', 'ls'];
 export const BUSINESS_TOOLS: readonly ['ask-user', 'report-failure', 'request-termination'];
+export const LOCAL_TOOLS: readonly ['json-validation'];
+export const MAX_JSON_SCHEMAS: number;
+export const MAX_WORKSPACE_PATH_BYTES: number;
+export const MAX_WORKSPACE_PATH_DEPTH: number;
+export function isWorkspaceRelativePath(value: unknown): value is string;
 export const EXCLUSIVE_BUSINESS_TOOLS: readonly (readonly string[])[];
 export const SESSION_FILE_PATTERN: RegExp;
 export const MAX_PROMPT_CHARS: number;
@@ -35,7 +40,8 @@ export class EntryError extends Error {
 
 export type NativeTool = (typeof NATIVE_TOOLS)[number];
 export type BusinessTool = (typeof BUSINESS_TOOLS)[number];
-export type RequestTool = NativeTool | BusinessTool;
+export type LocalTool = (typeof LOCAL_TOOLS)[number];
+export type RequestTool = NativeTool | LocalTool | BusinessTool;
 
 export interface SessionRequest {
   version: 1;
@@ -51,6 +57,8 @@ export interface PromptRequest {
   tools: RequestTool[];
   maxTurns: number;
   model: { contextWindow: number; maxOutputTokens: number };
+  /** 预置的 JSON Schema（工作区相对路径 → schema）；parseRequest 的结果中总有（省略时为 {}）。 */
+  jsonSchemas?: Record<string, unknown>;
 }
 export type EntryRequest = SessionRequest | PromptRequest;
 

@@ -15,6 +15,8 @@
 //   工具清单中除原生工具外还可以有业务工具（8.6c1，BUSINESS_TOOLS）：入口为它们登记桩（tools.mjs），调用经 agent-gw 的
 //   POST /v1/tools/call 交给 worker。**阶段的限制在 worker 一侧**（迁移 0042_agent_tool_scopes）：这里只登记 worker 给出的桩、
 //   让 Agent 正常工作，不算控制（沙箱内的命令可以绕过入口直接调用工具接口，#91 确认）。
+//   本地工具（8.6c2a，LOCAL_TOOLS）在沙箱内执行、不经 worker：json-validation（jsonValidation.mjs）供 Agent 自查工作区中的 JSON 文件，
+//   worker 可在 jsonSchemas 中为指定文件预置 Schema（只在 json-validation 启用时可以给出）；结果提交时平台另按固定规则校验。
 import { request as httpRequest } from 'node:http';
 
 export const PROTOCOL_VERSION = 1;
@@ -37,7 +39,14 @@ export const NATIVE_TOOLS = Object.freeze(['read', 'write', 'edit', 'bash', 'gre
 export const BUSINESS_TOOLS = Object.freeze(['ask-user', 'report-failure', 'request-termination']);
 /** 只能出现其中之一的业务工具。 */
 export const EXCLUSIVE_BUSINESS_TOOLS = Object.freeze([Object.freeze(['report-failure', 'request-termination'])]);
-const REQUEST_TOOLS = Object.freeze([...NATIVE_TOOLS, ...BUSINESS_TOOLS]);
+/** 本地工具（8.6c2a）：在沙箱内由入口执行，不经 worker。 */
+export const LOCAL_TOOLS = Object.freeze(['json-validation']);
+const REQUEST_TOOLS = Object.freeze([...NATIVE_TOOLS, ...LOCAL_TOOLS, ...BUSINESS_TOOLS]);
+/** jsonSchemas 至多为这么多个文件预置 Schema。 */
+export const MAX_JSON_SCHEMAS = 32;
+/** 工作区内相对路径的上限（与工作区快照的规则相同：完整路径至多 255 个字节、至多 8 级）。 */
+export const MAX_WORKSPACE_PATH_BYTES = 255;
+export const MAX_WORKSPACE_PATH_DEPTH = 8;
 /** Pi 新建会话时的文件名（SessionManager：ISO 时间中的 : 与 . 换成 -，加会话 id）；续接时只接受这种名字。 */
 export const SESSION_FILE_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.jsonl$/;
 /** 一条提示词至多这么多字符（请求整体另有 MAX_REQUEST_BYTES）。 */
@@ -96,8 +105,36 @@ const hasExactKeys = (value, keys) => {
 
 const isIntegerIn = (value, { min, max }) => Number.isSafeInteger(value) && value >= min && value <= max;
 
+/**
+ * 规范的工作区相对路径：以 / 分隔、不以 / 开头或结尾，没有空段、`.`、`..`，不含反斜杠与控制字符，至多 MAX_WORKSPACE_PATH_BYTES 个字节、
+ * MAX_WORKSPACE_PATH_DEPTH 级。jsonSchemas 的键必须是这种形式（worker 一侧 src/agent/entry.ts 用同样的规则）。
+ */
+export function isWorkspaceRelativePath(value) {
+  if (typeof value !== 'string' || value === '' || Buffer.byteLength(value, 'utf8') > MAX_WORKSPACE_PATH_BYTES) return false;
+  if (/[\\\u0000-\u001f\u007f]/u.test(value)) return false;
+  const segments = value.split('/');
+  return segments.length <= MAX_WORKSPACE_PATH_DEPTH && segments.every((segment) => segment !== '' && segment !== '.' && segment !== '..');
+}
+
+/** 预置 Schema：键为工作区相对路径，值为 JSON Schema（对象或布尔值）；在沙箱内用到时才编译。 */
+function parseJsonSchemas(value) {
+  if (!isPlainObject(value)) throw new EntryError('BAD_REQUEST');
+  const entries = Object.entries(value);
+  if (entries.length > MAX_JSON_SCHEMAS) throw new EntryError('BAD_REQUEST');
+  for (const [path, schema] of entries) {
+    if (!isWorkspaceRelativePath(path)) throw new EntryError('BAD_REQUEST');
+    if (typeof schema !== 'boolean' && !isPlainObject(schema)) throw new EntryError('BAD_REQUEST');
+  }
+  // Object.fromEntries 按自有属性写入（键为 __proto__ 时也不改原型）。
+  return Object.fromEntries(entries);
+}
+
+const PROMPT_KEYS = Object.freeze(['version', 'action', 'token', 'prompt', 'session', 'tools', 'maxTurns', 'model']);
+
 function parsePromptFields(value) {
-  if (!hasExactKeys(value, ['version', 'action', 'token', 'prompt', 'session', 'tools', 'maxTurns', 'model'])) throw new EntryError('BAD_REQUEST');
+  // jsonSchemas 可以省略（等于没有预置），给出时 tools 中必须有 json-validation。
+  const hasSchemas = Object.hasOwn(value, 'jsonSchemas');
+  if (!hasExactKeys(value, hasSchemas ? [...PROMPT_KEYS, 'jsonSchemas'] : PROMPT_KEYS)) throw new EntryError('BAD_REQUEST');
   const { prompt, session, tools, maxTurns, model } = value;
   if (typeof prompt !== 'string' || prompt.trim() === '' || prompt.length > MAX_PROMPT_CHARS) throw new EntryError('BAD_REQUEST');
   if (session !== null && (typeof session !== 'string' || !SESSION_FILE_PATTERN.test(session))) throw new EntryError('BAD_REQUEST');
@@ -108,12 +145,14 @@ function parsePromptFields(value) {
   if (!isPlainObject(model) || !hasExactKeys(model, ['contextWindow', 'maxOutputTokens'])) throw new EntryError('BAD_REQUEST');
   if (!isIntegerIn(model.contextWindow, CONTEXT_WINDOW_RANGE) || !isIntegerIn(model.maxOutputTokens, MAX_OUTPUT_TOKENS_RANGE)) throw new EntryError('BAD_REQUEST');
   if (model.maxOutputTokens > model.contextWindow) throw new EntryError('BAD_REQUEST');
+  if (hasSchemas && !tools.includes('json-validation')) throw new EntryError('BAD_REQUEST');
   return {
     prompt,
     session,
     tools: [...tools],
     maxTurns,
     model: { contextWindow: model.contextWindow, maxOutputTokens: model.maxOutputTokens },
+    jsonSchemas: hasSchemas ? parseJsonSchemas(value.jsonSchemas) : {},
   };
 }
 
