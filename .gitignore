@@ -273,3 +273,6 @@ donotsync/
 testfiles/
 doc/
 logs/
+
+# 本机运行 Redis / Valkey 时写出的快照（集成测试）
+dump.rdb
