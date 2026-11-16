@@ -8,9 +8,17 @@
 //
 // 两种请求：session（8.6a，确认令牌有效、取到期时间）与 prompt（8.6b，在 Pi 会话中执行一条提示词，返回会话文件名、轮数与结束原因）。
 // prompt 的结果只说明入口按协议走完了：Agent 写了什么、会话中有什么，都由 worker 从工作区取回后按不可信内容处理（8.6d）；
-// 入口报告的 MODEL_FAILED 不区分原因（令牌失效、任务上限、余额不足等），原因由调用方按任务状态判断，不采信沙箱的说法。
+// 入口报告的 MODEL_FAILED 不区分原因（令牌失效、任务上限、余额不足等），原因由调用方按任务状态判断，不采信沙箱的说法；
+// REPORTED_FAILURE（8.6c1，Agent 报告无法继续或用户选择终止）同样只是入口的说法，任务是否失败按 agent_failure_reports（8.4b）判断。
+//
+// 业务工具（8.6c1）：prompt 请求的 tools 中可以有业务工具（AGENT_BUSINESS_TOOLS），入口为它们登记桩。阶段的限制在 worker 一侧：
+// runAgentPrompt 在执行入口之前写下本条提示词可用的业务工具（src/agent/toolScope.ts，迁移 0042），工具调用的计数语句只放行它们。
+import type { Kysely } from 'kysely';
+import type { Database } from '../db/schema.ts';
 import { isWellFormedAgentToken } from './token.ts';
+import { setAgentToolScope } from './toolScope.ts';
 import { JobError } from '../jobs/definitions.ts';
+import type { RunRef } from '../jobs/store.ts';
 import type { SandboxDriver, SandboxExecResult, SandboxOperationOptions, SandboxRef } from '../sandbox/driver.ts';
 import { AGENT_ENTRY_COMMAND, AGENT_ENTRY_MAX_INPUT_BYTES } from '../sandbox/templates.ts';
 
@@ -29,13 +37,21 @@ export const AGENT_ENTRY_ERROR_CODES = [
   'SESSION_INVALID',
   'TURN_LIMIT',
   'MODEL_FAILED',
+  'REPORTED_FAILURE',
+  'RUN_ENDED',
   'INTERNAL',
 ] as const;
 export type AgentEntryErrorCode = (typeof AGENT_ENTRY_ERROR_CODES)[number];
 
-/** Pi 原生工具（与 protocol.mjs 的 NATIVE_TOOLS 相同）：prompt 请求的 tools 只能从中选。 */
+/** Pi 原生工具（与 protocol.mjs 的 NATIVE_TOOLS 相同）。 */
 export const AGENT_NATIVE_TOOLS = ['read', 'write', 'edit', 'bash', 'grep', 'find', 'ls'] as const;
 export type AgentNativeTool = (typeof AGENT_NATIVE_TOOLS)[number];
+/** 入口有桩的业务工具（与 protocol.mjs 的 BUSINESS_TOOLS 相同，名字是 src/agent/toolRegistry.ts 中登记的工具名）。 */
+export const AGENT_BUSINESS_TOOLS = ['ask-user', 'report-failure', 'request-termination'] as const;
+export type AgentBusinessTool = (typeof AGENT_BUSINESS_TOOLS)[number];
+export type AgentPromptTool = AgentNativeTool | AgentBusinessTool;
+/** 只能出现其中之一的业务工具（request-termination 面向模型的名字也是 report-failure）。 */
+export const AGENT_EXCLUSIVE_PROMPT_TOOLS = [['report-failure', 'request-termination']] as const;
 /** 与 protocol.mjs 相同的上限（两侧各自检查）。 */
 export const AGENT_PROMPT_MAX_CHARS = 256 * 1024;
 export const AGENT_MAX_TURNS_PER_PROMPT = 1_000;
@@ -55,8 +71,8 @@ export interface AgentPromptRequest {
   prompt: string;
   /** 续接的会话文件名（工作区 pi-sessions/ 中）；null 新建会话。 */
   session: string | null;
-  /** 启用的 Pi 原生工具。 */
-  tools: readonly AgentNativeTool[];
+  /** 启用的 Pi 原生工具与业务工具（业务工具的桩经 agent-gw 调用 worker，阶段限制由 runAgentPrompt 写下）。 */
+  tools: readonly AgentPromptTool[];
   /** 本条提示词之内至多的轮数（桌面版 max_turns_per_prompt）。 */
   maxTurns: number;
   /** 组织选用的模型的上下文长度与输出上限。 */
@@ -76,7 +92,9 @@ function promptFields(request: AgentPromptRequest): Record<string, unknown> {
   const { prompt, session, tools, maxTurns, model } = request;
   if (typeof prompt !== 'string' || prompt.trim() === '' || prompt.length > AGENT_PROMPT_MAX_CHARS) throw new TypeError('invalid agent prompt');
   if (session !== null && !AGENT_SESSION_FILE_PATTERN.test(session)) throw new TypeError('invalid agent session file');
-  if (new Set(tools).size !== tools.length || !tools.every((tool) => (AGENT_NATIVE_TOOLS as readonly string[]).includes(tool))) throw new TypeError('invalid agent tools');
+  const known: readonly string[] = [...AGENT_NATIVE_TOOLS, ...AGENT_BUSINESS_TOOLS];
+  if (new Set(tools).size !== tools.length || !tools.every((tool) => known.includes(tool))) throw new TypeError('invalid agent tools');
+  if (AGENT_EXCLUSIVE_PROMPT_TOOLS.some((group) => group.filter((name) => tools.includes(name)).length > 1)) throw new TypeError('invalid agent tools');
   if (!isIntegerIn(maxTurns, { min: 1, max: AGENT_MAX_TURNS_PER_PROMPT })) throw new TypeError('invalid agent max turns');
   if (!isIntegerIn(model.contextWindow, AGENT_CONTEXT_WINDOW_RANGE) || !isIntegerIn(model.maxOutputTokens, AGENT_MAX_OUTPUT_TOKENS_RANGE) || model.maxOutputTokens > model.contextWindow) {
     throw new TypeError('invalid agent model limits');
@@ -170,4 +188,28 @@ export async function runAgentEntry(
   const input = encodeAgentEntryRequest(request);
   const exec = await driver.exec(sandbox, AGENT_ENTRY_COMMAND, [], { ...options, input });
   return parseAgentEntryResult(exec, request.action === 'prompt' ? { action: 'prompt', maxTurns: request.maxTurns } : { action: 'session' });
+}
+
+/** 请求中的业务工具（worker 一侧的工具名）。 */
+export function agentPromptBusinessTools(tools: readonly AgentPromptTool[]): AgentBusinessTool[] {
+  return tools.filter((name): name is AgentBusinessTool => (AGENT_BUSINESS_TOOLS as readonly string[]).includes(name));
+}
+
+/**
+ * 执行一条提示词：先写下本条提示词可用的业务工具（本阶段，迁移 0042；allowedTools 为任务类型登记的 agentTools，请求中的业务工具
+ * 必须是它的子集，否则抛 TypeError），再执行入口。任务已不在本次执行中（写不进阶段）时不执行入口，返回 RUN_ENDED。
+ */
+export async function runAgentPrompt(
+  db: Kysely<Database>,
+  driver: Pick<SandboxDriver, 'exec'>,
+  sandbox: SandboxRef,
+  run: RunRef,
+  request: AgentPromptRequest,
+  allowedTools: readonly string[],
+  options: SandboxOperationOptions = {},
+): Promise<AgentEntryResult> {
+  // 先检查请求（不合法时不写阶段）。
+  encodeAgentEntryRequest(request);
+  if (!(await setAgentToolScope(db, run, agentPromptBusinessTools(request.tools), allowedTools))) return { ok: false, code: 'RUN_ENDED' };
+  return runAgentEntry(driver, sandbox, request, options);
 }

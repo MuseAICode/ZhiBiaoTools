@@ -7,6 +7,8 @@ export const MAX_RESULT_BYTES: number;
 export const GATEWAY_BASE_URL: string;
 export const GATEWAY_TIMEOUT_MS: number;
 export const NATIVE_TOOLS: readonly ['read', 'write', 'edit', 'bash', 'grep', 'find', 'ls'];
+export const BUSINESS_TOOLS: readonly ['ask-user', 'report-failure', 'request-termination'];
+export const EXCLUSIVE_BUSINESS_TOOLS: readonly (readonly string[])[];
 export const SESSION_FILE_PATTERN: RegExp;
 export const MAX_PROMPT_CHARS: number;
 export const MAX_TURNS_PER_PROMPT: number;
@@ -21,6 +23,8 @@ export type EntryErrorCode =
   | 'SESSION_INVALID'
   | 'TURN_LIMIT'
   | 'MODEL_FAILED'
+  | 'REPORTED_FAILURE'
+  | 'RUN_ENDED'
   | 'INTERNAL';
 export const ENTRY_ERROR_MESSAGES: Readonly<Record<EntryErrorCode, string>>;
 
@@ -30,6 +34,8 @@ export class EntryError extends Error {
 }
 
 export type NativeTool = (typeof NATIVE_TOOLS)[number];
+export type BusinessTool = (typeof BUSINESS_TOOLS)[number];
+export type RequestTool = NativeTool | BusinessTool;
 
 export interface SessionRequest {
   version: 1;
@@ -42,7 +48,7 @@ export interface PromptRequest {
   token: string;
   prompt: string;
   session: string | null;
-  tools: NativeTool[];
+  tools: RequestTool[];
   maxTurns: number;
   model: { contextWindow: number; maxOutputTokens: number };
 }

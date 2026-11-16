@@ -37,9 +37,9 @@ RUN apt-get update \
  && mkdir -p /workspace /opt/agent
 
 # 入口：模板的 run 命令（node /opt/agent/entry.mjs），请求（含任务令牌）经标准输入传入，协议见 protocol.mjs；prompt 请求在 Pi 会话中
-# 执行（pi.mjs，工作区说明 workspace-instructions.md）。属主为 root、只读。
+# 执行（pi.mjs，工作区说明 workspace-instructions.md），业务工具的桩在 tools.mjs（8.6c1）。属主为 root、只读。
 COPY --from=deps /opt/agent/node_modules /opt/agent/node_modules
-COPY --chmod=0644 package.json entry.mjs protocol.mjs pi.mjs workspace-instructions.md /opt/agent/
+COPY --chmod=0644 package.json entry.mjs protocol.mjs pi.mjs tools.mjs workspace-instructions.md /opt/agent/
 
 ENV HOME=/tmp LANG=C.UTF-8 TMPDIR=/tmp
 USER 10001:10001

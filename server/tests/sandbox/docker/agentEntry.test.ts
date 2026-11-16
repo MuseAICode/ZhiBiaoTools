@@ -9,7 +9,10 @@
 // - prompt（8.6b）：镜像中的 Pi 运行时经 agent-gw 的 POST /v1/chat/completions 调用模型（桩按脚本回答：先让 Agent 执行一条 bash
 //   命令，再结束），令牌只在 Authorization 中；Agent 执行的命令中，沙箱内所有进程的环境与参数里都没有令牌，命令的环境固定；
 //   会话文件在 /workspace/pi-sessions/ 中、可续接，工作区（结果文件与会话文件）按 agent 模板的规则取回。
-//   真实的模型调用路由（schema、字段转换）见 tests/agent/piSession.test.ts。
+//   真实的模型调用路由（schema、字段转换）见 tests/agent/piSession.test.ts；
+// - 业务工具的桩（8.6c1）：镜像中的 tools.mjs 为请求中的 ask-user 登记桩，经 agent-gw 的 POST /v1/tools/call 调用（令牌只在
+//   Authorization 中），回答交给模型。真实的工具路由见 tests/agent/piBusinessTools.test.ts，阶段限制与绕过入口直接调用见
+//   tests/db/agentToolScopes.test.ts。
 import { randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { AGENT_SESSION_FILE_PATTERN, type AgentPromptRequest, runAgentEntry } from '../../../src/agent/entry.ts';
@@ -69,9 +72,15 @@ const PROBE_SCRIPT = `
   }
   process.stdout.write(JSON.stringify({ found, processes, env: Object.keys(process.env).sort(), memory }));`;
 
+/** 桩让 Agent 调用 ask-user 时的参数与回答（8.6c1）。 */
+const ASK_USER_ARGUMENTS = { question: '按哪种方式组织目录？', options: [{ label: '按评分项', custom: false }, { label: '按章节', custom: false }] };
+const ASK_USER_ANSWER = { answered: true, answer: '按评分项', selected_option: '按评分项', is_custom: false };
+
 /**
  * agent-gw 的桩：GET /v1/session 只认 TOKEN 与 SLOW_TOKEN（Bearer），其余 401；记录收到的 Authorization。
  * POST /v1/chat/completions（只认 TOKEN）：最后一条消息是用户的提示词时回答一次 bash 工具调用（PROBE_COMMAND），否则回答“完成”；
+ * 用户的提示词含“调用业务工具”时改为回答一次 ask-user 工具调用（8.6c1）。
+ * POST /v1/tools/call（只认 TOKEN）：回答 ask-user 已被回答，记录请求体。
  * 记录每个请求的 Authorization、请求体中是否出现令牌、消息条数与 tool 消息的内容。
  */
 const GATEWAY_STUB = `
@@ -96,10 +105,20 @@ const GATEWAY_STUB = `
       const body = JSON.parse(raw);
       seen.push({ method: req.method, url: req.url, authorization: req.headers.authorization || null, bodyHasToken: raw.includes(process.env.TOKEN), messages: body.messages.length, tools: (body.tools || []).map((tool) => tool.function.name).sort(), toolResults: body.messages.filter((m) => m.role === 'tool').map((m) => m.content) });
       if (token !== process.env.TOKEN) { res.statusCode = 401; return res.end('{"error":{"code":"AGENT_TOKEN_INVALID"}}'); }
-      if (body.messages[body.messages.length - 1].role === 'user') {
+      const last = body.messages[body.messages.length - 1];
+      if (last.role === 'user' && JSON.stringify(last.content).includes('调用业务工具')) {
+        return sse(res, { tool_calls: [{ index: 0, id: 'call_2', type: 'function', function: { name: 'ask-user', arguments: JSON.stringify(${JSON.stringify(ASK_USER_ARGUMENTS)}) } }] }, 'tool_calls');
+      }
+      if (last.role === 'user') {
         return sse(res, { tool_calls: [{ index: 0, id: 'call_1', type: 'function', function: { name: 'bash', arguments: JSON.stringify({ command: process.env.PROBE_COMMAND }) } }] }, 'tool_calls');
       }
       return sse(res, { content: '完成' }, 'stop');
+    }
+    if (req.method === 'POST' && req.url === '/v1/tools/call') {
+      seen.push({ method: req.method, url: req.url, authorization: req.headers.authorization || null, bodyHasToken: raw.includes(process.env.TOKEN), toolCall: JSON.parse(raw) });
+      if (token !== process.env.TOKEN) { res.statusCode = 401; return res.end('{"error":{"code":"AGENT_TOKEN_INVALID"}}'); }
+      res.setHeader('content-type', 'application/json');
+      return res.end(JSON.stringify({ result: ${JSON.stringify(ASK_USER_ANSWER)} }));
     }
     seen.push({ method: req.method, url: req.url, authorization: req.headers.authorization || null });
     const answer = () => {
@@ -121,6 +140,7 @@ interface Seen {
   messages?: number;
   tools?: string[];
   toolResults?: string[];
+  toolCall?: { name: string; arguments: unknown };
 }
 
 async function gatewaySeen(ref: Parameters<typeof run>[0]): Promise<Seen[]> {
@@ -257,6 +277,30 @@ describe.runIf(sandboxEnv.agentImage)('agent 入口（8.6a、8.6b）', () => {
     expect(files.map((file) => file.path).sort()).toEqual([`pi-sessions/${session}`, '结果.txt']);
     expect(files.find((file) => file.path === '结果.txt')!.data.toString()).toBe('ok');
     for (const file of files) expect(file.data.toString('latin1')).not.toContain(TOKEN);
+  });
+
+  it('prompt：业务工具的桩（8.6c1）经 agent-gw 的 POST /v1/tools/call 调用，令牌只在 Authorization 中，回答交给模型', async () => {
+    const ref = await createSandbox();
+    const before = (await gatewaySeen(ref)).length;
+    const request: AgentPromptRequest = {
+      action: 'prompt',
+      token: TOKEN,
+      prompt: '调用业务工具确认目录组织方式',
+      session: null,
+      tools: ['read', 'ask-user'],
+      maxTurns: 5,
+      model: { contextWindow: 128_000, maxOutputTokens: 8_192 },
+    };
+    const result = await runAgentEntry(driver, ref, request);
+    expect(result).toEqual({ ok: true, action: 'prompt', session: expect.stringMatching(AGENT_SESSION_FILE_PATTERN), turns: 2, stopReason: 'stop' });
+    const seen = (await gatewaySeen(ref)).slice(before);
+    expect(seen.filter((item) => item.url === '/v1/tools/call')).toEqual([
+      { method: 'POST', url: '/v1/tools/call', authorization: `Bearer ${TOKEN}`, bodyHasToken: false, toolCall: { name: 'ask-user', arguments: ASK_USER_ARGUMENTS } },
+    ]);
+    const chats = seen.filter((item) => item.url === '/v1/chat/completions');
+    expect(chats).toHaveLength(2);
+    expect(chats[0]!.tools).toEqual(['ask-user', 'read']);
+    expect(chats[1]!.toolResults!.map((content) => JSON.parse(content))).toEqual([ASK_USER_ANSWER]);
   });
 
   it('prompt：续接的会话文件不存在时 SESSION_INVALID；令牌无效时不启动 Pi 会话', async () => {

@@ -8,13 +8,16 @@
 // 2. **身份只按令牌**（agentIdentityOf）：组织、项目、任务、发起用户由服务端按令牌查出，处理函数拿到的是令牌身份与据此建立的
 //    TenantContext（发起用户的身份与 RLS）；请求中自称的组织、项目、任务、用户等字段没有位置（请求体顶层只有 name 与 arguments，
 //    arguments 的 schema 由工具登记且必须是封闭的：每个对象都 additionalProperties: false）；
-// 3. **调用次数与频率**：每个任务对每个工具有累计次数上限（跨执行累计）与每分钟的频率上限，在执行之前原子地计入
+// 3. **当前阶段**（8.6c1，迁移 0042_agent_tool_scopes）：只放行执行者为本次执行当前阶段写下的工具（src/agent/toolScope.ts），
+//    其余 403 AGENT_TOOL_NOT_IN_STAGE、不计入；还没有写下阶段时所有工具都不可用。阶段限制只在这里执行，沙箱内入口按阶段登记桩工具
+//    只是让 Agent 正常工作（沙箱内的命令可以绕过入口直接调用本路由，#91 确认）；
+// 4. **调用次数与频率**：每个任务对每个工具有累计次数上限（跨执行累计）与每分钟的频率上限，在执行之前原子地计入
 //    （迁移 0037_agent_tool_calls），参数不合法的调用同样计入，达到上限 429；任务不在本次执行中 409；
-// 4. **参数**：先查字节数（工具自己的上限，超出 413），再按登记的 schema 校验（不做类型转换，不合法 400，错误说明只含
+// 5. **参数**：先查字节数（工具自己的上限，超出 413），再按登记的 schema 校验（不做类型转换，不合法 400，错误说明只含
 //    参数中的位置与 schema 的要求，供模型修正）；
-// 5. **资源标识**：参数中的每个资源标识都是不可信输入，处理函数按令牌身份在本项目范围内重新解析（resolveProjectArtifact 等），
+// 6. **资源标识**：参数中的每个资源标识都是不可信输入，处理函数按令牌身份在本项目范围内重新解析（resolveProjectArtifact 等），
 //    查不到即 404 AGENT_RESOURCE_NOT_FOUND，不区分“不存在”和“无权访问”；
-// 6. **结果**：处理函数返回可 JSON 序列化的值，响应 { result }；超过 AGENT_TOOL_MAX_RESULT_BYTES 按内部错误处理。
+// 7. **结果**：处理函数返回可 JSON 序列化的值，响应 { result }；超过 AGENT_TOOL_MAX_RESULT_BYTES 按内部错误处理。
 //
 // 日志只记工具名、任务 id、令牌哈希前缀、耗时与结果码，不记参数与结果。
 import type { FastifyBaseLogger, FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
@@ -27,6 +30,7 @@ import { AppError } from '../errors.ts';
 import { AGENT_TOOL_CALL_PATH, AGENT_TOOL_MAX_BODY_BYTES } from './gateway.ts';
 import { findAgentFailureReport, noAgentFailureReport } from './failureReport.ts';
 import { agentTenantContext, type AgentTokenIdentity } from './tokenStore.ts';
+import { inAgentToolScope } from './toolScope.ts';
 
 export { AGENT_TOOL_CALL_PATH, AGENT_TOOL_MAX_BODY_BYTES } from './gateway.ts';
 
@@ -211,7 +215,7 @@ export function assertAgentToolsRegistered(jobTypes: readonly { type: string; ag
   }
 }
 
-export type AgentToolCallOutcome = 'not-running' | 'call-limit' | 'rate-limit';
+export type AgentToolCallOutcome = 'not-running' | 'not-in-stage' | 'call-limit' | 'rate-limit';
 
 export interface AgentToolCallRef {
   /** 按令牌查出的身份（不来自请求）。 */
@@ -225,7 +229,7 @@ export interface AgentToolCallRef {
 
 /**
  * 计入一次工具调用：一条 INSERT ... ON CONFLICT DO UPDATE 原子地检查并递增——任务仍是本次执行（running、run_id 相符）且是
- * 登记了上限的 Agent 任务、本次执行没有报告无法继续（8.4b）、累计次数小于上限、当前一分钟窗口内的次数小于频率上限（窗口已过则从 now() 重新计数）。
+ * 登记了上限的 Agent 任务、本次执行没有报告无法继续（8.4b）、工具在本次执行当前阶段可用的工具中（8.6c1）、累计次数小于上限、当前一分钟窗口内的次数小于频率上限（窗口已过则从 now() 重新计数）。
  * 计入成功返回 null，否则返回原因（不计入）。
  */
 export async function beginAgentToolCall(db: Kysely<Database>, ref: AgentToolCallRef): Promise<AgentToolCallOutcome | null> {
@@ -238,12 +242,14 @@ export async function beginAgentToolCall(db: Kysely<Database>, ref: AgentToolCal
                       AND j.status = 'running' AND j.run_id = ${ref.runId}::uuid)
         AND EXISTS (SELECT 1 FROM agent_job_budgets b WHERE b.org_id = ${ref.tenant.orgId}::uuid AND b.job_id = ${ref.jobId}::uuid)
         AND ${noAgentFailureReport(ref.jobId, ref.runId)}
+        AND ${inAgentToolScope(ref.jobId, ref.runId, ref.tool)}
       ON CONFLICT (job_id, tool) DO UPDATE SET
         calls = agent_tool_calls.calls + 1,
         window_started_at = CASE WHEN agent_tool_calls.window_started_at <= now() - ${window} THEN now() ELSE agent_tool_calls.window_started_at END,
         window_calls = CASE WHEN agent_tool_calls.window_started_at <= now() - ${window} THEN 1 ELSE agent_tool_calls.window_calls + 1 END
       WHERE agent_tool_calls.calls < ${ref.maxCallsPerJob}
         AND ${noAgentFailureReport(ref.jobId, ref.runId)}
+        AND ${inAgentToolScope(ref.jobId, ref.runId, ref.tool)}
         AND (agent_tool_calls.window_started_at <= now() - ${window} OR agent_tool_calls.window_calls < ${ref.maxCallsPerMinute})
       RETURNING calls`.execute(trx);
     if (counted.rows.length > 0) return null;
@@ -252,6 +258,10 @@ export async function beginAgentToolCall(db: Kysely<Database>, ref: AgentToolCal
     if (!job || job.status !== 'running' || job.run_id !== ref.runId) return 'not-running';
     // Agent 已报告无法继续（8.4b）：本次执行即将结束，之后的工具调用按不在执行中处理。
     if ((await findAgentFailureReport(trx, ref.jobId, ref.runId)) !== null) return 'not-running';
+    // 不是登记了上限的 Agent 任务：按不在执行中处理（与下面没有计数行的情形相同）。
+    if (!(await trx.selectFrom('agent_job_budgets').select('job_id').where('job_id', '=', ref.jobId).executeTakeFirst())) return 'not-running';
+    const scope = await trx.selectFrom('agent_tool_scopes').select('tools').where('job_id', '=', ref.jobId).where('run_id', '=', ref.runId).executeTakeFirst();
+    if (!scope || !scope.tools.includes(ref.tool)) return 'not-in-stage';
     const row = await trx.selectFrom('agent_tool_calls').select('calls').where('job_id', '=', ref.jobId).where('tool', '=', ref.tool).executeTakeFirst();
     // 没有行：任务没有登记上限（不是 Agent 任务），按不在执行中处理。
     if (!row) return 'not-running';
@@ -401,6 +411,8 @@ export function registerAgentToolRoute(app: FastifyInstance, deps: AgentToolRout
       if (outcome !== null) {
         logCall(outcome);
         if (outcome === 'not-running') throw new AppError(409, 'JOB_NOT_RUNNING', '任务不在执行中，不能调用工具');
+        // 与桌面版阶段门禁的提示相同，供模型调整（不计入次数）。
+        if (outcome === 'not-in-stage') throw new AppError(403, 'AGENT_TOOL_NOT_IN_STAGE', `当前阶段不能调用 ${tool.name}，请只使用当前阶段说明的工具。`);
         if (outcome === 'call-limit') throw new AppError(429, 'AGENT_TOOL_CALL_LIMIT', `本任务调用工具 ${tool.name} 的次数已达到上限`);
         throw new AppError(429, 'AGENT_TOOL_RATE_LIMIT', `调用工具 ${tool.name} 过于频繁，请稍后再试`);
       }

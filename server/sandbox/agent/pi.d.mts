@@ -12,5 +12,12 @@ export const BASH_ENV: Readonly<Record<string, string>>;
 export function bashTimeoutSeconds(requested: number | undefined): number;
 export function runPiPrompt(
   request: PromptRequest,
-  options: { baseUrl: string; workspaceDir?: string; sessionsDir?: string; agentDir?: string; instructionsPath?: URL | string },
+  options: {
+    baseUrl: string;
+    workspaceDir?: string;
+    sessionsDir?: string;
+    agentDir?: string;
+    instructionsPath?: URL | string;
+    callTool?: (name: string, args: Record<string, unknown>, signal?: AbortSignal) => Promise<unknown>;
+  },
 ): Promise<PromptOutcome>;
