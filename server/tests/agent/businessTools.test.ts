@@ -7,7 +7,6 @@
 // 真实的 Pi 经真实路由调用桩的流程见 tests/agent/piBusinessTools.test.ts。
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
-import { Type } from '../../sandbox/agent/node_modules/typebox/build/index.mjs';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { askUserTool } from '../../src/agent/askUserTool.ts';
 import { reportFailureTool } from '../../src/agent/reportFailureTool.ts';
@@ -25,6 +24,9 @@ import {
 } from '../../sandbox/agent/tools.mjs';
 
 const TOKEN = generateAgentToken();
+// TypeBox 在 sandbox/agent/node_modules 中（CI 在单元测试前安装，类型检查时尚未安装），运行时按路径加载。
+const TYPEBOX_URL = new URL('../../sandbox/agent/node_modules/typebox/build/index.mjs', import.meta.url).href;
+const { Type } = (await import(TYPEBOX_URL)) as { Type: unknown };
 
 /** 去掉 description，只比较约束。 */
 function constraints(schema: unknown): unknown {
