@@ -22,6 +22,7 @@ import { AGENT_QUESTION_MAX_LENGTH, AGENT_QUESTION_TIMEOUT_SECONDS, normalizeAge
 import { reportFailureTool } from '../../src/agent/reportFailureTool.ts';
 import { AGENT_RELAY_KEY_HEADER } from '../../src/agent/token.ts';
 import { issueAgentJobToken, lookupAgentJobToken } from '../../src/agent/tokenStore.ts';
+import { setAgentToolScope } from '../../src/agent/toolScope.ts';
 import { AGENT_TOOL_CALL_PATH, createAgentToolRegistry } from '../../src/agent/tools.ts';
 import { buildApp } from '../../src/app.ts';
 import { createDatabase, type DatabaseHandle } from '../../src/db/database.ts';
@@ -135,9 +136,17 @@ async function runningJob(member: Member, type = 'test-agent'): Promise<RunRef> 
   return claim(member, job.id);
 }
 
+/** 写下本次执行当前阶段可用的业务工具（迁移 0042，8.6c1）：测试中为任务类型登记的全部工具。 */
+async function scopeAllTools(run: RunRef): Promise<void> {
+  const { type } = await superuser.selectFrom('jobs').select('type').where('id', '=', run.jobId).executeTakeFirstOrThrow();
+  const tools = TOOLS_BY_TYPE[type as string] ?? [];
+  expect(await setAgentToolScope(appDb, run, tools, tools)).toBe(true);
+}
+
 async function tokenOf(run: RunRef): Promise<string> {
   const issued = await issueAgentJobToken(appDb, run, TTL_MS);
   expect(issued).not.toBeNull();
+  await scopeAllTools(run);
   return issued!.token;
 }
 
@@ -767,6 +776,7 @@ describe('回滚 0039', () => {
     await database.destroy();
     const migrator = connect(testDb.ownerConfig);
     try {
+      expect((await migrateDown(migrator)).results?.map((result) => result.migrationName)).toEqual(['0042_agent_tool_scopes']);
       expect((await migrateDown(migrator)).results?.map((result) => result.migrationName)).toEqual(['0041_job_pause_storage_quota']);
       expect((await migrateDown(migrator)).results?.map((result) => result.migrationName)).toEqual(['0040_agent_workspace_snapshots']);
       const down = await migrateDown(migrator);

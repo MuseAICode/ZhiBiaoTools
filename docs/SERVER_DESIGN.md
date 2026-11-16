@@ -746,13 +746,20 @@ worker 经 sandbox-runner 执行 agent 模板登记的唯一命令 `run`（`node
 ### 7.23 实现（路线图 8.6b）：入口中的 Pi 会话
 
 - **Pi 运行时进镜像**：`server/sandbox/agent/package.json` 与 `package-lock.json`（`@earendil-works/pi-coding-agent`、`pi-ai` 0.80.10 与 `typebox`，版本与传递依赖取自 `client/package-lock.json`，不用 Pi 自带的 `npm-shrinkwrap.json`——后者固定了有已知漏洞的传递依赖），在构建阶段 `npm ci --omit=dev --omit=optional --ignore-scripts`，删去非 Linux 的原生预编译文件；最终镜像只复制 `node_modules`（属主 root、只读），没有 npm、没有 `.node` 原生模块。CI 对该目录做 `npm audit`。
-- **请求**（`protocol.mjs`，字段恰好是登记的那几个）：提示词（非空、至多 256 Ki 字符）、续接的会话文件名（`null` 新建；只接受 Pi 命名的 `<时间>_<uuid>.jsonl`）、启用的 Pi 原生工具（`read` / `write` / `edit` / `bash` / `grep` / `find` / `ls` 中不重复的若干个；业务工具的桩随 8.6c）、本条提示词的轮数上限（1～1,000，桌面版 `max_turns_per_prompt`）、模型的上下文长度与输出上限（worker 按组织选用的模型给出）。
+- **请求**（`protocol.mjs`，字段恰好是登记的那几个）：提示词（非空、至多 256 Ki 字符）、续接的会话文件名（`null` 新建；只接受 Pi 命名的 `<时间>_<uuid>.jsonl`）、启用的 Pi 原生工具（`read` / `write` / `edit` / `bash` / `grep` / `find` / `ls` 中不重复的若干个；8.6c1 起还可以有业务工具，见第 7.24 节）、本条提示词的轮数上限（1～1,000，桌面版 `max_turns_per_prompt`）、模型的上下文长度与输出上限（worker 按组织选用的模型给出）。
 - **会话**（`pi.mjs`，与桌面版 `piSessionFactory.cjs` 同一套 Pi 配置）：提供方 `app`、`openai-completions`，Base URL 固定为 `http://agent-gw:8080/v1`，任务令牌作为 Pi 的运行时 API Key 只在入口进程内存中（以 `Authorization: Bearer` 发送）；平台按令牌决定组织、模型与上限，请求中的模型名不被采信（第 7.14 节）。Pi 自身不重试（重试与暂停由 worker 决定，8.6d），不加载项目上下文、扩展、技能、提示模板与主题，不下载工具、不检查新版本、不发遥测，配置目录在 `/tmp`。
 - **工具**：只注册请求中的原生工具；`bash` 使用 `/bin/sh`，每条命令至多 5 分钟（模型给出的 `timeout` 只能更短），命令的环境固定为 `PATH`、`HOME`、`TMPDIR`、`LANG` 四项，不继承入口进程的环境。
 - **会话文件**：`/workspace/pi-sessions/`，随工作区快照保存（第 7.20 节），续接时只接受该目录中的普通文件（不跟随符号链接），无效时 `SESSION_INVALID`。
 - **工作区说明**：镜像中的 `workspace-instructions.md`（桌面版 `agent-workspace.md` 改写：Linux `/bin/sh`、断网、5 分钟命令时限、按 agent 模板取回规则写的文件命名规则），作为 Pi 的项目说明进入系统提示词。
 - **结果**：成功为会话文件名、本条提示词用掉的轮数与结束原因（`stop` / `length`）；Agent 的回复与写出的文件留在工作区，由 worker 取回（8.6d）。失败新增 `SESSION_INVALID`、`TURN_LIMIT`（第 maxTurns + 1 轮开始时中止）与 `MODEL_FAILED`（模型调用失败，含被平台拒绝；原因由 worker 按任务状态判断，不采信沙箱的说法）。worker 另检查结果的 `action` 与请求一致、轮数不超过请求的上限。
 - **标准输出只留给结果**：入口把 `console` 的输出改到标准错误，写完结果即退出（不等 Pi 留下的连接与定时器）。
+
+### 7.24 实现（路线图 8.6c1）：业务工具的桩与阶段限制
+
+- **阶段限制在 worker 一侧**（#91 确认）：桌面版按业务阶段切换 Pi 会话中可用的工具；Web 版的 Pi 在沙箱中，沙箱内的命令可以拿到令牌、绕过入口直接调用 `POST /v1/tools/call`，所以入口按阶段登记桩不算控制。迁移 0042 新增 `agent_tool_scopes`（每次执行一行，`tools` 为当前阶段可用的业务工具名，强制 RLS，只能为本组织 running、`run_id` 相符的 Agent 任务写入与更新，旧执行的行不能再改，没有 DELETE，CHECK 限定工具名格式、无 NULL、至多 32 个），执行者在每条提示词之前写入（`setAgentToolScope`，必须是任务类型登记的 `agentTools` 的子集；`runAgentPrompt` 先写阶段再执行入口，任务已不在本次执行中时不执行、返回 `RUN_ENDED`）。工具调用的计数语句（第 7.15 节）在同一条语句中检查工具在当前阶段中：不在时 403 `AGENT_TOOL_NOT_IN_STAGE`（说明与桌面版阶段门禁相同）、不计入、处理函数不执行；还没有写下阶段时所有业务工具都不可用。检查顺序：工具名（404）→ 阶段（403）→ 次数与频率（429）→ 参数（413 / 400）。
+- **桩**（`server/sandbox/agent/tools.mjs`）：prompt 请求的 `tools` 可以包含 `ask-user` 与 `report-failure` / `request-termination` 之一（后者面向模型的名字也是 `report-failure`，两者二选一，入口与 worker 都检查）。入口只为请求中的业务工具登记桩，名称、说明与提示沿用桌面版（ask-user 的问题按纯文本显示，提示改为不用 Markdown），参数 schema 与 worker 登记的相同（测试逐项核对）。调用经 agent-gw 的 `POST /v1/tools/call`（令牌只在 `Authorization` 中，请求体只有 `{ name, arguments }`，时限 120 秒，响应至多 4 MiB + 64 KiB，不跟随重定向、不复用连接）。
+- **桩的行为**：`pending` 时等 1 秒后以完全相同的参数再次调用、不交给模型；`report-failure` 报告成功、`request-termination` 选择终止后立即结束 Pi 会话，入口报告 `REPORTED_FAILURE`；选择继续时把 `instruction` 作为工具结果交给模型；worker 的 4xx 说明（截短到 500 个字符）作为工具错误交给模型；401 与 409 `JOB_NOT_RUNNING` 立即结束会话（`TOKEN_INVALID` / `RUN_ENDED`）；5xx、连不上、超时、响应不合法只给固定说明。入口报告的 `REPORTED_FAILURE`、`RUN_ENDED` 同样只是沙箱的说法，任务是否失败按 `agent_failure_reports`（第 7.16 节）与任务状态判断。
+- **工作区说明**：补上业务工具的段落（桌面版 `agent-workspace.md` 中 ask-user 与 report-failure 的约定；不同阶段提供的工具可能不同；按工具返回的说明调整、不要以相同参数反复重试）。`json-validation` 与受保护文件的还原随 8.6c2，`openxml` 随使用它的任务。
 
 ## 8. 部署架构
 

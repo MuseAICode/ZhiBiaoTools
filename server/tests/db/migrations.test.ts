@@ -16,6 +16,7 @@ const APPLICATION_TABLES = [
   'agent_job_tokens',
   'agent_questions',
   'agent_tool_calls',
+  'agent_tool_scopes',
   'agent_workspace_snapshots',
   'artifacts',
   'auth_tokens',
@@ -255,6 +256,7 @@ describe('迁移升级与回滚', () => {
       (await sql<{ prosrc: string }>`SELECT prosrc FROM pg_proc WHERE proname = 'ai_usage_begin'`.execute(testDb.admin)).rows.map((row) => row.prosrc);
     expectSuccess(await migrateToLatest(owner));
     expect((await source())[0]).toContain('ai_model_price');
+    expect(expectSuccess(await migrateDown(owner))).toEqual(['Down:0042_agent_tool_scopes']);
     expect(expectSuccess(await migrateDown(owner))).toEqual(['Down:0041_job_pause_storage_quota']);
     expect(expectSuccess(await migrateDown(owner))).toEqual(['Down:0040_agent_workspace_snapshots']);
     expect(expectSuccess(await migrateDown(owner))).toEqual(['Down:0039_agent_questions']);

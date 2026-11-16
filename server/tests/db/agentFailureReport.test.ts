@@ -20,6 +20,7 @@ import { buildAgentGateway } from '../../src/agent/gateway.ts';
 import { reportFailureTool } from '../../src/agent/reportFailureTool.ts';
 import { AGENT_RELAY_KEY_HEADER } from '../../src/agent/token.ts';
 import { issueAgentJobToken, lookupAgentJobToken } from '../../src/agent/tokenStore.ts';
+import { setAgentToolScope } from '../../src/agent/toolScope.ts';
 import { AGENT_TOOL_CALL_PATH, createAgentToolRegistry, type AgentToolDefinition } from '../../src/agent/tools.ts';
 import { createDatabase, type DatabaseHandle } from '../../src/db/database.ts';
 import { migrateDown, migrateToLatest } from '../../src/db/migrator.ts';
@@ -138,10 +139,18 @@ async function runningJob(member: Member, options: { type?: string; agent?: bool
   return { orgId: member.orgId, jobId: job.id, runId };
 }
 
+/** 写下本次执行当前阶段可用的业务工具（迁移 0042，8.6c1）：测试中为任务类型登记的全部工具。 */
+async function scopeAllTools(run: RunRef): Promise<void> {
+  const { type } = await superuser.selectFrom('jobs').select('type').where('id', '=', run.jobId).executeTakeFirstOrThrow();
+  const tools = TOOLS_BY_TYPE[type as string] ?? [];
+  expect(await setAgentToolScope(appDb, run, tools, tools)).toBe(true);
+}
+
 async function tokenFor(member: Member, options: { type?: string } = {}) {
   const run = await runningJob(member, options);
   const issued = await issueAgentJobToken(appDb, run, TTL_MS);
   expect(issued).not.toBeNull();
+  await scopeAllTools(run);
   return { run, token: issued!.token };
 }
 
@@ -446,6 +455,7 @@ describe('执行者端到端', () => {
     const runId = await waitFor(async () => (await jobRow(job.id)).run_id, 15_000, '任务开始执行');
     const issued = await issueAgentJobToken(appDb, { orgId: member.orgId, jobId: job.id, runId }, TTL_MS);
     expect(issued).not.toBeNull();
+    await scopeAllTools({ orgId: member.orgId, jobId: job.id, runId });
     expect((await call(issued!.token, { name: 'test-echo', arguments: { text: 'a' } })).status).toBe(200);
 
     expect((await report(issued!.token, '招标文件没有技术评分表，无法生成目录')).status).toBe(200);
@@ -533,6 +543,7 @@ describe('回滚 0038', () => {
     await database.destroy();
     const owner = connect(testDb.ownerConfig);
     try {
+      expect((await migrateDown(owner)).results?.map((result) => result.migrationName)).toEqual(['0042_agent_tool_scopes']);
       expect((await migrateDown(owner)).results?.map((result) => result.migrationName)).toEqual(['0041_job_pause_storage_quota']);
       expect((await migrateDown(owner)).results?.map((result) => result.migrationName)).toEqual(['0040_agent_workspace_snapshots']);
       expect((await migrateDown(owner)).results?.map((result) => result.migrationName)).toEqual(['0039_agent_questions']);

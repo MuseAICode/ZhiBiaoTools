@@ -22,6 +22,8 @@ import {
   MAX_PROMPT_CHARS,
   MAX_RESULT_BYTES,
   MAX_TURNS_PER_PROMPT,
+  BUSINESS_TOOLS,
+  EXCLUSIVE_BUSINESS_TOOLS,
   NATIVE_TOOLS,
   parseRequest,
   type PromptRequest,
@@ -32,8 +34,10 @@ import {
   runEntry,
 } from '../../sandbox/agent/protocol.mjs';
 import {
+  AGENT_BUSINESS_TOOLS,
   AGENT_CONTEXT_WINDOW_RANGE,
   AGENT_ENTRY_ERROR_CODES,
+  AGENT_EXCLUSIVE_PROMPT_TOOLS,
   AGENT_ENTRY_MAX_RESULT_BYTES,
   AGENT_MAX_OUTPUT_TOKENS_RANGE,
   AGENT_MAX_TURNS_PER_PROMPT,
@@ -325,6 +329,8 @@ describe('prompt 请求（8.6b）', () => {
 
   it('两侧的常量一致', () => {
     expect([...NATIVE_TOOLS]).toEqual([...AGENT_NATIVE_TOOLS]);
+    expect([...BUSINESS_TOOLS]).toEqual([...AGENT_BUSINESS_TOOLS]);
+    expect(EXCLUSIVE_BUSINESS_TOOLS.map((group) => [...group])).toEqual(AGENT_EXCLUSIVE_PROMPT_TOOLS.map((group) => [...group]));
     expect(SESSION_FILE_PATTERN.source).toBe(AGENT_SESSION_FILE_PATTERN.source);
     expect(MAX_PROMPT_CHARS).toBe(AGENT_PROMPT_MAX_CHARS);
     expect(MAX_TURNS_PER_PROMPT).toBe(AGENT_MAX_TURNS_PER_PROMPT);
@@ -343,6 +349,10 @@ describe('prompt 请求（8.6b）', () => {
     const edge = { ...validPrompt, session: SESSION, tools: [], maxTurns: MAX_TURNS_PER_PROMPT, prompt: 'x'.repeat(MAX_PROMPT_CHARS), model: { contextWindow: CONTEXT_WINDOW_RANGE.max, maxOutputTokens: MAX_OUTPUT_TOKENS_RANGE.max } };
     expect(parseRequest(request(edge))).toEqual(edge);
     expect(parseRequest(request({ ...validPrompt, tools: [...NATIVE_TOOLS], model: { contextWindow: CONTEXT_WINDOW_RANGE.min, maxOutputTokens: MAX_OUTPUT_TOKENS_RANGE.min } }))).toMatchObject({ tools: [...NATIVE_TOOLS] });
+    // 业务工具（8.6c1）：原生工具加 ask-user 与 report-failure / request-termination 之一。
+    for (const tools of [[...NATIVE_TOOLS, 'ask-user', 'report-failure'], [...NATIVE_TOOLS, 'ask-user', 'request-termination'], ['request-termination']]) {
+      expect(parseRequest(request({ ...validPrompt, tools }))).toMatchObject({ tools });
+    }
   });
 
   it.each<[string, Record<string, unknown>]>([
@@ -360,7 +370,8 @@ describe('prompt 请求（8.6b）', () => {
     ['会话文件名带换行', { session: `${SESSION}\n` }],
     ['工具不是数组', { tools: 'bash' }],
     ['未登记的工具', { tools: ['bash', 'curl'] }],
-    ['业务工具（随 8.6c）', { tools: ['ask-user'] }],
+    ['未登记的业务工具', { tools: ['bash', 'openxml'] }],
+    ['report-failure 与 request-termination 同时出现', { tools: ['report-failure', 'request-termination'] }],
     ['工具重复', { tools: ['bash', 'bash'] }],
     ['工具不是字符串', { tools: [1] }],
     ['轮数为 0', { maxTurns: 0 }],
@@ -438,6 +449,8 @@ describe('prompt 请求（8.6b）', () => {
         { session: '../escape.jsonl' },
         { tools: ['bash', 'bash'] },
         { tools: ['curl'] },
+        { tools: ['openxml'] },
+        { tools: ['report-failure', 'request-termination'] },
         { maxTurns: 0 },
         { maxTurns: AGENT_MAX_TURNS_PER_PROMPT + 1 },
         { model: { contextWindow: 1_000, maxOutputTokens: 256 } },

@@ -12,6 +12,9 @@
 // - prompt（8.6b）：先同样确认令牌，再在 Pi 会话中执行**一条**提示词（新建会话或续接 /workspace/pi-sessions/ 中的会话文件），
 //   返回会话文件名、本条提示词用掉的轮数与结束原因。Pi 会话的实现在 pi.mjs，由 entry.mjs 注入（runPrompt），本文件不加载 Pi。
 //   提示词、工具清单、轮数上限与模型的上下文长度都由 worker 给出；Agent 的回复与写出的文件留在工作区，由 worker 取回（8.6d）。
+//   工具清单中除原生工具外还可以有业务工具（8.6c1，BUSINESS_TOOLS）：入口为它们登记桩（tools.mjs），调用经 agent-gw 的
+//   POST /v1/tools/call 交给 worker。**阶段的限制在 worker 一侧**（迁移 0042_agent_tool_scopes）：这里只登记 worker 给出的桩、
+//   让 Agent 正常工作，不算控制（沙箱内的命令可以绕过入口直接调用工具接口，#91 确认）。
 import { request as httpRequest } from 'node:http';
 
 export const PROTOCOL_VERSION = 1;
@@ -25,8 +28,16 @@ export const GATEWAY_TIMEOUT_MS = 15_000;
 const MAX_GATEWAY_RESPONSE_BYTES = 4 * 1024;
 
 const TOKEN_PATTERN = /^agt_[A-Za-z0-9_-]{43}$/;
-/** Pi 原生工具（桌面版 NATIVE_AGENT_TOOLS）：prompt 请求的 tools 只能从中选（业务工具的桩随 8.6c）。 */
+/** Pi 原生工具（桌面版 NATIVE_AGENT_TOOLS）。 */
 export const NATIVE_TOOLS = Object.freeze(['read', 'write', 'edit', 'bash', 'grep', 'find', 'ls']);
+/**
+ * 业务工具（8.6c1）：名字是 worker 一侧登记的工具名（src/agent/toolRegistry.ts），入口登记同名的桩（tools.mjs）；
+ * request-termination 面向模型的工具名是 report-failure（与桌面版相同），因此与 report-failure 只能二选一。
+ */
+export const BUSINESS_TOOLS = Object.freeze(['ask-user', 'report-failure', 'request-termination']);
+/** 只能出现其中之一的业务工具。 */
+export const EXCLUSIVE_BUSINESS_TOOLS = Object.freeze([Object.freeze(['report-failure', 'request-termination'])]);
+const REQUEST_TOOLS = Object.freeze([...NATIVE_TOOLS, ...BUSINESS_TOOLS]);
 /** Pi 新建会话时的文件名（SessionManager：ISO 时间中的 : 与 . 换成 -，加会话 id）；续接时只接受这种名字。 */
 export const SESSION_FILE_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.jsonl$/;
 /** 一条提示词至多这么多字符（请求整体另有 MAX_REQUEST_BYTES）。 */
@@ -46,6 +57,8 @@ export const ENTRY_ERROR_MESSAGES = Object.freeze({
   SESSION_INVALID: 'Agent 会话文件无效',
   TURN_LIMIT: '本条提示词的轮数达到上限',
   MODEL_FAILED: '模型调用失败',
+  REPORTED_FAILURE: 'Agent 报告无法继续',
+  RUN_ENDED: '本次执行已结束',
   INTERNAL: '入口内部错误',
 });
 
@@ -88,8 +101,9 @@ function parsePromptFields(value) {
   const { prompt, session, tools, maxTurns, model } = value;
   if (typeof prompt !== 'string' || prompt.trim() === '' || prompt.length > MAX_PROMPT_CHARS) throw new EntryError('BAD_REQUEST');
   if (session !== null && (typeof session !== 'string' || !SESSION_FILE_PATTERN.test(session))) throw new EntryError('BAD_REQUEST');
-  if (!Array.isArray(tools) || tools.length > NATIVE_TOOLS.length || new Set(tools).size !== tools.length) throw new EntryError('BAD_REQUEST');
-  if (!tools.every((name) => typeof name === 'string' && NATIVE_TOOLS.includes(name))) throw new EntryError('BAD_REQUEST');
+  if (!Array.isArray(tools) || tools.length > REQUEST_TOOLS.length || new Set(tools).size !== tools.length) throw new EntryError('BAD_REQUEST');
+  if (!tools.every((name) => typeof name === 'string' && REQUEST_TOOLS.includes(name))) throw new EntryError('BAD_REQUEST');
+  if (EXCLUSIVE_BUSINESS_TOOLS.some((group) => group.filter((name) => tools.includes(name)).length > 1)) throw new EntryError('BAD_REQUEST');
   if (!isIntegerIn(maxTurns, { min: 1, max: MAX_TURNS_PER_PROMPT })) throw new EntryError('BAD_REQUEST');
   if (!isPlainObject(model) || !hasExactKeys(model, ['contextWindow', 'maxOutputTokens'])) throw new EntryError('BAD_REQUEST');
   if (!isIntegerIn(model.contextWindow, CONTEXT_WINDOW_RANGE) || !isIntegerIn(model.maxOutputTokens, MAX_OUTPUT_TOKENS_RANGE)) throw new EntryError('BAD_REQUEST');

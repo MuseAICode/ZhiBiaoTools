@@ -1358,6 +1358,18 @@ export interface AgentFailureReportsTable {
   created_at: ColumnType<Date, never, never>;
 }
 
+/**
+ * Agent 当前阶段可用的业务工具（迁移 0042_agent_tool_scopes，8.6c1）：每次执行一行，执行者在每条提示词之前写入；
+ * 工具调用的计数语句（src/agent/tools.ts）只放行其中的工具。只能为本组织 running、run_id 相符的 Agent 任务写入与更新，没有 DELETE。
+ */
+export interface AgentToolScopesTable {
+  org_id: ColumnType<string, string, never>;
+  job_id: ColumnType<string, string, never>;
+  run_id: ColumnType<string, string, never>;
+  tools: ColumnType<string[], string[], string[]>;
+  updated_at: ColumnType<Date, never, Date>;
+}
+
 export type AgentQuestionStatus = (typeof AGENT_QUESTION_STATUSES)[number];
 
 /** Agent 问题的一个选项（服务端规范化后的纯文本）。 */
@@ -1496,4 +1508,5 @@ export interface Database {
   agent_failure_reports: AgentFailureReportsTable;
   agent_questions: AgentQuestionsTable;
   agent_workspace_snapshots: AgentWorkspaceSnapshotsTable;
+  agent_tool_scopes: AgentToolScopesTable;
 }

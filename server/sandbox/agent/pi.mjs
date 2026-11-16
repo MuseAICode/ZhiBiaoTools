@@ -6,7 +6,10 @@
 // - **模型经 agent-gw**：Base URL 固定为 http://agent-gw:8080/v1（/etc/hosts 中的地址），任务令牌作为 Pi 的运行时 API Key
 //   只留在本进程内存中（Pi 以 Authorization: Bearer 发送），不写进环境、文件与会话；平台按令牌决定组织、模型与上限，
 //   请求中的模型名（default）不被采信。Pi 自身不重试（retry.enabled = false），重试与暂停由 worker 决定（8.6d）；
-// - **原生工具**：read / write / edit / bash / grep / find / ls 按请求的清单启用（业务工具的桩随 8.6c），工作目录 /workspace；
+// - **原生工具**：read / write / edit / bash / grep / find / ls 按请求的清单启用，工作目录 /workspace；
+// - **业务工具**（8.6c1）：请求清单中的 ask-user / report-failure / request-termination 登记为桩（tools.mjs），调用经 agent-gw 交给
+//   worker；报告失败、用户选择终止、令牌失效或本次执行已结束时立即结束会话，入口报告 REPORTED_FAILURE / TOKEN_INVALID / RUN_ENDED。
+//   阶段的限制在 worker 一侧（迁移 0042），这里只登记 worker 给出的桩；
 // - **bash**：/bin/sh；每条命令最多 BASH_COMMAND_TIMEOUT_SECONDS（模型给出的 timeout 只能更短）；命令的环境是固定的几项
 //   （BASH_ENV），不继承入口进程的环境；
 // - **会话文件**：/workspace/pi-sessions/（随工作区快照保存，续跑时由 worker 放回）；续接时只接受 Pi 命名的普通文件；
@@ -17,7 +20,8 @@
 // 上限、工作区取回校验）。
 import { lstatSync, mkdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { EntryError, SESSION_FILE_PATTERN } from './protocol.mjs';
+import { BUSINESS_TOOLS, EntryError, SESSION_FILE_PATTERN } from './protocol.mjs';
+import { callBusinessTool, createBusinessToolStubs, modelToolName } from './tools.mjs';
 
 export const WORKSPACE_DIR = '/workspace';
 export const SESSIONS_DIR = '/workspace/pi-sessions';
@@ -44,7 +48,7 @@ function loadPiModules() {
   process.env.PI_OFFLINE = '1';
   process.env.PI_SKIP_VERSION_CHECK = '1';
   process.env.PI_CODING_AGENT_DIR = AGENT_DIR;
-  modulesPromise ??= Promise.all([import('@earendil-works/pi-coding-agent'), import('@earendil-works/pi-ai')]).then(([codingAgent, piAi]) => ({ codingAgent, piAi }));
+  modulesPromise ??= Promise.all([import('@earendil-works/pi-coding-agent'), import('@earendil-works/pi-ai'), import('typebox')]).then(([codingAgent, piAi, typebox]) => ({ codingAgent, piAi, typebox }));
   return modulesPromise;
 }
 
@@ -90,10 +94,12 @@ function createBashOperations(codingAgent) {
 /**
  * 执行一条提示词。request 为 protocol.mjs 解析过的 prompt 请求；返回 { session（会话文件名）, turns, stopReason（stop / length）}。
  * 失败抛 EntryError：会话文件不存在或无效 SESSION_INVALID、轮数达到上限 TURN_LIMIT、模型调用失败（含被平台拒绝：令牌失效、
- * 达到任务上限、余额不足等，具体原因由 worker 按任务状态判断，不采信沙箱的说法）MODEL_FAILED。
+ * 达到任务上限、余额不足等，具体原因由 worker 按任务状态判断，不采信沙箱的说法）MODEL_FAILED、Agent 报告无法继续（含用户选择终止）
+ * REPORTED_FAILURE、业务工具调用时令牌失效 TOKEN_INVALID、本次执行已结束 RUN_ENDED。
+ * callTool 只供测试替换业务工具的调用（默认经 agent-gw，tools.mjs 的 callBusinessTool）。
  */
-export async function runPiPrompt(request, { baseUrl, workspaceDir = WORKSPACE_DIR, sessionsDir = SESSIONS_DIR, agentDir = AGENT_DIR, instructionsPath = INSTRUCTIONS_PATH } = {}) {
-  const { codingAgent, piAi } = await loadPiModules();
+export async function runPiPrompt(request, { baseUrl, workspaceDir = WORKSPACE_DIR, sessionsDir = SESSIONS_DIR, agentDir = AGENT_DIR, instructionsPath = INSTRUCTIONS_PATH, callTool } = {}) {
+  const { codingAgent, piAi, typebox } = await loadPiModules();
   const instructions = readFileSync(instructionsPath, 'utf8');
   mkdirSync(sessionsDir, { recursive: true });
   const sessionPath = request.session === null ? null : existingSessionPath(sessionsDir, request.session);
@@ -163,19 +169,32 @@ export async function runPiPrompt(request, { baseUrl, workspaceDir = WORKSPACE_D
     throw new EntryError('SESSION_INVALID');
   }
   const bashTool = codingAgent.createBashToolDefinition(workspaceDir, { shellPath: '/bin/sh', operations: createBashOperations(codingAgent) });
-  const { session } = await codingAgent.createAgentSession({
+  // 业务工具的桩：结束会话时记下原因（只记第一个），在 prompt 返回后报告。session 在下面创建，桩只在会话执行中被调用。
+  let session = null;
+  let endCode = null;
+  const end = (code) => {
+    if (endCode !== null) return;
+    endCode = code;
+    // 在工具执行中调用：不等待（abort 会等会话空闲，而会话正在等这个工具返回）。
+    void session?.abort();
+  };
+  const businessNames = request.tools.filter((name) => BUSINESS_TOOLS.includes(name));
+  const call = callTool ?? ((name, args, signal) => callBusinessTool({ baseUrl, token: request.token, name, args, signal }));
+  const businessTools = createBusinessToolStubs({ Type: typebox.Type, names: businessNames, call, end }).map((tool) => codingAgent.defineTool(tool));
+  ({ session } = await codingAgent.createAgentSession({
     cwd: workspaceDir,
     agentDir,
     model,
     modelRuntime,
     thinkingLevel: 'off',
-    // tools 同时限定注册范围（含 customTools）：只注册请求中的原生工具；bash 用上面的定义替换 Pi 的默认实现，不在清单中时不注册。
-    tools: request.tools,
-    customTools: [bashTool],
+    // tools 同时限定注册范围（含 customTools）：只注册请求中的工具；bash 用上面的定义替换 Pi 的默认实现，不在清单中时不注册；
+    // 业务工具按面向模型的名字登记（request-termination 为 report-failure）。
+    tools: request.tools.map(modelToolName),
+    customTools: [bashTool, ...businessTools],
     resourceLoader,
     settingsManager,
     sessionManager,
-  });
+  }));
 
   let turns = 0;
   let turnLimitReached = false;
@@ -191,6 +210,7 @@ export async function runPiPrompt(request, { baseUrl, workspaceDir = WORKSPACE_D
   } finally {
     unsubscribe();
   }
+  if (endCode !== null) throw new EntryError(endCode);
   if (turnLimitReached) throw new EntryError('TURN_LIMIT');
   const assistant = lastAssistant(session.messages);
   if (!assistant || assistant.stopReason === 'error' || assistant.stopReason === 'aborted') throw new EntryError('MODEL_FAILED');

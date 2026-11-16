@@ -521,6 +521,7 @@ describe('回滚 0036', () => {
     await appDb.destroy();
     const owner = connect(testDb.ownerConfig);
     try {
+      expect((await migrateDown(owner)).results?.map((result) => result.migrationName)).toEqual(['0042_agent_tool_scopes']);
       expect((await migrateDown(owner)).results?.map((result) => result.migrationName)).toEqual(['0041_job_pause_storage_quota']);
       expect((await migrateDown(owner)).results?.map((result) => result.migrationName)).toEqual(['0040_agent_workspace_snapshots']);
       expect((await migrateDown(owner)).results?.map((result) => result.migrationName)).toEqual(['0039_agent_questions']);

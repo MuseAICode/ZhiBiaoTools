@@ -17,6 +17,7 @@ import { buildAgentEndpointApp } from '../../src/agent/endpoint.ts';
 import { buildAgentGateway } from '../../src/agent/gateway.ts';
 import { AGENT_RELAY_KEY_HEADER } from '../../src/agent/token.ts';
 import { issueAgentJobToken } from '../../src/agent/tokenStore.ts';
+import { setAgentToolScope } from '../../src/agent/toolScope.ts';
 import {
   AGENT_TOOL_CALL_PATH,
   AGENT_TOOL_MAX_BODY_BYTES,
@@ -181,10 +182,18 @@ async function runningJob(member: Member, options: { type?: string; projectId?: 
   return { orgId: member.orgId, jobId: job.id, runId, projectId };
 }
 
+/** 写下本次执行当前阶段可用的业务工具（迁移 0042，8.6c1）：测试中为任务类型登记的全部工具。 */
+async function scopeAllTools(run: RunRef): Promise<void> {
+  const { type } = await superuser.selectFrom('jobs').select('type').where('id', '=', run.jobId).executeTakeFirstOrThrow();
+  const tools = TOOLS_BY_TYPE[type as string] ?? [];
+  expect(await setAgentToolScope(appDb, run, tools, tools)).toBe(true);
+}
+
 async function tokenFor(member: Member, options: { type?: string; projectId?: string } = {}) {
   const run = await runningJob(member, options);
   const issued = await issueAgentJobToken(appDb, run, TTL_MS);
   expect(issued).not.toBeNull();
+  await scopeAllTools(run);
   return { run, token: issued!.token };
 }
 
@@ -475,6 +484,7 @@ describe('调用次数与频率', () => {
   it('beginAgentToolCall：run_id 不符、任务不在执行中、没有登记上限的任务 → not-running，不计入', async () => {
     const member = await newMember();
     const run = await runningJob(member);
+    await scopeAllTools(run);
     const ref = { tenant: member.context, jobId: run.jobId, runId: run.runId, tool: 'test-echo', maxCallsPerJob: 10, maxCallsPerMinute: 10 };
     expect(await beginAgentToolCall(appDb, ref)).toBeNull();
     expect(await beginAgentToolCall(appDb, { ...ref, runId: randomUUID() })).toBe('not-running');
@@ -495,6 +505,7 @@ describe('计数表的 RLS、授权与不变式', () => {
   it('应用角色：只能逐次加 1、窗口只能计数或从 now() 重新开始、标识不能改、没有 DELETE；只看得到本组织的行', async () => {
     const member = await newMember();
     const run = await runningJob(member);
+    await scopeAllTools(run);
     const ref = { tenant: member.context, jobId: run.jobId, runId: run.runId, tool: 'test-echo', maxCallsPerJob: 10, maxCallsPerMinute: 10 };
     expect(await beginAgentToolCall(appDb, ref)).toBeNull();
     const update = (set: string) =>
@@ -596,6 +607,7 @@ describe('回滚 0037', () => {
     await database.destroy();
     const owner = connect(testDb.ownerConfig);
     try {
+      expect((await migrateDown(owner)).results?.map((result) => result.migrationName)).toEqual(['0042_agent_tool_scopes']);
       expect((await migrateDown(owner)).results?.map((result) => result.migrationName)).toEqual(['0041_job_pause_storage_quota']);
       expect((await migrateDown(owner)).results?.map((result) => result.migrationName)).toEqual(['0040_agent_workspace_snapshots']);
       expect((await migrateDown(owner)).results?.map((result) => result.migrationName)).toEqual(['0039_agent_questions']);

@@ -31,6 +31,7 @@ import {
 } from '../../src/agent/requestTerminationTool.ts';
 import { agentToolRegistry } from '../../src/agent/toolRegistry.ts';
 import { issueAgentJobToken, lookupAgentJobToken } from '../../src/agent/tokenStore.ts';
+import { setAgentToolScope } from '../../src/agent/toolScope.ts';
 import { AGENT_TOOL_CALL_PATH, createAgentToolRegistry } from '../../src/agent/tools.ts';
 import { createDatabase, type DatabaseHandle } from '../../src/db/database.ts';
 import { migrateToLatest } from '../../src/db/migrator.ts';
@@ -150,9 +151,17 @@ async function claim(member: Member, jobId: string): Promise<RunRef> {
   return { orgId: member.orgId, jobId, runId };
 }
 
+/** 写下本次执行当前阶段可用的业务工具（迁移 0042，8.6c1）：测试中为任务类型登记的全部工具。 */
+async function scopeAllTools(run: RunRef): Promise<void> {
+  const { type } = await superuser.selectFrom('jobs').select('type').where('id', '=', run.jobId).executeTakeFirstOrThrow();
+  const tools = TOOLS_BY_TYPE[type as string] ?? [];
+  expect(await setAgentToolScope(appDb, run, tools, tools)).toBe(true);
+}
+
 async function tokenOf(run: RunRef): Promise<string> {
   const issued = await issueAgentJobToken(appDb, run, TTL_MS);
   expect(issued).not.toBeNull();
+  await scopeAllTools(run);
   return issued!.token;
 }
 
