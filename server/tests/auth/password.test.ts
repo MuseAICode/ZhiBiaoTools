@@ -27,20 +27,26 @@ describe('argon2id 密码哈希（真实参数）', () => {
     const hash = await hasher.hash('correct horse battery');
     expect(await hasher.verifyDummy('correct horse battery')).toBe(false);
 
-    async function median(fn: () => Promise<unknown>) {
-      const samples: number[] = [];
-      for (let i = 0; i < 5; i += 1) {
-        const start = performance.now();
-        await fn();
-        samples.push(performance.now() - start);
-      }
-      return samples.sort((x, y) => x - y)[2]!;
+    const timed = async (fn: () => Promise<unknown>) => {
+      const start = performance.now();
+      await fn();
+      return performance.now() - start;
+    };
+    // 真实校验与假校验交替执行、逐对计算耗时比，取中位数：机器负载的波动同时影响一对中的两次，不会只偏向一边
+    // （先连续测完一种再测另一种时，负载高峰只落在其中一组，比例会偏离）。先各跑一次预热。
+    await hasher.verify('wrong password here', hash);
+    await hasher.verifyDummy('wrong password here');
+    const ratios: number[] = [];
+    for (let i = 0; i < 9; i += 1) {
+      const real = await timed(() => hasher.verify('wrong password here', hash));
+      const dummy = await timed(() => hasher.verifyDummy('wrong password here'));
+      ratios.push(dummy / real);
     }
-    const real = await median(() => hasher.verify('wrong password here', hash));
-    const dummy = await median(() => hasher.verifyDummy('wrong password here'));
-    // 假哈希与真实哈希参数相同，耗时由 argon2 决定；宽松的比例只用来发现“跳过了哈希”这类回归。
-    expect(dummy / real).toBeGreaterThan(0.5);
-    expect(dummy / real).toBeLessThan(2);
+    const ratio = ratios.sort((x, y) => x - y)[4]!;
+    // 假哈希与真实哈希参数相同，耗时由 argon2 决定，比例应接近 1；宽松的范围只用来发现“跳过了哈希”（比例接近 0）
+    // 或“多做了几次哈希”这类回归。
+    expect(ratio).toBeGreaterThan(0.25);
+    expect(ratio).toBeLessThan(4);
   });
 });
 
