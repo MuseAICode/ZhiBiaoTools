@@ -769,6 +769,15 @@ worker 经 sandbox-runner 执行 agent 模板登记的唯一命令 `run`（`node
 - **工作线程**：每次调用在新的 `worker_threads` 线程中读取、解析、编译与校验（`jsonValidationWorker.mjs`），至多 30 秒、堆至多 512 MiB、环境为空、输出不进入入口的标准输出；超时、超出资源上限、被中止时终止线程，作为校验失败（`stage` 为 `timeout` / `resource` / `aborted`）交给模型。灾难性正则不会卡住入口的事件循环，轮数上限与中止照常生效；整体仍受 agent 模板的 CPU、内存与时长限制。
 - **工作区说明**：补上 `json-validation` 的段落（预置时只传 `file_path`、单个文件至多 16 MiB、一次至多 30 秒）。
 
+### 7.26 实现（路线图 8.6c2b）：受保护文件的还原
+
+- **在 worker 一侧**：桌面版（`pi/piWorkspaceBaseline.cjs`）在工作区外保存程序写入的文件的原件，提交校验前比对，被改或被删的直接还原。Web 版的工作区在 agent 沙箱中，沙箱内没有 Agent 碰不到的位置，登记与原件都在 worker：`src/agent/workspaceBaseline.ts` 的 `createAgentWorkspaceBaseline`。
+- **登记**：`write(sandbox, group, files, { replace? })` 把文件放入 `/workspace`（覆盖同名文件），放入成功后按分组记下路径、大小与 SHA-256，原件保存在 worker 的内存中（相同内容只存一份）；整体替换某组、`release` 解除登记互不影响其他组；同一路径在几个分组中时内容同步刷新。路径按 agent 工作区的取回规则（与快照相同，第 7.20 节）校验并规范化；分组名为小写字母、数字与 `-`，至多 16 组、合计 1,000 个文件、原件合计 64 MiB（每次执行一个实例，按不同内容的大小算，含续跑后尚未取回的原件）；超出时 `write` 抛 `TypeError`（程序错误，任务失败），不放入、不登记、已有登记不变；从 checkpoint 重建时同样检查文件数与合计大小，`recover` 取回内存的原件不会超过上限。
+- **比对与还原**：`restore(sandbox)` 经 `copyOutArchive` 取回 `/workspace`（按取回规则逐项校验、重新生成），边读边只对登记的路径计算 SHA-256（`archive.ts` 的 `visitArchive`），内容不同或不存在的一次放回原件，返回还原的路径。任务在每次提交校验之前、下一条提示词之前调用（8.6d），并把还原的路径告诉 Agent（桌面版的“程序已还原被改动的文件……这些文件由程序维护，不要修改”）。工作区不符合取回规则时 `AGENT_WORKSPACE_REJECTED`（与检查点相同，说明只写类别）；登记的路径与工作区中已有的文件或目录冲突（大小写折叠后同名、上级目录变成文件、文件变成非空目录）或放回失败时销毁沙箱，`AGENT_PROTECTED_FILES_RESTORE_FAILED`；中止照原样抛出。放回用沙箱内 GNU tar 的默认行为：先删除已有的文件（含符号链接、空目录）再写入。
+- **续跑**：登记（不含原件）经 `toState` 写进 `jobs.checkpoint`，新的执行从 checkpoint 重建（逐项检查形状）；放入工作区快照之后、发出第一条提示词之前调用 `recover`，从刚放入、Agent 尚未执行过的工作区中取回与登记相符（路径、大小、SHA-256）的原件，返回仍不可用的路径。原件不可用的文件须由任务重新 `write`（输入资料本来每次执行都重新写入，与桌面版相同），否则需要放回时 `AGENT_PROTECTED_FILES_UNAVAILABLE` 失败，不把 Agent 改过的内容当作原件。8.6d 在保存检查点之前先 `restore`，使快照中的受保护文件就是原件。
+- **平台只用原件**：还原之后沙箱内残留的后台进程仍可能再次改动，所以 worker 处理受保护文件时一律用 `original(path)` 给出的原件，不读回沙箱中的副本；还原只是让 Agent 的后续工作基于正确的输入。
+- **工作区说明**：“程序写入的输入资料和不属于本次任务的文件不要修改”后补“被改动的会在提交校验前还原”（与桌面版 `agent-workspace.md` 相同）。
+
 ## 8. 部署架构
 
 ### 8.0 部署位置（已决定，第 9 节第 13、14 项）
