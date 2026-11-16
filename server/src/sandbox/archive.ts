@@ -88,6 +88,10 @@ function splitUstarPath(path: string): { prefix: string; name: string } | null {
 }
 
 /** 判断重复与冲突用的键：unicode 规则下按 NFKC 加大小写折叠（Ａ.md、a.md、A.md 是同一个名字），ascii 规则下按原样。 */
+export function archivePathKey(path: string, limits: SandboxTransferLimits): string {
+  return pathKey(path, limits);
+}
+
 function pathKey(path: string, limits: SandboxTransferLimits): string {
   return limits.pathSegments === 'unicode' ? path.normalize('NFKC').toUpperCase().toLowerCase().normalize('NFKC') : path;
 }
@@ -614,6 +618,37 @@ export async function* validateArchiveStream(source: AsyncIterable<Uint8Array>, 
   } finally {
     await reader.close();
   }
+}
+
+/** visitArchive 的回调：file 宣告一个普通文件（路径已按 limits 校验与规范化），其后的 data 依次给出它的内容（总长为 size）。 */
+export interface ArchiveVisitor {
+  file(path: string, size: number): void;
+  data(bytes: Buffer): void;
+}
+
+/**
+ * 边读边校验 tar 归档并逐个文件回调（路线图 8.6c2b，worker 在取回的工作区中比对受保护文件）：规则与 readArchive 相同，
+ * 不在内存中缓存整个归档或整个文件（是否保存内容由回调决定）。返回文件数；不符时抛 SandboxArchiveError。
+ */
+export async function visitArchive(source: AsyncIterable<Uint8Array>, limits: SandboxTransferLimits, visitor: ArchiveVisitor): Promise<number> {
+  const reader = new ByteReader(source, maxArchiveBytes(limits));
+  let files = 0;
+  try {
+    for await (const part of scanArchive(reader, limits)) {
+      if (part.kind === 'file') {
+        files += 1;
+        visitor.file(part.path, part.size);
+      } else if (part.kind === 'data') {
+        visitor.data(part.bytes);
+      }
+    }
+    while (await reader.readSome(DATA_CHUNK_BYTES)) {
+      // 结束块之后的数据不处理。
+    }
+  } finally {
+    await reader.close();
+  }
+  return files;
 }
 
 /** 归档流的字节上限：文件总大小加上每个条目的头部、扩展头和对齐，再加结束块和 tar 的记录对齐（10 KiB）。 */
