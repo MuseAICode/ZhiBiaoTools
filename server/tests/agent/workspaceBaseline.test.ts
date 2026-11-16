@@ -419,10 +419,15 @@ describe('续跑', () => {
       { version: 1, groups: { inputs: { 'a.md': null } } },
       { version: 1, groups: Object.fromEntries(Array.from({ length: AGENT_BASELINE_MAX_GROUPS + 1 }, (_, index) => [`g${index}`, {}])) },
       { version: 1, groups: { inputs: Object.fromEntries(Array.from({ length: AGENT_BASELINE_MAX_FILES + 1 }, (_, index) => [`f${index}.md`, { sha256: hash, size: 1 }])) } },
+      // 合计大小超过上限（不同内容，各 1 MiB）：recover 不能因此把超过上限的原件取回内存。
+      { version: 1, groups: { inputs: Object.fromEntries(Array.from({ length: AGENT_BASELINE_MAX_BYTES / (1024 * 1024) + 1 }, (_, index) => [`f${index}.md`, { sha256: index.toString(16).padStart(64, '0'), size: 1024 * 1024 }])) } },
     ];
     for (const state of invalid) {
       expect(() => createAgentWorkspaceBaseline({ driver }, state as AgentWorkspaceBaselineState)).toThrow(TypeError);
     }
     expect(createAgentWorkspaceBaseline({ driver }, { version: 1, groups: { inputs: { 'a.md': { sha256: hash, size: 1 } } } }).paths('inputs')).toEqual(['a.md']);
+    // 上限处照常；相同内容只算一次。
+    const atLimit = Object.fromEntries(Array.from({ length: AGENT_BASELINE_MAX_BYTES / (1024 * 1024) }, (_, index) => [`f${index}.md`, { sha256: index.toString(16).padStart(64, '0'), size: 1024 * 1024 }]));
+    expect(createAgentWorkspaceBaseline({ driver }, { version: 1, groups: { inputs: atLimit, copy: { 'g.md': { sha256: '0'.repeat(64), size: 1024 * 1024 } } } }).paths('copy')).toEqual(['g.md']);
   });
 });

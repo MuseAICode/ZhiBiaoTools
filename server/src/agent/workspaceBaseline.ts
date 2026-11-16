@@ -171,7 +171,18 @@ export function createAgentWorkspaceBaseline(deps: AgentWorkspaceBaselineDeps, s
     return paths.size;
   }
 
+  /** 原件按内容存放，合计按不同内容的大小算（含续跑后尚未取回的原件）。 */
+  function totalBytes(candidate: Map<string, Map<string, AgentBaselineEntry>>): number {
+    const sizes = new Map<string, number>();
+    for (const entries of candidate.values()) for (const entry of entries.values()) sizes.set(entry.sha256, entry.size);
+    let total = 0;
+    for (const size of sizes.values()) total += size;
+    return total;
+  }
+
   if (countFiles(groups) > AGENT_BASELINE_MAX_FILES) throw new TypeError('受保护文件过多');
+  // 从 checkpoint 重建时同样检查合计大小：recover 至多取回这么多原件到内存中。
+  if (totalBytes(groups) > AGENT_BASELINE_MAX_BYTES) throw new TypeError('受保护文件的合计大小超过上限');
 
   /** 不再被任何登记引用的原件丢掉。 */
   function pruneOriginals(): void {
@@ -268,12 +279,7 @@ export function createAgentWorkspaceBaseline(deps: AgentWorkspaceBaselineDeps, s
       next.set(group, target);
       if (next.size > AGENT_BASELINE_MAX_GROUPS) throw new TypeError('受保护文件的分组过多');
       if (countFiles(next) > AGENT_BASELINE_MAX_FILES) throw new TypeError('受保护文件过多');
-      // 原件按内容存放，合计按不同内容的大小算（含续跑后尚未取回的原件）。
-      const sizes = new Map<string, number>();
-      for (const entries of next.values()) for (const entry of entries.values()) sizes.set(entry.sha256, entry.size);
-      let total = 0;
-      for (const size of sizes.values()) total += size;
-      if (bytes > AGENT_BASELINE_MAX_BYTES || total > AGENT_BASELINE_MAX_BYTES) throw new TypeError('受保护文件的合计大小超过上限');
+      if (bytes > AGENT_BASELINE_MAX_BYTES || totalBytes(next) > AGENT_BASELINE_MAX_BYTES) throw new TypeError('受保护文件的合计大小超过上限');
       if (prepared.size > 0) {
         await deps.driver.copyIn(sandbox, [...prepared].map(([path, { data }]) => ({ path, data })), options.signal ? { signal: options.signal } : {});
       }
