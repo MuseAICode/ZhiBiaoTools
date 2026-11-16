@@ -198,6 +198,7 @@ async function runPreview(context: TenantContext, requestId: string, options: Ru
     objectStore: options.objectStore === undefined ? store : options.objectStore,
     sandbox: options.sandbox === undefined ? fakeSandbox().driver : options.sandbox,
     agentWorkspace: null,
+    agent: null,
   };
   try {
     await job.run(jobContext);

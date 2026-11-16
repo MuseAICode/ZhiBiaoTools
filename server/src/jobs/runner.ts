@@ -25,6 +25,8 @@
 // 立即触发一次续租），finishRun 按报告把任务标为失败（AGENT_REPORTED_FAILURE）。
 // Agent 工作区快照（8.5c，src/agent/workspaceJob.ts）：登记了 agentWorkspace 的任务经 context.agentWorkspace 在检查点保存快照、
 // 续跑时放入；保存时超出组织存储配额，任务退出、暂停为 paused / storage_quota；任务成功完成后丢弃快照（登记 keepAfterSuccess 的除外）。
+// Agent 执行（8.6d1，src/agent/execution.ts）：agent 队列中工作区快照可用的任务另有 context.agent（沙箱、令牌、逐条提示词、
+// 提交校验与检查点）；任务抛出的 JobBalanceExhaustedError（沙箱中的模型调用余额不足）同样暂停为 insufficient_balance。
 import { randomUUID } from 'node:crypto';
 import { DelayedError, Worker, type Job, type RedisOptions as BullmqRedisOptions } from 'bullmq';
 import { Redis } from 'ioredis';
@@ -34,6 +36,7 @@ import { JOB_DISPATCH_BATCH_MAX } from '../db/migrations/0021_jobs.ts';
 import type { AiGateway } from '../ai/gateway.ts';
 import type { AgentQuotaOptions } from '../agent/quota.ts';
 import { beginAgentTurn, markAgentBudgetExhausted, TASK_COST_LIMIT_CODE, TASK_TURN_LIMIT_CODE } from '../agent/budget.ts';
+import { createJobAgent, DEFAULT_AGENT_CONTEXT_WINDOW, DEFAULT_AGENT_MAX_OUTPUT_TOKENS, type AgentModelLimits } from '../agent/execution.ts';
 import { createJobAgentWorkspace, isWorkspaceSandboxDriver } from '../agent/workspaceJob.ts';
 import { discardWorkspaceSnapshot } from '../agent/workspaceSnapshots.ts';
 import type { Database } from '../db/schema.ts';
@@ -103,6 +106,13 @@ export interface JobRunnerOptions {
   sandbox?: SandboxDriver | null;
   /** Agent 任务的组织配额（8.3d）；不提供时取 src/agent/quota.ts 的常量（测试用）。 */
   agentQuota?: AgentQuotaOptions;
+  /**
+   * Agent 沙箱中 Pi 会话的模型上限（8.6d1）：上下文长度与输出上限；不提供时为 DEFAULT_AGENT_CONTEXT_WINDOW 与
+   * DEFAULT_AGENT_MAX_OUTPUT_TOKENS（worker 传入时截到 AI_MAX_OUTPUT_TOKENS）。
+   */
+  agentModel?: AgentModelLimits;
+  /** Agent 新建沙箱的重试间隔（测试用）。 */
+  agentSandboxCreateDelaysMs?: readonly number[];
 }
 
 export interface ReconcileResult {
@@ -260,6 +270,7 @@ export function createJobRunner(options: JobRunnerOptions): JobRunner {
       objectStore: options.objectStore ?? null,
       sandbox: options.sandbox ?? null,
       agentWorkspace: null,
+      agent: null,
       signal: controller.signal,
       async setProgress(progress) {
         if (!apply(await renewRun(db, run, leaseMs, { progress }, agentQuota))) throw new JobInterruptedError();
@@ -300,15 +311,32 @@ export function createJobRunner(options: JobRunnerOptions): JobRunner {
             },
           })
         : null;
+    // Agent 执行（8.6d1）：agent 队列、工作区快照可用时提供。令牌与沙箱绑定本次执行（runId 不交给任务代码）。
+    const agent =
+      definition.queue === 'agent' && agentWorkspace && isWorkspaceSandboxDriver(sandboxDriver)
+        ? createJobAgent({
+            db,
+            driver: sandboxDriver,
+            run,
+            tenant,
+            template: definition.agentSandboxTemplate ?? 'agent',
+            allowedTools: definition.agentTools ?? [],
+            model: options.agentModel ?? { contextWindow: DEFAULT_AGENT_CONTEXT_WINDOW, maxOutputTokens: DEFAULT_AGENT_MAX_OUTPUT_TOKENS },
+            checkpoint: job.checkpoint,
+            workspace: agentWorkspace,
+            context,
+            ...(options.agentSandboxCreateDelaysMs ? { createDelaysMs: options.agentSandboxCreateDelaysMs } : {}),
+          })
+        : null;
 
     let outcome: RunOutcome;
     try {
       const params = definition.parseParams(job.params);
-      await definition.run({ ...context, agentWorkspace, params });
+      await definition.run({ ...context, agentWorkspace, agent, params });
       outcome = { kind: 'succeeded' };
     } catch (error) {
       const limitReached = error instanceof JobTaskLimitError ? error : taskLimit;
-      if (balanceExhausted && !lost) {
+      if ((balanceExhausted || error instanceof JobBalanceExhaustedError) && !lost) {
         outcome = { kind: 'insufficient-balance' };
       } else if (limitReached && !lost) {
         outcome = { kind: 'task-limit', reason: limitReached.reason };

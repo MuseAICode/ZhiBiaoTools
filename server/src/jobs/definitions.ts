@@ -3,6 +3,7 @@
 import type { Kysely } from 'kysely';
 import type { ChatDelta, ChatRequest, ChatResult } from '../ai/gateway.ts';
 import { isValidAgentTaskLimits, type AgentTaskLimits } from '../agent/budget.ts';
+import type { AgentSandboxTemplate, JobAgent } from '../agent/execution.ts';
 import type { JobAgentWorkspace } from '../agent/workspaceJob.ts';
 import type { AgentBudgetExhaustedReason, Database } from '../db/schema.ts';
 import type { TenantContext } from '../db/tenant.ts';
@@ -86,6 +87,11 @@ export interface JobContext<P> {
    * 再保存 checkpoint；超出组织存储配额时任务暂停为 storage_quota。
    */
   readonly agentWorkspace: JobAgentWorkspace | null;
+  /**
+   * Agent 执行（8.6d1，src/agent/execution.ts）：agent 队列的任务在 agentWorkspace 可用时提供（新建沙箱、签发令牌、续跑时恢复现场、
+   * 逐条提示词执行入口、提交校验与修复、检查点），否则为 null。任务经 withAgentRun 打开，结束时销毁沙箱、作废令牌。
+   */
+  readonly agent: JobAgent | null;
 }
 
 /** Agent 任务的工作区快照登记（8.5c）。 */
@@ -126,6 +132,11 @@ export interface JobTypeDefinition<P = unknown> {
   readonly agentTools?: readonly string[];
   /** Agent 工作区快照（8.5c）：只有 agent 队列的任务类型能登记。 */
   readonly agentWorkspace?: AgentWorkspaceRegistration;
+  /**
+   * Agent 沙箱的模板（8.6d1）：正文生成、章节重写、原方案还原用 agent-content（墙钟 2 小时），其余默认 agent（30 分钟）。
+   * 只有 agent 队列的任务类型能登记。
+   */
+  readonly agentSandboxTemplate?: AgentSandboxTemplate;
   /** 校验并归一化任务参数（入队时和执行前各一次），不合法时抛错。参数里只放 id 和少量选项。 */
   parseParams(raw: unknown): P;
   run(context: JobContext<P>): Promise<void>;
@@ -144,7 +155,10 @@ export class JobError extends Error {
   }
 }
 
-/** 调用模型时余额不足以冻结：任务应立即退出，执行者把任务暂停为 paused / insufficient_balance。 */
+/**
+ * 调用模型时余额不足以冻结：任务应立即退出，执行者把任务暂停为 paused / insufficient_balance。context.ai 之外（例如 Agent 沙箱中的
+ * 模型调用，8.6d1 按可用余额判断）由任务抛出时同样暂停。
+ */
 export class JobBalanceExhaustedError extends Error {
   constructor(options?: ErrorOptions) {
     super('organization balance is insufficient for the next model call', options);
@@ -201,6 +215,9 @@ const TASK_KIND_PATTERN = new RegExp(AGENT_WORKSPACE_TASK_KIND_PATTERN);
  */
 export const AGENT_EXCLUSIVE_TOOLS: readonly (readonly string[])[] = [['report-failure', 'request-termination']];
 
+/** agent 队列可用的沙箱模板（与 src/agent/execution.ts 的 AGENT_SANDBOX_TEMPLATES 相同，这里不引入该模块以免循环依赖）。 */
+const AGENT_SANDBOX_TEMPLATE_NAMES = ['agent', 'agent-content'] as const;
+
 export function createJobTypeRegistry(definitions: readonly JobTypeDefinition<any>[]): JobTypeRegistry {
   const byType = new Map<string, JobTypeDefinition>();
   for (const definition of definitions) {
@@ -231,6 +248,12 @@ export function createJobTypeRegistry(definitions: readonly JobTypeDefinition<an
       const { taskKind, keepAfterSuccess } = (definition.agentWorkspace ?? {}) as Partial<AgentWorkspaceRegistration>;
       if (typeof taskKind !== 'string' || !TASK_KIND_PATTERN.test(taskKind) || (keepAfterSuccess !== undefined && typeof keepAfterSuccess !== 'boolean')) {
         throw new TypeError(`任务类型 ${definition.type} 登记的工作区快照不合法`);
+      }
+    }
+    if (definition.agentSandboxTemplate !== undefined) {
+      if (definition.queue !== 'agent') throw new TypeError(`任务类型 ${definition.type}：只有 agent 队列的任务能登记 Agent 沙箱模板`);
+      if (!(AGENT_SANDBOX_TEMPLATE_NAMES as readonly string[]).includes(definition.agentSandboxTemplate)) {
+        throw new TypeError(`任务类型 ${definition.type} 登记的 Agent 沙箱模板不合法`);
       }
     }
     byType.set(definition.type, definition);

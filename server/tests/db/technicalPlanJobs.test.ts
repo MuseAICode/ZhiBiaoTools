@@ -265,6 +265,7 @@ async function runJob(
     objectStore: memoryStore,
     sandbox: null,
     agentWorkspace: null,
+    agent: null,
   };
   try {
     await definition.run(context);

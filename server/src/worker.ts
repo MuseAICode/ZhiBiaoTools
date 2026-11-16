@@ -10,6 +10,8 @@
 // 清理任务（6.8）每小时一批：跨组织删除超过保留期的文件、产物、项目和任务记录，并把到期的冻结收尾（src/cleanup/）。
 import Fastify, { type FastifyInstance } from 'fastify';
 import { buildAgentEndpointApp } from './agent/endpoint.ts';
+import { AGENT_MAX_OUTPUT_TOKENS_RANGE } from './agent/entry.ts';
+import { DEFAULT_AGENT_CONTEXT_WINDOW, DEFAULT_AGENT_MAX_OUTPUT_TOKENS } from './agent/execution.ts';
 import { agentToolRegistry } from './agent/toolRegistry.ts';
 import { assertAgentToolsRegistered } from './agent/tools.ts';
 import { createAiConcurrencyLimiter } from './ai/concurrency.ts';
@@ -93,6 +95,11 @@ const runner = createJobRunner({
   gateway,
   objectStore,
   sandbox,
+  // Agent 沙箱中 Pi 会话的模型上限（8.6d1）：输出上限不超过平台的 AI_MAX_OUTPUT_TOKENS。
+  agentModel: {
+    contextWindow: DEFAULT_AGENT_CONTEXT_WINDOW,
+    maxOutputTokens: Math.min(DEFAULT_AGENT_MAX_OUTPUT_TOKENS, Math.max(AGENT_MAX_OUTPUT_TOKENS_RANGE.min, config.ai.maxOutputTokens)),
+  },
 });
 
 // 任务类型登记的工具都必须已定义（否则启动失败）。

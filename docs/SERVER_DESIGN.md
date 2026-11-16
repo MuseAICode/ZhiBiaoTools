@@ -778,6 +778,18 @@ worker 经 sandbox-runner 执行 agent 模板登记的唯一命令 `run`（`node
 - **平台只用原件**：还原之后沙箱内残留的后台进程仍可能再次改动，所以 worker 处理受保护文件时一律用 `original(path)` 给出的原件，不读回沙箱中的副本；还原只是让 Agent 的后续工作基于正确的输入。
 - **工作区说明**：“程序写入的输入资料和不属于本次任务的文件不要修改”后补“被改动的会在提交校验前还原”（与桌面版 `agent-workspace.md` 相同）。
 
+### 7.27 实现（路线图 8.6d1）：worker 端的 Agent 执行
+
+- **入口**：执行者给 agent 队列中工作区快照可用（登记了 `agentWorkspace`、任务属于项目、worker 配置了对象存储与能整体放入与取回归档的 sandbox-runner）的任务提供 `context.agent`（`src/agent/execution.ts`），其余为 `null`；任务经 `withAgentRun(context.agent, fn)` 打开，`fn` 结束（含失败、中止）时销毁沙箱、作废本次执行的令牌。本次执行的 `run_id` 不交给任务代码。
+- **打开**（`open`，一次执行一次）：先从 checkpoint 重建受保护文件的登记（不合法时不建沙箱），再按任务类型登记的 `agentSandboxTemplate`（`agent` 30 分钟 / `agent-content` 2 小时，默认 `agent`）新建沙箱（`SANDBOX_BUSY` / `SANDBOX_UNAVAILABLE` 按 5、15、30 秒重试，用完为 `AGENT_SANDBOX_BUSY` / `AGENT_UNAVAILABLE`），签发令牌（有效期 = 模板入口命令的墙钟；本次执行已结束或已请求暂停时不签发、按中止收尾）。checkpoint 中有执行者的现场时为续跑：放入上次的工作区快照（第 7.21 节）并 `recover` 受保护文件的原件（第 7.26 节）；现场中有会话或登记、快照却不在了时 `AGENT_WORKSPACE_RESTORE_FAILED`，不从头开始（从头开始会重新调用模型、重新扣费，由用户决定）。
+- **checkpoint 的布局**：`{ agent: { version: 1, session, stage, stageIndex, promptedStage, baseline }, task }`。`session` 为 Pi 的会话文件名（`pi-sessions/` 中），`stage` / `stageIndex` 为当前阶段，`promptedStage` 为已在会话中发出过要求的阶段（桌面版 `prompted_stage`，续跑时任务据此只发“继续之前的任务”），`baseline` 为受保护文件的登记（不含原件），`task` 为任务自己的状态。不含令牌与文件内容；读出时逐项检查形状。现场与工作区快照一起保存，二者始终是同一个检查点的一对：检查点之后才发出的提示词不在快照的会话中，续跑时任务重新发出该阶段的要求。
+- **提示词**（`prompt`）：每条之前先 `restore` 被改动的受保护文件（还原的路径写一条任务日志），再经 `runAgentPrompt` 执行（先写下本条可用的业务工具，第 7.24 节）；会话由执行者管理，续接上一条的会话文件。每次执行入口只给本次执行剩余的时间（令牌到期即中止），到期后不再执行，`AGENT_TIME_LIMIT`。
+- **失败按数据库中的事实判断**（不采信入口的说法与输出）：依次看任务是否已中止（取消、暂停、租约丢失、当日时长用完、问题等待超时，按执行者的中止原因收尾）、本次执行的失败报告（按报告以 `AGENT_REPORTED_FAILURE` 失败，原因取报告，第 7.16 节）、任务的费用与轮数上限（暂停为 `task_cost_limit` / `task_turn_limit`）、任务是否仍在本次执行中（不在即按中止收尾）、令牌是否到期（`AGENT_TIME_LIMIT`）；都不能说明时：`MODEL_FAILED` 在组织可用余额低于最低启动余额时暂停为 `insufficient_balance`（执行者对任务抛出的 `JobBalanceExhaustedError` 同样暂停），否则为可以重试的“模型调用失败”；`GATEWAY_UNAVAILABLE` / `GATEWAY_FAILED` 为可以重试的“连接平台服务失败”；`TURN_LIMIT` 为 `AGENT_PROMPT_TURN_LIMIT`；`SESSION_INVALID` 为 `AGENT_SESSION_INVALID`；其余（令牌无效、自称报告了失败或执行已结束却查不到对应的事实、请求被拒绝、入口内部错误、结果不符合协议、入口超时）为 `AGENT_ENTRY_FAILED`，沙箱操作失败为 `AGENT_SANDBOX_FAILED`。给用户与 Agent 看的说明都是固定的文字。不可重试的失败之后这个沙箱不再使用。
+- **阶段**（`runStage`）：发出阶段要求，执行失败中可以重试的按任务给出的次数（0～3，默认 1，与桌面版 `max_retries` 相同）以固定原因的重试提示词在同一会话中重试；每次提交校验之前先 `restore` 受保护文件，再由任务按固定规则校验工作区中的结果（`readFiles` 读出，内容按不可信数据处理；受保护文件只用 `original`）。提交策略与修复提示词与桌面版相同（`src/agent/submission.ts`）：有问题即修复，连续一次没有进展时要求更换方法，连续两次没有进展时没有阻塞问题即接受、有阻塞问题按最低目标再修一轮，最低目标之后仍有阻塞问题以 `AGENT_SUBMISSION_FAILED` 失败；修复提示词写明本次还原的受保护文件。提交修复没有固定次数上限（与桌面版相同），每次修复同样计入任务的轮数与费用上限（第 10.11 节）。`checkpointAfterPrompt` 给出时每条提示词成功后、校验之前保存检查点。
+- **读文件**（`readFiles`）：经 `copyOutArchive` 取回 `/workspace`（按取回规则逐项校验），只保留请求的路径（按请求时的写法，大小写不同的同名文件不算），单个文件至多 16 MiB、合计 64 MiB、一次至多 256 个，超过的只给大小。
+- **检查点**（`checkpoint`）：先 `restore` 受保护文件（使快照中的受保护文件是原件），再经 `context.agentWorkspace.saveCheckpoint` 保存快照与 checkpoint；超出组织存储配额时 `JobStorageQuotaError`（任务暂停为 `storage_quota`，会话随沙箱结束），工作区不符合规则或过大时任务失败。
+- **模型上限**：入口的 Pi 会话按 worker 给出的上下文长度（默认 400,000，与桌面版 `context_length_limit` 的默认值相同）与输出上限（32,768 与 `AI_MAX_OUTPUT_TOKENS` 中较小者）压缩与截断；平台另按令牌把 `max_tokens` 截到 `AI_MAX_OUTPUT_TOKENS`（第 7.14 节）。
+
 ## 8. 部署架构
 
 ### 8.0 部署位置（已决定，第 9 节第 13、14 项）
