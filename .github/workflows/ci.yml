@@ -198,6 +198,12 @@ jobs:
       - name: Build (tsc emit)
         run: npm run build
 
+      # 8.6b：agent 沙箱入口中的 Pi 会话（sandbox/agent/pi.mjs）的单元测试（tests/agent/piSession.test.ts）加载真实的 Pi 运行时，
+      # 按 sandbox/agent/package-lock.json 安装（与镜像相同：不执行安装脚本、不装可选依赖）。
+      - name: Install agent sandbox dependencies (Pi runtime, for unit tests)
+        working-directory: server/sandbox/agent
+        run: npm ci --omit=optional --ignore-scripts --no-audit --no-fund
+
       - name: Unit tests (Vitest)
         run: npm run test
 
@@ -259,7 +265,8 @@ jobs:
             --build-context desktop=../client/electron \
             sandbox/export
 
-      # 8.1：agent 沙箱镜像（Node 24 + rg / fd / jq，无 npm 依赖）；8.6a 起含入口 /opt/agent/entry.mjs（只用 Node 内置模块）；Pi 运行时随 8.6b。
+      # 8.1：agent 沙箱镜像（Node 24 + rg / fd / jq）；8.6a 起含入口 /opt/agent/entry.mjs；8.6b 起含 Pi 运行时（按 sandbox/agent/package-lock.json
+      # 在构建阶段安装，最终镜像不含 npm 与原生模块）与入口中的 Pi 会话（pi.mjs）。
       - name: Build agent sandbox image
         run: docker build -t zhibiao-agent:ci sandbox/agent
 
@@ -284,6 +291,11 @@ jobs:
       # parse 沙箱镜像中的解析依赖（mammoth、pdfjs、SheetJS 等）单独一份 lockfile。
       - name: npm audit parse sandbox dependencies (fail on high)
         working-directory: server/sandbox/parse
+        run: npm audit --audit-level=high
+
+      # agent 沙箱镜像中的 Pi 运行时（@earendil-works/pi-coding-agent、pi-ai，8.6b），版本取自 client/package-lock.json。
+      - name: npm audit agent sandbox dependencies (fail on high)
+        working-directory: server/sandbox/agent
         run: npm audit --audit-level=high
 
       # export 沙箱镜像中的入口依赖（playwright-core）单独一份 lockfile。

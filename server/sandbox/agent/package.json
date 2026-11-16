@@ -1,0 +1,21 @@
+{
+  "name": "zhibiao-agent-sandbox",
+  "version": "0.1.0",
+  "private": true,
+  "description": "agent 沙箱镜像中的入口与 Pi 运行时（docs/SERVER_DESIGN.md 第 7.22 节），只在只通 agent-gw 的沙箱中运行",
+  "license": "UNLICENSED",
+  "type": "module",
+  "engines": {
+    "node": ">=24.21.0 <25"
+  },
+  "dependencies": {
+    "@earendil-works/pi-ai": "0.80.10",
+    "@earendil-works/pi-coding-agent": "0.80.10",
+    "typebox": "1.1.38"
+  },
+  "overrides": {
+    "@earendil-works/pi-coding-agent": {
+      "undici": "8.12.3"
+    }
+  }
+}

@@ -6,8 +6,22 @@ export const MAX_REQUEST_BYTES: number;
 export const MAX_RESULT_BYTES: number;
 export const GATEWAY_BASE_URL: string;
 export const GATEWAY_TIMEOUT_MS: number;
+export const NATIVE_TOOLS: readonly ['read', 'write', 'edit', 'bash', 'grep', 'find', 'ls'];
+export const SESSION_FILE_PATTERN: RegExp;
+export const MAX_PROMPT_CHARS: number;
+export const MAX_TURNS_PER_PROMPT: number;
+export const CONTEXT_WINDOW_RANGE: Readonly<{ min: number; max: number }>;
+export const MAX_OUTPUT_TOKENS_RANGE: Readonly<{ min: number; max: number }>;
 
-export type EntryErrorCode = 'BAD_REQUEST' | 'TOKEN_INVALID' | 'GATEWAY_UNAVAILABLE' | 'GATEWAY_FAILED' | 'INTERNAL';
+export type EntryErrorCode =
+  | 'BAD_REQUEST'
+  | 'TOKEN_INVALID'
+  | 'GATEWAY_UNAVAILABLE'
+  | 'GATEWAY_FAILED'
+  | 'SESSION_INVALID'
+  | 'TURN_LIMIT'
+  | 'MODEL_FAILED'
+  | 'INTERNAL';
 export const ENTRY_ERROR_MESSAGES: Readonly<Record<EntryErrorCode, string>>;
 
 export class EntryError extends Error {
@@ -15,14 +29,40 @@ export class EntryError extends Error {
   constructor(code: EntryErrorCode);
 }
 
-export interface EntryRequest {
+export type NativeTool = (typeof NATIVE_TOOLS)[number];
+
+export interface SessionRequest {
   version: 1;
   action: 'session';
   token: string;
 }
+export interface PromptRequest {
+  version: 1;
+  action: 'prompt';
+  token: string;
+  prompt: string;
+  session: string | null;
+  tools: NativeTool[];
+  maxTurns: number;
+  model: { contextWindow: number; maxOutputTokens: number };
+}
+export type EntryRequest = SessionRequest | PromptRequest;
+
+export interface PromptOutcome {
+  session: string;
+  turns: number;
+  stopReason: 'stop' | 'length';
+}
+export type RunPrompt = (request: PromptRequest, options: { baseUrl: string }) => Promise<PromptOutcome>;
 
 export function readRequest(stream: AsyncIterable<Buffer> & { destroy?: () => void }, maxBytes?: number): Promise<Buffer>;
 export function parseRequest(bytes: Buffer): EntryRequest;
 export function querySession(options: { baseUrl?: string; token: string; timeoutMs?: number }): Promise<{ expiresAt: string }>;
 export function formatResult(result: Record<string, unknown>): string;
-export function runEntry(options: { stdin: Readable | AsyncIterable<Buffer>; stdout: Writable; baseUrl?: string; timeoutMs?: number }): Promise<0 | 1>;
+export function runEntry(options: {
+  stdin: Readable | AsyncIterable<Buffer>;
+  stdout: Writable;
+  baseUrl?: string;
+  timeoutMs?: number;
+  runPrompt?: RunPrompt;
+}): Promise<0 | 1>;

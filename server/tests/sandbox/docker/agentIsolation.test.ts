@@ -6,9 +6,11 @@
 //   另一个同时运行的 agent 沙箱；对照组为经 /etc/hosts 中的 agent-gw 访问桩成功，以及去掉 inhibit_ipv4 后同一探测连到宿主；
 // - 专用网络的生命周期：随沙箱创建与删除、到期清理、创建失败时不残留，网关未配置、不可用或是沙箱时拒绝创建；
 //   只剩网络的残留计入沙箱总数上限，占满时拒绝创建、清理后恢复（8.2d）；
-// - 逃逸面与镜像内容：mount、unshare 失败，没有 Docker socket，镜像中有 rg / fd / jq、没有 Chromium、LibreOffice、OpenXmlHelper。
+// - 逃逸面与镜像内容：mount、unshare 失败，没有 Docker socket，镜像中有 rg / fd / jq、没有 Chromium、LibreOffice、OpenXmlHelper；
+//   Pi 运行时（8.6b）的版本与 sandbox/agent/package-lock.json 一致，没有包管理器与原生模块，/opt/agent 只读。
 // agent-content 与 agent 只有沙箱最长存活不同（tests/sandbox/templates.test.ts 核对），这里只跑 agent。
 import { randomUUID } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import { networkInterfaces } from 'node:os';
 import { createServer, type Server } from 'node:net';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -323,6 +325,19 @@ describe.runIf(sandboxEnv.agentImage)('agent sandbox', () => {
         'for tool in chromium chromium-browser chrome google-chrome headless_shell soffice libreoffice openxmlhelper dotnet python3 python; do command -v "$tool" || true; done; ls /opt',
       );
       expect(absent.stdout.trim()).toBe('agent');
+    });
+
+    it('ships the Pi runtime pinned by sandbox/agent/package-lock.json, read-only, without npm or native addons', async () => {
+      const ref = await createSandbox();
+      const lock = JSON.parse(readFileSync(new URL('../../../sandbox/agent/package-lock.json', import.meta.url), 'utf8')) as { packages: Record<string, { version?: string }> };
+      const versions = await sh(
+        ref,
+        `cd /opt/agent && node -p "['pi-coding-agent','pi-ai'].map((name) => require('./node_modules/@earendil-works/' + name + '/package.json').version).join(' ')"`,
+      );
+      expect(versions.stdout.trim()).toBe(`${lock.packages['node_modules/@earendil-works/pi-coding-agent']!.version} ${lock.packages['node_modules/@earendil-works/pi-ai']!.version}`);
+      // 镜像中没有包管理器与原生模块；/opt/agent 属主为 root，沙箱用户不能写。
+      const extras = await sh(ref, 'command -v npm npx corepack yarn || true; find / -xdev -name "*.node" -type f 2>/dev/null | head -5; find /opt/agent ! -user root | head -5; touch /opt/agent/x 2>/dev/null && echo writable || true');
+      expect(extras.stdout.trim()).toBe('');
     });
   });
 });
