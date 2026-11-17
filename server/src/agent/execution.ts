@@ -1,4 +1,4 @@
-// worker 端的 Agent 执行（路线图第 8 步 8.6d1；docs/SERVER_DESIGN.md 第 7.27 节）。
+// worker 端的 Agent 执行（路线图第 8 步 8.6d1、8.6d2；docs/SERVER_DESIGN.md 第 7.27、7.28 节）。
 //
 // 桌面版的 piRuntimeService.runTask 在主进程中驱动 Pi 会话；Web 版的 Pi 会话在 agent 沙箱中，由 worker 逐条提示词驱动（#90）：
 // 沙箱内的入口每次只执行一条提示词，阶段、提交校验、修复与重试、续跑的现场都在 worker 一侧。执行者给 agent 队列中登记了
@@ -7,8 +7,11 @@
 //   checkpoint 重建受保护文件的登记、取回原件（8.5c、8.6c2b）；
 // - prompt()：每条提示词之前先还原被改动的受保护文件，再经 runAgentPrompt 执行（先写下本阶段的业务工具，8.6c1）；
 // - runStage()：一个阶段的提交校验与修复（与桌面版相同的提交策略，src/agent/submission.ts），执行失败按原因重试；
+// - compact()（8.6d2）：阶段交接的上下文压缩（与桌面版 runStageCompaction 相同）：开始前登记待补压缩，成功或无需压缩时清除；
+//   可选压缩失败时按原上下文继续并保留登记，续跑时在该阶段要求发出前补做；该阶段的要求发出后不再补做；
+// - assistantText()（8.6d2）：从工作区的会话文件取回 Agent 最后一条回复的全文（不经入口的标准输出，按不可信内容处理）；
 // - checkpoint()：先还原受保护文件，再经 context.agentWorkspace.saveCheckpoint 保存快照与 checkpoint（会话文件名、阶段、
-//   已发出的阶段、受保护文件的登记与任务自己的状态）；超出存储配额时 JobStorageQuotaError，会话随沙箱结束；
+//   已发出的阶段、待补压缩、受保护文件的登记与任务自己的状态）；超出存储配额时 JobStorageQuotaError，会话随沙箱结束；
 // - close()：销毁沙箱、作废令牌（任务在 finally 中调用，withAgentRun 代为调用）。
 //
 // 入口的结果与失败代码都是沙箱的说法，不被采信：失败后按数据库中的事实判断原因（#92 登记）——本次执行的失败报告（8.4b）、任务的
@@ -34,9 +37,12 @@ import { SandboxError, type SandboxRef } from '../sandbox/driver.ts';
 import { AGENT_ENTRY_COMMAND, SANDBOX_TEMPLATES } from '../sandbox/templates.ts';
 import type { RunRef } from '../jobs/store.ts';
 import { findAgentJobBudget } from './budget.ts';
+import { AGENT_SESSION_FILE_READ_MAX_BYTES, agentAssistantTextLimit, extractAgentAssistantText, type AgentAssistantText } from './assistantText.ts';
 import {
+  AGENT_COMPACTION_INSTRUCTIONS_MAX_CHARS,
   AGENT_ENTRY_FAILED_CODE,
   AGENT_MAX_TURNS_PER_PROMPT,
+  runAgentCompaction,
   runAgentPrompt,
   type AgentEntryErrorCode,
   type AgentPromptTool,
@@ -69,6 +75,7 @@ export const AGENT_GATEWAY_FAILED_CODE = 'AGENT_GATEWAY_FAILED';
 export const AGENT_PROMPT_TURN_LIMIT_CODE = 'AGENT_PROMPT_TURN_LIMIT';
 export const AGENT_SESSION_INVALID_CODE = 'AGENT_SESSION_INVALID';
 export const AGENT_SUBMISSION_FAILED_CODE = 'AGENT_SUBMISSION_FAILED';
+export const AGENT_COMPACTION_FAILED_CODE = 'AGENT_COMPACTION_FAILED';
 
 const SANDBOX_FAILED_MESSAGE = 'Agent 沙箱执行失败，任务已停止，请稍后重新发起';
 const SESSION_MISSING_MESSAGE = '上次保存的 Agent 会话不可用，请重新发起任务';
@@ -76,6 +83,9 @@ const SESSION_INVALID_MESSAGE = 'Agent 会话不可用，任务已停止，请�
 /** 模型调用失败与连不上平台入口时给 Agent 与用户看的原因（固定文字，不采信沙箱的说法）。 */
 const MODEL_FAILED_REASON = '模型调用失败';
 const GATEWAY_FAILED_REASON = '连接平台服务失败';
+const COMPACTION_FAILED_MESSAGE = 'Agent 上下文压缩失败，任务已停止，请稍后重新发起';
+/** 可选压缩按原上下文继续的入口代码（判断完数据库中的事实之后）：模型调用失败、连不上平台入口、入口内部错误。 */
+const OPTIONAL_COMPACTION_TOLERATED: readonly AgentEntryErrorCode[] = ['MODEL_FAILED', 'GATEWAY_UNAVAILABLE', 'GATEWAY_FAILED', 'INTERNAL'];
 
 /** 新建沙箱时 SANDBOX_BUSY / SANDBOX_UNAVAILABLE 的重试间隔（与导出相同的起步值）。 */
 export const AGENT_SANDBOX_CREATE_DELAYS_MS: readonly number[] = Object.freeze([5_000, 15_000, 30_000]);
@@ -102,6 +112,15 @@ export interface AgentModelLimits {
 export const DEFAULT_AGENT_CONTEXT_WINDOW = 400_000;
 export const DEFAULT_AGENT_MAX_OUTPUT_TOKENS = 32_768;
 
+/** 待补的阶段交接压缩（桌面版 compaction_pending）：压缩完成前登记，续跑时在该阶段的要求发出前补做。 */
+export interface AgentCompactionPending {
+  /** 压缩之后要进入的阶段。 */
+  readonly stage: string;
+  readonly instructions: string;
+  /** 可选压缩：失败时按原上下文继续。 */
+  readonly optional: boolean;
+}
+
 /** 写进 jobs.checkpoint 的执行者现场（不含任何令牌与文件内容）。 */
 export interface AgentRunState {
   readonly version: 1;
@@ -112,6 +131,8 @@ export interface AgentRunState {
   readonly stageIndex: number;
   /** 已在会话中发出过要求的阶段（桌面版 prompted_stage）：续跑时任务据此只发“继续之前的任务”。 */
   readonly promptedStage: string | null;
+  /** 待补的阶段交接压缩（8.6d2）；8.6d1 写下的 checkpoint 没有这一项，按 null 读出。 */
+  readonly compactionPending: AgentCompactionPending | null;
   /** 受保护文件的登记（8.6c2b 的 toState）。 */
   readonly baseline: AgentWorkspaceBaselineState;
 }
@@ -125,6 +146,17 @@ const isPlainObject = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value) && Object.getPrototypeOf(value) === Object.prototype;
 
 const isStage = (value: unknown): value is string => typeof value === 'string' && STAGE_PATTERN.test(value);
+
+const isCompactionInstructions = (value: unknown): value is string =>
+  typeof value === 'string' && value.trim() !== '' && value.length <= AGENT_COMPACTION_INSTRUCTIONS_MAX_CHARS;
+
+function parseCompactionPending(value: unknown): AgentCompactionPending | null {
+  if (value === null) return null;
+  if (!isPlainObject(value) || Object.keys(value).length !== 3 || !isStage(value.stage) || !isCompactionInstructions(value.instructions) || typeof value.optional !== 'boolean') {
+    throw new TypeError('Agent 的 checkpoint 不合法');
+  }
+  return { stage: value.stage, instructions: value.instructions, optional: value.optional };
+}
 
 /**
  * 从 jobs.checkpoint 读出执行者的现场：checkpoint 为 null 或没有 agent 键时返回 null（首次执行，或任务自己保存的 checkpoint）；
@@ -153,6 +185,7 @@ export function parseAgentRunCheckpoint(checkpoint: Record<string, unknown> | nu
       stage: stage as string | null,
       stageIndex: stageIndex as number,
       promptedStage: promptedStage as string | null,
+      compactionPending: parseCompactionPending(Object.hasOwn(agent, 'compactionPending') ? agent.compactionPending : null),
       baseline: baseline as unknown as AgentWorkspaceBaselineState,
     },
     task: task as Record<string, unknown> | null,
@@ -195,6 +228,21 @@ export class AgentPromptRetryableError extends Error {
     this.jobError = jobError;
   }
 }
+
+/** 阶段交接的上下文压缩（8.6d2，桌面版 compact_before_prompt）。 */
+export interface AgentCompactionInput {
+  /** 压缩之后要进入的阶段（任务代码中的常量）。 */
+  readonly stage: string;
+  /** 压缩指令（总结时保留什么、不摘录什么）。 */
+  readonly instructions: string;
+  /** 可选压缩（默认 false）：模型调用失败等时按原上下文继续，登记保留到该阶段的要求发出为止。必须的压缩失败时任务失败。 */
+  readonly optional?: boolean;
+  /** 给出时，登记待补压缩之后、压缩之前保存检查点（与桌面版相同：压缩中被暂停时，续跑在该阶段要求发出前补做）。 */
+  readonly checkpoint?: { readonly task: Record<string, unknown> | null; readonly progress?: number };
+}
+
+/** compact 的结果：compacted 已压缩；noop 无需压缩（还没有会话、会话太短、刚压缩过）；failed 可选压缩失败、按原上下文继续。 */
+export type AgentCompactionStatus = 'compacted' | 'noop' | 'failed';
 
 export interface AgentStageOptions<V> extends AgentPromptInput {
   /** 本阶段的结果文件（执行重试的提示词中给出，与桌面版 output_file 相同）。 */
@@ -244,6 +292,18 @@ export interface AgentRun {
   readonly stageIndex: number;
   /** 该阶段的要求是否已在会话中发出（续跑时任务据此只发“继续之前的任务”）。 */
   wasPrompted(stage: string): boolean;
+  /** 待补的阶段交接压缩（8.6d2）。 */
+  readonly compactionPending: AgentCompactionPending | null;
+  /**
+   * 阶段交接的上下文压缩（见文件头）。续跑后第一条提示词之前，若 checkpoint 中有该阶段的待补压缩、而该阶段的要求还没有发出，
+   * 执行者先自动补做，任务不必自己调用。
+   */
+  compact(input: AgentCompactionInput): Promise<AgentCompactionStatus>;
+  /**
+   * 从工作区的会话文件取回 Agent 最后一条回复的全文（8.6d2；桌面版 assistant_text）。还没有会话、会话文件不存在或过大、
+   * 内容不合法、没有回复时返回 null。内容来自沙箱，按不可信的 AI 内容处理。
+   */
+  assistantText(options?: { maxChars?: number }): Promise<AgentAssistantText | null>;
   /** 读出工作区中的文件（不存在的不在结果中）。路径按 agent 工作区的规则校验，不合法时抛 TypeError。 */
   readFiles(paths: readonly string[], options?: { maxFileBytes?: number; maxTotalBytes?: number }): Promise<ReadonlyMap<string, AgentWorkspaceFile>>;
   /** 执行一条提示词（见文件头）。可以重试的失败抛 AgentPromptRetryableError，其余按原因抛 JobError / 暂停类错误 / JobInterruptedError。 */
@@ -418,7 +478,10 @@ async function openAgentRun(
       stage: parsed?.agent.stage ?? null,
       stageIndex: parsed?.agent.stageIndex ?? 0,
       promptedStage: parsed?.agent.promptedStage ?? null,
+      compactionPending: parsed?.agent.compactionPending ?? null,
     };
+    // 续跑后的第一条提示词之前检查一次 checkpoint 中的待补压缩（桌面版 resumePendingCompaction）。
+    let resumeCompactionChecked = parsed === null;
     const allowedTools = options.allowedTools;
     const model = options.model;
 
@@ -479,6 +542,12 @@ async function openAgentRun(
         throw new TypeError('阶段序号不合法');
       }
       const maxTurns = input.maxTurns ?? AGENT_MAX_TURNS_PER_PROMPT;
+      if (!resumeCompactionChecked) {
+        resumeCompactionChecked = true;
+        // 续跑时该阶段的要求尚未发出而交接压缩未完成（失败或被暂停）：先补做压缩，再发出阶段要求。
+        const pending = state.compactionPending;
+        if (pending && pending.stage === input.stage && state.promptedStage !== input.stage) await runCompaction(pending);
+      }
       const remaining = issued.expiresAt.getTime() - Date.now();
       if (remaining <= 0) throw timeLimitError(template);
       // 每条提示词之前还原被改动的受保护文件（8.6c2b）。
@@ -488,6 +557,8 @@ async function openAgentRun(
       if (input.stageIndex !== undefined) state.stageIndex = input.stageIndex;
       // 续接的会话中，提示词一旦发出就已写进会话文件（即使本条失败）；新建会话失败时会话文件名未知，下一条重新新建。
       if (state.session !== null) state.promptedStage = input.stage;
+      // 阶段要求发出后不再补做该阶段的交接压缩（与桌面版相同）。
+      if (state.compactionPending?.stage === input.stage) state.compactionPending = null;
       const deadline = AbortSignal.timeout(Math.max(1, issued.expiresAt.getTime() - Date.now()));
       const execSignal = AbortSignal.any([signal, deadline]);
       let result;
@@ -530,6 +601,89 @@ async function openAgentRun(
       state.session = result.session;
       state.promptedStage = input.stage;
       return { turns: result.turns, stopReason: result.stopReason, restored };
+    }
+
+    /** 执行一次压缩（compact 与续跑时的补做共用）：pending 已登记在 state 中。 */
+    async function runCompaction(pending: AgentCompactionPending, retryNotice = false): Promise<AgentCompactionStatus> {
+      assertUsable();
+      await context.log(retryNotice ? '上下文压缩未完成，正在重新压缩' : 'Agent 正在压缩上下文', { stage: pending.stage, optional: pending.optional });
+      // 还没有会话（没有发出过提示词）：没有可压缩的上下文。
+      if (state.session === null) {
+        state.compactionPending = null;
+        await context.log('当前上下文无需压缩，继续执行下一阶段', { stage: pending.stage });
+        return 'noop';
+      }
+      if (issued.expiresAt.getTime() - Date.now() <= 0) throw timeLimitError(template);
+      const deadline = AbortSignal.timeout(Math.max(1, issued.expiresAt.getTime() - Date.now()));
+      const execSignal = AbortSignal.any([signal, deadline]);
+      let result;
+      try {
+        result = await runAgentCompaction(
+          db,
+          driver,
+          current,
+          run,
+          { action: 'compact', token: issued.token, session: state.session, instructions: pending.instructions, model },
+          options.allowedTools,
+          { signal: execSignal },
+        );
+      } catch (error) {
+        if (error instanceof TypeError) throw error;
+        if (error instanceof SandboxError || (error instanceof JobError && error.code === AGENT_ENTRY_FAILED_CODE)) broken ??= error;
+        const explained = await explainFailure(null, error, 0, deadline.aborted);
+        if (explained instanceof JobError && explained.code === AGENT_ENTRY_FAILED_CODE) {
+          throw error instanceof SandboxError ? new JobError(AGENT_SANDBOX_FAILED_CODE, SANDBOX_FAILED_MESSAGE, { cause: error }) : error;
+        }
+        throw explained;
+      }
+      if (result.ok) {
+        if (result.action !== 'compact') throw new JobError(AGENT_ENTRY_FAILED_CODE, 'Agent 入口执行失败');
+        state.compactionPending = null;
+        await context.log(result.compacted ? 'Agent 上下文压缩完成' : '当前上下文无需压缩，继续执行下一阶段', { stage: pending.stage });
+        return result.compacted ? 'compacted' : 'noop';
+      }
+      if (result.code === 'RUN_ENDED' && signal.aborted) throw new JobInterruptedError();
+      const explained = await explainFailure(result.code, new Error(`agent entry reported ${result.code}`), 0, false);
+      // 数据库中的事实（中止、失败报告、上限、执行已结束、时限、余额不足）优先；之后才看是否可选。
+      const tolerable = explained instanceof AgentPromptRetryableError || (explained instanceof JobError && explained.code === AGENT_ENTRY_FAILED_CODE && result.code === 'INTERNAL');
+      if (tolerable && OPTIONAL_COMPACTION_TOLERATED.includes(result.code)) {
+        if (pending.optional) {
+          // 可选压缩只用于缩减上下文：保留登记，按原上下文继续（说明是固定文字，不含入口的输出）。
+          await context.log('上下文压缩失败，按原上下文继续', { stage: pending.stage });
+          return 'failed';
+        }
+        const failed = new JobError(AGENT_COMPACTION_FAILED_CODE, COMPACTION_FAILED_MESSAGE, { cause: explained });
+        broken ??= failed;
+        throw failed;
+      }
+      if (!(explained instanceof AgentPromptRetryableError)) broken ??= explained;
+      throw explained instanceof AgentPromptRetryableError ? explained.jobError : explained;
+    }
+
+    async function compact(input: AgentCompactionInput): Promise<AgentCompactionStatus> {
+      assertUsable();
+      if (!isStage(input.stage)) throw new TypeError('阶段名不合法');
+      if (!isCompactionInstructions(input.instructions)) throw new TypeError('压缩指令不合法');
+      if (input.optional !== undefined && typeof input.optional !== 'boolean') throw new TypeError('optional 必须是布尔值');
+      const pending: AgentCompactionPending = { stage: input.stage, instructions: input.instructions, optional: input.optional === true };
+      // 再次压缩同一阶段（例如与程序步骤并行的压缩失败后补做）时说明“重新压缩”。
+      const retry = state.compactionPending?.stage === pending.stage;
+      state.compactionPending = pending;
+      // 任务自己发起了压缩：续跑时不再自动补做。
+      resumeCompactionChecked = true;
+      if (input.checkpoint) await checkpoint(input.checkpoint.task, input.checkpoint.progress);
+      return runCompaction(pending, retry);
+    }
+
+    async function assistantText(limits: { maxChars?: number } = {}): Promise<AgentAssistantText | null> {
+      assertUsable();
+      // 先检查上限（不合法时不读取）。
+      const maxChars = agentAssistantTextLimit(limits.maxChars);
+      if (state.session === null) return null;
+      const path = `pi-sessions/${state.session}`;
+      const file = (await readFiles([path], { maxFileBytes: AGENT_SESSION_FILE_READ_MAX_BYTES, maxTotalBytes: AGENT_SESSION_FILE_READ_MAX_BYTES })).get(path);
+      if (!file?.data) return null;
+      return extractAgentAssistantText(file.data, maxChars);
     }
 
     async function readFiles(paths: readonly string[], limits: { maxFileBytes?: number; maxTotalBytes?: number } = {}): Promise<ReadonlyMap<string, AgentWorkspaceFile>> {
@@ -674,6 +828,11 @@ async function openAgentRun(
         return state.stageIndex;
       },
       wasPrompted: (stage: string) => isStage(stage) && state.promptedStage === stage,
+      get compactionPending() {
+        return state.compactionPending;
+      },
+      compact,
+      assistantText,
       readFiles,
       prompt,
       runStage,

@@ -6,7 +6,9 @@
 //   超时、被终止、其他退出码、多出的输出、形状不符一律 AGENT_ENTRY_FAILED（JobError，说明固定，不含入口的输出）；
 // - 入口按协议报告的失败（令牌无效、连不上平台入口等）作为结果返回，由调用方决定如何处理（8.6d 的执行流程）。
 //
-// 两种请求：session（8.6a，确认令牌有效、取到期时间）与 prompt（8.6b，在 Pi 会话中执行一条提示词，返回会话文件名、轮数与结束原因）。
+// 三种请求：session（8.6a，确认令牌有效、取到期时间）、prompt（8.6b，在 Pi 会话中执行一条提示词，返回会话文件名、轮数与结束原因）
+// 与 compact（8.6d2，压缩已有会话的上下文，返回会话文件名与是否真的压缩了）。Agent 的回复全文不经标准输出（结果至多 16 KiB），
+// 由 worker 从工作区的会话文件中取回（src/agent/assistantText.ts）。
 // prompt 的结果只说明入口按协议走完了：Agent 写了什么、会话中有什么，都由 worker 从工作区取回后按不可信内容处理（8.6d）；
 // 入口报告的 MODEL_FAILED 不区分原因（令牌失效、任务上限、余额不足等），原因由调用方按任务状态判断，不采信沙箱的说法；
 // REPORTED_FAILURE（8.6c1，Agent 报告无法继续或用户选择终止）同样只是入口的说法，任务是否失败按 agent_failure_reports（8.4b）判断。
@@ -64,6 +66,8 @@ const WORKSPACE_PATH_MAX_DEPTH = 8;
 export const AGENT_EXCLUSIVE_PROMPT_TOOLS = [['report-failure', 'request-termination']] as const;
 /** 与 protocol.mjs 相同的上限（两侧各自检查）。 */
 export const AGENT_PROMPT_MAX_CHARS = 256 * 1024;
+/** 压缩指令的上限（与 protocol.mjs 的 MAX_COMPACTION_INSTRUCTIONS_CHARS 相同）。 */
+export const AGENT_COMPACTION_INSTRUCTIONS_MAX_CHARS = 16 * 1024;
 export const AGENT_MAX_TURNS_PER_PROMPT = 1_000;
 export const AGENT_CONTEXT_WINDOW_RANGE = { min: 8_192, max: 2_000_000 } as const;
 export const AGENT_MAX_OUTPUT_TOKENS_RANGE = { min: 256, max: 131_072 } as const;
@@ -90,11 +94,22 @@ export interface AgentPromptRequest {
   /** json-validation 为指定文件预置的 Schema（工作区相对路径 → JSON Schema）；省略或为空时不预置。 */
   jsonSchemas?: Readonly<Record<string, unknown>>;
 }
-export type AgentEntryRequest = AgentSessionRequest | AgentPromptRequest;
+/** 压缩已有会话的上下文（8.6d2）。 */
+export interface AgentCompactRequest {
+  action: 'compact';
+  token: string;
+  /** 续接的会话文件名（工作区 pi-sessions/ 中）。 */
+  session: string;
+  /** 压缩指令（桌面版 compaction_instructions）。 */
+  instructions: string;
+  model: { contextWindow: number; maxOutputTokens: number };
+}
+export type AgentEntryRequest = AgentSessionRequest | AgentPromptRequest | AgentCompactRequest;
 
 export type AgentEntryResult =
   | { ok: true; action: 'session'; expiresAt: Date }
   | { ok: true; action: 'prompt'; session: string; turns: number; stopReason: 'stop' | 'length' }
+  | { ok: true; action: 'compact'; session: string; compacted: boolean }
   | { ok: false; code: AgentEntryErrorCode };
 
 const isIntegerIn = (value: unknown, range: { min: number; max: number }): value is number =>
@@ -120,6 +135,22 @@ function jsonSchemasField(jsonSchemas: AgentPromptRequest['jsonSchemas'], tools:
   return { jsonSchemas: Object.fromEntries(entries) };
 }
 
+function modelField(model: AgentPromptRequest['model']): AgentPromptRequest['model'] {
+  if (!isIntegerIn(model.contextWindow, AGENT_CONTEXT_WINDOW_RANGE) || !isIntegerIn(model.maxOutputTokens, AGENT_MAX_OUTPUT_TOKENS_RANGE) || model.maxOutputTokens > model.contextWindow) {
+    throw new TypeError('invalid agent model limits');
+  }
+  return { contextWindow: model.contextWindow, maxOutputTokens: model.maxOutputTokens };
+}
+
+function compactFields(request: AgentCompactRequest): Record<string, unknown> {
+  const { session, instructions, model } = request;
+  if (typeof session !== 'string' || !AGENT_SESSION_FILE_PATTERN.test(session)) throw new TypeError('invalid agent session file');
+  if (typeof instructions !== 'string' || instructions.trim() === '' || instructions.length > AGENT_COMPACTION_INSTRUCTIONS_MAX_CHARS) {
+    throw new TypeError('invalid agent compaction instructions');
+  }
+  return { session, instructions, model: modelField(model) };
+}
+
 function promptFields(request: AgentPromptRequest): Record<string, unknown> {
   const { prompt, session, tools, maxTurns, model, jsonSchemas } = request;
   if (typeof prompt !== 'string' || prompt.trim() === '' || prompt.length > AGENT_PROMPT_MAX_CHARS) throw new TypeError('invalid agent prompt');
@@ -128,24 +159,23 @@ function promptFields(request: AgentPromptRequest): Record<string, unknown> {
   if (new Set(tools).size !== tools.length || !tools.every((tool) => known.includes(tool))) throw new TypeError('invalid agent tools');
   if (AGENT_EXCLUSIVE_PROMPT_TOOLS.some((group) => group.filter((name) => tools.includes(name)).length > 1)) throw new TypeError('invalid agent tools');
   if (!isIntegerIn(maxTurns, { min: 1, max: AGENT_MAX_TURNS_PER_PROMPT })) throw new TypeError('invalid agent max turns');
-  if (!isIntegerIn(model.contextWindow, AGENT_CONTEXT_WINDOW_RANGE) || !isIntegerIn(model.maxOutputTokens, AGENT_MAX_OUTPUT_TOKENS_RANGE) || model.maxOutputTokens > model.contextWindow) {
-    throw new TypeError('invalid agent model limits');
-  }
+  const limits = modelField(model);
   return {
     prompt,
     session,
     tools: [...tools],
     maxTurns,
-    model: { contextWindow: model.contextWindow, maxOutputTokens: model.maxOutputTokens },
+    model: limits,
     ...jsonSchemasField(jsonSchemas, tools),
   };
 }
 
 /** 编码请求：令牌格式不对、字段不合法、超过上限时抛 TypeError（调用方的错误，不执行）。 */
 export function encodeAgentEntryRequest(request: AgentEntryRequest): Buffer {
-  if (request.action !== 'session' && request.action !== 'prompt') throw new TypeError('unknown agent entry action');
+  if (request.action !== 'session' && request.action !== 'prompt' && request.action !== 'compact') throw new TypeError('unknown agent entry action');
   if (!isWellFormedAgentToken(request.token)) throw new TypeError('invalid agent token');
-  const body = { version: AGENT_ENTRY_PROTOCOL_VERSION, action: request.action, token: request.token, ...(request.action === 'prompt' ? promptFields(request) : {}) };
+  const fields = request.action === 'prompt' ? promptFields(request) : request.action === 'compact' ? compactFields(request) : {};
+  const body = { version: AGENT_ENTRY_PROTOCOL_VERSION, action: request.action, token: request.token, ...fields };
   const encoded = Buffer.from(JSON.stringify(body), 'utf8');
   if (encoded.length > AGENT_ENTRY_MAX_INPUT_BYTES) throw new TypeError('agent entry request too large');
   return encoded;
@@ -167,10 +197,10 @@ const hasExactKeys = (value: Record<string, unknown>, keys: readonly string[]) =
 const ISO_INSTANT_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
 
 /**
- * 解析入口的执行结果；expected 给出时，成功结果的 action 必须与请求相同、prompt 的轮数不超过请求的上限。不符合协议时抛 AGENT_ENTRY_FAILED（cause 写明哪一项不符，只进日志）；入口按协议报告的失败作为结果返回。
+ * 解析入口的执行结果；expected 给出时，成功结果的 action 必须与请求相同、prompt 的轮数不超过请求的上限、compact 的会话文件名与请求相同。不符合协议时抛 AGENT_ENTRY_FAILED（cause 写明哪一项不符，只进日志）；入口按协议报告的失败作为结果返回。
  * 标准输出来自沙箱：不采信其中的任何其他内容，也不把它写进错误说明。
  */
-export function parseAgentEntryResult(exec: SandboxExecResult, expected?: { action: AgentEntryRequest['action']; maxTurns?: number }): AgentEntryResult {
+export function parseAgentEntryResult(exec: SandboxExecResult, expected?: { action: AgentEntryRequest['action']; maxTurns?: number; session?: string }): AgentEntryResult {
   const maxTurns = expected?.maxTurns;
   const expectedAction = expected?.action;
   if (exec.timedOut) throw entryFailed('entry timed out');
@@ -201,6 +231,14 @@ export function parseAgentEntryResult(exec: SandboxExecResult, expected?: { acti
       if (value.stopReason !== 'stop' && value.stopReason !== 'length') throw entryFailed('entry result stopReason invalid');
       return { ok: true, action: 'prompt', session: value.session, turns: value.turns, stopReason: value.stopReason };
     }
+    if (value.action === 'compact') {
+      if (!hasExactKeys(value, ['version', 'ok', 'action', 'session', 'compacted'])) throw entryFailed('entry result shape mismatch');
+      if (typeof value.session !== 'string' || !AGENT_SESSION_FILE_PATTERN.test(value.session)) throw entryFailed('entry result session invalid');
+      // 压缩追加到同一个会话文件：文件名必须与请求相同。
+      if (expected?.session !== undefined && value.session !== expected.session) throw entryFailed('entry result session mismatch');
+      if (typeof value.compacted !== 'boolean') throw entryFailed('entry result compacted invalid');
+      return { ok: true, action: 'compact', session: value.session, compacted: value.compacted };
+    }
     throw entryFailed('entry result action invalid');
   }
   if (value.ok === false) {
@@ -226,7 +264,10 @@ export async function runAgentEntry(
 ): Promise<AgentEntryResult> {
   const input = encodeAgentEntryRequest(request);
   const exec = await driver.exec(sandbox, AGENT_ENTRY_COMMAND, [], { ...options, input });
-  return parseAgentEntryResult(exec, request.action === 'prompt' ? { action: 'prompt', maxTurns: request.maxTurns } : { action: 'session' });
+  const expected = request.action === 'prompt'
+    ? { action: 'prompt' as const, maxTurns: request.maxTurns }
+    : request.action === 'compact' ? { action: 'compact' as const, session: request.session } : { action: 'session' as const };
+  return parseAgentEntryResult(exec, expected);
 }
 
 /** 请求中的业务工具（worker 一侧的工具名）。 */
@@ -250,5 +291,23 @@ export async function runAgentPrompt(
   // 先检查请求（不合法时不写阶段）。
   encodeAgentEntryRequest(request);
   if (!(await setAgentToolScope(db, run, agentPromptBusinessTools(request.tools), allowedTools))) return { ok: false, code: 'RUN_ENDED' };
+  return runAgentEntry(driver, sandbox, request, options);
+}
+
+/**
+ * 压缩会话的上下文（8.6d2）：先把本阶段可用的业务工具清空（压缩不调用工具，迁移 0042），再执行入口。任务已不在本次执行中时
+ * 不执行入口，返回 RUN_ENDED。
+ */
+export async function runAgentCompaction(
+  db: Kysely<Database>,
+  driver: Pick<SandboxDriver, 'exec'>,
+  sandbox: SandboxRef,
+  run: RunRef,
+  request: AgentCompactRequest,
+  allowedTools: readonly string[],
+  options: SandboxOperationOptions = {},
+): Promise<AgentEntryResult> {
+  encodeAgentEntryRequest(request);
+  if (!(await setAgentToolScope(db, run, [], allowedTools))) return { ok: false, code: 'RUN_ENDED' };
   return runAgentEntry(driver, sandbox, request, options);
 }

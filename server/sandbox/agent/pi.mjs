@@ -1,4 +1,5 @@
-// agent 沙箱入口中的 Pi 会话（路线图第 8 步 8.6b；docs/SERVER_DESIGN.md 第 7.22 节）：执行一条提示词（protocol.mjs 的 prompt 请求）。
+// agent 沙箱入口中的 Pi 会话（路线图第 8 步 8.6b、8.6d2；docs/SERVER_DESIGN.md 第 7.22 节）：执行一条提示词（protocol.mjs 的 prompt 请求），
+// 或压缩已有会话的上下文（compact 请求，8.6d2）。
 // 依赖 @earendil-works/pi-coding-agent / pi-ai（MIT，按 package-lock.json 在镜像构建阶段安装），只在 prompt 请求时加载。
 //
 // 与桌面版 pi/piSessionFactory.cjs 的同一套配置（提供方 app、openai-completions、不思考、不加载项目上下文 / 扩展 / 技能 /
@@ -16,7 +17,9 @@
 //   （BASH_ENV），不继承入口进程的环境；
 // - **会话文件**：/workspace/pi-sessions/（随工作区快照保存，续跑时由 worker 放回）；续接时只接受 Pi 命名的普通文件；
 // - **工作区说明**：镜像中的 workspace-instructions.md（桌面版 agent-workspace.md 改写：Linux /bin/sh、断网、文件命名规则）；
-// - **一条提示词的轮数上限**：第 maxTurns + 1 轮开始时中止（TURN_LIMIT），与桌面版 max_turns_per_prompt 相同。
+// - **一条提示词的轮数上限**：第 maxTurns + 1 轮开始时中止（TURN_LIMIT），与桌面版 max_turns_per_prompt 相同；
+// - **阶段交接压缩**（8.6d2）：compact 请求在续接的会话上执行 session.compact(instructions)，不注册工具；会话太短、刚压缩过时
+//   不算失败（compacted = false），与桌面版 isCompactionNoopError 相同。Pi 自动压缩（compaction.enabled）照常。
 //
 // Pi 运行在沙箱中、按攻击者的代码处理：这里的设置只是让 Agent 正常工作，平台的控制都在沙箱之外（网络只通 agent-gw、令牌、
 // 上限、工作区取回校验）。
@@ -95,13 +98,10 @@ function createBashOperations(codingAgent) {
 }
 
 /**
- * 执行一条提示词。request 为 protocol.mjs 解析过的 prompt 请求；返回 { session（会话文件名）, turns, stopReason（stop / length）}。
- * 失败抛 EntryError：会话文件不存在或无效 SESSION_INVALID、轮数达到上限 TURN_LIMIT、模型调用失败（含被平台拒绝：令牌失效、
- * 达到任务上限、余额不足等，具体原因由 worker 按任务状态判断，不采信沙箱的说法）MODEL_FAILED、Agent 报告无法继续（含用户选择终止）
- * REPORTED_FAILURE、业务工具调用时令牌失效 TOKEN_INVALID、本次执行已结束 RUN_ENDED。
- * callTool 只供测试替换业务工具的调用（默认经 agent-gw，tools.mjs 的 callBusinessTool）。
+ * prompt 与 compact 共用的 Pi 运行时：模型经 agent-gw（令牌作为运行时 API Key 只在内存中）、设置与资源加载（工作区说明）。
+ * request.session 不为 null 时先检查会话文件（SESSION_INVALID）。
  */
-export async function runPiPrompt(request, { baseUrl, workspaceDir = WORKSPACE_DIR, sessionsDir = SESSIONS_DIR, agentDir = AGENT_DIR, instructionsPath = INSTRUCTIONS_PATH, callTool } = {}) {
+async function preparePi(request, { baseUrl, workspaceDir, sessionsDir, agentDir, instructionsPath }) {
   const { codingAgent, piAi, typebox } = await loadPiModules();
   const instructions = readFileSync(instructionsPath, 'utf8');
   mkdirSync(sessionsDir, { recursive: true });
@@ -165,6 +165,18 @@ export async function runPiPrompt(request, { baseUrl, workspaceDir = WORKSPACE_D
   });
   await resourceLoader.reload();
 
+  return { codingAgent, typebox, model, modelRuntime, settingsManager, resourceLoader, sessionPath };
+}
+
+/**
+ * 执行一条提示词。request 为 protocol.mjs 解析过的 prompt 请求；返回 { session（会话文件名）, turns, stopReason（stop / length）}。
+ * 失败抛 EntryError：会话文件不存在或无效 SESSION_INVALID、轮数达到上限 TURN_LIMIT、模型调用失败（含被平台拒绝：令牌失效、
+ * 达到任务上限、余额不足等，具体原因由 worker 按任务状态判断，不采信沙箱的说法）MODEL_FAILED、Agent 报告无法继续（含用户选择终止）
+ * REPORTED_FAILURE、业务工具调用时令牌失效 TOKEN_INVALID、本次执行已结束 RUN_ENDED。
+ * callTool 只供测试替换业务工具的调用（默认经 agent-gw，tools.mjs 的 callBusinessTool）。
+ */
+export async function runPiPrompt(request, { baseUrl, workspaceDir = WORKSPACE_DIR, sessionsDir = SESSIONS_DIR, agentDir = AGENT_DIR, instructionsPath = INSTRUCTIONS_PATH, callTool } = {}) {
+  const { codingAgent, typebox, model, modelRuntime, settingsManager, resourceLoader, sessionPath } = await preparePi(request, { baseUrl, workspaceDir, sessionsDir, agentDir, instructionsPath });
   let sessionManager;
   try {
     sessionManager = sessionPath ? codingAgent.SessionManager.open(sessionPath, sessionsDir, workspaceDir) : codingAgent.SessionManager.create(workspaceDir, sessionsDir);
@@ -221,9 +233,63 @@ export async function runPiPrompt(request, { baseUrl, workspaceDir = WORKSPACE_D
   const assistant = lastAssistant(session.messages);
   if (!assistant || assistant.stopReason === 'error' || assistant.stopReason === 'aborted') throw new EntryError('MODEL_FAILED');
   if (assistant.stopReason !== 'stop' && assistant.stopReason !== 'length') throw new EntryError('INTERNAL');
+  const name = sessionFileName(session, sessionManager);
+  session.dispose();
+  return { session: name, turns, stopReason: assistant.stopReason };
+}
+
+/** 会话文件名（Pi 命名，位于 sessionsDir 中）；不符合 SESSION_FILE_PATTERN 时 INTERNAL。 */
+function sessionFileName(session, sessionManager) {
   const sessionFile = session.sessionFile ?? sessionManager.getSessionFile();
   const name = typeof sessionFile === 'string' ? sessionFile.slice(sessionFile.lastIndexOf('/') + 1) : '';
   if (!SESSION_FILE_PATTERN.test(name)) throw new EntryError('INTERNAL');
+  return name;
+}
+
+/** Pi 手动压缩在当前上下文无需处理时抛出的错误（agent-session.js 的 compact：会话太短、最后一项已是压缩）。 */
+const COMPACTION_NOOP_MESSAGES = Object.freeze(['Nothing to compact (session too small)', 'Already compacted']);
+/** 压缩时的模型调用失败（compaction.js 的 generateSummary / generateTurnPrefixSummary：模型返回 stopReason = error）。 */
+const COMPACTION_MODEL_FAILED_PATTERN = /^(?:Turn prefix summarization|Summarization) failed: /;
+
+/**
+ * 压缩一个已有会话的上下文（8.6d2，与桌面版阶段交接时的 session.compact(instructions) 相同）。request 为 protocol.mjs 解析过的
+ * compact 请求；返回 { session, compacted }，Pi 认为无需压缩时 compacted = false。不注册任何工具。
+ * 失败抛 EntryError：会话文件不存在或无效 SESSION_INVALID、模型调用失败（含被平台拒绝，原因由 worker 判断）MODEL_FAILED，
+ * 其他异常 INTERNAL（不带出说明）。是否按原上下文继续（可选压缩）由 worker 决定。
+ */
+export async function runPiCompaction(request, { baseUrl, workspaceDir = WORKSPACE_DIR, sessionsDir = SESSIONS_DIR, agentDir = AGENT_DIR, instructionsPath = INSTRUCTIONS_PATH } = {}) {
+  if (typeof request.session !== 'string') throw new EntryError('SESSION_INVALID');
+  const { codingAgent, model, modelRuntime, settingsManager, resourceLoader, sessionPath } = await preparePi(request, { baseUrl, workspaceDir, sessionsDir, agentDir, instructionsPath });
+  let sessionManager;
+  try {
+    sessionManager = codingAgent.SessionManager.open(sessionPath, sessionsDir, workspaceDir);
+  } catch {
+    throw new EntryError('SESSION_INVALID');
+  }
+  const { session } = await codingAgent.createAgentSession({
+    cwd: workspaceDir,
+    agentDir,
+    model,
+    modelRuntime,
+    thinkingLevel: 'off',
+    tools: [],
+    customTools: [],
+    resourceLoader,
+    settingsManager,
+    sessionManager,
+  });
+  let compacted = true;
+  try {
+    await session.compact(request.instructions);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : '';
+    if (COMPACTION_NOOP_MESSAGES.includes(message)) compacted = false;
+    else if (COMPACTION_MODEL_FAILED_PATTERN.test(message)) throw new EntryError('MODEL_FAILED');
+    else throw new EntryError('INTERNAL');
+  }
+  const name = sessionFileName(session, sessionManager);
   session.dispose();
-  return { session: name, turns, stopReason: assistant.stopReason };
+  // 续接的会话文件名不变（Pi 把压缩追加到同一个文件）。
+  if (name !== request.session) throw new EntryError('INTERNAL');
+  return { session: name, compacted };
 }

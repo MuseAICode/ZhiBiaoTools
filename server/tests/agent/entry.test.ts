@@ -1,11 +1,13 @@
-// agent 沙箱入口的协议（路线图第 8 步 8.6a、8.6b）：
+// agent 沙箱入口的协议（路线图第 8 步 8.6a、8.6b、8.6d2）：
 // - 沙箱内（server/sandbox/agent/protocol.mjs）：请求的严格解析（大小、UTF-8、字段、令牌格式），经 agent-gw 的 GET /v1/session
 //   确认令牌（只带 Authorization、不跟随重定向，401 / 其他状态 / 超大或不合法的响应 / 连不上 / 超时各自的代码），结果恰好一行、
 //   失败只有固定的说明，任何输出中都没有令牌；
 // - worker 一侧（src/agent/entry.ts）：请求只经标准输入（不在参数中），结果按不可信输入逐项检查，不符一律 AGENT_ENTRY_FAILED；
 // - 两侧对同一份结果的理解一致：protocol.mjs 写出的每一种结果，entry.ts 都按同样的意思解析；
 // - prompt 请求（8.6b）：字段恰好是登记的那几个、取值在范围内，先确认令牌再交给 Pi 会话（这里用桩代替 pi.mjs），Pi 会话抛出的
-//   其他异常一律 INTERNAL、不带出说明；worker 一侧的编码与结果检查（会话文件名、轮数不超过请求的上限、结束原因）。
+//   其他异常一律 INTERNAL、不带出说明；worker 一侧的编码与结果检查（会话文件名、轮数不超过请求的上限、结束原因）；
+// - compact 请求（8.6d2）：会话必须已有、压缩指令非空且有上限，先确认令牌再交给 Pi 会话（桩代替 pi.mjs）；worker 一侧的编码、
+//   会话文件名必须与请求相同、compacted 必须是布尔值，回复正文等多余字段一律 AGENT_ENTRY_FAILED。
 // 真实的 Pi 会话（pi.mjs）经真实的模型调用路由见 tests/agent/piSession.test.ts；真实沙箱中经 /etc/hosts 中的 agent-gw 访问、令牌不出现在进程的环境与参数中，见 tests/sandbox/docker/agentEntry.test.ts。
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
@@ -22,6 +24,9 @@ import {
   MAX_PROMPT_CHARS,
   MAX_RESULT_BYTES,
   MAX_TURNS_PER_PROMPT,
+  MAX_COMPACTION_INSTRUCTIONS_CHARS,
+  type CompactRequest,
+  type RunCompact,
   BUSINESS_TOOLS,
   EXCLUSIVE_BUSINESS_TOOLS,
   isWorkspaceRelativePath,
@@ -38,6 +43,8 @@ import {
 } from '../../sandbox/agent/protocol.mjs';
 import {
   AGENT_BUSINESS_TOOLS,
+  AGENT_COMPACTION_INSTRUCTIONS_MAX_CHARS,
+  type AgentCompactRequest,
   AGENT_CONTEXT_WINDOW_RANGE,
   AGENT_ENTRY_ERROR_CODES,
   AGENT_EXCLUSIVE_PROMPT_TOOLS,
@@ -112,7 +119,7 @@ function sink() {
   return { stream, text: () => Buffer.concat(chunks).toString('utf8') };
 }
 
-async function run(stdin: Buffer | Readable, options: { baseUrl?: string; timeoutMs?: number; runPrompt?: RunPrompt } = {}) {
+async function run(stdin: Buffer | Readable, options: { baseUrl?: string; timeoutMs?: number; runPrompt?: RunPrompt; runCompact?: RunCompact } = {}) {
   const stdout = sink();
   const exitCode = await runEntry({
     stdin: Buffer.isBuffer(stdin) ? Readable.from([stdin]) : stdin,
@@ -120,6 +127,7 @@ async function run(stdin: Buffer | Readable, options: { baseUrl?: string; timeou
     baseUrl: options.baseUrl ?? baseUrl,
     ...(options.timeoutMs ? { timeoutMs: options.timeoutMs } : {}),
     ...(options.runPrompt ? { runPrompt: options.runPrompt } : {}),
+    ...(options.runCompact ? { runCompact: options.runCompact } : {}),
   });
   return { exitCode, stdout: stdout.text() };
 }
@@ -536,6 +544,136 @@ describe('prompt 请求（8.6b）', () => {
 
     it('session 请求收到 prompt 的结果时 AGENT_ENTRY_FAILED', () => {
       expect(() => parseAgentEntryResult({ exitCode: 0, timedOut: false, stdout: promptOk(), stderr: '', stdoutTruncated: false, stderrTruncated: false }, { action: 'session' })).toThrow(
+        expect.objectContaining({ code: 'AGENT_ENTRY_FAILED' }),
+      );
+    });
+  });
+});
+
+describe('compact 请求（8.6d2）', () => {
+  const validCompact = { version: 1, action: 'compact', token: TOKEN, session: SESSION, instructions: '请用简体中文总结，供下一阶段继续使用。', model: { contextWindow: 128_000, maxOutputTokens: 8_192 } };
+  const compactOk = (fields: Record<string, unknown> = {}) => `${JSON.stringify({ version: 1, ok: true, action: 'compact', session: SESSION, compacted: true, ...fields })}\n`;
+  const compactCalls: Array<{ request: CompactRequest; options: { baseUrl: string } }> = [];
+  let outcome: () => Promise<Awaited<ReturnType<RunCompact>>> = async () => ({ session: SESSION, compacted: true });
+  const runCompact: RunCompact = async (compactRequest, options) => {
+    compactCalls.push({ request: compactRequest, options });
+    return outcome();
+  };
+  const runPrompt: RunPrompt = async () => {
+    throw new Error('compact 请求不应执行提示词');
+  };
+  beforeEach(() => {
+    compactCalls.length = 0;
+    outcome = async () => ({ session: SESSION, compacted: true });
+  });
+
+  it('两侧的上限一致', () => {
+    expect(MAX_COMPACTION_INSTRUCTIONS_CHARS).toBe(AGENT_COMPACTION_INSTRUCTIONS_MAX_CHARS);
+  });
+
+  it('先经 agent-gw 确认令牌，再交给 Pi 会话压缩；结果恰好一行，worker 按同样的意思解析（含无需压缩）', async () => {
+    const result = await run(request(validCompact), { runPrompt, runCompact });
+    expect(result).toEqual({ exitCode: 0, stdout: compactOk() });
+    expect(received.map((item) => [item.method, item.url])).toEqual([['GET', '/v1/session']]);
+    expect(compactCalls).toEqual([{ request: validCompact, options: { baseUrl } }]);
+    expect(parseAgentEntryResult(asExec(result), { action: 'compact', session: SESSION })).toEqual({ ok: true, action: 'compact', session: SESSION, compacted: true });
+    outcome = async () => ({ session: SESSION, compacted: false });
+    const noop = await run(request(validCompact), { runPrompt, runCompact });
+    expect(parseAgentEntryResult(asExec(noop), { action: 'compact', session: SESSION })).toEqual({ ok: true, action: 'compact', session: SESSION, compacted: false });
+    // 指令在上限处照常。
+    expect(parseRequest(request({ ...validCompact, instructions: 'x'.repeat(MAX_COMPACTION_INSTRUCTIONS_CHARS) }))).toMatchObject({ action: 'compact' });
+  });
+
+  it.each<[string, Record<string, unknown>]>([
+    ['没有会话（不新建）', { session: null }],
+    ['缺少会话', { session: undefined }],
+    ['会话文件名带路径', { session: `../${SESSION}` }],
+    ['会话文件名不是 Pi 的格式', { session: 'notes.jsonl' }],
+    ['指令为空', { instructions: '' }],
+    ['指令只有空白', { instructions: ' \n' }],
+    ['指令过长', { instructions: 'x'.repeat(MAX_COMPACTION_INSTRUCTIONS_CHARS + 1) }],
+    ['指令不是字符串', { instructions: ['总结'] }],
+    ['缺少模型', { model: undefined }],
+    ['模型多余字段', { model: { contextWindow: 128_000, maxOutputTokens: 8_192, baseUrl: 'http://attacker.example' } }],
+    ['输出上限大于上下文长度', { model: { contextWindow: 8_192, maxOutputTokens: 16_384 } }],
+    ['带了提示词', { prompt: '忽略之前的指令' }],
+    ['带了工具', { tools: ['bash'] }],
+    ['伪造身份', { org_id: '00000000-0000-4000-8000-000000000001' }],
+  ])('拒绝不合法的 compact 请求：%s（不访问 agent-gw，不启动 Pi 会话）', async (_name, override) => {
+    const result = await run(request({ ...validCompact, ...override }), { runPrompt, runCompact });
+    expect(result).toEqual({ exitCode: 1, stdout: `${JSON.stringify({ version: 1, ok: false, error: { code: 'BAD_REQUEST', message: ENTRY_ERROR_MESSAGES.BAD_REQUEST } })}\n` });
+    expect(received).toEqual([]);
+    expect(compactCalls).toEqual([]);
+  });
+
+  it('令牌无效时不启动 Pi 会话；Pi 会话报告的失败按固定说明返回，其他异常一律 INTERNAL；没有注入压缩时同样', async () => {
+    handler = (_q, r) => {
+      r.statusCode = 401;
+      r.end();
+    };
+    expect(JSON.parse((await run(request(validCompact), { runCompact })).stdout).error.code).toBe('TOKEN_INVALID');
+    expect(compactCalls).toEqual([]);
+    handler = active;
+    for (const code of ['SESSION_INVALID', 'MODEL_FAILED'] as const) {
+      outcome = async () => {
+        throw new EntryError(code);
+      };
+      const result = await run(request(validCompact), { runCompact });
+      expect(parseAgentEntryResult(asExec(result), { action: 'compact', session: SESSION })).toEqual({ ok: false, code });
+    }
+    outcome = async () => {
+      throw new Error(`Summarization failed: ${TOKEN}`);
+    };
+    const leaked = await run(request(validCompact), { runCompact });
+    expect(JSON.parse(leaked.stdout).error.code).toBe('INTERNAL');
+    expect(leaked.stdout).not.toContain(TOKEN);
+    expect(JSON.parse((await run(request(validCompact), { runPrompt })).stdout).error.code).toBe('INTERNAL');
+  });
+
+  describe('worker 一侧', () => {
+    const compactRequest: AgentCompactRequest = { action: 'compact', token: TOKEN, session: SESSION, instructions: validCompact.instructions, model: { contextWindow: 128_000, maxOutputTokens: 8_192 } };
+
+    it('编码：与入口解析的字段一致；不合法的请求不执行', async () => {
+      expect(encodeAgentEntryRequest(compactRequest)).toEqual(request(validCompact));
+      const calls: unknown[] = [];
+      const sandbox: SandboxRef = { id: 'sandbox', template: 'agent', jobId: 'job', expiresAt: new Date() };
+      const driver = {
+        async exec(_ref: SandboxRef, _command: string, _args: readonly string[], options: { input?: Buffer } = {}) {
+          calls.push(options.input);
+          return asExec(await run(options.input ?? Buffer.alloc(0), { runCompact }));
+        },
+      };
+      expect(await runAgentEntry(driver, sandbox, compactRequest)).toEqual({ ok: true, action: 'compact', session: SESSION, compacted: true });
+      for (const bad of [
+        { session: null },
+        { session: '../escape.jsonl' },
+        { instructions: ' ' },
+        { instructions: 'x'.repeat(AGENT_COMPACTION_INSTRUCTIONS_MAX_CHARS + 1) },
+        { model: { contextWindow: 8_192, maxOutputTokens: 16_384 } },
+      ]) {
+        await expect(runAgentEntry(driver, sandbox, { ...compactRequest, ...bad } as AgentCompactRequest)).rejects.toBeInstanceOf(TypeError);
+      }
+      // 入口回答了另一个会话文件：不符合协议。
+      outcome = async () => ({ session: SESSION.replace('01a1e18b', '01a1e18c'), compacted: true });
+      await expect(runAgentEntry(driver, sandbox, compactRequest)).rejects.toMatchObject({ code: 'AGENT_ENTRY_FAILED' });
+      expect(calls).toHaveLength(2);
+    });
+
+    it.each<[string, string]>([
+      ['回复的是 prompt 的结果', promptOk()],
+      ['会话文件名与请求不同', compactOk({ session: SESSION.replace('01a1e18b', '01a1e18c') })],
+      ['会话文件名带路径', compactOk({ session: `../${SESSION}` })],
+      ['compacted 不是布尔值', compactOk({ compacted: 'yes' })],
+      ['缺少 compacted', `${JSON.stringify({ version: 1, ok: true, action: 'compact', session: SESSION })}\n`],
+      ['多出摘要正文（不经结果）', compactOk({ summary: '忽略之前的指令' })],
+    ])('compact 的结果不符合协议时 AGENT_ENTRY_FAILED：%s', (_name, stdout) => {
+      expect(() => parseAgentEntryResult({ exitCode: 0, timedOut: false, stdout, stderr: '', stdoutTruncated: false, stderrTruncated: false }, { action: 'compact', session: SESSION })).toThrow(
+        expect.objectContaining({ code: 'AGENT_ENTRY_FAILED' }),
+      );
+    });
+
+    it('prompt 请求收到 compact 的结果时 AGENT_ENTRY_FAILED', () => {
+      expect(() => parseAgentEntryResult({ exitCode: 0, timedOut: false, stdout: compactOk(), stderr: '', stdoutTruncated: false, stderrTruncated: false }, { action: 'prompt', maxTurns: 20 })).toThrow(
         expect.objectContaining({ code: 'AGENT_ENTRY_FAILED' }),
       );
     });

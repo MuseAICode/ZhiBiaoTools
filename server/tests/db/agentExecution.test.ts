@@ -1,4 +1,4 @@
-// worker 端的 Agent 执行（src/agent/execution.ts、执行者 src/jobs/runner.ts，路线图第 8 步 8.6d1）对真实数据库与 Redis 的测试。
+// worker 端的 Agent 执行（src/agent/execution.ts、执行者 src/jobs/runner.ts，路线图第 8 步 8.6d1、8.6d2）对真实数据库与 Redis 的测试。
 // 沙箱用内存桩（每个沙箱一个内存中的 /workspace；取回经与真实 driver 相同的 toOutputArchive，放入按模板的规则校验），入口用脚本化的
 // 假入口（按请求返回协议结果，可以改写工作区、写失败报告、改任务上限，模拟“完全听从注入”的 Agent 与说谎的入口）：
 // 1. 首次执行：按登记的模板建沙箱，令牌只经标准输入传入且在执行中有效，提示词前写下阶段，会话文件名延续到下一条提示词；
@@ -8,7 +8,10 @@
 //    时限；模型调用失败按固定原因重试，用完后失败；入口输出中的文字不进失败说明；
 // 4. 检查点与续跑：checkpoint 中有会话、阶段、已发出的阶段、受保护文件的登记与任务状态；暂停后继续时放入快照、续接会话、
 //    取回原件，新令牌与旧令牌不同；快照不在时失败；超出存储配额时暂停为 storage_quota；
-// 5. checkpoint 的形状检查与任务类型登记的模板。
+// 5. checkpoint 的形状检查与任务类型登记的模板；
+// 6. 阶段交接压缩（8.6d2）：压缩请求的字段、压缩期间业务工具清空、成功 / 无需压缩时清除登记；可选压缩失败按原上下文继续、
+//    该阶段要求发出后清除；必须的压缩失败、余额不足按数据库中的事实；压缩中被暂停时续跑在该阶段要求发出前补做；
+//    回复全文从会话文件取回（超过入口结果的 16 KiB），会话文件被改坏时为 null。
 import { randomUUID } from 'node:crypto';
 import { Readable } from 'node:stream';
 import type { Redis } from 'ioredis';
@@ -16,6 +19,7 @@ import type { Kysely } from 'kysely';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { AGENT_TASK_LIMITS } from '../../src/agent/budget.ts';
 import {
+  AGENT_COMPACTION_FAILED_CODE,
   AGENT_PROMPT_TURN_LIMIT_CODE,
   AGENT_SESSION_INVALID_CODE,
   AGENT_SUBMISSION_FAILED_CODE,
@@ -105,7 +109,7 @@ interface EntryCall {
 }
 
 /** 假入口的返回：协议结果（ok 时自动写会话文件），或直接给出 exec 的结果（模拟不符合协议的入口）。 */
-type EntryReply = { ok: true; turns?: number } | { ok: false; code: string } | { exec: SandboxExecResult } | { throw: unknown };
+type EntryReply = { ok: true; turns?: number; text?: string; compacted?: boolean } | { ok: false; code: string } | { exec: SandboxExecResult } | { throw: unknown };
 type EntryScript = (call: EntryCall, index: number) => Promise<EntryReply> | EntryReply;
 
 function sessionName(): string {
@@ -160,10 +164,18 @@ function fakeDriver() {
       if ('throw' in reply) throw reply.throw;
       if ('exec' in reply) return reply.exec;
       if (!reply.ok) return execResult(`${JSON.stringify({ version: 1, ok: false, error: { code: reply.code, message: SECRET_TEXT } })}\n`, 1);
+      const append = (file: string, entry: unknown) => ws.set(file, Buffer.concat([ws.get(file) ?? Buffer.alloc(0), Buffer.from(`${JSON.stringify(entry)}\n`)]));
+      if (request.action === 'compact') {
+        // 与 Pi 相同：压缩追加到同一个会话文件。
+        const compacted = reply.compacted ?? true;
+        if (compacted) append(`pi-sessions/${request.session}`, { type: 'compaction', summary: '摘要' });
+        return execResult(`${JSON.stringify({ version: 1, ok: true, action: 'compact', session: request.session, compacted })}\n`);
+      }
       let session = request.session as string | null;
       if (session === null) session = sessionName();
       const file = `pi-sessions/${session}`;
-      ws.set(file, Buffer.concat([ws.get(file) ?? Buffer.alloc(0), Buffer.from(`${JSON.stringify({ prompt: request.prompt })}\n`)]));
+      append(file, { type: 'message', message: { role: 'user', content: [{ type: 'text', text: request.prompt }] } });
+      append(file, { type: 'message', message: { role: 'assistant', content: [{ type: 'text', text: reply.text ?? '完成' }] } });
       return execResult(`${JSON.stringify({ version: 1, ok: true, action: 'prompt', session, turns: reply.turns ?? 1, stopReason: 'stop' })}\n`);
     },
     async copyOut() {
@@ -775,14 +787,220 @@ describe('检查点与续跑', () => {
   });
 });
 
-describe('checkpoint 的形状与登记', () => {
-  const base = { version: 1, session: null, stage: null, stageIndex: 0, promptedStage: null, baseline: { version: 1, groups: {} } };
+describe('阶段交接压缩与回复全文（8.6d2）', () => {
+  const COMPACTION = { stage: 'content', instructions: '请用简体中文总结，供下一阶段「正文生成」继续使用。' } as const;
 
-  it('没有 agent 键时为首次执行；合法的现场原样读出', () => {
+  it('压缩：请求带会话、指令与模型上限，压缩期间业务工具清空；成功与无需压缩都清除登记；还没有会话时不执行入口', async () => {
+    const { dispatcher, logs } = await startRunner();
+    const member = await newMember();
+    const statuses: unknown[] = [];
+    steps = [async (run) => {
+      statuses.push(await run.compact(COMPACTION));
+      await run.prompt(PROMPT);
+      statuses.push(await run.compact(COMPACTION));
+      statuses.push(run.compactionPending);
+      fake.state.script = (call) => ({ ok: true, compacted: call.request.action !== 'compact' });
+      statuses.push(await run.compact({ ...COMPACTION, optional: true }));
+      statuses.push(run.compactionPending);
+      await run.prompt({ stage: 'content', prompt: '生成正文', tools: ['read', 'ask-user'] });
+    }];
+    const { job } = await enqueue(member, dispatcher);
+    await waitStatus(job.id, 'succeeded', '任务成功');
+    expect(statuses).toEqual(['noop', 'compacted', null, 'noop', null]);
+    const calls = fake.state.calls;
+    expect(calls.map((call) => call.request.action)).toEqual(['prompt', 'compact', 'compact', 'prompt']);
+    const session = calls[0]!.request.session ?? calls[1]!.request.session;
+    expect(calls[1]!.request).toEqual({ version: 1, action: 'compact', session, instructions: COMPACTION.instructions, model: { contextWindow: 128_000, maxOutputTokens: 8_192 } });
+    expect(calls[1]!.tokenValid).toBe(true);
+    expect(calls[1]!.scope).toEqual([]);
+    expect(calls[3]!.scope).toEqual(['ask-user']);
+    expect(calls[3]!.request.session).toBe(session);
+    const messages = logs.entries.map((entry) => entry.msg);
+    expect(messages).not.toContain(SECRET_TEXT);
+    const events = (await listJobEvents(appDb, member.context, job.id, 100)).map((event) => event.message);
+    expect(events.filter((message) => message === 'Agent 上下文压缩完成')).toHaveLength(1);
+    expect(events.filter((message) => message === '当前上下文无需压缩，继续执行下一阶段')).toHaveLength(2);
+  });
+
+  it('可选压缩失败（模型调用失败、入口内部错误）：按原上下文继续、登记保留；该阶段的要求发出后清除', async () => {
+    const { dispatcher } = await startRunner();
+    const member = await newMember();
+    const seen: unknown[] = [];
+    steps = [async (run) => {
+      await run.prompt(PROMPT);
+      for (const code of ['MODEL_FAILED', 'INTERNAL', 'GATEWAY_UNAVAILABLE']) {
+        fake.state.script = (call) => (call.request.action === 'compact' ? { ok: false, code } : { ok: true });
+        seen.push(await run.compact({ ...COMPACTION, optional: true }));
+      }
+      seen.push(run.compactionPending);
+      await run.prompt({ stage: 'content', prompt: '生成正文', tools: ['read'] });
+      seen.push(run.compactionPending);
+    }];
+    const { job } = await enqueue(member, dispatcher);
+    await waitStatus(job.id, 'succeeded', '任务成功');
+    expect(seen).toEqual(['failed', 'failed', 'failed', { stage: 'content', instructions: COMPACTION.instructions, optional: true }, null]);
+    // 可选压缩不重试：每次只执行一次入口。
+    expect(fake.state.calls.map((call) => call.request.action)).toEqual(['prompt', 'compact', 'compact', 'compact', 'prompt']);
+    const events = (await listJobEvents(appDb, member.context, job.id, 100)).map((event) => event.message);
+    expect(events.filter((message) => message === '上下文压缩失败，按原上下文继续')).toHaveLength(3);
+    expect(events.filter((message) => message === '上下文压缩未完成，正在重新压缩')).toHaveLength(2);
+    expect(events.join('\n')).not.toContain(SECRET_TEXT);
+  });
+
+  it('必须的压缩失败：AGENT_COMPACTION_FAILED（说明不含入口的输出），沙箱不再使用', async () => {
+    const { dispatcher } = await startRunner();
+    const member = await newMember();
+    steps = [async (run) => {
+      await run.prompt(PROMPT);
+      fake.state.script = (call) => (call.request.action === 'compact' ? { ok: false, code: 'MODEL_FAILED' } : { ok: true });
+      await run.compact(COMPACTION).catch(() => {});
+      await run.prompt({ stage: 'content', prompt: '不应发出', tools: ['read'] });
+    }];
+    const { job } = await enqueue(member, dispatcher);
+    const row = await waitStatus(job.id, 'failed', '任务失败');
+    expect(row.error_code).toBe(AGENT_COMPACTION_FAILED_CODE);
+    expect(row.error_message).not.toContain(SECRET_TEXT);
+    expect(fake.state.calls.map((call) => call.request.action)).toEqual(['prompt', 'compact']);
+  });
+
+  it('压缩时达到费用上限、可用余额不足：按数据库中的事实暂停（可选压缩也一样，不按原上下文继续）', async () => {
+    const { dispatcher } = await startRunner();
+    const limited = await newMember();
+    steps = [async (run) => {
+      await run.prompt(PROMPT);
+      fake.state.script = async (call) => {
+        if (call.request.action !== 'compact') return { ok: true };
+        await superuser.updateTable('agent_job_budgets').set({ exhausted_reason: 'task_cost_limit' }).where('job_id', '=', fake.state.created.at(-1)!.jobId).execute();
+        return { ok: false, code: 'MODEL_FAILED' };
+      };
+      await run.compact({ ...COMPACTION, optional: true });
+      await run.prompt({ stage: 'content', prompt: '不应发出', tools: ['read'] });
+    }];
+    const first = await enqueue(limited, dispatcher);
+    expect((await waitStatus(first.job.id, 'paused', '任务暂停')).pause_reason).toBe('task_cost_limit');
+    expect(fake.state.calls.map((call) => call.request.action)).toEqual(['prompt', 'compact']);
+
+    const poor = await newMember(0n);
+    executions = 0;
+    fake.state.calls.length = 0;
+    fake.state.script = () => ({ ok: true });
+    steps = [async (run) => {
+      await run.prompt(PROMPT);
+      fake.state.script = (call) => (call.request.action === 'compact' ? { ok: false, code: 'MODEL_FAILED' } : { ok: true });
+      await run.compact({ ...COMPACTION, optional: true });
+      await run.prompt({ stage: 'content', prompt: '不应发出', tools: ['read'] });
+    }];
+    const second = await enqueue(poor, dispatcher);
+    expect((await waitStatus(second.job.id, 'paused', '任务暂停')).pause_reason).toBe('insufficient_balance');
+    expect(fake.state.calls.map((call) => call.request.action)).toEqual(['prompt', 'compact']);
+  });
+
+  it('压缩中被暂停（登记后先保存检查点）：续跑时在该阶段要求发出前补做压缩，之后清除登记', async () => {
+    const { dispatcher } = await startRunner();
+    const member = await newMember();
+    const resumed: unknown[] = [];
+    steps = [
+      async (run, context) => {
+        await run.prompt(PROMPT);
+        fake.state.script = async (call) => {
+          if (call.request.action !== 'compact') return { ok: true };
+          await requestPause(appDb, member.context, context.jobId);
+          return { ok: false, code: 'RUN_ENDED' };
+        };
+        await run.compact({ ...COMPACTION, optional: true, checkpoint: { task: { step: 'compacting' } } });
+      },
+      async (run) => {
+        resumed.push(run.compactionPending, run.wasPrompted('content'), run.taskCheckpoint);
+        await run.prompt({ stage: 'content', prompt: '生成正文', tools: ['read'] });
+        resumed.push(run.compactionPending);
+        // 补做只在续跑后的第一条提示词之前检查一次。
+        await run.prompt({ stage: 'content', prompt: '再检查一遍', tools: ['read'] });
+      },
+    ];
+    const { job } = await enqueue(member, dispatcher);
+    const paused = await waitStatus(job.id, 'paused', '任务暂停');
+    expect(paused.checkpoint).toMatchObject({
+      agent: { stage: 'outline', promptedStage: 'outline', compactionPending: { stage: 'content', instructions: COMPACTION.instructions, optional: true } },
+      task: { step: 'compacting' },
+    });
+    const before = fake.state.calls.length;
+    fake.state.script = () => ({ ok: true });
+    await requestResume(appDb, member.context, job.id);
+    await dispatcher.dispatch({ id: job.id, orgId: member.orgId, type: 'test-agent-exec', queue: 'agent' });
+    await waitStatus(job.id, 'succeeded', '续跑后成功');
+    expect(resumed).toEqual([{ stage: 'content', instructions: COMPACTION.instructions, optional: true }, false, { step: 'compacting' }, null]);
+    const after = fake.state.calls.slice(before);
+    expect(after.map((call) => call.request.action)).toEqual(['compact', 'prompt', 'prompt']);
+    expect(after[0]!.request.session).toBe(fake.state.calls[0]!.request.session ?? after[1]!.request.session);
+  });
+
+  it('续跑时待补压缩的阶段已发出过要求、或第一条提示词属于其他阶段：不补做', async () => {
+    const { dispatcher } = await startRunner();
+    const member = await newMember();
+    steps = [
+      async (run, context) => {
+        await run.prompt(PROMPT);
+        fake.state.script = (call) => (call.request.action === 'compact' ? { ok: false, code: 'MODEL_FAILED' } : { ok: true });
+        expect(await run.compact({ ...COMPACTION, stage: 'review', optional: true })).toBe('failed');
+        await run.checkpoint({ step: 1 });
+        await requestPause(appDb, member.context, context.jobId);
+        fake.state.script = () => ({ ok: false, code: 'RUN_ENDED' });
+        await run.prompt(PROMPT);
+      },
+      async (run) => {
+        expect(run.compactionPending).toMatchObject({ stage: 'review' });
+        await run.prompt({ ...PROMPT, prompt: '继续之前的任务' });
+        await run.prompt({ stage: 'review', prompt: '检查目录', tools: ['read'] });
+      },
+    ];
+    const { job } = await enqueue(member, dispatcher);
+    await waitStatus(job.id, 'paused', '任务暂停');
+    const before = fake.state.calls.length;
+    fake.state.script = () => ({ ok: true });
+    await requestResume(appDb, member.context, job.id);
+    await dispatcher.dispatch({ id: job.id, orgId: member.orgId, type: 'test-agent-exec', queue: 'agent' });
+    await waitStatus(job.id, 'succeeded', '续跑后成功');
+    expect(fake.state.calls.slice(before).map((call) => call.request.action)).toEqual(['prompt', 'prompt']);
+  });
+
+  it('回复全文从会话文件取回（超过入口结果的 16 KiB）；还没有会话、会话文件被改坏或不存在时为 null；上限不合法是程序错误', async () => {
+    const { dispatcher } = await startRunner();
+    const member = await newMember();
+    const long = `${'目录已调整。'.repeat(4_000)}完`;
+    const seen: unknown[] = [];
+    steps = [async (run) => {
+      seen.push(await run.assistantText());
+      fake.state.script = () => ({ ok: true, text: long });
+      await run.prompt(PROMPT);
+      seen.push(await run.assistantText());
+      seen.push(await run.assistantText({ maxChars: 6 }));
+      await expect(run.assistantText({ maxChars: 0 })).rejects.toBeInstanceOf(TypeError);
+      const ws = fake.state.workspaces.get(run.sandbox.id)!;
+      const file = `pi-sessions/${run.session}`;
+      ws.set(file, Buffer.concat([ws.get(file)!, Buffer.from('{"type":\n')]));
+      seen.push(await run.assistantText());
+      ws.delete(file);
+      seen.push(await run.assistantText());
+    }];
+    const { job } = await enqueue(member, dispatcher);
+    await waitStatus(job.id, 'succeeded', '任务成功');
+    expect(Buffer.byteLength(long)).toBeGreaterThan(16 * 1024);
+    expect(seen).toEqual([null, { text: long, truncated: false }, { text: '目录已调整。', truncated: true }, null, null]);
+  });
+});
+
+describe('checkpoint 的形状与登记', () => {
+  const base = { version: 1, session: null, stage: null, stageIndex: 0, promptedStage: null, compactionPending: null, baseline: { version: 1, groups: {} } };
+  const pending = { stage: 'content', instructions: '总结已完成的阶段', optional: true };
+
+  it('没有 agent 键时为首次执行；合法的现场原样读出；8.6d1 写下的现场（没有待补压缩）按 null 读出', () => {
     expect(parseAgentRunCheckpoint(null)).toBeNull();
     expect(parseAgentRunCheckpoint({ step: 1 })).toBeNull();
     expect(parseAgentRunCheckpoint({ agent: base, task: { a: 1 } })).toEqual({ agent: base, task: { a: 1 } });
     expect(parseAgentRunCheckpoint({ agent: base })).toEqual({ agent: base, task: null });
+    expect(parseAgentRunCheckpoint({ agent: { ...base, compactionPending: pending } })).toEqual({ agent: { ...base, compactionPending: pending }, task: null });
+    const { compactionPending: _omitted, ...legacy } = base;
+    expect(parseAgentRunCheckpoint({ agent: legacy })).toEqual({ agent: base, task: null });
   });
 
   it.each([
@@ -794,6 +1012,12 @@ describe('checkpoint 的形状与登记', () => {
     ['阶段序号不是整数', { agent: { ...base, stageIndex: 1.5 } }],
     ['已发出的阶段不合法', { agent: { ...base, promptedStage: 3 } }],
     ['没有受保护文件的登记', { agent: { ...base, baseline: null } }],
+    ['待补压缩不是对象', { agent: { ...base, compactionPending: 'content' } }],
+    ['待补压缩的阶段名不合法', { agent: { ...base, compactionPending: { ...pending, stage: '../x' } } }],
+    ['待补压缩的指令为空', { agent: { ...base, compactionPending: { ...pending, instructions: ' ' } } }],
+    ['待补压缩的指令过长', { agent: { ...base, compactionPending: { ...pending, instructions: 'x'.repeat(16 * 1024 + 1) } } }],
+    ['待补压缩的 optional 不是布尔值', { agent: { ...base, compactionPending: { ...pending, optional: 'yes' } } }],
+    ['待补压缩多余字段', { agent: { ...base, compactionPending: { ...pending, session: 'x' } } }],
     ['任务状态不是对象', { agent: base, task: 'x' }],
   ])('不合法：%s', (_name, checkpoint) => {
     expect(() => parseAgentRunCheckpoint(checkpoint as Record<string, unknown>)).toThrow(TypeError);
