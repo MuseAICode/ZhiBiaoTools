@@ -8,12 +8,15 @@
 //   rejections 是本次执行被拒绝的次数（每次加 1）：执行者在执行入口之前读出次数，失败后只采信这之后的拒绝，之前的提示词中的
 //   拒绝不影响本条提示词；
 // - 费用上限（TASK_COST_LIMIT）与轮数上限仍只记在 agent_job_budgets.exhausted_reason（8.3a），不在这里重复；
+// - jobs.pause_reason 新增 model_not_configured、model_unavailable（#98 确认：与余额不足一致，暂停而不是失败；用户或管理员在设置中
+//   选择可用的模型后经普通的“继续”从上一个检查点续跑）；
 // - 写入与更新只能为本组织 running、run_id 相符且登记了上限的 Agent 任务进行（RLS）：旧执行的行不能再改；应用角色只能写入
 //   org_id、job_id、run_id、reason 与更新 reason、rejections、updated_at；没有 DELETE 授权；随任务记录删除。
 //
 // 不改已有表的 RLS 策略，不新增数据库角色。
 import { sql, type Kysely, type RawBuilder } from 'kysely';
 import { APP_ROLE } from '../roles.ts';
+import { JOB_PAUSE_REASONS as JOB_PAUSE_REASONS_0041 } from './0041_job_pause_storage_quota.ts';
 
 async function run(db: Kysely<unknown>, statements: readonly RawBuilder<unknown>[]): Promise<void> {
   for (const statement of statements) await statement.execute(db);
@@ -23,6 +26,19 @@ const app = sql.id(APP_ROLE);
 
 /** 记下的拒绝原因。 */
 export const AGENT_MODEL_REJECTION_REASONS = ['insufficient_balance', 'model_not_configured', 'model_unavailable'] as const;
+
+/** 模型不可用而暂停的原因（与拒绝原因同名）。 */
+export const MODEL_PAUSE_REASONS = ['model_not_configured', 'model_unavailable'] as const;
+/** 暂停原因：0041 的六个加上没有选择模型、所选模型不可用。 */
+export const JOB_PAUSE_REASONS = [...JOB_PAUSE_REASONS_0041, ...MODEL_PAUSE_REASONS] as const;
+
+function list(values: readonly string[]): RawBuilder<unknown> {
+  return sql.join(values.map((value) => sql.lit(value)));
+}
+
+function pauseReasonCheck(reasons: readonly string[]): RawBuilder<unknown> {
+  return sql`ALTER TABLE jobs ADD CONSTRAINT jobs_pause_reason_check CHECK (pause_reason IN (${list(reasons)}))`;
+}
 
 export async function up(db: Kysely<unknown>): Promise<void> {
   await run(db, [
@@ -58,9 +74,20 @@ export async function up(db: Kysely<unknown>): Promise<void> {
     sql`GRANT SELECT ON agent_model_rejections TO ${app}`,
     sql`GRANT INSERT (org_id, job_id, run_id, reason) ON agent_model_rejections TO ${app}`,
     sql`GRANT UPDATE (reason, rejections, updated_at) ON agent_model_rejections TO ${app}`,
+
+    sql`ALTER TABLE jobs DROP CONSTRAINT jobs_pause_reason_check`,
+    pauseReasonCheck(JOB_PAUSE_REASONS),
   ]);
 }
 
 export async function down(db: Kysely<unknown>): Promise<void> {
-  await run(db, [sql`DROP TABLE agent_model_rejections`]);
+  // 因模型不可用暂停的任务回滚后按手动暂停处理（仍是 paused，可以继续）。做法同 0036、0039、0041 的回滚。
+  await run(db, [
+    sql`ALTER TABLE jobs DROP CONSTRAINT jobs_pause_reason_check`,
+    sql`ALTER TABLE jobs NO FORCE ROW LEVEL SECURITY`,
+    sql`UPDATE jobs SET pause_reason = NULL WHERE pause_reason IN (${list(MODEL_PAUSE_REASONS)})`,
+    sql`ALTER TABLE jobs FORCE ROW LEVEL SECURITY`,
+    pauseReasonCheck(JOB_PAUSE_REASONS_0041),
+    sql`DROP TABLE agent_model_rejections`,
+  ]);
 }

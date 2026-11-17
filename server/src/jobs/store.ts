@@ -15,6 +15,8 @@
 //   当日 Agent 运行时长用完时 queued ──认领──> paused、running ──续租时发现──> paused（pause_reason = agent_daily_runtime），
 //   次日经普通的“继续”回到 queued；入队与继续时已用完的拒绝（429）
 //   running ──保存 Agent 工作区快照时超出组织存储配额──> paused（pause_reason = storage_quota，8.5c）；用户删除文件后经普通的“继续”回到 queued
+//   running ──Agent 的模型调用因没有选择模型 / 所选模型不可用被拒绝──> paused（pause_reason = model_not_configured / model_unavailable，
+//     8.6d3）；在设置中选择可用的模型后经普通的“继续”回到 queued
 //
 // 用户发起的操作（新建、查询、取消、暂停、继续）经 withTenant；worker 的系统操作（认领、续租、结束、对账）经 withOrgContext，
 // 只设置组织、不代表任何用户。worker 的每一次写入都带 run_id 条件：租约被收回后，原执行者的写入只影响 0 行。
@@ -80,7 +82,8 @@ export interface JobRecord {
   attempt: number;
   /**
    * 暂停原因：insufficient_balance（运行中余额不足，6.4）、task_cost_limit / task_turn_limit（达到任务上限，8.3a）、agent_daily_runtime（8.3d）、
-   * waiting_for_user（8.4c1）、storage_quota（保存工作区快照时存储配额已满，8.5c）；用户手动暂停时为 null。
+   * waiting_for_user（8.4c1）、storage_quota（保存工作区快照时存储配额已满，8.5c）、model_not_configured / model_unavailable
+   * （Agent 的模型调用因没有选择模型 / 所选模型不可用被拒绝，8.6d3）；用户手动暂停时为 null。
    */
   pauseReason: JobPauseReason | null;
   /** 本任务已扣费的合计（计费单位），在结算的同一事务中累加。 */
@@ -797,6 +800,10 @@ export function isTaskLimitReason(reason: JobPauseReason | null): reason is Agen
 const AGENT_WAITING_FOR_USER_PAUSE_MESSAGE = 'Agent 的问题长时间未回答，任务已暂停，回答后会自动继续';
 
 const STORAGE_QUOTA_PAUSE_MESSAGE = '组织存储空间已满，无法保存 Agent 的工作区，任务已暂停，请删除不需要的文件后继续';
+const MODEL_PAUSE_MESSAGES = {
+  model_not_configured: '尚未选择文本模型，任务已暂停，请在设置中选择模型后继续',
+  model_unavailable: '所选模型暂时不能使用（未登记、已停用、未定价或服务未配置），任务已暂停，请在设置中选择可用的模型后继续',
+} as const;
 
 const AGENT_DAILY_RUNTIME_PAUSE_MESSAGE = '本组织今日的 Agent 运行时长已用完，任务已暂停，明日可继续';
 
@@ -819,7 +826,9 @@ export type RunOutcome =
   /** 等待用户回答超时（8.4c1）：暂停为 paused / waiting_for_user，用户回答后自动继续；问题已被回答时按中止收尾（回到 queued）。 */
   | { kind: 'waiting-for-user' }
   /** 保存 Agent 工作区快照时超出组织存储配额（8.5c）：暂停为 paused / storage_quota，已请求取消时仍为 cancelled。 */
-  | { kind: 'storage-quota' };
+  | { kind: 'storage-quota' }
+  /** Agent 的模型调用因没有选择模型 / 所选模型不可用被拒绝（8.6d3）：暂停为 paused / 该原因，已请求取消时仍为 cancelled。 */
+  | { kind: 'model-unavailable'; reason: 'model_not_configured' | 'model_unavailable' };
 
 /**
  * 结束一次执行。成功即 succeeded（即使期间请求了取消，工作已完成）；失败即 failed，除非已请求取消（cancelled）；
@@ -895,6 +904,16 @@ export async function finishRun(db: Kysely<Database>, run: RunRef, outcome: RunO
         .returningAll()
         .executeTakeFirstOrThrow();
       await appendEvent(trx, toRecord(updated), 'paused', STORAGE_QUOTA_PAUSE_MESSAGE, { reason: STORAGE_QUOTA_PAUSE_REASON });
+      return 'paused';
+    }
+    if (outcome.kind === 'model-unavailable' && row.status === 'running') {
+      const updated = await trx
+        .updateTable('jobs')
+        .set({ status: 'paused', pause_reason: outcome.reason, pause_requested: false, run_id: null, lease_expires_at: null })
+        .where('id', '=', row.id)
+        .returningAll()
+        .executeTakeFirstOrThrow();
+      await appendEvent(trx, toRecord(updated), 'paused', MODEL_PAUSE_MESSAGES[outcome.reason], { reason: outcome.reason });
       return 'paused';
     }
     if (outcome.kind === 'agent-runtime-limit' && row.status === 'running') {

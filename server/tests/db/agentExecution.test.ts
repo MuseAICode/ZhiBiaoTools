@@ -25,8 +25,6 @@ import {
   AGENT_SUBMISSION_FAILED_CODE,
   AGENT_TIME_LIMIT_CODE,
   AGENT_MODEL_FAILED_CODE,
-  AGENT_MODEL_NOT_CONFIGURED_CODE,
-  AGENT_MODEL_UNAVAILABLE_CODE,
   AGENT_UNAVAILABLE_CODE,
   AGENT_SANDBOX_FAILED_CODE,
   agentRunWallClockMs,
@@ -661,27 +659,69 @@ describe('失败按数据库中的事实判断', () => {
     expect(retried).toBe(true);
   });
 
-  it('路由记下组织没有选择模型 / 所选模型不可用（8.6d3）：按固定说明失败、不重试，说明不含入口的输出', async () => {
+  it('路由记下组织没有选择模型 / 所选模型不可用（8.6d3，#98 确认）：与余额不足一致暂停、写明原因、不重试；在设置中选择可用模型后继续，从 checkpoint 续跑', async () => {
     const cases: Array<[AgentModelRejectionReason, string]> = [
-      ['model_not_configured', AGENT_MODEL_NOT_CONFIGURED_CODE],
-      ['model_unavailable', AGENT_MODEL_UNAVAILABLE_CODE],
+      ['model_not_configured', '尚未选择文本模型，任务已暂停，请在设置中选择模型后继续'],
+      ['model_unavailable', '所选模型暂时不能使用（未登记、已停用、未定价或服务未配置），任务已暂停，请在设置中选择可用的模型后继续'],
     ];
-    for (const [reason, code] of cases) {
+    for (const [reason, message] of cases) {
+      const { dispatcher } = await startRunner();
+      const member = await newMember();
       fake.state.calls.length = 0;
       executions = 0;
-      const { job } = await runFailing(async () => {
-        await rejectModelCall(reason);
-        return { ok: false, code: 'MODEL_FAILED' };
-      }, {
-        step: async (run) => {
+      let resumed: { resumed: boolean; task: unknown } | null = null;
+      fake.state.script = () => ({ ok: true });
+      steps = [
+        async (run) => {
+          await run.prompt(PROMPT);
+          await run.checkpoint({ step: 1 });
+          fake.state.script = async () => {
+            await rejectModelCall(reason);
+            return { ok: false, code: 'MODEL_FAILED' };
+          };
           await run.runStage({ ...PROMPT, outputFile: '结果/目录.json', maxExecutionRetries: 3, validate: async () => ({ value: null, issues: [] }) });
         },
-      });
-      const row = await waitStatus(job.id, 'failed', '任务失败');
-      expect(row.error_code).toBe(code);
-      expect(row.error_message).not.toContain(SECRET_TEXT);
-      expect(fake.state.calls).toHaveLength(1);
+        async (run) => {
+          resumed = { resumed: run.resumed, task: run.taskCheckpoint };
+          await run.prompt({ ...PROMPT, prompt: '继续之前的任务' });
+        },
+      ];
+      const { job } = await enqueue(member, dispatcher);
+      const paused = await waitStatus(job.id, 'paused', '任务暂停');
+      expect(paused).toMatchObject({ pause_reason: reason, error_code: null, checkpoint: { task: { step: 1 } } });
+      // 不重试：第一条提示词与被拒绝的一条。
+      expect(fake.state.calls).toHaveLength(2);
+      const event = (await listJobEvents(appDb, member.context, job.id, 100)).find((item) => item.kind === 'paused');
+      expect(event?.message).toBe(message);
+      expect(event?.message).not.toContain(SECRET_TEXT);
+
+      // 用户或管理员在设置中选择可用的模型后经普通的“继续”续跑（模型调用不再被拒绝）。
+      fake.state.script = () => ({ ok: true });
+      expect((await requestResume(appDb, member.context, job.id)).dispatch).toBe(true);
+      await dispatcher.dispatch({ id: job.id, orgId: member.orgId, type: 'test-agent-exec', queue: 'agent' });
+      await waitStatus(job.id, 'succeeded', '续跑后成功');
+      expect(resumed).toEqual({ resumed: true, task: { step: 1 } });
+      expect(fake.state.calls.at(-1)!.request.prompt).toBe('继续之前的任务');
     }
+  });
+
+  it('压缩时路由记下所选模型不可用（8.6d3）：可选压缩也暂停为 model_unavailable，不按原上下文继续', async () => {
+    const { dispatcher } = await startRunner();
+    const member = await newMember();
+    fake.state.script = () => ({ ok: true });
+    steps = [async (run) => {
+      await run.prompt(PROMPT);
+      fake.state.script = async (call) => {
+        if (call.request.action !== 'compact') return { ok: true };
+        await rejectModelCall('model_unavailable');
+        return { ok: false, code: 'MODEL_FAILED' };
+      };
+      await run.compact({ stage: 'content', instructions: '请总结，供下一阶段继续使用。', optional: true });
+      await run.prompt({ stage: 'content', prompt: '不应发出', tools: ['read'] });
+    }];
+    const { job } = await enqueue(member, dispatcher);
+    expect((await waitStatus(job.id, 'paused', '任务暂停')).pause_reason).toBe('model_unavailable');
+    expect(fake.state.calls.map((call) => call.request.action)).toEqual(['prompt', 'compact']);
   });
 
   it('模型调用失败、余额充足：按固定原因重试（不含入口的说明），重试用完后以 AGENT_MODEL_FAILED 失败', async () => {

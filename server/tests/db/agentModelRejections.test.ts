@@ -4,7 +4,8 @@
 //    Agent 任务、其他组织的上下文时不写入；
 // 2. agentModelRejectionSince：只采信 mark 之后的拒绝；不同执行互不影响；
 // 3. agentModelRejectionReason：错误代码到原因的对应，其余错误不记；
-// 4. RLS、授权与 CHECK；随任务删除；回滚 0043。
+// 4. RLS、授权与 CHECK；随任务删除；jobs.pause_reason 接受 model_not_configured / model_unavailable（#98 确认的暂停）；
+//    回滚 0043（因模型不可用暂停的任务改为普通暂停）。
 import { randomUUID } from 'node:crypto';
 import { sql, type Kysely } from 'kysely';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -205,8 +206,36 @@ describe('RLS、授权与约束', () => {
   });
 });
 
+describe('暂停原因', () => {
+  it('jobs.pause_reason 接受 model_not_configured、model_unavailable，其他值仍被拒绝', async () => {
+    const member = await newMember();
+    const run = await runningJob(member);
+    for (const reason of ['model_not_configured', 'model_unavailable']) {
+      await superuser.updateTable('jobs').set({ status: 'paused', pause_reason: reason, run_id: null, lease_expires_at: null }).where('id', '=', run.jobId).execute();
+    }
+    await expect(superuser.updateTable('jobs').set({ pause_reason: 'model_missing' }).where('id', '=', run.jobId).execute()).rejects.toThrow(/jobs_pause_reason_check/);
+  });
+
+  it('finishRun：model-unavailable 暂停为该原因并写明说明；已请求取消时仍为取消', async () => {
+    const member = await newMember();
+    const run = await runningJob(member);
+    expect(await finishRun(appDb, run, { kind: 'model-unavailable', reason: 'model_not_configured' }, true)).toBe('paused');
+    const row = await superuser.selectFrom('jobs').select(['status', 'pause_reason', 'checkpoint']).where('id', '=', run.jobId).executeTakeFirstOrThrow();
+    expect(row).toMatchObject({ status: 'paused', pause_reason: 'model_not_configured' });
+    const event = await superuser.selectFrom('job_events').select(['message', 'data']).where('job_id', '=', run.jobId).where('kind', '=', 'paused').executeTakeFirstOrThrow();
+    expect(event).toMatchObject({ message: '尚未选择文本模型，任务已暂停，请在设置中选择模型后继续', data: { reason: 'model_not_configured' } });
+
+    const cancelled = await runningJob(member);
+    await superuser.updateTable('jobs').set({ status: 'cancelling' }).where('id', '=', cancelled.jobId).execute();
+    expect(await finishRun(appDb, cancelled, { kind: 'model-unavailable', reason: 'model_unavailable' }, true)).toBe('cancelled');
+  });
+});
+
 describe('回滚 0043', () => {
-  it('删除拒绝原因表，之后再升级成功', async () => {
+  it('删除拒绝原因表，因模型不可用暂停的任务改为普通暂停，之后再升级成功', async () => {
+    const member = await newMember();
+    const run = await runningJob(member);
+    expect(await finishRun(appDb, run, { kind: 'model-unavailable', reason: 'model_unavailable' }, true)).toBe('paused');
     await database.destroy();
     const owner = connect(testDb.ownerConfig);
     try {
@@ -215,6 +244,7 @@ describe('回滚 0043', () => {
       expect(down.results?.map((result) => result.migrationName)).toEqual(['0043_agent_model_rejections']);
       const { rows: tables } = await sql<{ name: string | null }>`SELECT to_regclass('agent_model_rejections')::text AS name`.execute(superuser);
       expect(tables[0]!.name).toBeNull();
+      expect(await superuser.selectFrom('jobs').select(['status', 'pause_reason']).where('id', '=', run.jobId).executeTakeFirstOrThrow()).toEqual({ status: 'paused', pause_reason: null });
       expect((await migrateToLatest(owner)).error).toBeUndefined();
     } finally {
       await owner.destroy();

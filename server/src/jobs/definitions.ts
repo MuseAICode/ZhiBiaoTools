@@ -191,6 +191,20 @@ export class JobStorageQuotaError extends Error {
   }
 }
 
+/**
+ * Agent 沙箱中的模型调用被平台拒绝、原因是组织没有选择模型或所选模型不可用（8.6d3，#98 确认）：任务应立即退出，执行者把任务
+ * 暂停为 paused / model_not_configured 或 model_unavailable，用户或管理员在设置中选择可用的模型后经普通的“继续”从上一个检查点续跑。
+ */
+export class JobModelUnavailableError extends Error {
+  readonly reason: 'model_not_configured' | 'model_unavailable';
+
+  constructor(reason: 'model_not_configured' | 'model_unavailable', options?: ErrorOptions) {
+    super(reason === 'model_not_configured' ? 'organization has not selected a model' : 'selected model is unavailable', options);
+    this.name = 'JobModelUnavailableError';
+    this.reason = reason;
+  }
+}
+
 /** 租约已丢失（被对账收回或任务已被别人结束）：当前执行者的写入不再生效，应立即退出。 */
 export class JobInterruptedError extends Error {
   constructor() {

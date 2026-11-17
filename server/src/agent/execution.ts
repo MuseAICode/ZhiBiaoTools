@@ -26,6 +26,7 @@ import {
   JobBalanceExhaustedError,
   JobError,
   JobInterruptedError,
+  JobModelUnavailableError,
   JobStorageQuotaError,
   JobTaskLimitError,
   type JobContext,
@@ -76,8 +77,6 @@ export const AGENT_PROMPT_TURN_LIMIT_CODE = 'AGENT_PROMPT_TURN_LIMIT';
 export const AGENT_SESSION_INVALID_CODE = 'AGENT_SESSION_INVALID';
 export const AGENT_SUBMISSION_FAILED_CODE = 'AGENT_SUBMISSION_FAILED';
 export const AGENT_COMPACTION_FAILED_CODE = 'AGENT_COMPACTION_FAILED';
-export const AGENT_MODEL_NOT_CONFIGURED_CODE = 'AI_MODEL_NOT_CONFIGURED';
-export const AGENT_MODEL_UNAVAILABLE_CODE = 'AGENT_MODEL_UNAVAILABLE';
 
 const SANDBOX_FAILED_MESSAGE = 'Agent 沙箱执行失败，任务已停止，请稍后重新发起';
 const SESSION_MISSING_MESSAGE = '上次保存的 Agent 会话不可用，请重新发起任务';
@@ -86,9 +85,6 @@ const SESSION_INVALID_MESSAGE = 'Agent 会话不可用，任务已停止，请�
 const MODEL_FAILED_REASON = '模型调用失败';
 const GATEWAY_FAILED_REASON = '连接平台服务失败';
 const COMPACTION_FAILED_MESSAGE = 'Agent 上下文压缩失败，任务已停止，请稍后重新发起';
-/** 模型调用被平台拒绝（8.6d3）时的说明：与组织没有选择模型时其他任务的说明相同 / 所选模型暂时不能使用。 */
-const MODEL_NOT_CONFIGURED_MESSAGE = '尚未选择文本模型，请先在设置中选择模型';
-const MODEL_UNAVAILABLE_MESSAGE = '所选模型暂时不能使用，任务已停止，请稍后重新发起或在设置中更换模型';
 /** 可选压缩按原上下文继续的入口代码（判断完数据库中的事实之后）：模型调用失败、连不上平台入口、入口内部错误。 */
 const OPTIONAL_COMPACTION_TOLERATED: readonly AgentEntryErrorCode[] = ['MODEL_FAILED', 'GATEWAY_UNAVAILABLE', 'GATEWAY_FAILED', 'INTERNAL'];
 
@@ -492,7 +488,7 @@ async function openAgentRun(
 
     function assertUsable(): void {
       if (closed) throw new TypeError('Agent 沙箱已关闭');
-      if (broken) throw broken instanceof JobError || broken instanceof JobStorageQuotaError ? broken : new JobError(AGENT_SANDBOX_FAILED_CODE, SANDBOX_FAILED_MESSAGE, { cause: broken });
+      if (broken) throw broken instanceof JobError || broken instanceof JobStorageQuotaError || broken instanceof JobBalanceExhaustedError || broken instanceof JobModelUnavailableError ? broken : new JobError(AGENT_SANDBOX_FAILED_CODE, SANDBOX_FAILED_MESSAGE, { cause: broken });
       if (signal.aborted) throw new JobInterruptedError();
     }
 
@@ -525,14 +521,15 @@ async function openAgentRun(
       switch (code) {
         case 'MODEL_FAILED': {
           // 模型调用路由在本条提示词（或压缩）中记下的拒绝原因（8.6d3）：余额不足以冻结（含可用余额不低于 1 元、但不够一次冻结）
-          // 一律暂停（充值后从 checkpoint 续跑）；模型或服务商不可用时重试无用，按固定说明失败；没有记下时按模型调用失败重试。
-          switch (await agentModelRejectionSince(db, run, rejectionMark)) {
+          // 一律暂停（充值后从 checkpoint 续跑）；没有选择模型 / 所选模型不可用同样暂停（#98 确认，在设置中选择可用的模型后续跑）；
+          // 没有记下时按模型调用失败重试。
+          const rejected = await agentModelRejectionSince(db, run, rejectionMark);
+          switch (rejected) {
             case 'insufficient_balance':
               return new JobBalanceExhaustedError({ cause });
             case 'model_not_configured':
-              return new JobError(AGENT_MODEL_NOT_CONFIGURED_CODE, MODEL_NOT_CONFIGURED_MESSAGE, { cause });
             case 'model_unavailable':
-              return new JobError(AGENT_MODEL_UNAVAILABLE_CODE, MODEL_UNAVAILABLE_MESSAGE, { cause });
+              return new JobModelUnavailableError(rejected, { cause });
             case null:
               return new AgentPromptRetryableError(MODEL_FAILED_REASON, new JobError(AGENT_MODEL_FAILED_CODE, '模型调用失败，任务已停止，请稍后重新发起', { cause }));
           }
