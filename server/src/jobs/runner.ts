@@ -26,7 +26,8 @@
 // Agent 工作区快照（8.5c，src/agent/workspaceJob.ts）：登记了 agentWorkspace 的任务经 context.agentWorkspace 在检查点保存快照、
 // 续跑时放入；保存时超出组织存储配额，任务退出、暂停为 paused / storage_quota；任务成功完成后丢弃快照（登记 keepAfterSuccess 的除外）。
 // Agent 执行（8.6d1，src/agent/execution.ts）：agent 队列中工作区快照可用的任务另有 context.agent（沙箱、令牌、逐条提示词、
-// 提交校验与检查点）；任务抛出的 JobBalanceExhaustedError（沙箱中的模型调用余额不足）同样暂停为 insufficient_balance。
+// 提交校验与检查点）；任务抛出的 JobBalanceExhaustedError（沙箱中的模型调用余额不足）同样暂停为 insufficient_balance，
+// JobModelUnavailableError（没有选择模型 / 所选模型不可用，8.6d3）暂停为 model_not_configured / model_unavailable。
 import { randomUUID } from 'node:crypto';
 import { DelayedError, Worker, type Job, type RedisOptions as BullmqRedisOptions } from 'bullmq';
 import { Redis } from 'ioredis';
@@ -49,6 +50,7 @@ import {
   JobBalanceExhaustedError,
   JobError,
   JobInterruptedError,
+  JobModelUnavailableError,
   JobStorageQuotaError,
   JobTaskLimitError,
   maxAttemptsOf,
@@ -340,6 +342,9 @@ export function createJobRunner(options: JobRunnerOptions): JobRunner {
         outcome = { kind: 'insufficient-balance' };
       } else if (limitReached && !lost) {
         outcome = { kind: 'task-limit', reason: limitReached.reason };
+      } else if (error instanceof JobModelUnavailableError && !lost) {
+        // Agent 的模型调用因没有选择模型 / 所选模型不可用被拒绝（8.6d3）：暂停，在设置中选择可用的模型后继续。
+        outcome = { kind: 'model-unavailable', reason: error.reason };
       } else if ((storageQuotaExceeded || error instanceof JobStorageQuotaError) && !lost) {
         // 保存工作区快照时超出组织存储配额（8.5c）：暂停为 storage_quota，用户删除文件后继续。
         outcome = { kind: 'storage-quota' };

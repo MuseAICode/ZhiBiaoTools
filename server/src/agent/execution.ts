@@ -15,18 +15,18 @@
 // - close()：销毁沙箱、作废令牌（任务在 finally 中调用，withAgentRun 代为调用）。
 //
 // 入口的结果与失败代码都是沙箱的说法，不被采信：失败后按数据库中的事实判断原因（#92 登记）——本次执行的失败报告（8.4b）、任务的
-// 费用与轮数上限（8.3a）、任务是否仍在本次执行中、令牌是否已到期、组织的可用余额；只有这些都不能说明时，才按入口的代码决定
+// 费用与轮数上限（8.3a）、任务是否仍在本次执行中、令牌是否已到期，入口报告模型调用失败时再看模型调用路由在本条提示词（或压缩）
+// 中记下的拒绝原因（8.6d3，src/agent/modelRejections.ts：余额不足暂停、模型不可用失败）；只有这些都不能说明时，才按入口的代码决定
 // 是否重试（模型调用失败、连不上平台入口）或失败。给用户看的说明都是固定的文字，不含入口的输出、Agent 写出的内容与文件名。
 // 本次执行的墙钟（令牌有效期）在 worker 一侧累计执行：每次执行入口时只给剩余的时间，到期即以 AGENT_TIME_LIMIT 失败。
 import type { Kysely } from 'kysely';
-import { JOB_MIN_START_BALANCE } from '../db/migrations/0022_job_billing.ts';
 import type { Database } from '../db/schema.ts';
 import { withOrgContext, type TenantContext } from '../db/tenant.ts';
-import { getAvailableBalance } from '../billing/usage.ts';
 import {
   JobBalanceExhaustedError,
   JobError,
   JobInterruptedError,
+  JobModelUnavailableError,
   JobStorageQuotaError,
   JobTaskLimitError,
   type JobContext,
@@ -48,6 +48,7 @@ import {
   type AgentPromptTool,
 } from './entry.ts';
 import { AGENT_REPORTED_FAILURE_CODE, AGENT_REPORTED_FAILURE_FALLBACK_MESSAGE, findAgentFailureReport } from './failureReport.ts';
+import { agentModelRejectionMark, agentModelRejectionSince } from './modelRejections.ts';
 import {
   buildAgentExecutionRetryPrompt,
   buildAgentSubmissionRepairPrompt,
@@ -487,7 +488,7 @@ async function openAgentRun(
 
     function assertUsable(): void {
       if (closed) throw new TypeError('Agent 沙箱已关闭');
-      if (broken) throw broken instanceof JobError || broken instanceof JobStorageQuotaError ? broken : new JobError(AGENT_SANDBOX_FAILED_CODE, SANDBOX_FAILED_MESSAGE, { cause: broken });
+      if (broken) throw broken instanceof JobError || broken instanceof JobStorageQuotaError || broken instanceof JobBalanceExhaustedError || broken instanceof JobModelUnavailableError ? broken : new JobError(AGENT_SANDBOX_FAILED_CODE, SANDBOX_FAILED_MESSAGE, { cause: broken });
       if (signal.aborted) throw new JobInterruptedError();
     }
 
@@ -505,8 +506,11 @@ async function openAgentRun(
       await context.log(`已还原 ${restored.length} 个被改动的程序文件`, { count: restored.length, paths: restored.slice(0, 20) });
     }
 
-    /** 失败后按数据库中的事实判断原因（不采信入口的说法）。 */
-    async function explainFailure(code: AgentEntryErrorCode | null, cause: unknown, maxTurns: number, deadlinePassed: boolean): Promise<Error> {
+    /**
+     * 失败后按数据库中的事实判断原因（不采信入口的说法）。rejectionMark 是执行入口之前本次执行被拒绝的次数：只采信这之后
+     * 模型调用路由记下的拒绝。
+     */
+    async function explainFailure(code: AgentEntryErrorCode | null, cause: unknown, maxTurns: number, deadlinePassed: boolean, rejectionMark: number): Promise<Error> {
       if (signal.aborted) return new JobInterruptedError();
       const facts = await readRunFacts(db, run);
       // 失败报告：finishRun 按数据库中的报告以 AGENT_REPORTED_FAILURE 失败，原因取报告。
@@ -516,10 +520,19 @@ async function openAgentRun(
       if (deadlinePassed || Date.now() >= issued.expiresAt.getTime()) return timeLimitError(template);
       switch (code) {
         case 'MODEL_FAILED': {
-          // 余额不足以冻结：可用余额低于最低启动余额时按余额不足暂停（充值后从 checkpoint 续跑）。
-          const balance = await getAvailableBalance(db, tenant);
-          if (balance.available < JOB_MIN_START_BALANCE) return new JobBalanceExhaustedError({ cause });
-          return new AgentPromptRetryableError(MODEL_FAILED_REASON, new JobError(AGENT_MODEL_FAILED_CODE, '模型调用失败，任务已停止，请稍后重新发起', { cause }));
+          // 模型调用路由在本条提示词（或压缩）中记下的拒绝原因（8.6d3）：余额不足以冻结（含可用余额不低于 1 元、但不够一次冻结）
+          // 一律暂停（充值后从 checkpoint 续跑）；没有选择模型 / 所选模型不可用同样暂停（#98 确认，在设置中选择可用的模型后续跑）；
+          // 没有记下时按模型调用失败重试。
+          const rejected = await agentModelRejectionSince(db, run, rejectionMark);
+          switch (rejected) {
+            case 'insufficient_balance':
+              return new JobBalanceExhaustedError({ cause });
+            case 'model_not_configured':
+            case 'model_unavailable':
+              return new JobModelUnavailableError(rejected, { cause });
+            case null:
+              return new AgentPromptRetryableError(MODEL_FAILED_REASON, new JobError(AGENT_MODEL_FAILED_CODE, '模型调用失败，任务已停止，请稍后重新发起', { cause }));
+          }
         }
         case 'GATEWAY_UNAVAILABLE':
         case 'GATEWAY_FAILED':
@@ -559,6 +572,8 @@ async function openAgentRun(
       if (state.session !== null) state.promptedStage = input.stage;
       // 阶段要求发出后不再补做该阶段的交接压缩（与桌面版相同）。
       if (state.compactionPending?.stage === input.stage) state.compactionPending = null;
+      // 执行入口之前的拒绝次数：失败后只采信本条提示词中记下的拒绝（8.6d3）。
+      const rejectionMark = await agentModelRejectionMark(db, run);
       const deadline = AbortSignal.timeout(Math.max(1, issued.expiresAt.getTime() - Date.now()));
       const execSignal = AbortSignal.any([signal, deadline]);
       let result;
@@ -585,7 +600,7 @@ async function openAgentRun(
         if (error instanceof TypeError) throw error;
         // 沙箱操作失败（中止 exec 会终止整个沙箱）、入口超时或结果不符合协议：之后只能关闭。
         if (error instanceof SandboxError || (error instanceof JobError && error.code === AGENT_ENTRY_FAILED_CODE)) broken ??= error;
-        const explained = await explainFailure(null, error, maxTurns, deadline.aborted);
+        const explained = await explainFailure(null, error, maxTurns, deadline.aborted, rejectionMark);
         if (explained instanceof JobError && explained.code === AGENT_ENTRY_FAILED_CODE) {
           throw error instanceof SandboxError ? new JobError(AGENT_SANDBOX_FAILED_CODE, SANDBOX_FAILED_MESSAGE, { cause: error }) : error;
         }
@@ -593,7 +608,7 @@ async function openAgentRun(
       }
       if (!result.ok) {
         if (result.code === 'RUN_ENDED' && signal.aborted) throw new JobInterruptedError();
-        const explained = await explainFailure(result.code, new Error(`agent entry reported ${result.code}`), maxTurns, false);
+        const explained = await explainFailure(result.code, new Error(`agent entry reported ${result.code}`), maxTurns, false, rejectionMark);
         if (!(explained instanceof AgentPromptRetryableError)) broken ??= explained;
         throw explained;
       }
@@ -614,6 +629,7 @@ async function openAgentRun(
         return 'noop';
       }
       if (issued.expiresAt.getTime() - Date.now() <= 0) throw timeLimitError(template);
+      const rejectionMark = await agentModelRejectionMark(db, run);
       const deadline = AbortSignal.timeout(Math.max(1, issued.expiresAt.getTime() - Date.now()));
       const execSignal = AbortSignal.any([signal, deadline]);
       let result;
@@ -630,7 +646,7 @@ async function openAgentRun(
       } catch (error) {
         if (error instanceof TypeError) throw error;
         if (error instanceof SandboxError || (error instanceof JobError && error.code === AGENT_ENTRY_FAILED_CODE)) broken ??= error;
-        const explained = await explainFailure(null, error, 0, deadline.aborted);
+        const explained = await explainFailure(null, error, 0, deadline.aborted, rejectionMark);
         if (explained instanceof JobError && explained.code === AGENT_ENTRY_FAILED_CODE) {
           throw error instanceof SandboxError ? new JobError(AGENT_SANDBOX_FAILED_CODE, SANDBOX_FAILED_MESSAGE, { cause: error }) : error;
         }
@@ -643,7 +659,7 @@ async function openAgentRun(
         return result.compacted ? 'compacted' : 'noop';
       }
       if (result.code === 'RUN_ENDED' && signal.aborted) throw new JobInterruptedError();
-      const explained = await explainFailure(result.code, new Error(`agent entry reported ${result.code}`), 0, false);
+      const explained = await explainFailure(result.code, new Error(`agent entry reported ${result.code}`), 0, false, rejectionMark);
       // 数据库中的事实（中止、失败报告、上限、执行已结束、时限、余额不足）优先；之后才看是否可选。
       const tolerable = explained instanceof AgentPromptRetryableError || (explained instanceof JobError && explained.code === AGENT_ENTRY_FAILED_CODE && result.code === 'INTERNAL');
       if (tolerable && OPTIONAL_COMPACTION_TOLERATED.includes(result.code)) {

@@ -58,7 +58,7 @@ import type { TECHNICAL_PLAN_CONTENT_MODES } from './migrations/0019_technical_p
 import type { JOB_EVENT_KINDS, JOB_STATUSES } from './migrations/0021_jobs.ts';
 import type { AGENT_BUDGET_EXHAUSTED_REASONS } from './migrations/0033_agent_job_budgets.ts';
 import type { AGENT_QUESTION_STATUSES } from './migrations/0039_agent_questions.ts';
-import type { JOB_PAUSE_REASONS } from './migrations/0041_job_pause_storage_quota.ts';
+import type { AGENT_MODEL_REJECTION_REASONS, JOB_PAUSE_REASONS } from './migrations/0043_agent_model_rejections.ts';
 import type { ProjectKind } from '../projects/store.ts';
 
 type Timestamp = ColumnType<Date, Date | string, Date | string>;
@@ -1370,6 +1370,21 @@ export interface AgentToolScopesTable {
   updated_at: ColumnType<Date, never, Date>;
 }
 
+/**
+ * Agent 的模型调用被平台拒绝的原因（迁移 0043_agent_model_rejections，8.6d3）：每次执行一行，reason 是最近一次的原因，
+ * rejections 是本次执行被拒绝的次数。只能为本组织 running、run_id 相符的 Agent 任务写入与更新，没有 DELETE。
+ */
+export interface AgentModelRejectionsTable {
+  org_id: ColumnType<string, string, never>;
+  job_id: ColumnType<string, string, never>;
+  run_id: ColumnType<string, string, never>;
+  reason: ColumnType<AgentModelRejectionReason, AgentModelRejectionReason, AgentModelRejectionReason>;
+  rejections: ColumnType<number, never, number>;
+  updated_at: ColumnType<Date, never, Date>;
+}
+
+export type AgentModelRejectionReason = (typeof AGENT_MODEL_REJECTION_REASONS)[number];
+
 export type AgentQuestionStatus = (typeof AGENT_QUESTION_STATUSES)[number];
 
 /** Agent 问题的一个选项（服务端规范化后的纯文本）。 */
@@ -1509,4 +1524,5 @@ export interface Database {
   agent_questions: AgentQuestionsTable;
   agent_workspace_snapshots: AgentWorkspaceSnapshotsTable;
   agent_tool_scopes: AgentToolScopesTable;
+  agent_model_rejections: AgentModelRejectionsTable;
 }

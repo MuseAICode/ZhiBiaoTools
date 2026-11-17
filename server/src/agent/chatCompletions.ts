@@ -22,6 +22,10 @@
 // 中止：沙箱断开（agent-gw 随之中止转发）按已产生的用量收费（与用户取消相同）；worker 关闭时中止的调用不收费
 // （platform_interrupted，与任务中的调用相同）。
 //
+// 被拒绝的原因（8.6d3，src/agent/modelRejections.ts）：余额不足以冻结、组织没有选择模型、所选模型或服务商不可用时，按令牌的执行
+// 记下原因（recordRejection），再照常返回错误。入口只向执行者报告 MODEL_FAILED，执行者按记下的原因决定暂停（余额不足）、
+// 失败（模型不可用）或重试（没有记下）。记下失败只写日志，不影响响应。
+//
 // 响应：第一段输出到达时才开始 SSE（与 /api/ai/chat 相同），在此之前的失败（余额不足、模型未选择、上游失败等）按普通 JSON 错误
 // 返回；开始推送后的失败以 data: {"error": ...} 结束（OpenAI SDK 按 APIError 处理），不发 [DONE]。思考内容（reasoning_content）
 // 照常计费但不转给沙箱（Pi 配置为不思考，转回会使下一轮请求带上不接受的字段）。
@@ -36,6 +40,7 @@ import type { JobModel } from '../jobs/chat.ts';
 import { JobError } from '../jobs/definitions.ts';
 import { TASK_COST_LIMIT_CODE } from './budget.ts';
 import { AGENT_CHAT_MAX_BODY_BYTES, AGENT_CHAT_PATH } from './gateway.ts';
+import { agentModelRejectionReason, type AgentModelRejectionReason } from './modelRejections.ts';
 import { agentTenantContext, type AgentTokenIdentity } from './tokenStore.ts';
 
 export { AGENT_CHAT_MAX_BODY_BYTES, AGENT_CHAT_PATH } from './gateway.ts';
@@ -60,6 +65,8 @@ export interface AgentChatDependencies {
   beginTurn: (identity: AgentTokenIdentity) => Promise<void>;
   /** 冻结时费用上限检查失败后记下原因（endpoint.ts 传 markAgentBudgetExhausted）。 */
   markCostLimit: (identity: AgentTokenIdentity) => Promise<void>;
+  /** 记下本次执行的模型调用被拒绝的原因（endpoint.ts 传 recordAgentModelRejection，8.6d3）。 */
+  recordRejection: (identity: AgentTokenIdentity, reason: AgentModelRejectionReason) => Promise<void>;
   /** 登记进行中的调用，worker 关闭时以原因 'shutdown' 统一中止（不收费）；返回注销函数。 */
   track: (controller: AbortController) => () => void;
 }
@@ -277,14 +284,25 @@ export function registerAgentChatRoute(app: FastifyInstance, deps: AgentChatDepe
     { bodyLimit: AGENT_CHAT_MAX_BODY_BYTES, schema: { body: AGENT_CHAT_BODY_SCHEMA } },
     async (request: FastifyRequest<{ Body: AgentChatBody }>, reply: FastifyReply) => {
       const identity = deps.identityOf(request);
+      // 平台拒绝的原因记下给执行者（8.6d3）；记下失败只写日志。
+      const noteRejection = async (error: unknown) => {
+        const reason = agentModelRejectionReason(error);
+        if (reason === null) return;
+        await deps.recordRejection(identity, reason).catch((recordError: unknown) => request.log.error({ err: recordError, jobId: identity.jobId }, 'agent model rejection record failed'));
+      };
       const gateway = deps.gateway;
-      if (!gateway) throw new AppError(503, 'AI_GATEWAY_DISABLED', '模型服务暂不可用，请稍后再试');
+      if (!gateway) {
+        const disabled = new AppError(503, 'AI_GATEWAY_DISABLED', '模型服务暂不可用，请稍后再试');
+        await noteRejection(disabled);
+        throw disabled;
+      }
       const input = toChatRequest(request.body, deps.maxOutputTokens);
       const tenant = agentTenantContext(identity);
       let model: JobModel;
       try {
         model = await deps.resolveModel(tenant);
       } catch (error) {
+        await noteRejection(error);
         if (error instanceof JobError) throw new AppError(409, error.code, error.message);
         throw error;
       }
@@ -362,6 +380,7 @@ export function registerAgentChatRoute(app: FastifyInstance, deps: AgentChatDepe
         if (error instanceof AppError && error.code === TASK_COST_LIMIT_CODE) {
           await deps.markCostLimit(identity).catch((markError: unknown) => request.log.error({ err: markError, jobId: identity.jobId }, 'agent budget mark failed'));
         }
+        await noteRejection(error);
         if (!streaming) throw error;
         const failure = error instanceof AppError ? { code: error.code, message: error.message } : { code: 'INTERNAL_ERROR', message: '服务器内部错误' };
         if (!(error instanceof AppError)) request.log.error({ err: error, jobId: identity.jobId }, 'agent chat stream failed');

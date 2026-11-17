@@ -455,6 +455,7 @@ describe('回滚 0042', () => {
     await database.destroy();
     const owner = connect(testDb.ownerConfig);
     try {
+      expect((await migrateDown(owner)).results?.map((result) => result.migrationName)).toEqual(['0043_agent_model_rejections']);
       const down = await migrateDown(owner);
       expect(down.error).toBeUndefined();
       expect(down.results?.map((result) => result.migrationName)).toEqual(['0042_agent_tool_scopes']);

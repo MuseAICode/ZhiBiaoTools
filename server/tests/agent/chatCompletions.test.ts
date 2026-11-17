@@ -1,7 +1,7 @@
 // Agent 的模型调用路由（src/agent/chatCompletions.ts，路线图第 8 步 8.2c2）的单元测试：AI 网关用记录请求的桩代替，
 // 身份与模型由桩给出。覆盖：Pi（openai-completions）请求格式的对照组、请求转成网关字段（身份只按令牌、模型固定、只转校验过的字段）、
 // 伪造的身份 / 服务商 / Base URL 字段与不接受的字段一律 400 且不调用网关、各上限、SSE 输出格式（分段、工具调用、续跑取回、
-// 开始推送前后的失败）。真实数据库、AI 网关与 agent-gw 的端到端用例见 tests/db/agentChat.test.ts。
+// 开始推送前后的失败）、被拒绝的原因按令牌记下（8.6d3）。真实数据库、AI 网关与 agent-gw 的端到端用例见 tests/db/agentChat.test.ts。
 import { randomUUID } from 'node:crypto';
 import type { AddressInfo } from 'node:net';
 import Fastify, { type FastifyInstance } from 'fastify';
@@ -57,6 +57,9 @@ const inFlight = new Set<AbortController>();
 /** 计入轮数的桩（8.3a）：记录调用；turnError 给出时抛出它（达到上限等）。 */
 const turns: AgentTokenIdentity[] = [];
 const costMarks: AgentTokenIdentity[] = [];
+/** 记下的拒绝原因（8.6d3）；rejectionError 给出时记下失败（抛出它）。 */
+const rejections: Array<{ identity: AgentTokenIdentity; reason: string }> = [];
+let rejectionError: unknown = null;
 let turnError: unknown = null;
 
 const stubGateway: AiGateway = {
@@ -98,6 +101,10 @@ async function buildApp(gateway: AiGateway | null): Promise<{ app: FastifyInstan
     markCostLimit: async (identity) => {
       costMarks.push(identity);
     },
+    recordRejection: async (identity, reason) => {
+      rejections.push({ identity, reason });
+      if (rejectionError) throw rejectionError;
+    },
     track(controller) {
       inFlight.add(controller);
       return () => inFlight.delete(controller);
@@ -122,6 +129,8 @@ beforeEach(() => {
   calls.length = 0;
   turns.length = 0;
   costMarks.length = 0;
+  rejections.length = 0;
+  rejectionError = null;
   turnError = null;
   script = { deltas: [{ content: '你好' }, { content: '，世界' }] };
   resolveModel = async () => PLATFORM_MODEL;
@@ -487,5 +496,78 @@ describe('任务上限（8.3a）', () => {
     script = { error: new AppError(402, 'INSUFFICIENT_BALANCE', '余额不足') };
     expect((await post(piBody())).status).toBe(402);
     expect(costMarks).toHaveLength(0);
+  });
+});
+
+describe('被拒绝的原因（8.6d3）', () => {
+  it('余额不足以冻结：记下 insufficient_balance（按令牌的身份），照常返回 402', async () => {
+    script = { error: new AppError(402, 'INSUFFICIENT_BALANCE', '余额不足，请充值后再试') };
+    const response = await post(piBody());
+    expect(response.status).toBe(402);
+    expect(rejections).toEqual([{ identity: IDENTITY, reason: 'insufficient_balance' }]);
+  });
+
+  it('组织没有选择模型：记下 model_not_configured；所选模型或服务商不可用：记下 model_unavailable', async () => {
+    resolveModel = async () => {
+      throw new JobError('AI_MODEL_NOT_CONFIGURED', '尚未选择文本模型，请先在设置中选择模型');
+    };
+    expect((await post(piBody())).status).toBe(409);
+    resolveModel = async () => PLATFORM_MODEL;
+    const unavailable = [
+      new AppError(403, 'AI_MODEL_DISABLED', '该模型已停用，暂时不能调用'),
+      new AppError(404, 'AI_MODEL_NOT_REGISTERED', '该模型未在平台登记，不能调用'),
+      new AppError(404, 'AI_MODEL_NOT_FOUND', '模型不存在'),
+      new AppError(503, 'MODEL_PRICE_NOT_CONFIGURED', '该模型尚未定价，暂时无法使用'),
+      new AppError(503, 'AI_MODEL_PRICE_CONFLICT', '该模型标记为免费但价格不为零，暂时无法使用'),
+      new AppError(503, 'AI_PROVIDER_NOT_CONFIGURED', '该模型服务尚未配置，暂时无法使用'),
+    ];
+    for (const error of unavailable) {
+      script = { error };
+      expect((await post(piBody())).status).toBe(error.statusCode);
+    }
+    expect(rejections.map((item) => item.reason)).toEqual(['model_not_configured', ...unavailable.map(() => 'model_unavailable')]);
+    expect(rejections.every((item) => item.identity === IDENTITY)).toBe(true);
+  });
+
+  it('未配置主密钥（没有网关）：记下 model_unavailable', async () => {
+    const other = await buildApp(null);
+    try {
+      const response = await fetch(`${other.origin}${AGENT_CHAT_PATH}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(piBody()) });
+      expect(response.status).toBe(503);
+      expect(rejections).toEqual([{ identity: IDENTITY, reason: 'model_unavailable' }]);
+    } finally {
+      await other.app.close();
+    }
+  });
+
+  it('其他失败不记下：上游失败、超时、并发、费用 / 轮数上限、请求不合法、开始推送后的失败、成功', async () => {
+    const others = [
+      new AppError(502, 'AI_UPSTREAM_ERROR', '模型服务调用失败，本次调用不收费'),
+      new AppError(504, 'AI_UPSTREAM_TIMEOUT', '模型服务响应超时，本次调用不收费'),
+      new AppError(429, 'AI_CONCURRENCY_LIMITED', '同时进行的模型调用过多，请稍后再试'),
+      new AppError(503, 'AI_PROVIDER_UNAVAILABLE', '模型服务暂不可用，请稍后再试'),
+      new AppError(409, 'TASK_COST_LIMIT', '本任务的费用已达到上限'),
+      new Error('internal'),
+    ];
+    for (const error of others) {
+      script = { error };
+      await post(piBody());
+    }
+    turnError = new AppError(409, 'TASK_TURN_LIMIT', '本任务的模型调用次数已达到上限');
+    expect((await post(piBody())).status).toBe(409);
+    turnError = null;
+    expect((await post(piBody({ org_id: randomUUID() }))).status).toBe(400);
+    script = { deltas: [{ content: '你好' }] };
+    expect((await post(piBody())).status).toBe(200);
+    expect(rejections).toEqual([]);
+  });
+
+  it('记下失败：只写日志，照常返回原来的错误', async () => {
+    rejectionError = new Error('db down');
+    script = { error: new AppError(402, 'INSUFFICIENT_BALANCE', '余额不足，请充值后再试') };
+    const response = await post(piBody());
+    expect(response.status).toBe(402);
+    expect(JSON.parse(response.text).error.code).toBe('INSUFFICIENT_BALANCE');
+    expect(rejections).toHaveLength(1);
   });
 });
