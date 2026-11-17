@@ -43,6 +43,7 @@ import * as agentQuestions from './0039_agent_questions.ts';
 import * as agentWorkspaceSnapshots from './0040_agent_workspace_snapshots.ts';
 import * as jobPauseStorageQuota from './0041_job_pause_storage_quota.ts';
 import * as agentToolScopes from './0042_agent_tool_scopes.ts';
+import * as agentModelRejections from './0043_agent_model_rejections.ts';
 
 export const migrations: Readonly<Record<string, Migration>> = Object.freeze({
   '0001_identity': identity,
@@ -87,4 +88,5 @@ export const migrations: Readonly<Record<string, Migration>> = Object.freeze({
   '0040_agent_workspace_snapshots': agentWorkspaceSnapshots,
   '0041_job_pause_storage_quota': jobPauseStorageQuota,
   '0042_agent_tool_scopes': agentToolScopes,
+  '0043_agent_model_rejections': agentModelRejections,
 });

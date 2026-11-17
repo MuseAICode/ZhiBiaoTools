@@ -12,7 +12,7 @@
 //
 // 路由：GET /v1/session（8.2b）返回令牌当前的到期时间（令牌与租约中较早者），供沙箱内的入口（8.6）确认令牌有效，
 // 不返回组织、项目、用户等标识（沙箱不需要）；POST /v1/chat/completions（8.2c2，src/agent/chatCompletions.ts）经 AI 网关
-// 调用组织选用的模型；POST /v1/tools/call（8.4a，src/agent/tools.ts）执行本任务类型登记可用的业务工具。关闭时（worker 停止）
+// 调用组织选用的模型（被拒绝的原因记下给执行者，8.6d3）；POST /v1/tools/call（8.4a，src/agent/tools.ts）执行本任务类型登记可用的业务工具。关闭时（worker 停止）
 // 先中止进行中的模型调用（这些调用不收费）与工具调用。
 import Fastify, { LogController, type FastifyInstance, type FastifyRequest } from 'fastify';
 import type { Kysely } from 'kysely';
@@ -24,6 +24,7 @@ import { resolveJobModel } from '../jobs/chat.ts';
 import { createLoggerOptions } from '../logger.ts';
 import { beginAgentTurn, markAgentBudgetExhausted } from './budget.ts';
 import { registerAgentChatRoute } from './chatCompletions.ts';
+import { recordAgentModelRejection } from './modelRejections.ts';
 import { createAgentToolRegistry, registerAgentToolRoute, type AgentToolRegistry } from './tools.ts';
 import { DEFAULT_AGENT_GATEWAY_LIMITS } from './gateway.ts';
 import { AGENT_RELAY_KEY_HEADER, createRelayKeyVerifier, parseAgentBearer } from './token.ts';
@@ -160,6 +161,9 @@ export async function buildAgentEndpointApp(options: AgentEndpointOptions): Prom
     },
     markCostLimit: async (identity) => {
       await markAgentBudgetExhausted(options.db, { tenant: agentTenantContext(identity), jobId: identity.jobId, runId: identity.runId }, 'task_cost_limit');
+    },
+    recordRejection: async (identity, reason) => {
+      await recordAgentModelRejection(options.db, { tenant: agentTenantContext(identity), jobId: identity.jobId, runId: identity.runId }, reason);
     },
     track,
   });

@@ -724,6 +724,7 @@ describe('迁移 0041', () => {
 
     const owner = connect(testDb.ownerConfig);
     try {
+      expect((await migrateDown(owner)).results?.map((result) => result.migrationName)).toEqual(['0043_agent_model_rejections']);
       expect((await migrateDown(owner)).results?.map((result) => result.migrationName)).toEqual(['0042_agent_tool_scopes']);
       expect((await migrateDown(owner)).results?.map((result) => result.migrationName)).toEqual(['0041_job_pause_storage_quota']);
       expect(await superuser.selectFrom('jobs').select(['status', 'pause_reason']).where('id', '=', job.id).executeTakeFirstOrThrow()).toEqual({ status: 'paused', pause_reason: null });

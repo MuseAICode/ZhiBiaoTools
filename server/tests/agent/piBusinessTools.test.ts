@@ -117,6 +117,7 @@ beforeAll(async () => {
     identityOf: () => IDENTITY,
     beginTurn: async () => {},
     markCostLimit: async () => {},
+    recordRejection: async () => {},
     track: () => () => {},
   });
   registerAgentToolRoute(app, {

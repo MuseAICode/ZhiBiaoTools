@@ -25,6 +25,8 @@ import {
   AGENT_SUBMISSION_FAILED_CODE,
   AGENT_TIME_LIMIT_CODE,
   AGENT_MODEL_FAILED_CODE,
+  AGENT_MODEL_NOT_CONFIGURED_CODE,
+  AGENT_MODEL_UNAVAILABLE_CODE,
   AGENT_UNAVAILABLE_CODE,
   AGENT_SANDBOX_FAILED_CODE,
   agentRunWallClockMs,
@@ -34,6 +36,7 @@ import {
 } from '../../src/agent/execution.ts';
 import { AGENT_ENTRY_FAILED_CODE, type AgentPromptTool } from '../../src/agent/entry.ts';
 import { lookupAgentJobToken } from '../../src/agent/tokenStore.ts';
+import { recordAgentModelRejection, type AgentModelRejectionReason } from '../../src/agent/modelRejections.ts';
 import { AGENT_WORKSPACE_RESTORE_FAILED_CODE } from '../../src/agent/workspaceJob.ts';
 import { findWorkspaceSnapshot } from '../../src/agent/workspaceSnapshots.ts';
 import type { WorkspaceSandboxDriver } from '../../src/agent/workspaceSandbox.ts';
@@ -438,6 +441,16 @@ describe('首次执行', () => {
   });
 });
 
+/**
+ * 模拟模型调用路由拒绝本次执行的一次调用（8.6d3）：与路由相同，经 recordAgentModelRejection 按任务当前的执行与发起人记下原因。
+ * 假入口随后报告 MODEL_FAILED。
+ */
+async function rejectModelCall(reason: AgentModelRejectionReason): Promise<void> {
+  const jobId = fake.state.created.at(-1)!.jobId;
+  const job = await superuser.selectFrom('jobs').select(['org_id', 'run_id', 'user_id']).where('id', '=', jobId).executeTakeFirstOrThrow();
+  expect(await recordAgentModelRejection(appDb, { tenant: { orgId: job.org_id, userId: job.user_id, role: 'owner' }, jobId, runId: job.run_id }, reason)).toBe(true);
+}
+
 function run_session(call: EntryCall): string {
   const files = [...call.workspace.keys()].filter((path) => path.startsWith('pi-sessions/'));
   expect(files).toHaveLength(1);
@@ -554,10 +567,121 @@ describe('失败按数据库中的事实判断', () => {
     expect(row.pause_reason).toBe('task_cost_limit');
   });
 
-  it('模型调用失败且可用余额不足：暂停为 insufficient_balance', async () => {
-    const { job } = await runFailing(() => ({ ok: false, code: 'MODEL_FAILED' }), { balance: 0n });
+  it('模型调用失败、路由记下余额不足（8.6d3）：暂停为 insufficient_balance', async () => {
+    const { job } = await runFailing(async () => {
+      await rejectModelCall('insufficient_balance');
+      return { ok: false, code: 'MODEL_FAILED' };
+    }, { balance: 0n });
     const row = await waitStatus(job.id, 'paused', '任务暂停');
     expect(row.pause_reason).toBe('insufficient_balance');
+    expect(fake.state.calls).toHaveLength(1);
+  });
+
+  it('可用余额 ≥ 1 元但不够一次冻结（8.6d3，#96 确认）：暂停为 insufficient_balance 而不是重试后失败；充值后继续，从 checkpoint 续跑', async () => {
+    const { dispatcher } = await startRunner();
+    const member = await newMember(15_000n);
+    let resumed: { resumed: boolean; task: unknown } | null = null;
+    fake.state.script = () => ({ ok: true });
+    steps = [
+      async (run) => {
+        await run.prompt(PROMPT);
+        await run.checkpoint({ step: 1 });
+        fake.state.script = async () => {
+          await rejectModelCall('insufficient_balance');
+          return { ok: false, code: 'MODEL_FAILED' };
+        };
+        await run.runStage({ ...PROMPT, outputFile: '结果/目录.json', maxExecutionRetries: 3, validate: async () => ({ value: null, issues: [] }) });
+      },
+      async (run) => {
+        resumed = { resumed: run.resumed, task: run.taskCheckpoint };
+        await run.prompt({ ...PROMPT, prompt: '继续之前的任务' });
+      },
+    ];
+    const { job } = await enqueue(member, dispatcher);
+    const paused = await waitStatus(job.id, 'paused', '任务暂停');
+    expect(paused.pause_reason).toBe('insufficient_balance');
+    expect(paused.checkpoint).toMatchObject({ task: { step: 1 } });
+    // 不重试：第一条提示词与被拒绝的一条。
+    expect(fake.state.calls).toHaveLength(2);
+
+    fake.state.script = () => ({ ok: true });
+    await creditOrganization(appDb, ctxAdmin, { orgId: member.orgId, type: 'recharge', amount: 10_000_000n, reference: null, note: '测试充值' });
+    expect((await requestResume(appDb, member.context, job.id)).dispatch).toBe(true);
+    await dispatcher.dispatch({ id: job.id, orgId: member.orgId, type: 'test-agent-exec', queue: 'agent' });
+    await waitStatus(job.id, 'succeeded', '续跑后成功');
+    expect(resumed).toEqual({ resumed: true, task: { step: 1 } });
+    expect(fake.state.calls.at(-1)!.request.prompt).toBe('继续之前的任务');
+  });
+
+  it('只采信本条提示词中的拒绝（8.6d3）：之前的提示词中记下的余额不足不影响之后的模型失败（按重试处理）', async () => {
+    const { job } = await runFailing(async (_call, index) => {
+      // 第一条提示词成功，但其间路由拒绝过一次（例如沙箱内遗留进程的调用）。
+      if (index === 0) {
+        await rejectModelCall('insufficient_balance');
+        return { ok: true };
+      }
+      return index === 1 ? { ok: false, code: 'MODEL_FAILED' } : { ok: true };
+    }, {
+      step: async (run) => {
+        await run.prompt(PROMPT);
+        const result = await run.runStage({ ...PROMPT, outputFile: '结果/目录.json', validate: async () => ({ value: 1, issues: [] }) });
+        expect(result).toMatchObject({ value: 1, executionRetries: 1 });
+      },
+    });
+    await waitStatus(job.id, 'succeeded', '任务成功');
+    expect(fake.state.calls).toHaveLength(3);
+  });
+
+  it('旧执行记下的拒绝不影响续跑后的新执行（8.6d3）', async () => {
+    const { dispatcher } = await startRunner();
+    const member = await newMember();
+    steps = [
+      async (run, context) => {
+        await run.prompt(PROMPT);
+        await rejectModelCall('model_unavailable');
+        await run.checkpoint({ step: 1 });
+        await requestPause(appDb, member.context, context.jobId);
+        fake.state.script = () => ({ ok: false, code: 'RUN_ENDED' });
+        await run.prompt(PROMPT);
+      },
+      async (run) => {
+        // 新执行的第一条提示词模型调用失败（没有记下拒绝）：按重试处理，不采信旧执行的 model_unavailable。
+        fake.state.script = () => (retried ? { ok: true } : ((retried = true), { ok: false, code: 'MODEL_FAILED' }));
+        const result = await run.runStage({ ...PROMPT, outputFile: '结果/目录.json', validate: async () => ({ value: 1, issues: [] }) });
+        expect(result).toMatchObject({ value: 1, executionRetries: 1 });
+      },
+    ];
+    let retried = false;
+    fake.state.script = () => ({ ok: true });
+    const { job } = await enqueue(member, dispatcher);
+    await waitStatus(job.id, 'paused', '任务暂停');
+    await requestResume(appDb, member.context, job.id);
+    await dispatcher.dispatch({ id: job.id, orgId: member.orgId, type: 'test-agent-exec', queue: 'agent' });
+    await waitStatus(job.id, 'succeeded', '续跑后成功');
+    expect(retried).toBe(true);
+  });
+
+  it('路由记下组织没有选择模型 / 所选模型不可用（8.6d3）：按固定说明失败、不重试，说明不含入口的输出', async () => {
+    const cases: Array<[AgentModelRejectionReason, string]> = [
+      ['model_not_configured', AGENT_MODEL_NOT_CONFIGURED_CODE],
+      ['model_unavailable', AGENT_MODEL_UNAVAILABLE_CODE],
+    ];
+    for (const [reason, code] of cases) {
+      fake.state.calls.length = 0;
+      executions = 0;
+      const { job } = await runFailing(async () => {
+        await rejectModelCall(reason);
+        return { ok: false, code: 'MODEL_FAILED' };
+      }, {
+        step: async (run) => {
+          await run.runStage({ ...PROMPT, outputFile: '结果/目录.json', maxExecutionRetries: 3, validate: async () => ({ value: null, issues: [] }) });
+        },
+      });
+      const row = await waitStatus(job.id, 'failed', '任务失败');
+      expect(row.error_code).toBe(code);
+      expect(row.error_message).not.toContain(SECRET_TEXT);
+      expect(fake.state.calls).toHaveLength(1);
+    }
   });
 
   it('模型调用失败、余额充足：按固定原因重试（不含入口的说明），重试用完后以 AGENT_MODEL_FAILED 失败', async () => {
@@ -863,7 +987,7 @@ describe('阶段交接压缩与回复全文（8.6d2）', () => {
     expect(fake.state.calls.map((call) => call.request.action)).toEqual(['prompt', 'compact']);
   });
 
-  it('压缩时达到费用上限、可用余额不足：按数据库中的事实暂停（可选压缩也一样，不按原上下文继续）', async () => {
+  it('压缩时达到费用上限、路由记下余额不足：按数据库中的事实暂停（可选压缩也一样，不按原上下文继续）', async () => {
     const { dispatcher } = await startRunner();
     const limited = await newMember();
     steps = [async (run) => {
@@ -886,7 +1010,11 @@ describe('阶段交接压缩与回复全文（8.6d2）', () => {
     fake.state.script = () => ({ ok: true });
     steps = [async (run) => {
       await run.prompt(PROMPT);
-      fake.state.script = (call) => (call.request.action === 'compact' ? { ok: false, code: 'MODEL_FAILED' } : { ok: true });
+      fake.state.script = async (call) => {
+        if (call.request.action !== 'compact') return { ok: true };
+        await rejectModelCall('insufficient_balance');
+        return { ok: false, code: 'MODEL_FAILED' };
+      };
       await run.compact({ ...COMPACTION, optional: true });
       await run.prompt({ stage: 'content', prompt: '不应发出', tools: ['read'] });
     }];

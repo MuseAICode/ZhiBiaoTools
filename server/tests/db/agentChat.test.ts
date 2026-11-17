@@ -5,6 +5,8 @@
 // - 计费与步骤幂等沿用 AI 网关：按用量扣费，同一任务同一请求内容（续跑时 Pi 重发）取回已保存的结果、只扣一次；
 // - 令牌无效、请求暂停后不调用服务商；沙箱断开按已产生的用量收费，worker 关闭时中止的调用不收费；
 // - 任务上限（8.3a）：取回已保存结果的请求同样计入轮数，重复同一请求到上限即被拒绝；费用上限在冻结时检查；
+// - 被拒绝的原因（8.6d3）：余额不足（含可用余额 ≥ 1 元但不够一次冻结）、没有选择模型、模型停用时按令牌的执行记下，
+//   其他执行、其他组织不受影响；
 // - 日志中没有令牌原文与 Key。
 import { randomBytes, randomUUID } from 'node:crypto';
 import type { AddressInfo } from 'node:net';
@@ -17,6 +19,7 @@ import { buildAgentEndpointApp } from '../../src/agent/endpoint.ts';
 import { buildAgentGateway } from '../../src/agent/gateway.ts';
 import { AGENT_RELAY_KEY_HEADER, generateAgentToken } from '../../src/agent/token.ts';
 import { issueAgentJobToken } from '../../src/agent/tokenStore.ts';
+import { findAgentModelRejection } from '../../src/agent/modelRejections.ts';
 import { putCredential } from '../../src/ai/credentials.ts';
 import { createAiGateway, type AiGateway, type GatewaySettings } from '../../src/ai/gateway.ts';
 import { createFileKeyWrapper } from '../../src/ai/keyring.ts';
@@ -341,6 +344,59 @@ describe('令牌、余额与上限', () => {
     expect(response.status).toBe(402);
     expect(JSON.parse(response.text).error.code).toBe('INSUFFICIENT_BALANCE');
     expect(provider.requests).toHaveLength(0);
+  });
+
+  it('可用余额 ≥ 1 元但不够一次冻结（8.6d3）：402，不调用服务商，按令牌的执行记下 insufficient_balance、每次加 1', async () => {
+    // 输出单价使 500 个输出 token 的冻结额约 3 元；可用余额 1.5 元（不低于最低启动余额 1 元）。
+    const past = new Date(Date.now() - 30 * 86_400_000);
+    await superuser.insertInto('model_prices').values({ provider: 'deepseek', model: 'deepseek-reasoner', input_price_per_mtok: '20000', output_price_per_mtok: '60000000', effective_from: past, created_at: past, created_by: platformAdmin }).execute();
+    const pricey = await superuser
+      .insertInto('platform_models')
+      .values({ provider: 'deepseek', model: 'deepseek-reasoner', is_free: false, enabled: true, created_by: platformAdmin, updated_by: platformAdmin })
+      .returning('id')
+      .executeTakeFirstOrThrow();
+    const member = await newMember({ model: false, balance: 15_000n });
+    await superuser.insertInto('org_settings').values({ org_id: member.orgId, platform_model_id: pricey.id, updated_by: member.userId }).execute();
+    const { run, token } = await tokenFor(member);
+    const other = await tokenFor(member);
+    expect(await findAgentModelRejection(appDb, run)).toBeNull();
+    const response = await chat(gwOrigin, token, body());
+    expect(response.status).toBe(402);
+    expect(JSON.parse(response.text).error.code).toBe('INSUFFICIENT_BALANCE');
+    expect(provider.requests).toHaveLength(0);
+    expect(await findAgentModelRejection(appDb, run)).toEqual({ reason: 'insufficient_balance', rejections: 1 });
+    expect((await chat(gwOrigin, token, body())).status).toBe(402);
+    expect(await findAgentModelRejection(appDb, run)).toEqual({ reason: 'insufficient_balance', rejections: 2 });
+    // 同一组织的另一个执行不受影响。
+    expect(await findAgentModelRejection(appDb, other.run)).toBeNull();
+  });
+
+  it('没有选择模型、所选模型被停用、余额为 0（8.6d3）：各自记下原因；成功的调用不记', async () => {
+    const unset = await newMember({ model: false });
+    const first = await tokenFor(unset);
+    expect((await chat(gwOrigin, first.token, body())).status).toBe(409);
+    expect(await findAgentModelRejection(appDb, first.run)).toEqual({ reason: 'model_not_configured', rejections: 1 });
+
+    const broke = await newMember({ balance: 0n });
+    const second = await tokenFor(broke);
+    expect((await chat(gwOrigin, second.token, body())).status).toBe(402);
+    expect(await findAgentModelRejection(appDb, second.run)).toEqual({ reason: 'insufficient_balance', rejections: 1 });
+
+    const disabled = await newMember({ model: false });
+    const extra = await superuser
+      .insertInto('platform_models')
+      .values({ provider: 'deepseek', model: 'deepseek-coder', is_free: false, enabled: true, created_by: platformAdmin, updated_by: platformAdmin })
+      .returning('id')
+      .executeTakeFirstOrThrow();
+    await superuser.insertInto('org_settings').values({ org_id: disabled.orgId, platform_model_id: extra.id, updated_by: disabled.userId }).execute();
+    await superuser.updateTable('platform_models').set({ enabled: false }).where('id', '=', extra.id).execute();
+    const third = await tokenFor(disabled);
+    expect((await chat(gwOrigin, third.token, body())).status).toBe(403);
+    expect(await findAgentModelRejection(appDb, third.run)).toEqual({ reason: 'model_unavailable', rejections: 1 });
+
+    const ok = await tokenFor(await newMember());
+    expect((await chat(gwOrigin, ok.token, body())).status).toBe(200);
+    expect(await findAgentModelRejection(appDb, ok.run)).toBeNull();
   });
 
   it('请求体超过路由上限：agent-gw 413；直接访问 worker 入口声明超限也 413，不读取、不调用服务商', async () => {
