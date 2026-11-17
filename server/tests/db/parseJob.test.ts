@@ -267,6 +267,7 @@ async function runParse(member: Member, projectId: string, fileId: string, optio
     objectStore: options.objectStore === undefined ? memoryStore : options.objectStore,
     sandbox: options.sandbox === undefined ? fakeSandbox(output('# 默认\n')) : options.sandbox,
     agentWorkspace: null,
+    agent: null,
   };
   try {
     await job.run(context);

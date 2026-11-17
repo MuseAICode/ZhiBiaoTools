@@ -274,6 +274,7 @@ async function runJob(type: 'extraction' | 'check', member: Member, projectId: s
     objectStore: memoryStore,
     sandbox: null,
     agentWorkspace: null,
+    agent: null,
   };
   try {
     await definition.run(context);
@@ -391,6 +392,7 @@ describe('废标项解析任务', () => {
       objectStore: memoryStore,
       sandbox: null,
       agentWorkspace: null,
+      agent: null,
     });
     expect(keys.filter((key) => key.startsWith('extraction:segment:')).length).toBeGreaterThan(1);
     expect(keys.at(-1)).toBe('extraction:merge');

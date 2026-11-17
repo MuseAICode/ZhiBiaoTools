@@ -213,6 +213,7 @@ async function runExport(context: TenantContext, projectId: string, requestId: s
     objectStore: options.objectStore === undefined ? store : options.objectStore,
     sandbox: options.sandbox === undefined ? fakeSandbox().driver : options.sandbox,
     agentWorkspace: null,
+    agent: null,
   };
   try {
     await job.run(jobContext);

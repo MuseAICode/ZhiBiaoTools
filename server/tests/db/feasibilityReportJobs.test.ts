@@ -288,6 +288,7 @@ async function runJob(type: string, member: Member, projectId: string, respond: 
     objectStore: memoryStore,
     sandbox: null,
     agentWorkspace: null,
+    agent: null,
   };
   try {
     await definition.run(context);

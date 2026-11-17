@@ -327,6 +327,7 @@ async function runAnalysis(member: Member, projectId: string, options: RunOption
     objectStore: options.objectStore ?? memoryStore,
     sandbox: options.sandbox ?? fakeSandbox(DOCUMENTS),
     agentWorkspace: null,
+    agent: null,
   };
   try {
     await job.run(context);
