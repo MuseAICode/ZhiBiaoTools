@@ -1,4 +1,4 @@
-// agent 沙箱入口（路线图第 8 步 8.6a、8.6b）在真实沙箱中的验证（CI 中在 gVisor 下运行）：
+// agent 沙箱入口（路线图第 8 步 8.6a、8.6b、8.6d2）在真实沙箱中的验证（CI 中在 gVisor 下运行）：
 // - 模板的 run 命令执行镜像中的 /opt/agent/entry.mjs，请求经标准输入传入，经 /etc/hosts 中的 agent-gw 确认令牌；
 //   agent-gw 这里是一个桩容器（只认一个令牌，与 agentIsolation.test.ts 的桩相同不是沙箱），真实的 agent-gw 与 worker 入口
 //   按令牌查身份见 tests/db/agentEndpoint.test.ts；
@@ -12,10 +12,12 @@
 //   真实的模型调用路由（schema、字段转换）见 tests/agent/piSession.test.ts；
 // - 业务工具的桩（8.6c1）：镜像中的 tools.mjs 为请求中的 ask-user 登记桩，经 agent-gw 的 POST /v1/tools/call 调用（令牌只在
 //   Authorization 中），回答交给模型。真实的工具路由见 tests/agent/piBusinessTools.test.ts，阶段限制与绕过入口直接调用见
-//   tests/db/agentToolScopes.test.ts。
+//   tests/db/agentToolScopes.test.ts；
+// - compact（8.6d2）：镜像中的 Pi 压缩续接的会话——会话太短时无需压缩（不调用模型），足够长时经 agent-gw 调用模型（不带工具、
+//   令牌只在 Authorization 中），压缩写进同一个会话文件；续接的会话文件不存在时 SESSION_INVALID。
 import { randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { AGENT_SESSION_FILE_PATTERN, type AgentPromptRequest, runAgentEntry } from '../../../src/agent/entry.ts';
+import { AGENT_SESSION_FILE_PATTERN, type AgentCompactRequest, type AgentPromptRequest, runAgentEntry } from '../../../src/agent/entry.ts';
 import { generateAgentToken } from '../../../src/agent/token.ts';
 import { AGENT_ENTRY_COMMAND, AGENT_ENTRY_MAX_INPUT_BYTES } from '../../../src/sandbox/templates.ts';
 import { dockerRequest, sandboxEnv } from './env.ts';
@@ -72,6 +74,9 @@ const PROBE_SCRIPT = `
   }
   process.stdout.write(JSON.stringify({ found, processes, env: Object.keys(process.env).sort(), memory }));`;
 
+/** 压缩指令中的标记：桩据此认出 Pi 的总结请求（8.6d2）。 */
+const COMPACTION_MARKER = '压缩指令标记';
+
 /** 桩让 Agent 调用 ask-user 时的参数与回答（8.6c1）。 */
 const ASK_USER_ARGUMENTS = { question: '按哪种方式组织目录？', options: [{ label: '按评分项', custom: false }, { label: '按章节', custom: false }] };
 const ASK_USER_ANSWER = { answered: true, answer: '按评分项', selected_option: '按评分项', is_custom: false };
@@ -80,7 +85,7 @@ const ASK_USER_ANSWER = { answered: true, answer: '按评分项', selected_optio
  * agent-gw 的桩：GET /v1/session 只认 TOKEN 与 SLOW_TOKEN（Bearer），其余 401；记录收到的 Authorization。
  * POST /v1/chat/completions（只认 TOKEN）：最后一条消息是用户的提示词时回答一次 bash 工具调用（PROBE_COMMAND），否则回答“完成”；
  * 用户的提示词含“调用业务工具”时改为回答一次 ask-user 工具调用（8.6c1）；含“校验 JSON”时回答两次 json-validation 工具调用（8.6c2a：
- * 一次用预置的 Schema、一次用模型给出的 schema）。
+ * 一次用预置的 Schema、一次用模型给出的 schema）；含 COMPACTION_MARKER 时（8.6d2 的压缩请求）回答一段摘要。
  * POST /v1/tools/call（只认 TOKEN）：回答 ask-user 已被回答，记录请求体。
  * 记录每个请求的 Authorization、请求体中是否出现令牌、消息条数与 tool 消息的内容。
  */
@@ -107,6 +112,9 @@ const GATEWAY_STUB = `
       seen.push({ method: req.method, url: req.url, authorization: req.headers.authorization || null, bodyHasToken: raw.includes(process.env.TOKEN), messages: body.messages.length, tools: (body.tools || []).map((tool) => tool.function.name).sort(), toolResults: body.messages.filter((m) => m.role === 'tool').map((m) => m.content) });
       if (token !== process.env.TOKEN) { res.statusCode = 401; return res.end('{"error":{"code":"AGENT_TOKEN_INVALID"}}'); }
       const last = body.messages[body.messages.length - 1];
+      if (last.role === 'user' && JSON.stringify(last.content).includes(${JSON.stringify(COMPACTION_MARKER)})) {
+        return sse(res, { content: '## 摘要\\n之前的阶段已完成。' }, 'stop');
+      }
       if (last.role === 'user' && JSON.stringify(last.content).includes('调用业务工具')) {
         return sse(res, { tool_calls: [{ index: 0, id: 'call_2', type: 'function', function: { name: 'ask-user', arguments: JSON.stringify(${JSON.stringify(ASK_USER_ARGUMENTS)}) } }] }, 'tool_calls');
       }
@@ -335,6 +343,37 @@ describe.runIf(sandboxEnv.agentImage)('agent 入口（8.6a、8.6b）', () => {
     const results = chats[1]!.toolResults!.map((content) => JSON.parse(content));
     expect(results).toHaveLength(2);
     for (const item of results) expect(item).toMatchObject({ valid: false, stage: 'validation', file_path: '目录.json', errors: [{ instancePath: '/items', keyword: 'minItems' }] });
+  });
+
+  it('compact（8.6d2）：会话太短时无需压缩、不调用模型；足够长时经 agent-gw 压缩（不带工具、令牌只在 Authorization 中），写进同一个会话文件；会话文件不存在时 SESSION_INVALID', async () => {
+    const ref = await createSandbox();
+    const model = { contextWindow: 128_000, maxOutputTokens: 8_192 };
+    // 不注册工具：桩回答的 bash 调用得到“工具不存在”，下一轮结束。
+    const promptRequest: AgentPromptRequest = { action: 'prompt', token: TOKEN, prompt: '第一阶段', session: null, tools: [], maxTurns: 5, model };
+    const first = await runAgentEntry(driver, ref, promptRequest);
+    expect(first).toMatchObject({ ok: true, action: 'prompt' });
+    const session = (first as { session: string }).session;
+    const compactRequest: AgentCompactRequest = { action: 'compact', token: TOKEN, session, instructions: `${COMPACTION_MARKER}：请用简体中文总结，供下一阶段继续使用。`, model };
+    let before = (await gatewaySeen(ref)).length;
+    expect(await runAgentEntry(driver, ref, compactRequest)).toEqual({ ok: true, action: 'compact', session, compacted: false });
+    expect((await gatewaySeen(ref)).slice(before).map((item) => item.url)).toEqual(['/v1/session']);
+
+    // 两条各约 25k token 的提示词（Pi 保留最近约 20k token）：可以压缩。
+    for (const word of ['alpha ', 'omega ']) {
+      expect(await runAgentEntry(driver, ref, { ...promptRequest, session, prompt: word.repeat(20_000) })).toMatchObject({ ok: true, session });
+    }
+    before = (await gatewaySeen(ref)).length;
+    expect(await runAgentEntry(driver, ref, compactRequest)).toEqual({ ok: true, action: 'compact', session, compacted: true });
+    const seen = (await gatewaySeen(ref)).slice(before);
+    expect(seen.map((item) => item.url)).toEqual(['/v1/session', '/v1/chat/completions']);
+    expect(seen[1]).toMatchObject({ authorization: `Bearer ${TOKEN}`, bodyHasToken: false, tools: [] });
+    const files = await driver.copyOut(ref);
+    expect(files.map((file) => file.path)).toEqual([`pi-sessions/${session}`]);
+    const text = files[0]!.data.toString('utf8');
+    expect(text).toContain('"type":"compaction"');
+    expect(text).toContain('之前的阶段已完成。');
+    expect(text).not.toContain(TOKEN);
+    expect(await runAgentEntry(driver, ref, { ...compactRequest, session: '2026-11-15T12-00-00-000Z_01a1e18b-3a01-73ab-8e86-dcac529abd40.jsonl' })).toEqual({ ok: false, code: 'SESSION_INVALID' });
   });
 
   it('prompt：续接的会话文件不存在时 SESSION_INVALID；令牌无效时不启动 Pi 会话', async () => {

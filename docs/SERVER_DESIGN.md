@@ -742,6 +742,7 @@ worker 经 sandbox-runner 执行 agent 模板登记的唯一命令 `run`（`node
 - **worker 一侧**（`src/agent/entry.ts`）按不可信输入解析结果：超时、被终止、其他退出码、被截断、不是恰好一行、退出码与结果不一致、字段或取值不符一律 `AGENT_ENTRY_FAILED`；入口给出的说明文字不采用。
 - `action = session`（8.6a）：入口经 `/etc/hosts` 中的 agent-gw 调用 `GET /v1/session`（第 7.12 节），确认令牌有效并返回到期时间（时限 15 秒、响应体至多 4 KiB、不跟随重定向）。
 - `action = prompt`（8.6b，见第 7.23 节）：先同样确认令牌，再在 Pi 会话中执行一条提示词。
+- `action = compact`（8.6d2，见第 7.28 节）：先同样确认令牌，再压缩已有会话的上下文（Pi 的 `session.compact`，指令由 worker 给出）。
 
 ### 7.23 实现（路线图 8.6b）：入口中的 Pi 会话
 
@@ -782,13 +783,21 @@ worker 经 sandbox-runner 执行 agent 模板登记的唯一命令 `run`（`node
 
 - **入口**：执行者给 agent 队列中工作区快照可用（登记了 `agentWorkspace`、任务属于项目、worker 配置了对象存储与能整体放入与取回归档的 sandbox-runner）的任务提供 `context.agent`（`src/agent/execution.ts`），其余为 `null`；任务经 `withAgentRun(context.agent, fn)` 打开，`fn` 结束（含失败、中止）时销毁沙箱、作废本次执行的令牌。本次执行的 `run_id` 不交给任务代码。
 - **打开**（`open`，一次执行一次）：先从 checkpoint 重建受保护文件的登记（不合法时不建沙箱），再按任务类型登记的 `agentSandboxTemplate`（`agent` 30 分钟 / `agent-content` 2 小时，默认 `agent`）新建沙箱（`SANDBOX_BUSY` / `SANDBOX_UNAVAILABLE` 按 5、15、30 秒重试，用完为 `AGENT_SANDBOX_BUSY` / `AGENT_UNAVAILABLE`），签发令牌（有效期 = 模板入口命令的墙钟；本次执行已结束或已请求暂停时不签发、按中止收尾）。checkpoint 中有执行者的现场时为续跑：放入上次的工作区快照（第 7.21 节）并 `recover` 受保护文件的原件（第 7.26 节）；现场中有会话或登记、快照却不在了时 `AGENT_WORKSPACE_RESTORE_FAILED`，不从头开始（从头开始会重新调用模型、重新扣费，由用户决定）。
-- **checkpoint 的布局**：`{ agent: { version: 1, session, stage, stageIndex, promptedStage, baseline }, task }`。`session` 为 Pi 的会话文件名（`pi-sessions/` 中），`stage` / `stageIndex` 为当前阶段，`promptedStage` 为已在会话中发出过要求的阶段（桌面版 `prompted_stage`，续跑时任务据此只发“继续之前的任务”），`baseline` 为受保护文件的登记（不含原件），`task` 为任务自己的状态。不含令牌与文件内容；读出时逐项检查形状。现场与工作区快照一起保存，二者始终是同一个检查点的一对：检查点之后才发出的提示词不在快照的会话中，续跑时任务重新发出该阶段的要求。
+- **checkpoint 的布局**：`{ agent: { version: 1, session, stage, stageIndex, promptedStage, compactionPending, baseline }, task }`（`compactionPending` 为 8.6d2 的待补压缩，见第 7.28 节；8.6d1 写下的现场没有这一项，按 `null` 读出）。`session` 为 Pi 的会话文件名（`pi-sessions/` 中），`stage` / `stageIndex` 为当前阶段，`promptedStage` 为已在会话中发出过要求的阶段（桌面版 `prompted_stage`，续跑时任务据此只发“继续之前的任务”），`baseline` 为受保护文件的登记（不含原件），`task` 为任务自己的状态。不含令牌与文件内容；读出时逐项检查形状。现场与工作区快照一起保存，二者始终是同一个检查点的一对：检查点之后才发出的提示词不在快照的会话中，续跑时任务重新发出该阶段的要求。
 - **提示词**（`prompt`）：每条之前先 `restore` 被改动的受保护文件（还原的路径写一条任务日志），再经 `runAgentPrompt` 执行（先写下本条可用的业务工具，第 7.24 节）；会话由执行者管理，续接上一条的会话文件。每次执行入口只给本次执行剩余的时间（令牌到期即中止），到期后不再执行，`AGENT_TIME_LIMIT`。
 - **失败按数据库中的事实判断**（不采信入口的说法与输出）：依次看任务是否已中止（取消、暂停、租约丢失、当日时长用完、问题等待超时，按执行者的中止原因收尾）、本次执行的失败报告（按报告以 `AGENT_REPORTED_FAILURE` 失败，原因取报告，第 7.16 节）、任务的费用与轮数上限（暂停为 `task_cost_limit` / `task_turn_limit`）、任务是否仍在本次执行中（不在即按中止收尾）、令牌是否到期（`AGENT_TIME_LIMIT`）；都不能说明时：`MODEL_FAILED` 在组织可用余额低于最低启动余额时暂停为 `insufficient_balance`（执行者对任务抛出的 `JobBalanceExhaustedError` 同样暂停），否则为可以重试的“模型调用失败”；`GATEWAY_UNAVAILABLE` / `GATEWAY_FAILED` 为可以重试的“连接平台服务失败”；`TURN_LIMIT` 为 `AGENT_PROMPT_TURN_LIMIT`；`SESSION_INVALID` 为 `AGENT_SESSION_INVALID`；其余（令牌无效、自称报告了失败或执行已结束却查不到对应的事实、请求被拒绝、入口内部错误、结果不符合协议、入口超时）为 `AGENT_ENTRY_FAILED`，沙箱操作失败为 `AGENT_SANDBOX_FAILED`。给用户与 Agent 看的说明都是固定的文字。不可重试的失败之后这个沙箱不再使用。
 - **阶段**（`runStage`）：发出阶段要求，执行失败中可以重试的按任务给出的次数（0～3，默认 1，与桌面版 `max_retries` 相同）以固定原因的重试提示词在同一会话中重试；每次提交校验之前先 `restore` 受保护文件，再由任务按固定规则校验工作区中的结果（`readFiles` 读出，内容按不可信数据处理；受保护文件只用 `original`）。提交策略与修复提示词与桌面版相同（`src/agent/submission.ts`）：有问题即修复，连续一次没有进展时要求更换方法，连续两次没有进展时没有阻塞问题即接受、有阻塞问题按最低目标再修一轮，最低目标之后仍有阻塞问题以 `AGENT_SUBMISSION_FAILED` 失败；修复提示词写明本次还原的受保护文件。提交修复没有固定次数上限（与桌面版相同），每次修复同样计入任务的轮数与费用上限（第 10.11 节）。`checkpointAfterPrompt` 给出时每条提示词成功后、校验之前保存检查点。
 - **读文件**（`readFiles`）：经 `copyOutArchive` 取回 `/workspace`（按取回规则逐项校验），只保留请求的路径（按请求时的写法，大小写不同的同名文件不算），单个文件至多 16 MiB、合计 64 MiB、一次至多 256 个，超过的只给大小。
 - **检查点**（`checkpoint`）：先 `restore` 受保护文件（使快照中的受保护文件是原件），再经 `context.agentWorkspace.saveCheckpoint` 保存快照与 checkpoint；超出组织存储配额时 `JobStorageQuotaError`（任务暂停为 `storage_quota`，会话随沙箱结束），工作区不符合规则或过大时任务失败。
 - **模型上限**：入口的 Pi 会话按 worker 给出的上下文长度（默认 400,000，与桌面版 `context_length_limit` 的默认值相同）与输出上限（32,768 与 `AI_MAX_OUTPUT_TOKENS` 中较小者）压缩与截断；平台另按令牌把 `max_tokens` 截到 `AI_MAX_OUTPUT_TOKENS`（第 7.14 节）。
+
+### 7.28 实现（路线图 8.6d2）：阶段交接的上下文压缩与 Agent 回复全文
+
+- **入口的 `compact`**（`protocol.mjs`、`pi.mjs` 的 `runPiCompaction`）：请求字段恰好为 `version` / `action` / `token` / `session`（必须是已有的会话文件，不新建）/ `instructions`（非空、至多 16 Ki 字符）/ `model`；先确认令牌，再在续接的会话上执行 `session.compact(instructions)`，**不注册任何工具**。结果为 `{ session, compacted }`：会话太短、刚压缩过时 Pi 认为无需压缩，`compacted = false`（与桌面版 `isCompactionNoopError` 相同，不算失败）；总结时的模型调用失败（含被平台拒绝）为 `MODEL_FAILED`，会话文件不可用为 `SESSION_INVALID`，其余异常 `INTERNAL`、不带出说明。压缩追加到同一个会话文件，worker 检查结果中的文件名与请求相同。压缩的模型调用经同一条模型调用路由，同样计入任务的轮数与费用上限（第 10.11 节）。
+- **worker 一侧**（`src/agent/entry.ts` 的 `runAgentCompaction`）：执行入口之前先把本阶段可用的业务工具清空（迁移 0042 的阶段表；压缩期间沙箱内遗留的进程也调用不了业务工具），任务已不在本次执行中时不执行入口（`RUN_ENDED`）。
+- **`run.compact({ stage, instructions, optional, checkpoint })`**（`src/agent/execution.ts`，与桌面版 `runStageCompaction` 相同）：开始前把 `{ stage, instructions, optional }` 登记为待补压缩（`compactionPending`），给出 `checkpoint` 时随即保存检查点（压缩中被暂停时，续跑知道要补做）；还没有会话时无需压缩、不执行入口；成功或无需压缩时清除登记。失败时先按数据库中的事实判断（中止、失败报告、任务上限、执行已结束、时限、可用余额，第 7.27 节），之后入口报告的 `MODEL_FAILED` / `GATEWAY_*` / `INTERNAL`：可选压缩按原上下文继续并保留登记（返回 `failed`，写固定说明的任务日志），必须的压缩以 `AGENT_COMPACTION_FAILED` 失败；可选压缩不重试（与桌面版相同）。同一阶段再次压缩时日志写“上下文压缩未完成，正在重新压缩”。
+- **登记的清除与续跑补做**：发出某阶段的要求时清除该阶段的登记（之后不再补做）；续跑后的第一条提示词之前，若 checkpoint 中有该阶段的登记、而该阶段的要求还没有发出（`promptedStage` 不是它），执行者先自动补做压缩，再发出要求；任务自己先调用 `compact` 时不再自动补做。
+- **Agent 回复全文**（`src/agent/assistantText.ts`、`run.assistantText({ maxChars })`）：入口的结果至多 16 KiB，回复不经标准输出；worker 经 `readFiles` 读出 `pi-sessions/<会话>.jsonl`（至多 16 MiB，超过时为 `null`），取最后一条 assistant 消息的文本段（按换行连接、去掉首尾空白，与桌面版 `extractAssistantText` 相同）。会话文件在工作区中、Agent 的命令可以任意改写，内容按**不可信数据**处理：严格 UTF-8、每个非空行恰好一个 JSON 对象，否则为 `null`（任务用固定说明代替，与桌面版的缺省说明相同）；去掉控制字符（保留换行与制表符）与孤立的代理项，按字符数截断（默认 64 Ki、至多 256 Ki，不拆开代理对）。它是 AI 生成的内容：给用户显示时与其他 AI 内容一样按 Markdown 渲染、不允许原始 HTML，不进日志与失败说明。
 
 ## 8. 部署架构
 

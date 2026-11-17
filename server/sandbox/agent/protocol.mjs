@@ -7,7 +7,7 @@
 // 结果写到**标准输出**：恰好一行 JSON（以换行结束），至多 MAX_RESULT_BYTES；退出码 0 表示 ok，1 表示按协议报告的失败。
 // 失败只给出固定的错误代码与固定的说明，不含请求、令牌、网关的响应正文。worker 按不可信输入解析结果（src/agent/entry.ts）。
 //
-// 两种请求（action）：
+// 三种请求（action）：
 // - session（8.6a）：经 agent-gw 的 GET /v1/session 确认令牌有效，返回令牌的到期时间；
 // - prompt（8.6b）：先同样确认令牌，再在 Pi 会话中执行**一条**提示词（新建会话或续接 /workspace/pi-sessions/ 中的会话文件），
 //   返回会话文件名、本条提示词用掉的轮数与结束原因。Pi 会话的实现在 pi.mjs，由 entry.mjs 注入（runPrompt），本文件不加载 Pi。
@@ -17,6 +17,9 @@
 //   让 Agent 正常工作，不算控制（沙箱内的命令可以绕过入口直接调用工具接口，#91 确认）。
 //   本地工具（8.6c2a，LOCAL_TOOLS）在沙箱内执行、不经 worker：json-validation（jsonValidation.mjs）供 Agent 自查工作区中的 JSON 文件，
 //   worker 可在 jsonSchemas 中为指定文件预置 Schema（只在 json-validation 启用时可以给出）；结果提交时平台另按固定规则校验。
+// - compact（8.6d2）：先同样确认令牌，再压缩已有会话的上下文（Pi 的 session.compact，压缩指令由 worker 给出，与桌面版的阶段交接
+//   压缩相同），返回会话文件名与是否真的压缩了（compacted = false：会话太短或刚压缩过，Pi 认为无需压缩）。不注册任何工具。
+//   Agent 的回复全文不经标准输出（结果至多 16 KiB）：worker 从工作区的会话文件中取回（src/agent/assistantText.ts）。
 import { request as httpRequest } from 'node:http';
 
 export const PROTOCOL_VERSION = 1;
@@ -56,6 +59,8 @@ export const MAX_TURNS_PER_PROMPT = 1_000;
 /** 模型的上下文长度与输出上限的取值范围（worker 按组织选用的模型给出；平台另把 max_tokens 截到 AI_MAX_OUTPUT_TOKENS）。 */
 export const CONTEXT_WINDOW_RANGE = Object.freeze({ min: 8_192, max: 2_000_000 });
 export const MAX_OUTPUT_TOKENS_RANGE = Object.freeze({ min: 256, max: 131_072 });
+/** 压缩指令至多这么多字符（桌面版的指令只有几百个字符）。 */
+export const MAX_COMPACTION_INSTRUCTIONS_CHARS = 16 * 1024;
 const ISO_INSTANT_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
 
 export const ENTRY_ERROR_MESSAGES = Object.freeze({
@@ -129,6 +134,14 @@ function parseJsonSchemas(value) {
   return Object.fromEntries(entries);
 }
 
+/** 模型的上下文长度与输出上限（prompt 与 compact 共用）。 */
+function parseModel(model) {
+  if (!isPlainObject(model) || !hasExactKeys(model, ['contextWindow', 'maxOutputTokens'])) throw new EntryError('BAD_REQUEST');
+  if (!isIntegerIn(model.contextWindow, CONTEXT_WINDOW_RANGE) || !isIntegerIn(model.maxOutputTokens, MAX_OUTPUT_TOKENS_RANGE)) throw new EntryError('BAD_REQUEST');
+  if (model.maxOutputTokens > model.contextWindow) throw new EntryError('BAD_REQUEST');
+  return { contextWindow: model.contextWindow, maxOutputTokens: model.maxOutputTokens };
+}
+
 const PROMPT_KEYS = Object.freeze(['version', 'action', 'token', 'prompt', 'session', 'tools', 'maxTurns', 'model']);
 
 function parsePromptFields(value) {
@@ -142,18 +155,27 @@ function parsePromptFields(value) {
   if (!tools.every((name) => typeof name === 'string' && REQUEST_TOOLS.includes(name))) throw new EntryError('BAD_REQUEST');
   if (EXCLUSIVE_BUSINESS_TOOLS.some((group) => group.filter((name) => tools.includes(name)).length > 1)) throw new EntryError('BAD_REQUEST');
   if (!isIntegerIn(maxTurns, { min: 1, max: MAX_TURNS_PER_PROMPT })) throw new EntryError('BAD_REQUEST');
-  if (!isPlainObject(model) || !hasExactKeys(model, ['contextWindow', 'maxOutputTokens'])) throw new EntryError('BAD_REQUEST');
-  if (!isIntegerIn(model.contextWindow, CONTEXT_WINDOW_RANGE) || !isIntegerIn(model.maxOutputTokens, MAX_OUTPUT_TOKENS_RANGE)) throw new EntryError('BAD_REQUEST');
-  if (model.maxOutputTokens > model.contextWindow) throw new EntryError('BAD_REQUEST');
+  const limits = parseModel(model);
   if (hasSchemas && !tools.includes('json-validation')) throw new EntryError('BAD_REQUEST');
   return {
     prompt,
     session,
     tools: [...tools],
     maxTurns,
-    model: { contextWindow: model.contextWindow, maxOutputTokens: model.maxOutputTokens },
+    model: limits,
     jsonSchemas: hasSchemas ? parseJsonSchemas(value.jsonSchemas) : {},
   };
+}
+
+const COMPACT_KEYS = Object.freeze(['version', 'action', 'token', 'session', 'instructions', 'model']);
+
+/** compact：会话必须已有（不新建），压缩指令非空、有长度上限。 */
+function parseCompactFields(value) {
+  if (!hasExactKeys(value, COMPACT_KEYS)) throw new EntryError('BAD_REQUEST');
+  const { session, instructions, model } = value;
+  if (typeof session !== 'string' || !SESSION_FILE_PATTERN.test(session)) throw new EntryError('BAD_REQUEST');
+  if (typeof instructions !== 'string' || instructions.trim() === '' || instructions.length > MAX_COMPACTION_INSTRUCTIONS_CHARS) throw new EntryError('BAD_REQUEST');
+  return { session, instructions, model: parseModel(model) };
 }
 
 /** 严格解析请求：严格 UTF-8、一个 JSON 对象、字段恰好是该 action 登记的那几个（多余的、缺少的、类型不对的一律拒绝）。 */
@@ -177,6 +199,7 @@ export function parseRequest(bytes) {
     return { version: PROTOCOL_VERSION, action: 'session', token: value.token };
   }
   if (value.action === 'prompt') return { version: PROTOCOL_VERSION, action: 'prompt', token: value.token, ...parsePromptFields(value) };
+  if (value.action === 'compact') return { version: PROTOCOL_VERSION, action: 'compact', token: value.token, ...parseCompactFields(value) };
   throw new EntryError('BAD_REQUEST');
 }
 
@@ -247,15 +270,20 @@ function errorResult(error) {
 /**
  * 执行一次入口请求，把结果写到 stdout，返回退出码（0 为 ok，1 为失败）。
  * runPrompt（pi.mjs 的 runPiPrompt）只在 prompt 请求、令牌确认有效之后调用，返回 { session, turns, stopReason }，
- * 失败时抛 EntryError（其他异常一律按 INTERNAL 报告，不带出说明）。
+ * 失败时抛 EntryError（其他异常一律按 INTERNAL 报告，不带出说明）。runCompact（pi.mjs 的 runPiCompaction）同样只在 compact 请求、
+ * 令牌确认有效之后调用，返回 { session, compacted }。
  */
-export async function runEntry({ stdin, stdout, baseUrl = GATEWAY_BASE_URL, timeoutMs = GATEWAY_TIMEOUT_MS, runPrompt }) {
+export async function runEntry({ stdin, stdout, baseUrl = GATEWAY_BASE_URL, timeoutMs = GATEWAY_TIMEOUT_MS, runPrompt, runCompact }) {
   let result;
   try {
     const request = parseRequest(await readRequest(stdin));
     const session = await querySession({ baseUrl, token: request.token, timeoutMs });
     if (request.action === 'session') {
       result = { ok: true, action: 'session', expiresAt: session.expiresAt };
+    } else if (request.action === 'compact') {
+      if (typeof runCompact !== 'function') throw new EntryError('INTERNAL');
+      const outcome = await runCompact(request, { baseUrl });
+      result = { ok: true, action: 'compact', session: outcome.session, compacted: outcome.compacted === true };
     } else {
       if (typeof runPrompt !== 'function') throw new EntryError('INTERNAL');
       const outcome = await runPrompt(request, { baseUrl });

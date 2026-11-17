@@ -17,6 +17,7 @@ export const EXCLUSIVE_BUSINESS_TOOLS: readonly (readonly string[])[];
 export const SESSION_FILE_PATTERN: RegExp;
 export const MAX_PROMPT_CHARS: number;
 export const MAX_TURNS_PER_PROMPT: number;
+export const MAX_COMPACTION_INSTRUCTIONS_CHARS: number;
 export const CONTEXT_WINDOW_RANGE: Readonly<{ min: number; max: number }>;
 export const MAX_OUTPUT_TOKENS_RANGE: Readonly<{ min: number; max: number }>;
 
@@ -60,7 +61,15 @@ export interface PromptRequest {
   /** 预置的 JSON Schema（工作区相对路径 → schema）；parseRequest 的结果中总有（省略时为 {}）。 */
   jsonSchemas?: Record<string, unknown>;
 }
-export type EntryRequest = SessionRequest | PromptRequest;
+export interface CompactRequest {
+  version: 1;
+  action: 'compact';
+  token: string;
+  session: string;
+  instructions: string;
+  model: { contextWindow: number; maxOutputTokens: number };
+}
+export type EntryRequest = SessionRequest | PromptRequest | CompactRequest;
 
 export interface PromptOutcome {
   session: string;
@@ -68,6 +77,11 @@ export interface PromptOutcome {
   stopReason: 'stop' | 'length';
 }
 export type RunPrompt = (request: PromptRequest, options: { baseUrl: string }) => Promise<PromptOutcome>;
+export interface CompactOutcome {
+  session: string;
+  compacted: boolean;
+}
+export type RunCompact = (request: CompactRequest, options: { baseUrl: string }) => Promise<CompactOutcome>;
 
 export function readRequest(stream: AsyncIterable<Buffer> & { destroy?: () => void }, maxBytes?: number): Promise<Buffer>;
 export function parseRequest(bytes: Buffer): EntryRequest;
@@ -79,4 +93,5 @@ export function runEntry(options: {
   baseUrl?: string;
   timeoutMs?: number;
   runPrompt?: RunPrompt;
+  runCompact?: RunCompact;
 }): Promise<0 | 1>;

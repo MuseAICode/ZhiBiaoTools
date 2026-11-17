@@ -5,7 +5,10 @@
 // - 工作区说明（Linux /bin/sh、文件命名规则，与 agent 模板的取回规则一致）进入系统提示词；只注册请求中的原生工具；
 // - bash 的环境固定为 BASH_ENV，命令时限只能更短；会话文件在 pi-sessions/ 中，续接时带上之前的对话；
 // - 会话文件不存在 / 是符号链接 / 是目录 / 内容无效（SESSION_INVALID，不调用模型）、轮数达到上限（TURN_LIMIT）、
-//   平台拒绝或流中途失败（MODEL_FAILED）、输出达到上限（stopReason = length）。
+//   平台拒绝或流中途失败（MODEL_FAILED）、输出达到上限（stopReason = length）；
+// - 阶段交接压缩（runPiCompaction，8.6d2）：会话太短时无需压缩（不调用模型）；会话足够长时按 worker 的指令压缩（经同一条路由、
+//   不注册工具、令牌只在 Authorization 中），压缩写进同一个会话文件、续接时模型收到摘要而不是原文；刚压缩过时无需压缩；
+//   会话文件不可用 SESSION_INVALID；模型调用失败 MODEL_FAILED；会话文件中的回复全文可以由 worker 取回（assistantText.ts）。
 // 真实沙箱（gVisor、只通 agent-gw）中的同一流程见 tests/sandbox/docker/agentEntry.test.ts。
 import { randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
@@ -20,8 +23,9 @@ import type { AgentTokenIdentity } from '../../src/agent/tokenStore.ts';
 import type { AiGateway, ChatDelta, ChatRequest, ChatResult } from '../../src/ai/gateway.ts';
 import { AppError, registerErrorHandlers } from '../../src/errors.ts';
 import { SANDBOX_TEMPLATES } from '../../src/sandbox/templates.ts';
-import { BASH_COMMAND_TIMEOUT_SECONDS, BASH_ENV, bashTimeoutSeconds, INSTRUCTIONS_PATH, runPiPrompt } from '../../sandbox/agent/pi.mjs';
-import { NATIVE_TOOLS, type PromptRequest, SESSION_FILE_PATTERN } from '../../sandbox/agent/protocol.mjs';
+import { BASH_COMMAND_TIMEOUT_SECONDS, BASH_ENV, bashTimeoutSeconds, INSTRUCTIONS_PATH, runPiCompaction, runPiPrompt } from '../../sandbox/agent/pi.mjs';
+import { extractAgentAssistantText } from '../../src/agent/assistantText.ts';
+import { type CompactRequest, NATIVE_TOOLS, type PromptRequest, SESSION_FILE_PATTERN } from '../../sandbox/agent/protocol.mjs';
 
 const TOKEN = generateAgentToken();
 const IDENTITY: AgentTokenIdentity = {
@@ -142,6 +146,12 @@ const baseRequest = (overrides: Partial<PromptRequest> = {}): PromptRequest => (
 });
 
 const prompt = (overrides: Partial<PromptRequest> = {}) => runPiPrompt(baseRequest(overrides), { baseUrl, workspaceDir, sessionsDir, agentDir: join(root, 'agent') });
+const COMPACTION_INSTRUCTIONS = '请用简体中文总结，供下一阶段「正文生成」继续使用。';
+const compact = (session: string, overrides: Partial<CompactRequest> = {}) =>
+  runPiCompaction(
+    { version: 1, action: 'compact', token: TOKEN, session, instructions: COMPACTION_INSTRUCTIONS, model: { contextWindow: 128_000, maxOutputTokens: 8_192 }, ...overrides },
+    { baseUrl, workspaceDir, sessionsDir, agentDir: join(root, 'agent') },
+  );
 
 /** 一次调用中 tool 消息的内容（Pi 把工具结果交回模型）。 */
 const toolResults = (request: ChatRequest) => request.messages.filter((message) => message.role === 'tool').map((message) => message.content);
@@ -304,5 +314,74 @@ describe('Pi 会话（pi.mjs）', () => {
   it('输出达到上限时照常返回（stopReason = length）', async () => {
     replies = [{ content: '很长的回复', finishReason: 'length' }];
     expect(await prompt()).toMatchObject({ turns: 1, stopReason: 'length' });
+  });
+
+  describe('阶段交接压缩（runPiCompaction，8.6d2）', () => {
+    /** 一个足够长、可以压缩的会话：两条提示词各约 40k token（Pi 保留最近约 20k token，从第二条提示词处切开、总结第一条）。 */
+    async function longSession(): Promise<string> {
+      replies = [{ content: '第一阶段完成' }, { content: '第二阶段完成' }];
+      const first = await prompt({ prompt: `第一阶段资料：${'甲乙丙丁'.repeat(40_000)}` });
+      await prompt({ prompt: `第二阶段：检查目录。${'戊己庚辛'.repeat(40_000)}`, session: first.session });
+      calls.length = 0;
+      authorizations.length = 0;
+      rawBodies.length = 0;
+      return first.session;
+    }
+
+    it('会话太短时无需压缩：compacted = false，不调用模型、会话文件不变', async () => {
+      const { session } = await prompt();
+      calls.length = 0;
+      const before = readFileSync(join(sessionsDir, session), 'utf8');
+      expect(await compact(session)).toEqual({ session, compacted: false });
+      expect(calls).toEqual([]);
+      expect(readFileSync(join(sessionsDir, session), 'utf8')).toBe(before);
+    });
+
+    it('按 worker 的指令压缩：经同一条路由、不注册工具、令牌只在 Authorization 中；续接时模型收到摘要；刚压缩过时无需压缩', async () => {
+      const session = await longSession();
+      replies = [{ content: '## 摘要\n第一阶段已完成，资料见工作区。' }];
+      expect(await compact(session)).toEqual({ session, compacted: true });
+      expect(calls).toHaveLength(1);
+      expect(calls[0]!.tools ?? []).toEqual([]);
+      expect(JSON.stringify(calls[0]!.messages)).toContain(COMPACTION_INSTRUCTIONS);
+      expect(authorizations).toEqual([`Bearer ${TOKEN}`]);
+      for (const body of rawBodies) expect(body).not.toContain(TOKEN);
+      expect(readdirSync(sessionsDir)).toEqual([session]);
+      const text = readFileSync(join(sessionsDir, session), 'utf8');
+      expect(text).toContain('"type":"compaction"');
+      expect(text).not.toContain(TOKEN);
+      // 刚压缩过：无需压缩。
+      calls.length = 0;
+      expect(await compact(session)).toEqual({ session, compacted: false });
+      expect(calls).toEqual([]);
+      // 续接：模型收到摘要，不再收到第一阶段的原文。
+      replies = [{ content: '正文完成' }];
+      await prompt({ prompt: '进入正文生成', session });
+      const sent = JSON.stringify(calls[0]!.messages);
+      expect(sent).toContain('第一阶段已完成，资料见工作区。');
+      expect(sent).not.toContain('甲乙丙丁'.repeat(100));
+      // 会话文件中的回复全文由 worker 取回（最后一条 assistant 消息）。
+      expect(extractAgentAssistantText(readFileSync(join(sessionsDir, session)))).toEqual({ text: '正文完成', truncated: false });
+    });
+
+    it('会话文件不存在或内容无效时 SESSION_INVALID，不调用模型', async () => {
+      const valid = (await prompt()).session;
+      calls.length = 0;
+      await expect(compact(valid.replace(/^\d{4}/, '1999'))).rejects.toMatchObject({ code: 'SESSION_INVALID' });
+      const corrupt = valid.replace(/^\d{4}/, '2003');
+      writeFileSync(join(sessionsDir, corrupt), 'not a pi session\n');
+      await expect(compact(corrupt)).rejects.toMatchObject({ code: 'SESSION_INVALID' });
+      expect(calls).toEqual([]);
+    });
+
+    it('模型调用失败（平台拒绝、上游失败）时 MODEL_FAILED，会话文件中没有压缩', async () => {
+      const session = await longSession();
+      turnError = new AppError(402, 'INSUFFICIENT_BALANCE', '余额不足');
+      await expect(compact(session)).rejects.toMatchObject({ code: 'MODEL_FAILED' });
+      turnError = null;
+      replies = [{ content: '写到一半', error: new AppError(502, 'AI_UPSTREAM_ERROR', '上游失败') }];
+      await expect(compact(session)).rejects.toMatchObject({ code: 'MODEL_FAILED' });
+      expect(readFileSync(join(sessionsDir, session), 'utf8')).not.toContain('"type":"compaction"');
+    });
   });
 });
