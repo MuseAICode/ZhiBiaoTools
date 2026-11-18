@@ -62,6 +62,13 @@ e) **许可证合规**：本项目为闭源商业授权。新增第三方依赖�
 - 当前私有仓库的分支保护不强制生效（见路线图第 9 步上线检查），合并按钮不会因 CI 失败而禁用，合并前须自行核对上述检查结果。
 - 合并后向用户发送总结：PR 编号与标题、改了什么、CI 结果，并写明偏离路线图之处（没有则写明“无偏离”）。
 
+## 已计划的依赖漏洞修复
+
+- **picomatch ReDoS（GHSA-fc5q-39xc-vjpf，high）**：经 `vitest` / `vite` 的开发依赖链间接引入（`vitest → vite / @vitest/mocker → tinyglobby → fdir → picomatch`），`npm audit` 在 `server/` 报出 5 个 high（`picomatch`、`fdir`、`tinyglobby`、`vite`、`vitest`，同一公告）。
+  - **影响面**：仅开发 / 测试依赖（测试运行器），不进生产运行时与安装包；ReDoS 需要攻击者可控的 glob 模式，本仓库的测试不对不可信输入暴露该路径，实际风险低。
+  - **暂不修复的原因**：截至 2026-11-18，`picomatch` 最新版仍是 `4.0.7`，公告判定 `<=4.0.7` 一律受影响，**尚无已发布的修复版本**；`npm audit fix --force` 只会把 `vite` 从 8.x 降级到 6.x（破坏性降级）且并不移除受影响的 `picomatch`，不采用。
+  - **计划**：于 **2026-12-02（约两周后）** 重跑 `cd server && npm audit`；一旦 `picomatch` 发布 `>4.0.7` 的修复版本且该版本发布满两周（遵守 `save-exact` 与“选发布超过两周的版本”），单独开 PR 升级（满足自动合并条件时可自动合并），并移除本条。
+
 ## 已接受风险（CI 审计豁免）
 
 - CI 的 `Server typecheck / test / audit` 中，server 根依赖的 high/critical 审计门由 `server/scripts/ci-audit-high.mjs` 执行（取代裸 `npm audit --audit-level=high`，因为后者无法按编号放行单个公告）。该脚本的 `AUDIT_ALLOWLIST` 对**个别公告**给出**带到期日**的临时豁免：只放行白名单中、且未到期的 high/critical 公告，其余 high/critical 一律使 CI 失败；到期后该项自动失效、恢复拦截。逻辑由 `server/tests/ci/auditHigh.test.ts` 验证。
