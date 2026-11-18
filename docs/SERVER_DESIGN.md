@@ -807,6 +807,15 @@ worker 经 sandbox-runner 执行 agent 模板登记的唯一命令 `run`（`node
 - **执行者**（`src/agent/execution.ts`）：每次执行入口（提示词与压缩）之前读出本次执行的拒绝次数，入口报告 `MODEL_FAILED` 后只采信这之后的拒绝（之前的提示词中、沙箱内遗留进程的调用被拒绝不影响本条）：`insufficient_balance` 一律暂停为 `insufficient_balance`，充值后继续从 checkpoint 续跑；`model_not_configured` / `model_unavailable` 与余额不足一致，暂停为同名的暂停原因（`JobModelUnavailableError` → `finishRun` 的 `model-unavailable`，#98 确认；事件说明分别为“尚未选择文本模型，任务已暂停，请在设置中选择模型后继续”与“所选模型暂时不能使用（未登记、已停用、未定价或服务未配置），任务已暂停，请在设置中选择可用的模型后继续”），不重试；用户或管理员在设置中选择可用的模型后经普通的“继续”从 checkpoint 续跑，仍不可用时再次暂停；没有新的拒绝时按可以重试的“模型调用失败”。压缩与提示词共用这一判断（可选压缩遇到这些拒绝同样暂停，不按原上下文继续）。
 - **被注入的 Agent**：沙箱内的命令可以自己发出被拒绝的调用（例如带上大量输入使冻结额超过余额），使任务暂停；这与 Agent 自己报告失败（第 7.16 节）的效果相同，不能借此调用模型、越过上限或影响其他执行与组织。
 
+### 7.30 实现（路线图 8.7a）：可研报告目录生成
+
+第一个接到第 7.27 节执行者上的真实 Agent 任务（`feasibility-outline`，`src/feasibilityReport/jobs.ts`；材料与结果整理在 `outlineAgent.ts`、`outlineTemplates.ts`，与桌面版 `feasibilityOutlineTask.cjs` 逐项对照）。
+
+- **登记**：agent 队列、可续跑、调用模型；上限取 `AGENT_TASK_LIMITS.outline`（5 元 / 500 轮，8.7f 按 P95 重定）；业务工具 `ask-user`、`request-termination`（桌面版顶层任务的失败报告须经用户确认）；工作区快照类别 `feasibility-outline`，成功后丢弃（目录调整接着生成的会话在 8.7b 设计）；模板 `agent`（墙钟 30 分钟）。互斥键与其他可研任务相同（`project:{projectId}:feasibility-report`），保存上游内容时一并取消。
+- **输入**：开始时从数据库读取资料分析（为空 409 / 失败“请先完成资料分析”）、项目参数、已保存的目录配置与引用的知识库轻量条目；接口 `POST .../feasibility-report/outline-job` 不接受参数（桌面版在开始时保存目录配置，Web 版由 `PUT .../outline-config` 先保存）。材料以受保护文件放入工作区，提示词、预置 Schema、工具与桌面版相同。
+- **结果**：桌面版没有提交校验、不重试（`max_retries` 0），Web 版相同：Agent 结束后读出 `outline.json`（按不可信数据处理，只取约定字段并转成字符串，最多三级、按桌面版截短数量，知识库条目只保留本次清单中的，节点 id 由程序按位置分配）；不是合法 JSON、没有可用目录、文件过大时失败，说明是固定文字、不含文件内容；节点数超过 2000（服务端目录上限）时失败。经 `saveOutlineResult` 整体替换目录、清空正文与关键参数（桌面版在开始时清空，这里在写入时清空，与资料分析任务相同），超长字段截短。
+- **续跑与输入签名**：每条提示词之后保存检查点，task 状态只有首次执行开始时的输入签名；续跑时签名与当前不符即失败（不按新输入接着旧会话），已发出阶段要求时只发“继续之前的任务”、不重新放入材料（原件不可用时按同一输入重新放入）；写入时在同一事务中核对签名。
+
 ## 8. 部署架构
 
 ### 8.0 部署位置（已决定，第 9 节第 13、14 项）

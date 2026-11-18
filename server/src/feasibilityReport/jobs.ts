@@ -1,7 +1,8 @@
-// 可研报告的四类任务（路线图第 6 步 6.12；取代桌面版 taskService.cjs 的 feasibility-analysis / feasibility-parameters /
-// feasibility-content / feasibility-human-writing 与 feasibilityReportTasks.cjs 的 run* 函数），ai 队列，会调用模型（入队检查
-// 最低启动余额）。四类任务互斥（lock_key 为 project:{projectId}:feasibility-report，与桌面版 feasibility-report 组的
-// group-exclusive 相同；第 8 步的目录生成 / 调整沿用）。
+// 可研报告的任务（取代桌面版 taskService.cjs 的 feasibility-* 任务与 feasibilityReportTasks.cjs、feasibilityOutlineTask.cjs 的
+// run* 函数），会调用模型（入队检查最低启动余额）。各类任务互斥（lock_key 为 project:{projectId}:feasibility-report，与桌面版
+// feasibility-report 组的 group-exclusive 相同；8.7b 的目录调整沿用）：
+// - 资料分析、关键参数、正文生成、自然化审校（路线图第 6 步 6.12）：ai 队列；
+// - 目录生成（第 8 步 8.7a）：agent 队列，在 agent 沙箱中由 Agent 读工作区材料写出 outline.json（见 createOutlineJob）。
 //
 // - 输入在任务开始时从数据库读取，不取自任务参数：资料分析读合并的资料正文（资料须全部解析成功，没有资料时只按项目参数分析）；
 //   关键参数读目录与引用的知识库条目；正文生成读目录、关键参数与引用的知识库条目。模型取组织设置中选择的平台模型；
@@ -19,6 +20,9 @@ import type { TenantContext } from '../db/tenant.ts';
 import { AppError } from '../errors.ts';
 import { createJobChat, resolveJobModel, type JobChat } from '../jobs/chat.ts';
 import { abortableDelay, isJobStop } from '../jobs/control.ts';
+import { AGENT_TASK_LIMITS } from '../agent/budget.ts';
+import type { AgentPromptTool } from '../agent/entry.ts';
+import { withAgentRun } from '../agent/execution.ts';
 import { JobError, JobInterruptedError, type JobContext, type JobTypeDefinition } from '../jobs/definitions.ts';
 import { cancelJob, enqueueJob, type JobServiceDependencies } from '../jobs/service.ts';
 import { listJobs, type JobRecord } from '../jobs/store.ts';
@@ -44,11 +48,21 @@ import {
   type PromptState,
 } from './prompts.ts';
 import {
+  buildFeasibilityOutlineAgentInput,
+  countOutlineNodes,
+  FEASIBILITY_OUTLINE_JSON_SCHEMA,
+  FEASIBILITY_OUTLINE_OUTPUT_FILE,
+  FeasibilityOutlineResultError,
+  finalizeFeasibilityOutline,
+} from './outlineAgent.ts';
+import {
   clearChapterContents,
   FEASIBILITY_ANALYSIS_JOB_TYPE,
   FEASIBILITY_CONTENT_JOB_TYPE,
   FEASIBILITY_HUMAN_WRITING_JOB_TYPE,
   FEASIBILITY_JOB_TYPES,
+  FEASIBILITY_OUTLINE_JOB_TYPE,
+  FEASIBILITY_OUTLINE_NODES_MAX,
   FEASIBILITY_PARAMETERS_JOB_TYPE,
   feasibilityReportLockKey,
   inputSignature,
@@ -58,11 +72,13 @@ import {
   saveAnalysisResult,
   saveChapterResult,
   saveKeyParametersResult,
+  saveOutlineResult,
+  type FeasibilityOutlineItem,
   type FeasibilityReportState,
   type ReferenceKnowledgeItem,
 } from './store.ts';
 
-export { FEASIBILITY_ANALYSIS_JOB_TYPE, FEASIBILITY_CONTENT_JOB_TYPE, FEASIBILITY_HUMAN_WRITING_JOB_TYPE, FEASIBILITY_PARAMETERS_JOB_TYPE };
+export { FEASIBILITY_ANALYSIS_JOB_TYPE, FEASIBILITY_CONTENT_JOB_TYPE, FEASIBILITY_HUMAN_WRITING_JOB_TYPE, FEASIBILITY_OUTLINE_JOB_TYPE, FEASIBILITY_PARAMETERS_JOB_TYPE };
 
 /** 预热请求结束后稍候再发后续请求（与桌面版 PREFIX_WARMUP_SETTLE_MS 相同）。 */
 const PREFIX_WARMUP_SETTLE_MS = 1500;
@@ -85,6 +101,10 @@ function analysisProblem(state: FeasibilityReportState): Problem | null {
     return { code: 'FEASIBILITY_REPORT_SOURCE_NOT_READY', message: '资料文件尚未全部解析完成，请稍后再试' };
   }
   return null;
+}
+
+function outlineProblem(state: FeasibilityReportState): Problem | null {
+  return state.analysisMarkdown.trim() ? null : { code: 'FEASIBILITY_REPORT_ANALYSIS_REQUIRED', message: '请先完成资料分析' };
 }
 
 const OUTLINE_REQUIRED: Problem = { code: 'FEASIBILITY_REPORT_OUTLINE_REQUIRED', message: '请先生成报告目录' };
@@ -259,6 +279,118 @@ function createAnalysisJob(options: FeasibilityJobOptions): JobTypeDefinition<Re
       if (context.signal.aborted) throw new JobInterruptedError();
       if (!(await saveAnalysisResult(db, tenant, projectId, analysisToMarkdown(payload), signature))) throw inputChanged();
       await context.log('资料分析完成。');
+    },
+  };
+}
+
+// ---- 目录生成（8.7a） ----
+
+/** 目录生成的阶段（与桌面版 initial_stage 相同）。 */
+export const FEASIBILITY_OUTLINE_STAGE = 'feasibility-outline';
+/** 工作区快照的任务类别（迁移 0040 的 task_kind；8.7b 的目录调整共用）。 */
+export const FEASIBILITY_OUTLINE_TASK_KIND = 'feasibility-outline';
+/** 工作区材料的受保护文件分组。 */
+const OUTLINE_INPUT_GROUP = 'input';
+/** 续跑时该阶段的要求已在会话中发出：只请 Agent 继续（与桌面版 CONTINUE_PROMPT 相同）。 */
+const CONTINUE_PROMPT = '继续之前的任务';
+/** 与桌面版相同：原生工具、json-validation、ask-user 与需用户确认的失败报告（顶层任务的 report-failure 即 request-termination）。 */
+const OUTLINE_TOOLS: readonly AgentPromptTool[] = ['read', 'write', 'edit', 'bash', 'grep', 'find', 'ls', 'json-validation', 'ask-user', 'request-termination'];
+const OUTLINE_BUSINESS_TOOLS = ['ask-user', 'request-termination'] as const;
+
+/** checkpoint 中任务自己的状态：首次执行开始时的输入签名（续跑时核对，写入时传回）。 */
+function outlineCheckpointSignature(raw: Record<string, unknown> | null): string | null {
+  return raw && typeof raw.signature === 'string' && raw.signature !== '' ? raw.signature : null;
+}
+
+/**
+ * 可研报告目录生成（取代桌面版 feasibilityOutlineTask.cjs 的 runFeasibilityOutlineTask）：
+ * - 输入在任务开始时从数据库读取：资料分析（为空时不能开始）、项目参数、目录配置（大纲模板、目标字数）与引用的知识库条目
+ *   （轻量条目：id、标题、简介）；目录配置由接口先保存（PUT .../outline-config），与桌面版开始时保存相同；
+ * - 工作区材料（项目参数.md、资料分析.md、大纲模板.md、参考知识库.md、材料说明.md）登记为受保护文件，提示词、预置 Schema 与工具
+ *   与桌面版相同（src/feasibilityReport/outlineAgent.ts）；桌面版没有提交校验（max_retries 0），结果在 Agent 结束后整理：不是合法
+ *   JSON、没有可用目录时任务失败，说明为固定文字；
+ * - 结果经 saveOutlineResult 整体替换目录并清空关键参数（桌面版在开始时清空，这里在写入时清空，与资料分析任务相同），带上首次执行
+ *   开始时的输入签名：之后保存了项目信息、资料分析、目录、关键参数，导入、移除了资料，写入被拒绝；
+ * - 可续跑：每条提示词之后保存检查点（工作区快照与 checkpoint，签名在其中），暂停（费用 / 轮数上限、余额不足、存储配额）或 worker
+ *   失联后续接会话，只发“继续之前的任务”；续跑时输入已变化即失败（不按新的输入接着旧的会话）。成功后丢弃快照（目录调整接着生成的
+ *   会话在 8.7b 设计）。
+ */
+function createOutlineJob(): JobTypeDefinition<Record<string, never>> {
+  return {
+    type: FEASIBILITY_OUTLINE_JOB_TYPE,
+    queue: 'agent',
+    resumable: true,
+    billable: true,
+    agentLimits: AGENT_TASK_LIMITS.outline,
+    agentTools: OUTLINE_BUSINESS_TOOLS,
+    agentWorkspace: { taskKind: FEASIBILITY_OUTLINE_TASK_KIND },
+    parseParams: noParams('目录生成'),
+    async run(context) {
+      const { db, tenant } = context;
+      const { projectId, state, signature: current } = await startState(context, outlineProblem);
+      const knowledgeItems = lightweightKnowledgeItems(await readReferenceKnowledgeItems(db, tenant, projectId));
+      const allowedKnowledgeIds = new Set(knowledgeItems.map((item) => item.id));
+      const input = buildFeasibilityOutlineAgentInput(state, knowledgeItems);
+      await withAgentRun(context.agent, async (run) => {
+        const saved = outlineCheckpointSignature(run.taskCheckpoint);
+        if (saved !== null && saved !== current) throw inputChanged();
+        const signature = saved ?? current;
+        if (!run.resumed) {
+          await context.log('开始生成报告目录。');
+          await context.setProgress(8);
+          await context.log(knowledgeItems.length ? `已读取 ${knowledgeItems.length} 条知识库轻量条目。` : '本次未使用知识库条目。');
+          await context.setProgress(12);
+          await context.log('正在准备目录生成工作区材料。');
+          await context.setProgress(16);
+        }
+        // 续跑时材料在快照中；原件不可用（快照中的副本被改动）时按同一输入重新放入。
+        if (!run.resumed || run.unavailableProtectedFiles.length > 0) {
+          await run.baseline.write(run.sandbox, OUTLINE_INPUT_GROUP, input.files.map((file) => ({ path: file.path, data: Buffer.from(file.content, 'utf8') })), {
+            replace: true,
+            signal: context.signal,
+          });
+        }
+        await context.log(run.resumed ? 'Agent 继续生成报告目录。' : 'Agent 正在生成报告目录。');
+        await context.setProgress(22);
+        const stage = await run.runStage<FeasibilityOutlineItem[]>({
+          stage: FEASIBILITY_OUTLINE_STAGE,
+          stageIndex: 0,
+          prompt: run.wasPrompted(FEASIBILITY_OUTLINE_STAGE) ? CONTINUE_PROMPT : input.prompt,
+          tools: OUTLINE_TOOLS,
+          jsonSchemas: { [FEASIBILITY_OUTLINE_OUTPUT_FILE]: FEASIBILITY_OUTLINE_JSON_SCHEMA },
+          outputFile: FEASIBILITY_OUTLINE_OUTPUT_FILE,
+          maxExecutionRetries: 0,
+          checkpointAfterPrompt: () => ({ signature }),
+          async validate() {
+            // 与桌面版相同：不做提交修复，结果不可用时任务失败。
+            const file = (await run.readFiles([FEASIBILITY_OUTLINE_OUTPUT_FILE])).get(FEASIBILITY_OUTLINE_OUTPUT_FILE);
+            if (file && file.data === null) throw new JobError('FEASIBILITY_REPORT_OUTLINE_INVALID', `${FEASIBILITY_OUTLINE_OUTPUT_FILE}过大，无法读取`);
+            try {
+              return { value: finalizeFeasibilityOutline(file?.data?.toString('utf8') ?? '', allowedKnowledgeIds), issues: [] };
+            } catch (error) {
+              if (error instanceof FeasibilityOutlineResultError) throw new JobError('FEASIBILITY_REPORT_OUTLINE_INVALID', error.message, { cause: error });
+              throw error;
+            }
+          },
+        });
+        if (stage.value === null) throw new JobError('FEASIBILITY_REPORT_OUTLINE_INVALID', '模型未返回可用目录');
+        if (context.signal.aborted) throw new JobInterruptedError();
+        if (countOutlineNodes(stage.value) > FEASIBILITY_OUTLINE_NODES_MAX) {
+          throw new JobError('FEASIBILITY_REPORT_OUTLINE_TOO_LARGE', `生成的目录超过 ${FEASIBILITY_OUTLINE_NODES_MAX} 项，请重新生成`);
+        }
+        await context.log(`已生成 ${stage.value.length} 个一级目录。`);
+        await context.setProgress(95);
+        const written = await saveOutlineResult(
+          db,
+          tenant,
+          projectId,
+          // 与桌面版相同：目录的项目名称取项目参数，概述取资料分析的前 400 个字符。
+          { outline: stage.value, projectName: state.projectInfo.projectName, projectOverview: String(state.analysisMarkdown || '').slice(0, 400) },
+          signature,
+        );
+        if (!written) throw inputChanged();
+      });
+      await context.log('报告目录生成完成。');
     },
   };
 }
@@ -471,7 +603,7 @@ function createHumanWritingJob(): JobTypeDefinition<Record<string, never>> {
 }
 
 export function createFeasibilityReportJobs(options: FeasibilityJobOptions = {}): JobTypeDefinition<any>[] {
-  return [createAnalysisJob(options), createParametersJob(), createContentJob(options), createHumanWritingJob()];
+  return [createAnalysisJob(options), createOutlineJob(), createParametersJob(), createContentJob(options), createHumanWritingJob()];
 }
 
 export const feasibilityReportJobs = createFeasibilityReportJobs();
@@ -506,6 +638,14 @@ async function enqueue(
 /** 开始资料分析（取代桌面版 tasks.startFeasibilityAnalysis）。已有未结束的可研任务时 409 JOB_LOCKED。 */
 export function startFeasibilityAnalysis(jobs: JobServiceDependencies, context: TenantContext, projectId: string): Promise<JobRecord> {
   return enqueue(jobs, context, projectId, FEASIBILITY_ANALYSIS_JOB_TYPE, analysisProblem, {});
+}
+
+/**
+ * 开始生成报告目录（取代桌面版 tasks.startFeasibilityOutline，8.7a）：目录配置（大纲模板、目标字数、引用的知识库文档）先经
+ * PUT .../outline-config 保存。入 agent 队列，另受每组织 Agent 任务并发与每日时长的限制（8.3d）。
+ */
+export function startFeasibilityOutline(jobs: JobServiceDependencies, context: TenantContext, projectId: string): Promise<JobRecord> {
+  return enqueue(jobs, context, projectId, FEASIBILITY_OUTLINE_JOB_TYPE, outlineProblem, {});
 }
 
 /** 开始生成关键参数（取代桌面版 tasks.startFeasibilityParameters）。 */

@@ -11,8 +11,8 @@
 // 目录和关键参数；保存资料分析时清空目录和关键参数；保存目录（排序除外）时清空关键参数，并按 reason / idMap /
 // affectedNodeIds 清空受影响章节的正文；保存关键参数时清空全部正文。
 //
-// 第 6 步（6.12）的任务（src/feasibilityReport/jobs.ts）：资料解析结果经 saveSourceParse 写入；资料分析、关键参数、正文由
-// saveAnalysisResult、saveKeyParametersResult、clearChapterContents、saveChapterResult 写入，下游清空规则与用户保存相同，
+// 第 6 步（6.12）与第 8 步（8.7a）的任务（src/feasibilityReport/jobs.ts）：资料解析结果经 saveSourceParse 写入；资料分析、目录、
+// 关键参数、正文由 saveAnalysisResult、saveOutlineResult、saveKeyParametersResult、clearChapterContents、saveChapterResult 写入，下游清空规则与用户保存相同，
 // 并带上任务开始时的输入签名（inputSignature），在写入的同一事务中（项目锁内）核对，不符时不写入。正文生成或审校任务未结束
 // （排队、运行、暂停、取消中）时用户不能保存目录、手工改正文（与桌面版 assertContentUnlocked 相同，409）。
 import { createHash } from 'node:crypto';
@@ -65,13 +65,16 @@ export type FeasibilityOutlineSaveReason = (typeof FEASIBILITY_OUTLINE_SAVE_REAS
 /** 任务读取合并的资料正文时 Markdown 的总大小上限（整份读入内存，与其他模块相同）。 */
 export const FEASIBILITY_MARKDOWN_READ_MAX_BYTES = 32 * 1024 * 1024;
 
-/** 可研报告的任务类型（6.12，src/feasibilityReport/jobs.ts）。目录生成 / 调整随第 8 步。 */
+/** 可研报告的任务类型（6.12、8.7a，src/feasibilityReport/jobs.ts）。目录调整随 8.7b。 */
 export const FEASIBILITY_ANALYSIS_JOB_TYPE = 'feasibility-analysis';
+/** 目录生成（8.7a）：agent 队列，在 agent 沙箱中由 Agent 写出目录。 */
+export const FEASIBILITY_OUTLINE_JOB_TYPE = 'feasibility-outline';
 export const FEASIBILITY_PARAMETERS_JOB_TYPE = 'feasibility-parameters';
 export const FEASIBILITY_CONTENT_JOB_TYPE = 'feasibility-content';
 export const FEASIBILITY_HUMAN_WRITING_JOB_TYPE = 'feasibility-human-writing';
 export const FEASIBILITY_JOB_TYPES = [
   FEASIBILITY_ANALYSIS_JOB_TYPE,
+  FEASIBILITY_OUTLINE_JOB_TYPE,
   FEASIBILITY_PARAMETERS_JOB_TYPE,
   FEASIBILITY_CONTENT_JOB_TYPE,
   FEASIBILITY_HUMAN_WRITING_JOB_TYPE,
@@ -149,8 +152,8 @@ export interface FeasibilityReportState {
   outlineData: FeasibilityOutlineData | null;
   /** 本项目最近一次的各类任务（与 GET /api/jobs/:jobId 相同的形式）；没有时为 null。 */
   analysisTask: JobBody | null;
-  /** 目录生成 / 调整随第 8 步，一律为 null。 */
-  outlineTask: null;
+  outlineTask: JobBody | null;
+  /** 目录调整随 8.7b，一律为 null。 */
   outlineAdjustmentTask: null;
   parametersTask: JobBody | null;
   contentTask: JobBody | null;
@@ -402,7 +405,7 @@ export async function readState(trx: Trx, projectId: string): Promise<Feasibilit
     keyParametersMarkdown: meta?.key_parameters_markdown ?? '',
     outlineData: await readOutline(trx, projectId, meta),
     analysisTask: task(FEASIBILITY_ANALYSIS_JOB_TYPE),
-    outlineTask: null,
+    outlineTask: task(FEASIBILITY_OUTLINE_JOB_TYPE),
     outlineAdjustmentTask: null,
     parametersTask: task(FEASIBILITY_PARAMETERS_JOB_TYPE),
     contentTask: task(FEASIBILITY_CONTENT_JOB_TYPE),
@@ -651,7 +654,7 @@ export interface SaveOutlineInput {
 /**
  * 保存目录（与桌面版 saveOutline 相同的 reason 协议）：整体替换节点。reason 为 replace 时清空全部正文；其他 reason 中
  * affectedNodeIds 里的节点清空正文，其余节点的正文取请求给出的，未给出时按 idMap 沿用已保存的。reason 不是 sort 时
- * 同时清空关键参数。第 8 步的目录生成任务同样经它写入（reason 为 replace）。正文生成或审校任务未结束时返回 409
+ * 同时清空关键参数。目录生成任务（8.7a）经 saveOutlineResult 写入（规则同 replace）。正文生成或审校任务未结束时返回 409
  * FEASIBILITY_REPORT_CONTENT_LOCKED。
  */
 export async function saveOutline(db: Kysely<Database>, context: TenantContext, projectId: string, input: SaveOutlineInput): Promise<FeasibilityReportState> {
@@ -1044,6 +1047,75 @@ export async function saveKeyParametersResult(
   return guardedWrite(db, context, projectId, expectedSignature, async (trx) => {
     await writeMeta(trx, context, projectId, { key_parameters_markdown: keyParameters });
     await clearAllContent(trx, projectId);
+  });
+}
+
+/** 目录生成任务（8.7a）写入的目录：节点由任务按位置编号（1、1.1、1.1.1），各字段已转成字符串。 */
+export interface OutlineResultInput {
+  outline: readonly FeasibilityOutlineItem[];
+  projectName: string;
+  projectOverview: string;
+}
+
+/**
+ * 目录生成任务的结果：与 saveOutline 的 replace 相同整体替换目录（新目录没有正文）并清空关键参数，目录的项目名称与概述一并写入。
+ * 内容来自 Agent，超长的标题、说明截短，每章引用的知识库条目超过上限的截短；层级超过上限、节点数超过上限或 id 重复时抛 TypeError
+ * （任务先检查）。任务自己持有可研任务的互斥键，正文任务不会同时运行，不检查正文锁。签名不符时不写入，返回 false。
+ */
+export async function saveOutlineResult(
+  db: Kysely<Database>,
+  context: TenantContext,
+  projectId: string,
+  input: OutlineResultInput,
+  expectedSignature: string,
+): Promise<boolean> {
+  const rows: OutlineRow[] = [];
+  const ids = new Set<string>();
+  const walk = (items: readonly FeasibilityOutlineItem[], parent: string | null, level: number) => {
+    if (level > FEASIBILITY_OUTLINE_DEPTH_MAX) throw new TypeError('目录层级超过上限');
+    items.forEach((item, index) => {
+      const id = String(item.id);
+      if (!id || charLength(id) > FEASIBILITY_NODE_ID_MAX || ids.has(id)) throw new TypeError('目录节点 id 不合法');
+      ids.add(id);
+      if (rows.length >= FEASIBILITY_OUTLINE_NODES_MAX) throw new TypeError('目录节点数超过上限');
+      const knowledgeItemIds: string[] = [];
+      for (const value of (item.knowledge_item_ids ?? []).slice(0, FEASIBILITY_KNOWLEDGE_ITEMS_MAX)) {
+        const next = [...knowledgeItemIds, stripNul(String(value))];
+        if (Buffer.byteLength(JSON.stringify(next)) > FEASIBILITY_KNOWLEDGE_IDS_MAX_BYTES) break;
+        knowledgeItemIds.push(next[next.length - 1]!);
+      }
+      rows.push({
+        node_id: id,
+        parent_node_id: parent,
+        sort_order: index,
+        level,
+        title: taskText(item.title, FEASIBILITY_TITLE_MAX).trim() || UNTITLED_CHAPTER,
+        description: taskText(item.description, FEASIBILITY_TEXT_MAX).trim(),
+        knowledge_item_ids: knowledgeItemIds.length ? knowledgeItemIds : null,
+        content: '',
+      });
+      if (item.children?.length) walk(item.children, id, level + 1);
+    });
+  };
+  walk(input.outline, null, 1);
+  const name = taskText(input.projectName, FEASIBILITY_TITLE_MAX).trim();
+  const overview = taskText(input.projectOverview, FEASIBILITY_TEXT_MAX).trim();
+  return guardedWrite(db, context, projectId, expectedSignature, async (trx) => {
+    await deleteOutline(trx, projectId);
+    await insertChunked(
+      rows.map((row) => ({
+        org_id: context.orgId,
+        project_id: projectId,
+        ...row,
+        knowledge_item_ids: row.knowledge_item_ids ? JSON.stringify(row.knowledge_item_ids) : null,
+      })),
+      (chunk) => trx.insertInto('feasibility_report_outline_nodes').values(chunk).execute(),
+    );
+    await writeMeta(trx, context, projectId, {
+      outline_project_name: name || null,
+      outline_project_overview: overview || null,
+      key_parameters_markdown: '',
+    });
   });
 }
 
