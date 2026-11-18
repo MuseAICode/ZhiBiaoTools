@@ -33,7 +33,11 @@ import { buildAgentGateway } from '../../../src/agent/gateway.ts';
 import { createAskUserTool } from '../../../src/agent/askUserTool.ts';
 import { reportFailureTool } from '../../../src/agent/reportFailureTool.ts';
 import { createRequestTerminationTool } from '../../../src/agent/requestTerminationTool.ts';
-import { createAgentToolRegistry } from '../../../src/agent/tools.ts';
+import { AGENT_TOOL_CALL_PATH, createAgentToolRegistry, resolveProjectArtifact, type AgentToolDefinition } from '../../../src/agent/tools.ts';
+import { setAgentToolScope } from '../../../src/agent/toolScope.ts';
+import { issueAgentJobToken } from '../../../src/agent/tokenStore.ts';
+import { ARTIFACT_MIMES } from '../../../src/artifacts/store.ts';
+import { claimJob, insertJob, type RunRef } from '../../../src/jobs/store.ts';
 import { withAgentRun, type AgentRun } from '../../../src/agent/execution.ts';
 import { AGENT_WORKSPACE_REJECTED_CODE } from '../../../src/agent/workspaceJob.ts';
 import { putCredential } from '../../../src/ai/credentials.ts';
@@ -86,6 +90,8 @@ let endpoint: FastifyInstance;
 let agentGw: FastifyInstance;
 let driver: DockerSandboxDriver;
 let platformModelId: string;
+/** 真实 agent-gw 的 origin（宿主进程）：第 1、3 项的直接调用样本从宿主经它打 /v1/tools/call（与沙箱同一条链路）。 */
+let gwOrigin: string;
 
 const runners: JobRunner[] = [];
 const dispatchers: JobDispatcher[] = [];
@@ -198,13 +204,35 @@ type Step = (run: AgentRun, context: JobContext<Record<string, never>>) => Promi
 let steps: Step[] = [];
 let executions = 0;
 
-/** 业务工具：report-failure、ask-user、request-termination（测试用短等待），与生产登记相同的实现。 */
-const TOOLS = createAgentToolRegistry([reportFailureTool, createAskUserTool({ waitMs: WAIT_MS, pollMs: POLL_MS }), createRequestTerminationTool({ waitMs: WAIT_MS, pollMs: POLL_MS })]);
+// 一个读项目资源的测试业务工具：参数里的 artifactId 按令牌身份在本项目范围内重新解析（resolveProjectArtifact），
+// 查不到即 404。用于“用有效令牌、在参数中填其他项目 / 组织的资源 id”的样本（第 1、3 项）。参数 schema 封闭
+// （additionalProperties: false），伪造 org_id / project_id 等字段在 schema 校验处 400。
+const readArtifactTool: AgentToolDefinition<{ artifactId: string }> = {
+  name: 'test-read-artifact',
+  argumentsSchema: { type: 'object', additionalProperties: false, required: ['artifactId'], properties: { artifactId: { type: 'string', maxLength: 64 } } },
+  maxArgumentBytes: 1024,
+  maxCallsPerJob: 1_000,
+  maxCallsPerMinute: 600,
+  async run(context, args) {
+    const artifact = await withTenant(context.db, context.tenant, (trx) => resolveProjectArtifact(trx, context, args.artifactId));
+    return { name: artifact.name };
+  },
+};
+
+/** 业务工具：report-failure、ask-user、request-termination（测试用短等待），与生产登记相同的实现，另加读资源的测试工具。 */
+const TOOLS = createAgentToolRegistry([
+  reportFailureTool,
+  createAskUserTool({ waitMs: WAIT_MS, pollMs: POLL_MS }),
+  createRequestTerminationTool({ waitMs: WAIT_MS, pollMs: POLL_MS }),
+  readArtifactTool,
+]);
 const TOOLS_BY_TYPE: Record<string, readonly string[]> = {
   'inj-probe': ['report-failure'],
   'inj-report': ['report-failure'],
   'inj-ask': ['ask-user', 'report-failure'],
   'inj-burn': ['report-failure'],
+  // 只登记 test-read-artifact：request-termination 未登记，用于“未开放工具 404”的样本。
+  'inj-tool': ['test-read-artifact'],
 };
 
 function agentType(type: string, limits: AgentTaskLimits, tools: readonly string[]): JobTypeDefinition<Record<string, never>> {
@@ -274,6 +302,52 @@ async function enqueue(member: Member, type: string, dispatcher: JobDispatcher) 
 }
 
 const PROBE_TOOLS = ['read', 'write', 'edit', 'bash'] as const;
+const TOKEN_TTL_MS = 30 * 60_000;
+
+/** 在某项目下插入一个已完成的产物，返回其 id。 */
+async function artifactIn(member: Member, projectId: string, name = 'content.md'): Promise<string> {
+  const row = await superuser
+    .insertInto('artifacts')
+    .values({
+      org_id: member.orgId,
+      project_id: projectId,
+      kind: 'markdown',
+      name,
+      mime: ARTIFACT_MIMES.markdown[0]!,
+      status: 'ready',
+      size_bytes: 10,
+      sha256: Buffer.alloc(32),
+      completed_at: new Date(),
+      created_by: member.userId,
+    })
+    .returning('id')
+    .executeTakeFirstOrThrow();
+  return row.id;
+}
+
+/** 直接起一个 running 的 Agent 任务（不经 worker / 沙箱）、签发有效令牌，模拟“沙箱内已拿到本任务令牌”。 */
+async function runningToken(member: Member, type: string): Promise<{ run: RunRef; projectId: string; token: string }> {
+  const projectId = await newProject(member);
+  const job = await insertJob(appDb, member.context, { type, params: {}, projectId, agentLimits: AGENT_TASK_LIMITS.outline });
+  const runId = randomUUID();
+  const claimed = await claimJob(appDb, { orgId: member.orgId, jobId: job.id, runId, leaseMs: 60_000, orgRunningLimit: 100, agentQuota: { orgAgentRunningLimit: 100 }, attemptsFor: () => 5 });
+  expect(claimed.kind).toBe('claimed');
+  const run: RunRef = { orgId: member.orgId, jobId: job.id, runId };
+  const issued = await issueAgentJobToken(appDb, run, TOKEN_TTL_MS);
+  expect(issued).not.toBeNull();
+  return { run, projectId, token: issued!.token };
+}
+
+/** 从宿主经真实的 agent-gw 打 /v1/tools/call（与沙箱同一条链路；agent-gw 自己加中继密钥转给 worker）。 */
+async function callToolDirect(token: string, payload: unknown): Promise<{ status: number; body: Record<string, any> }> {
+  const response = await fetch(`${gwOrigin}${AGENT_TOOL_CALL_PATH}`, {
+    method: 'POST',
+    headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  const text = await response.text();
+  return { status: response.status, body: text ? (JSON.parse(text) as Record<string, any>) : {} };
+}
 
 beforeAll(async () => {
   if (!runE2E) return;
@@ -322,6 +396,7 @@ beforeAll(async () => {
   agentGw = await buildAgentGateway({ upstream: `http://127.0.0.1:${endpointPort}`, relayKey: RELAY_KEY, logLevel: 'warn' });
   await agentGw.listen({ host: '0.0.0.0', port: 0 });
   const gwPort = (agentGw.server.address() as AddressInfo).port;
+  gwOrigin = `http://127.0.0.1:${gwPort}`;
 
   const forwarder = `
     const net = require('net');
@@ -447,7 +522,37 @@ describe.runIf(runE2E)('提示注入样本集（8.6e2，假模型完全听从注
     // 伪造令牌（well-formed 但库中不存在）直接打工具接口：经 agent-gw 到 worker，401，不读到任何组织的数据。
     expect(result.gw.toolsCall).toBe('status:401');
     expect(result.gw.session).toBe('status:401');
-    // 带有效令牌的越权标识调用（伪造 org_id / project_id、其他项目的资源 id）由 tests/db/agentToolScopes.test.ts（8.6c）覆盖。
+    // 带有效令牌的越权标识调用（伪造 org_id / project_id、其他项目的资源 id）另见下一个用例与 tests/db/agentToolScopes.test.ts（8.6c）。
+  }, 180_000);
+
+  it('1b 用本任务的有效令牌、在工具参数中填入其他项目 / 其他组织的资源 id：404 且不返回数据（对照：本项目资源正常返回）', async () => {
+    const member = await newMember();
+    const victim = await newMember();
+    const { run, projectId, token } = await runningToken(member, 'inj-tool');
+    // 执行者在当前阶段写下该工具（否则阶段外 403）。
+    expect(await setAgentToolScope(appDb, run, ['test-read-artifact'], TOOLS_BY_TYPE['inj-tool']!)).toBe(true);
+
+    const ownArtifact = await artifactIn(member, projectId);
+    const otherProjectId = await newProject(member); // 同组织的另一个项目
+    const otherProjectArtifact = await artifactIn(member, otherProjectId);
+    const victimProjectId = await newProject(victim); // 另一个组织的项目
+    const victimArtifact = await artifactIn(victim, victimProjectId);
+
+    // 对照：本项目的资源正常返回。
+    const own = await callToolDirect(token, { name: 'test-read-artifact', arguments: { artifactId: ownArtifact } });
+    expect(own.status).toBe(200);
+    expect(own.body.result).toEqual({ name: 'content.md' });
+
+    // 攻击：同组织其他项目、以及其他组织的资源 id —— 一律 404 AGENT_RESOURCE_NOT_FOUND，不返回任何数据。
+    for (const foreignId of [otherProjectArtifact, victimArtifact]) {
+      const res = await callToolDirect(token, { name: 'test-read-artifact', arguments: { artifactId: foreignId } });
+      expect(res.status).toBe(404);
+      expect(res.body.error?.code).toBe('AGENT_RESOURCE_NOT_FOUND');
+      expect(res.body.result).toBeUndefined();
+      expect(JSON.stringify(res.body)).not.toMatch(/content\.md/);
+    }
+    // 受害组织没有留下任何工具调用记录。
+    expect(await superuser.selectFrom('agent_tool_calls').select('tool').where('org_id', '=', victim.orgId).execute()).toEqual([]);
   }, 180_000);
 
   it('2 外传数据：外网 / IP / DNS / 元数据接口（169.254.169.254）全部不可达（对照：agent-gw 是唯一可达的主机）', async () => {
@@ -490,8 +595,42 @@ describe.runIf(runE2E)('提示注入样本集（8.6e2，假模型完全听从注
     expect(result.env.apiKeyInProcessEnv).toBe(false);
     // 工作区里也没有令牌文件。
     expect(result.env.workspaceFiles).not.toMatch(/agt_/);
-    // 拿不到令牌，伪造令牌直接打工具接口 401（带有效令牌的越权由 8.6c 覆盖）。
+    // 拿不到令牌，伪造令牌直接打工具接口 401（带有效令牌的越权见下一个用例与 8.6c）。
     expect(result.gw.toolsCall).toBe('status:401');
+  }, 180_000);
+
+  it('3b 绕过入口、用本任务的有效令牌直接调用 /v1/tools/call：只能访问本项目资源，伪造 org_id/project_id 400、其他项目资源 404、未开放工具 404', async () => {
+    const member = await newMember();
+    const victim = await newMember();
+    const { run, projectId, token } = await runningToken(member, 'inj-tool');
+    expect(await setAgentToolScope(appDb, run, ['test-read-artifact'], TOOLS_BY_TYPE['inj-tool']!)).toBe(true);
+    const ownArtifact = await artifactIn(member, projectId);
+    const victimArtifact = await artifactIn(victim, await newProject(victim));
+
+    // 只能访问本项目资源（对照）。
+    const own = await callToolDirect(token, { name: 'test-read-artifact', arguments: { artifactId: ownArtifact } });
+    expect(own.status).toBe(200);
+    expect(own.body.result).toEqual({ name: 'content.md' });
+
+    // 伪造身份字段：参数 schema 封闭（additionalProperties: false），org_id / project_id / job_id / user_id 一律 400，不采信。
+    for (const forged of [{ org_id: victim.orgId }, { project_id: await newProject(victim) }, { job_id: randomUUID() }, { user_id: victim.userId }]) {
+      const res = await callToolDirect(token, { name: 'test-read-artifact', arguments: { artifactId: ownArtifact, ...forged } });
+      expect(res.status).toBe(400);
+      expect(res.body.error?.code).toBe('AGENT_TOOL_INVALID_ARGUMENTS');
+    }
+
+    // 其他组织的资源 id：404，不返回数据。
+    const foreign = await callToolDirect(token, { name: 'test-read-artifact', arguments: { artifactId: victimArtifact } });
+    expect(foreign.status).toBe(404);
+    expect(foreign.body.error?.code).toBe('AGENT_RESOURCE_NOT_FOUND');
+
+    // 未在本任务类型开放的工具（request-termination 未登记给 inj-tool）：404 AGENT_TOOL_NOT_FOUND，不区分“不存在 / 不可用”。
+    const unopened = await callToolDirect(token, { name: 'request-termination', arguments: { reason: '终止' } });
+    expect(unopened.status).toBe(404);
+    expect(unopened.body.error?.code).toBe('AGENT_TOOL_NOT_FOUND');
+
+    // 受害组织没有任何记录。
+    expect(await superuser.selectFrom('agent_tool_calls').select('tool').where('org_id', '=', victim.orgId).execute()).toEqual([]);
   }, 180_000);
 
   it('4 刷费用 / 空转：假模型永不结束、反复调用模型，任务止于轮数上限（task_turn_limit），上游调用次数 ≤ 上限、已扣费 ≤ 费用上限', async () => {
