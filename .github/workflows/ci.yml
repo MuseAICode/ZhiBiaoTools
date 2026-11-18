@@ -288,8 +288,12 @@ jobs:
       - name: Shell script syntax (bash -n)
         run: bash -n db/init/10-provision.sh && bash -n scripts/init-dev-secrets.sh && sh -n redis/start-valkey.sh
 
-      - name: npm audit (fail on high)
-        run: npm audit --audit-level=high
+      # server 根依赖的 high/critical 审计门：裸 `npm audit --audit-level=high` 无法按编号放行单个公告，这里用脚本实现——
+      # 只放行 AUDIT_ALLOWLIST 中、未到期的公告（当前仅 GHSA-fc5q-39xc-vjpf：picomatch ReDoS，仅 vitest/vite 开发依赖链，
+      # 不进生产，到期日 2026-12-02），其余 high/critical 仍使 CI 失败；到期后自动恢复拦截。理由与范围见 CLAUDE.md
+      # 「已接受风险（CI 审计豁免）」，逻辑由 tests/ci/auditHigh.test.ts 验证。
+      - name: npm audit (fail on high, scoped allowlist)
+        run: node scripts/ci-audit-high.mjs
 
       # parse 沙箱镜像中的解析依赖（mammoth、pdfjs、SheetJS 等）单独一份 lockfile。
       - name: npm audit parse sandbox dependencies (fail on high)
