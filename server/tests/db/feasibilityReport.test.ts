@@ -613,6 +613,8 @@ describe('Store', () => {
       analysisTask: null,
       outlineTask: null,
       outlineAdjustmentTask: null,
+      outlineAdjustment: null,
+      outlineAdjustable: false,
       parametersTask: null,
       contentTask: null,
       humanWritingTask: null,

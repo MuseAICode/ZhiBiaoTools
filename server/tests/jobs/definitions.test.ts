@@ -26,7 +26,7 @@ describe('任务类型登记', () => {
     expect(maxAttemptsOf(definition('a', { maxAttempts: 1 }))).toBe(1);
   });
 
-  it('登记的业务任务类型：6.6 的文档解析（parse 队列、可续跑、不调用模型），6.9 的废标检查两类（ai 队列、可续跑、调用模型），6.10 的标书查重（ai 队列、可续跑、不调用模型），6.11 的技术方案两类、6.12 的可研报告四类、6.13a 的知识库文档准备与 6.13b 的知识库匹配（ai 队列、可续跑、调用模型），7.3d 的模板样张（export 队列、可续跑、不调用模型），8.7a 的可研目录生成（agent 队列、可续跑、调用模型、Agent 上限与工具、工作区快照）', () => {
+  it('登记的业务任务类型：6.6 的文档解析（parse 队列、可续跑、不调用模型），6.9 的废标检查两类（ai 队列、可续跑、调用模型），6.10 的标书查重（ai 队列、可续跑、不调用模型），6.11 的技术方案两类、6.12 的可研报告四类、6.13a 的知识库文档准备与 6.13b 的知识库匹配（ai 队列、可续跑、调用模型），7.3d 的模板样张（export 队列、可续跑、不调用模型），8.7a 的可研目录生成与 8.7b 的可研目录调整（agent 队列、可续跑、调用模型、Agent 上限与工具、共用的工作区快照、成功后保留）', () => {
     expect(JOB_TYPES.map((item) => item.type)).toEqual([
       'document-parse',
       'rejection-items-extraction',
@@ -36,6 +36,7 @@ describe('任务类型登记', () => {
       'bid-analysis',
       'feasibility-analysis',
       'feasibility-outline',
+      'feasibility-outline-adjustment',
       'feasibility-parameters',
       'feasibility-content',
       'feasibility-human-writing',
@@ -93,7 +94,19 @@ describe('任务类型登记', () => {
     expect(feasibilityOutline.billable).toBe(true);
     expect(feasibilityOutline.agentLimits).toEqual(AGENT_TASK_LIMITS.outline);
     expect(feasibilityOutline.agentTools).toEqual(['ask-user', 'request-termination']);
-    expect(feasibilityOutline.agentWorkspace).toEqual({ taskKind: 'feasibility-outline' });
+    expect(feasibilityOutline.agentWorkspace).toEqual({ taskKind: 'feasibility-outline', keepAfterSuccess: true });
     expect(feasibilityOutline.agentSandboxTemplate ?? 'agent').toBe('agent');
+    const adjustment = jobTypeRegistry.get('feasibility-outline-adjustment')!;
+    expect(adjustment.queue).toBe('agent');
+    expect(adjustment.resumable).toBe(true);
+    expect(adjustment.billable).toBe(true);
+    expect(adjustment.agentLimits).toEqual(AGENT_TASK_LIMITS.outline);
+    expect(adjustment.agentTools).toEqual(['ask-user', 'request-termination']);
+    expect(adjustment.agentWorkspace).toEqual({ taskKind: 'feasibility-outline', keepAfterSuccess: true });
+    expect(adjustment.agentSandboxTemplate ?? 'agent').toBe('agent');
+    expect(adjustment.parseParams({ requirement: '合并第二章' })).toEqual({ requirement: '合并第二章' });
+    for (const bad of [{}, { requirement: '' }, { requirement: '  有空白  ' }, { requirement: 'x'.repeat(2001) }, { requirement: 1 }, { requirement: '合并', extra: 1 }, null, []]) {
+      expect(() => adjustment.parseParams(bad)).toThrow(TypeError);
+    }
   });
 });

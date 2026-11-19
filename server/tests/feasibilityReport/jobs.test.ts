@@ -27,6 +27,8 @@ const fake = vi.hoisted(() => {
     signature: 'sig-1',
     /** 写入后抛出一次（模拟写入后、checkpoint 前中断）。 */
     failAfterWrite: null as null | ((nodeId: string) => boolean),
+    /** 丢弃的工作区快照类别（8.7b：资料分析写入结果后丢弃目录生成的会话）。 */
+    discarded: [] as string[][],
   };
   const walk = (items: Item[] | undefined, visit: (item: Item) => void) => {
     for (const item of items ?? []) {
@@ -37,6 +39,13 @@ const fake = vi.hoisted(() => {
   return { store, walk };
 });
 
+vi.mock('../../src/agent/workspaceJob.ts', () => ({
+  discardAgentWorkspaceSnapshots: async (_db: unknown, _context: unknown, _store: unknown, _projectId: string, taskKinds: string[]) => {
+    fake.store.discarded.push([...taskKinds]);
+    return taskKinds;
+  },
+}));
+
 vi.mock('../../src/feasibilityReport/store.ts', () => {
   const { store, walk } = fake;
   const clone = <T>(value: T): T => structuredClone(value);
@@ -46,8 +55,13 @@ vi.mock('../../src/feasibilityReport/store.ts', () => {
     FEASIBILITY_CONTENT_JOB_TYPE: 'feasibility-content',
     FEASIBILITY_HUMAN_WRITING_JOB_TYPE: 'feasibility-human-writing',
     FEASIBILITY_OUTLINE_JOB_TYPE: 'feasibility-outline',
+    FEASIBILITY_OUTLINE_ADJUSTMENT_JOB_TYPE: 'feasibility-outline-adjustment',
+    FEASIBILITY_OUTLINE_TASK_KIND: 'feasibility-outline',
     FEASIBILITY_OUTLINE_NODES_MAX: 2000,
-    FEASIBILITY_JOB_TYPES: ['feasibility-analysis', 'feasibility-outline', 'feasibility-parameters', 'feasibility-content', 'feasibility-human-writing'],
+    FEASIBILITY_ADJUSTMENT_REQUIREMENT_MAX: 2000,
+    FEASIBILITY_ADJUSTMENT_SUMMARY_MAX: 2000,
+    FEASIBILITY_JOB_TYPES: ['feasibility-analysis', 'feasibility-outline', 'feasibility-outline-adjustment', 'feasibility-parameters', 'feasibility-content', 'feasibility-human-writing'],
+    feasibilityOutlineSessionTarget: (projectId: string) => ({ projectId, taskKind: 'feasibility-outline', jobTypes: ['feasibility-outline', 'feasibility-outline-adjustment'] }),
     feasibilityReportLockKey: (projectId: string) => `project:${projectId}:feasibility-report`,
     inputSignature: async () => store.signature,
     loadFeasibilityReport: async () => clone(store.state),
@@ -302,6 +316,7 @@ beforeEach(() => {
   fake.store.knowledge = structuredClone(KNOWLEDGE);
   fake.store.signature = 'sig-1';
   fake.store.failAfterWrite = null;
+  fake.store.discarded = [];
   stepResults.clear();
   billedCalls = 0;
 });
@@ -317,6 +332,8 @@ describe('资料分析（feasibility-analysis）', () => {
     expect(fake.store.state.analysisMarkdown).toBe(reference.state.analysisMarkdown);
     expect(fake.store.state.analysisMarkdown).toContain('## 缺失资料清单\n\n- 【待补充】尚未识别到明确缺失项');
     expect(fake.store.state).toMatchObject({ outlineData: null, keyParametersMarkdown: '' });
+    // 目录已清空：丢弃目录生成的会话（8.7b，桌面版开始资料分析时删除持久任务）。
+    expect(fake.store.discarded).toEqual([['feasibility-outline']]);
   });
 
   it('没有资料时只按项目参数分析（“未导入资料文件”）', async () => {
@@ -344,6 +361,7 @@ describe('资料分析（feasibility-analysis）', () => {
     const result = await runServer(FEASIBILITY_ANALYSIS_JOB_TYPE, {}, { onChat: () => (fake.store.signature = 'sig-2') });
     expect(result.error).toMatchObject({ code: 'FEASIBILITY_REPORT_INPUT_CHANGED' });
     expect(fake.store.state.analysisMarkdown).toBe(before);
+    expect(fake.store.discarded).toEqual([]);
   });
 });
 

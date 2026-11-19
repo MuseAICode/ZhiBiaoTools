@@ -1,8 +1,11 @@
-// 可研报告的任务（取代桌面版 taskService.cjs 的 feasibility-* 任务与 feasibilityReportTasks.cjs、feasibilityOutlineTask.cjs 的
-// run* 函数），会调用模型（入队检查最低启动余额）。各类任务互斥（lock_key 为 project:{projectId}:feasibility-report，与桌面版
-// feasibility-report 组的 group-exclusive 相同；8.7b 的目录调整沿用）：
+// 可研报告的任务（取代桌面版 taskService.cjs 的 feasibility-* 任务与 feasibilityReportTasks.cjs、feasibilityOutlineTask.cjs、
+// feasibilityOutlineAdjustmentTask.cjs 的 run* 函数），会调用模型（入队检查最低启动余额）。各类任务互斥（lock_key 为
+// project:{projectId}:feasibility-report，与桌面版 feasibility-report 组的 group-exclusive 相同）：
 // - 资料分析、关键参数、正文生成、自然化审校（路线图第 6 步 6.12）：ai 队列；
-// - 目录生成（第 8 步 8.7a）：agent 队列，在 agent 沙箱中由 Agent 读工作区材料写出 outline.json（见 createOutlineJob）。
+// - 目录生成（第 8 步 8.7a）：agent 队列，在 agent 沙箱中由 Agent 读工作区材料写出 outline.json（见 createOutlineJob）；
+// - 目录调整（第 8 步 8.7b）：agent 队列，接着目录生成（或上一次调整）的会话与工作区，按用户的要求改写 outline.json
+//   （见 createOutlineAdjustmentJob）。两者共用工作区快照类别 feasibility-outline，成功后保留快照供下一次调整续用；
+//   重置（保存项目信息、资料分析，导入、移除资料，清空）与资料分析写入结果（清空目录）时丢弃（discardFeasibilityOutlineSession）。
 //
 // - 输入在任务开始时从数据库读取，不取自任务参数：资料分析读合并的资料正文（资料须全部解析成功，没有资料时只按项目参数分析）；
 //   关键参数读目录与引用的知识库条目；正文生成读目录、关键参数与引用的知识库条目。模型取组织设置中选择的平台模型；
@@ -21,8 +24,13 @@ import { AppError } from '../errors.ts';
 import { createJobChat, resolveJobModel, type JobChat } from '../jobs/chat.ts';
 import { abortableDelay, isJobStop } from '../jobs/control.ts';
 import { AGENT_TASK_LIMITS } from '../agent/budget.ts';
+import { findContinuableAgentSession } from '../agent/continuation.ts';
 import type { AgentPromptTool } from '../agent/entry.ts';
-import { withAgentRun } from '../agent/execution.ts';
+import { withAgentRun, type AgentRun, type AgentRunState } from '../agent/execution.ts';
+import { discardAgentWorkspaceSnapshots } from '../agent/workspaceJob.ts';
+import type { Kysely } from 'kysely';
+import type { Database } from '../db/schema.ts';
+import type { ObjectStore } from '../files/objectStore.ts';
 import { JobError, JobInterruptedError, type JobContext, type JobTypeDefinition } from '../jobs/definitions.ts';
 import { cancelJob, enqueueJob, type JobServiceDependencies } from '../jobs/service.ts';
 import { listJobs, type JobRecord } from '../jobs/store.ts';
@@ -50,6 +58,8 @@ import {
 import {
   buildFeasibilityOutlineAgentInput,
   countOutlineNodes,
+  createFeasibilityOutlineAdjustmentPrompt,
+  feasibilityOutlineAdjustmentFile,
   FEASIBILITY_OUTLINE_JSON_SCHEMA,
   FEASIBILITY_OUTLINE_OUTPUT_FILE,
   FeasibilityOutlineResultError,
@@ -57,13 +67,18 @@ import {
 } from './outlineAgent.ts';
 import {
   clearChapterContents,
+  FEASIBILITY_ADJUSTMENT_REQUIREMENT_MAX,
+  FEASIBILITY_ADJUSTMENT_SUMMARY_MAX,
   FEASIBILITY_ANALYSIS_JOB_TYPE,
   FEASIBILITY_CONTENT_JOB_TYPE,
   FEASIBILITY_HUMAN_WRITING_JOB_TYPE,
   FEASIBILITY_JOB_TYPES,
+  FEASIBILITY_OUTLINE_ADJUSTMENT_JOB_TYPE,
   FEASIBILITY_OUTLINE_JOB_TYPE,
   FEASIBILITY_OUTLINE_NODES_MAX,
+  FEASIBILITY_OUTLINE_TASK_KIND,
   FEASIBILITY_PARAMETERS_JOB_TYPE,
+  feasibilityOutlineSessionTarget,
   feasibilityReportLockKey,
   inputSignature,
   loadFeasibilityReport,
@@ -78,7 +93,15 @@ import {
   type ReferenceKnowledgeItem,
 } from './store.ts';
 
-export { FEASIBILITY_ANALYSIS_JOB_TYPE, FEASIBILITY_CONTENT_JOB_TYPE, FEASIBILITY_HUMAN_WRITING_JOB_TYPE, FEASIBILITY_OUTLINE_JOB_TYPE, FEASIBILITY_PARAMETERS_JOB_TYPE };
+export {
+  FEASIBILITY_ANALYSIS_JOB_TYPE,
+  FEASIBILITY_CONTENT_JOB_TYPE,
+  FEASIBILITY_HUMAN_WRITING_JOB_TYPE,
+  FEASIBILITY_OUTLINE_ADJUSTMENT_JOB_TYPE,
+  FEASIBILITY_OUTLINE_JOB_TYPE,
+  FEASIBILITY_OUTLINE_TASK_KIND,
+  FEASIBILITY_PARAMETERS_JOB_TYPE,
+};
 
 /** 预热请求结束后稍候再发后续请求（与桌面版 PREFIX_WARMUP_SETTLE_MS 相同）。 */
 const PREFIX_WARMUP_SETTLE_MS = 1500;
@@ -109,6 +132,16 @@ function outlineProblem(state: FeasibilityReportState): Problem | null {
 
 const OUTLINE_REQUIRED: Problem = { code: 'FEASIBILITY_REPORT_OUTLINE_REQUIRED', message: '请先生成报告目录' };
 
+/** 目录调整的前置条件（文案与桌面版 runFeasibilityOutlineAdjustmentTask 相同）。 */
+function adjustmentProblem(state: FeasibilityReportState): Problem | null {
+  return state.outlineData?.outline.length ? null : { code: 'FEASIBILITY_REPORT_OUTLINE_REQUIRED', message: '当前没有可调整的目录，请先完成报告目录生成' };
+}
+
+const SESSION_MISSING: Problem = {
+  code: 'FEASIBILITY_REPORT_OUTLINE_SESSION_MISSING',
+  message: '报告目录生成的 Agent 工作空间不存在，请重新生成后再使用 AI 调整',
+};
+
 function parametersProblem(state: FeasibilityReportState): Problem | null {
   return state.outlineData?.outline.length ? null : OUTLINE_REQUIRED;
 }
@@ -137,6 +170,26 @@ function noParams(what: string) {
     if (typeof raw !== 'object' || raw === null || Array.isArray(raw) || Object.keys(raw).length > 0) throw new TypeError(`${what}任务参数不合法`);
     return {};
   };
+}
+
+export interface OutlineAdjustmentParams {
+  /** 用户的调整要求（去掉首尾空白，不为空，至多 FEASIBILITY_ADJUSTMENT_REQUIREMENT_MAX 字）。 */
+  requirement: string;
+}
+
+/** 调整要求的规范化：去掉首尾空白；为空或过长时返回 null。 */
+function normalizeRequirement(raw: unknown): string | null {
+  if (typeof raw !== 'string') return null;
+  const requirement = raw.replace(/\0/g, '').trim();
+  return requirement && [...requirement].length <= FEASIBILITY_ADJUSTMENT_REQUIREMENT_MAX ? requirement : null;
+}
+
+function parseAdjustmentParams(raw: unknown): OutlineAdjustmentParams {
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) throw new TypeError('目录调整任务参数不合法');
+  const { requirement, ...rest } = raw as Record<string, unknown>;
+  const normalized = normalizeRequirement(requirement);
+  if (Object.keys(rest).length > 0 || normalized === null || normalized !== requirement) throw new TypeError('目录调整任务参数不合法');
+  return { requirement: normalized };
 }
 
 function parseContentParams(raw: unknown): ContentParams {
@@ -278,6 +331,8 @@ function createAnalysisJob(options: FeasibilityJobOptions): JobTypeDefinition<Re
       await logChain.catch(() => {});
       if (context.signal.aborted) throw new JobInterruptedError();
       if (!(await saveAnalysisResult(db, tenant, projectId, analysisToMarkdown(payload), signature))) throw inputChanged();
+      // 目录已清空：目录生成的会话不再续用（桌面版开始资料分析时删除持久任务）。丢弃失败的留给下一次目录生成替换。
+      await discardFeasibilityOutlineSession(db, tenant, context.objectStore, projectId).catch(() => {});
       await context.log('资料分析完成。');
     },
   };
@@ -287,10 +342,14 @@ function createAnalysisJob(options: FeasibilityJobOptions): JobTypeDefinition<Re
 
 /** 目录生成的阶段（与桌面版 initial_stage 相同）。 */
 export const FEASIBILITY_OUTLINE_STAGE = 'feasibility-outline';
-/** 工作区快照的任务类别（迁移 0040 的 task_kind；8.7b 的目录调整共用）。 */
-export const FEASIBILITY_OUTLINE_TASK_KIND = 'feasibility-outline';
+/** 目录调整的阶段（与桌面版 initial_stage 相同）。 */
+export const FEASIBILITY_OUTLINE_ADJUSTMENT_STAGE = 'feasibility-outline-adjustment';
 /** 工作区材料的受保护文件分组。 */
 const OUTLINE_INPUT_GROUP = 'input';
+/** 目录调整放入的当前目录（交给 Agent 修改，写入后解除登记，不还原）。 */
+const OUTLINE_OUTPUT_GROUP = 'output';
+/** 调整说明取不到时（与桌面版相同）。 */
+const ADJUSTMENT_DEFAULT_SUMMARY = '报告目录已按要求调整完成。';
 /** 续跑时该阶段的要求已在会话中发出：只请 Agent 继续（与桌面版 CONTINUE_PROMPT 相同）。 */
 const CONTINUE_PROMPT = '继续之前的任务';
 /** 与桌面版相同：原生工具、json-validation、ask-user 与需用户确认的失败报告（顶层任务的 report-failure 即 request-termination）。 */
@@ -300,6 +359,38 @@ const OUTLINE_BUSINESS_TOOLS = ['ask-user', 'request-termination'] as const;
 /** checkpoint 中任务自己的状态：首次执行开始时的输入签名（续跑时核对，写入时传回）。 */
 function outlineCheckpointSignature(raw: Record<string, unknown> | null): string | null {
   return raw && typeof raw.signature === 'string' && raw.signature !== '' ? raw.signature : null;
+}
+
+/** 生成与调整共用的提交校验：与桌面版相同不做提交修复，outline.json 不可用时任务失败（说明为固定文字）。 */
+function outlineValidator(run: AgentRun, allowedKnowledgeIds: ReadonlySet<string>) {
+  return async () => {
+    const file = (await run.readFiles([FEASIBILITY_OUTLINE_OUTPUT_FILE])).get(FEASIBILITY_OUTLINE_OUTPUT_FILE);
+    if (file && file.data === null) throw new JobError('FEASIBILITY_REPORT_OUTLINE_INVALID', `${FEASIBILITY_OUTLINE_OUTPUT_FILE}过大，无法读取`);
+    try {
+      return { value: finalizeFeasibilityOutline(file?.data?.toString('utf8') ?? '', allowedKnowledgeIds), issues: [] };
+    } catch (error) {
+      if (error instanceof FeasibilityOutlineResultError) throw new JobError('FEASIBILITY_REPORT_OUTLINE_INVALID', error.message, { cause: error });
+      throw error;
+    }
+  };
+}
+
+/** 生成与调整的结果：没有可用目录、节点数超过服务端上限时失败。 */
+function checkedOutline(context: JobContext<unknown>, value: FeasibilityOutlineItem[] | null): FeasibilityOutlineItem[] {
+  if (value === null) throw new JobError('FEASIBILITY_REPORT_OUTLINE_INVALID', '模型未返回可用目录');
+  if (context.signal.aborted) throw new JobInterruptedError();
+  if (countOutlineNodes(value) > FEASIBILITY_OUTLINE_NODES_MAX) {
+    throw new JobError('FEASIBILITY_REPORT_OUTLINE_TOO_LARGE', `生成的目录超过 ${FEASIBILITY_OUTLINE_NODES_MAX} 项，请重新生成`);
+  }
+  return value;
+}
+
+/** 工作区材料（受保护文件）放入沙箱：首次生成时，以及续接的会话中原件不可用（快照中的副本被改动）时按当前的输入重新放入。 */
+async function writeOutlineInputs(context: JobContext<unknown>, run: AgentRun, files: readonly { path: string; content: string }[]): Promise<void> {
+  await run.baseline.write(run.sandbox, OUTLINE_INPUT_GROUP, files.map((file) => ({ path: file.path, data: Buffer.from(file.content, 'utf8') })), {
+    replace: true,
+    signal: context.signal,
+  });
 }
 
 /**
@@ -312,8 +403,8 @@ function outlineCheckpointSignature(raw: Record<string, unknown> | null): string
  * - 结果经 saveOutlineResult 整体替换目录并清空关键参数（桌面版在开始时清空，这里在写入时清空，与资料分析任务相同），带上首次执行
  *   开始时的输入签名：之后保存了项目信息、资料分析、目录、关键参数，导入、移除了资料，写入被拒绝；
  * - 可续跑：每条提示词之后保存检查点（工作区快照与 checkpoint，签名在其中），暂停（费用 / 轮数上限、余额不足、存储配额）或 worker
- *   失联后续接会话，只发“继续之前的任务”；续跑时输入已变化即失败（不按新的输入接着旧的会话）。成功后丢弃快照（目录调整接着生成的
- *   会话在 8.7b 设计）。
+ *   失联后续接会话，只发“继续之前的任务”；续跑时输入已变化即失败（不按新的输入接着旧的会话）；
+ * - 成功后保留快照（8.7b，keepAfterSuccess）：目录调整接着这次的会话与工作区（桌面版的持久任务）。新的生成在第一个检查点替换快照。
  */
 function createOutlineJob(): JobTypeDefinition<Record<string, never>> {
   return {
@@ -323,7 +414,7 @@ function createOutlineJob(): JobTypeDefinition<Record<string, never>> {
     billable: true,
     agentLimits: AGENT_TASK_LIMITS.outline,
     agentTools: OUTLINE_BUSINESS_TOOLS,
-    agentWorkspace: { taskKind: FEASIBILITY_OUTLINE_TASK_KIND },
+    agentWorkspace: { taskKind: FEASIBILITY_OUTLINE_TASK_KIND, keepAfterSuccess: true },
     parseParams: noParams('目录生成'),
     async run(context) {
       const { db, tenant } = context;
@@ -344,12 +435,7 @@ function createOutlineJob(): JobTypeDefinition<Record<string, never>> {
           await context.setProgress(16);
         }
         // 续跑时材料在快照中；原件不可用（快照中的副本被改动）时按同一输入重新放入。
-        if (!run.resumed || run.unavailableProtectedFiles.length > 0) {
-          await run.baseline.write(run.sandbox, OUTLINE_INPUT_GROUP, input.files.map((file) => ({ path: file.path, data: Buffer.from(file.content, 'utf8') })), {
-            replace: true,
-            signal: context.signal,
-          });
-        }
+        if (!run.resumed || run.unavailableProtectedFiles.length > 0) await writeOutlineInputs(context, run, input.files);
         await context.log(run.resumed ? 'Agent 继续生成报告目录。' : 'Agent 正在生成报告目录。');
         await context.setProgress(22);
         const stage = await run.runStage<FeasibilityOutlineItem[]>({
@@ -361,36 +447,114 @@ function createOutlineJob(): JobTypeDefinition<Record<string, never>> {
           outputFile: FEASIBILITY_OUTLINE_OUTPUT_FILE,
           maxExecutionRetries: 0,
           checkpointAfterPrompt: () => ({ signature }),
-          async validate() {
-            // 与桌面版相同：不做提交修复，结果不可用时任务失败。
-            const file = (await run.readFiles([FEASIBILITY_OUTLINE_OUTPUT_FILE])).get(FEASIBILITY_OUTLINE_OUTPUT_FILE);
-            if (file && file.data === null) throw new JobError('FEASIBILITY_REPORT_OUTLINE_INVALID', `${FEASIBILITY_OUTLINE_OUTPUT_FILE}过大，无法读取`);
-            try {
-              return { value: finalizeFeasibilityOutline(file?.data?.toString('utf8') ?? '', allowedKnowledgeIds), issues: [] };
-            } catch (error) {
-              if (error instanceof FeasibilityOutlineResultError) throw new JobError('FEASIBILITY_REPORT_OUTLINE_INVALID', error.message, { cause: error });
-              throw error;
-            }
-          },
+          validate: outlineValidator(run, allowedKnowledgeIds),
         });
-        if (stage.value === null) throw new JobError('FEASIBILITY_REPORT_OUTLINE_INVALID', '模型未返回可用目录');
-        if (context.signal.aborted) throw new JobInterruptedError();
-        if (countOutlineNodes(stage.value) > FEASIBILITY_OUTLINE_NODES_MAX) {
-          throw new JobError('FEASIBILITY_REPORT_OUTLINE_TOO_LARGE', `生成的目录超过 ${FEASIBILITY_OUTLINE_NODES_MAX} 项，请重新生成`);
-        }
-        await context.log(`已生成 ${stage.value.length} 个一级目录。`);
+        const outline = checkedOutline(context, stage.value);
+        await context.log(`已生成 ${outline.length} 个一级目录。`);
         await context.setProgress(95);
         const written = await saveOutlineResult(
           db,
           tenant,
           projectId,
           // 与桌面版相同：目录的项目名称取项目参数，概述取资料分析的前 400 个字符。
-          { outline: stage.value, projectName: state.projectInfo.projectName, projectOverview: String(state.analysisMarkdown || '').slice(0, 400) },
+          { outline, projectName: state.projectInfo.projectName, projectOverview: String(state.analysisMarkdown || '').slice(0, 400) },
           signature,
         );
         if (!written) throw inputChanged();
       });
       await context.log('报告目录生成完成。');
+    },
+  };
+}
+
+/**
+ * 可研报告目录调整（8.7b，取代桌面版 feasibilityOutlineAdjustmentTask.cjs 的 runFeasibilityOutlineAdjustmentTask）：
+ * - 首次执行接着目录生成（或上一次调整）的会话与工作区（src/agent/continuation.ts：与当前快照同一对、已结束的生成或调整任务的现场）；
+ *   找不到时失败“报告目录生成的 Agent 工作空间不存在，请重新生成后再使用 AI 调整”（与桌面版相同，入队时也检查）。续跑时用本任务
+ *   自己的现场（只发“继续之前的任务”），与目录生成相同；
+ * - 当前目录（数据库中的，用户可能手动改过）按桌面版 buildAgentOutlineInput 写入 outline.json，交给 Agent 修改、不登记为受保护文件；
+ *   生成时放入的材料仍是受保护文件，原件不可用时按当前的输入重新放入；提示词、工具、预置 Schema 与桌面版相同；
+ * - 结果与目录生成相同整理（不做提交修复），经 saveOutlineResult 整体替换目录、清空正文与关键参数（与桌面版 saveOutline 的 replace
+ *   相同），目录的项目名称与概述沿用原目录的；带上首次执行开始时的输入签名，之后目录等输入变化时写入被拒绝；
+ * - 调整说明（桌面版 stats.adjustment.summary）：Agent 最后一条回复的全文（run.assistantText，至多 2000 字），取不到时为桌面版的
+ *   固定说明；它是 AI 生成的内容，不写进任务日志，写进本任务最后的 checkpoint（{ signature, summary }），由页面状态的
+ *   outlineAdjustment 给出（按纯文本显示，第 9 步）。成功后保留快照，下一次调整接着这次的会话。
+ */
+function createOutlineAdjustmentJob(): JobTypeDefinition<OutlineAdjustmentParams> {
+  return {
+    type: FEASIBILITY_OUTLINE_ADJUSTMENT_JOB_TYPE,
+    queue: 'agent',
+    resumable: true,
+    billable: true,
+    agentLimits: AGENT_TASK_LIMITS.outline,
+    agentTools: OUTLINE_BUSINESS_TOOLS,
+    agentWorkspace: { taskKind: FEASIBILITY_OUTLINE_TASK_KIND, keepAfterSuccess: true },
+    parseParams: parseAdjustmentParams,
+    async run(context) {
+      const { db, tenant, params } = context;
+      const { projectId, state, signature: current } = await startState(context, adjustmentProblem);
+      // 首次执行：接着目录生成（或上一次调整）的会话；续跑：本任务自己的现场。
+      let continueFrom: AgentRunState | undefined;
+      if (context.agent && !context.agent.resuming) {
+        const source = await findContinuableAgentSession(db, tenant, feasibilityOutlineSessionTarget(projectId));
+        if (!source) throw new JobError(SESSION_MISSING.code, SESSION_MISSING.message);
+        continueFrom = source.state;
+      }
+      const knowledgeItems = lightweightKnowledgeItems(await readReferenceKnowledgeItems(db, tenant, projectId));
+      const allowedKnowledgeIds = new Set(knowledgeItems.map((item) => item.id));
+      const outlineData = state.outlineData!;
+      await withAgentRun(
+        context.agent,
+        async (run) => {
+          const saved = outlineCheckpointSignature(run.taskCheckpoint);
+          if (saved !== null && saved !== current) throw inputChanged();
+          const signature = saved ?? current;
+          if (!run.resumed) {
+            await context.log('开始 AI 调整报告目录。');
+            await context.setProgress(10);
+            // 当前目录覆盖写入 outline.json（与桌面版 files 相同），交给 Agent 修改：写入后解除登记，不还原。续跑时 Agent 可能已改写，
+            // 不再覆盖。
+            await run.baseline.write(
+              run.sandbox,
+              OUTLINE_OUTPUT_GROUP,
+              [{ path: FEASIBILITY_OUTLINE_OUTPUT_FILE, data: Buffer.from(feasibilityOutlineAdjustmentFile(outlineData.outline), 'utf8') }],
+              { replace: true, signal: context.signal },
+            );
+            run.baseline.release(OUTLINE_OUTPUT_GROUP, [FEASIBILITY_OUTLINE_OUTPUT_FILE]);
+          }
+          // 生成时放入的材料原件不可用（快照中的副本被改动）：按当前的输入重新放入。
+          if (run.unavailableProtectedFiles.length > 0) await writeOutlineInputs(context, run, buildFeasibilityOutlineAgentInput(state, knowledgeItems).files);
+          await context.log(run.resumed ? 'Agent 继续调整报告目录。' : 'Agent 正在调整报告目录。');
+          await context.setProgress(20);
+          const stage = await run.runStage<FeasibilityOutlineItem[]>({
+            stage: FEASIBILITY_OUTLINE_ADJUSTMENT_STAGE,
+            prompt: run.wasPrompted(FEASIBILITY_OUTLINE_ADJUSTMENT_STAGE) ? CONTINUE_PROMPT : createFeasibilityOutlineAdjustmentPrompt(params.requirement),
+            tools: OUTLINE_TOOLS,
+            jsonSchemas: { [FEASIBILITY_OUTLINE_OUTPUT_FILE]: FEASIBILITY_OUTLINE_JSON_SCHEMA },
+            outputFile: FEASIBILITY_OUTLINE_OUTPUT_FILE,
+            maxExecutionRetries: 0,
+            checkpointAfterPrompt: () => ({ signature }),
+            validate: outlineValidator(run, allowedKnowledgeIds),
+          });
+          const outline = checkedOutline(context, stage.value);
+          const reply = await run.assistantText({ maxChars: FEASIBILITY_ADJUSTMENT_SUMMARY_MAX });
+          const summary = reply?.text.trim() || ADJUSTMENT_DEFAULT_SUMMARY;
+          await context.setProgress(95);
+          // 说明先随检查点保存（写入目录之后签名即变化，不能再续跑），再写入目录。
+          await run.checkpoint({ signature, summary }, 95);
+          const written = await saveOutlineResult(
+            db,
+            tenant,
+            projectId,
+            // 与桌面版相同：项目名称、概述沿用原目录的（原目录没有项目名称时取项目参数）。
+            { outline, projectName: outlineData.project_name || state.projectInfo.projectName, projectOverview: outlineData.project_overview ?? '' },
+            signature,
+          );
+          if (!written) throw inputChanged();
+        },
+        continueFrom ? { continueFrom } : undefined,
+      );
+      await context.log('报告目录 AI 调整完成。');
     },
   };
 }
@@ -603,7 +767,7 @@ function createHumanWritingJob(): JobTypeDefinition<Record<string, never>> {
 }
 
 export function createFeasibilityReportJobs(options: FeasibilityJobOptions = {}): JobTypeDefinition<any>[] {
-  return [createAnalysisJob(options), createOutlineJob(), createParametersJob(), createContentJob(options), createHumanWritingJob()];
+  return [createAnalysisJob(options), createOutlineJob(), createOutlineAdjustmentJob(), createParametersJob(), createContentJob(options), createHumanWritingJob()];
 }
 
 export const feasibilityReportJobs = createFeasibilityReportJobs();
@@ -646,6 +810,27 @@ export function startFeasibilityAnalysis(jobs: JobServiceDependencies, context: 
  */
 export function startFeasibilityOutline(jobs: JobServiceDependencies, context: TenantContext, projectId: string): Promise<JobRecord> {
   return enqueue(jobs, context, projectId, FEASIBILITY_OUTLINE_JOB_TYPE, outlineProblem, {});
+}
+
+/**
+ * 开始 AI 调整报告目录（取代桌面版 tasks.startFeasibilityOutlineAdjustment，8.7b）：调整要求去掉首尾空白后不能为空、至多 2000 字
+ * （400）；没有目录、目录生成的会话不能续用时 409（文案与桌面版相同）。入 agent 队列。
+ */
+export async function startFeasibilityOutlineAdjustment(jobs: JobServiceDependencies, context: TenantContext, projectId: string, input: { requirement: string }): Promise<JobRecord> {
+  const requirement = normalizeRequirement(input.requirement);
+  if (requirement === null) {
+    throw new AppError(400, 'FEASIBILITY_REPORT_INVALID', String(input.requirement ?? '').trim() ? `调整要求超过 ${FEASIBILITY_ADJUSTMENT_REQUIREMENT_MAX} 字` : '调整要求不能为空');
+  }
+  return enqueue(jobs, context, projectId, FEASIBILITY_OUTLINE_ADJUSTMENT_JOB_TYPE, (state) => adjustmentProblem(state) ?? (state.outlineAdjustable ? null : SESSION_MISSING), { requirement });
+}
+
+/**
+ * 丢弃目录生成与调整的会话（工作区快照，8.7b；桌面版 deleteFeasibilityOutlineAgentTask）：保存项目信息、资料分析，导入、移除资料，
+ * 清空时由接口调用，资料分析写入结果时由任务调用。store 为 null 时只标为已被替换、对象留给清理任务。被取消的任务在退出前仍可能
+ * 保存检查点（写下新的快照），它的会话不会被续用（src/agent/continuation.ts 只采用已结束的任务），快照留到下一次生成替换。
+ */
+export async function discardFeasibilityOutlineSession(db: Kysely<Database>, context: TenantContext, store: ObjectStore | null, projectId: string): Promise<void> {
+  await discardAgentWorkspaceSnapshots(db, context, store, projectId, [FEASIBILITY_OUTLINE_TASK_KIND]);
 }
 
 /** 开始生成关键参数（取代桌面版 tasks.startFeasibilityParameters）。 */

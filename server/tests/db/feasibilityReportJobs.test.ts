@@ -5,7 +5,10 @@
 // - 四类任务经真实数据库执行（模型用桩）：资料分析读合并的资料正文、关键参数读引用的知识库条目、正文生成与审校；
 // - 接口：开始任务的前置检查与互斥、余额不足 402、正文暂停中不能启动其他任务，保存上游内容、资料变化与清空时取消任务，
 //   状态中返回最近的任务；
-// - 经 worker（真实 Valkey）从接口入队到执行完成的完整流程。
+// - 经 worker（真实 Valkey）从接口入队到执行完成的完整流程；
+// - 目录调整（8.7b）：接着目录生成的会话（与当前快照同一对的已结束任务的现场）写入调整后的目录；开始调整的接口（前置条件、参数、
+//   会话不能续用时 409）；状态中的 outlineAdjustable 与 outlineAdjustment（要求与成功后的说明）；保存项目信息、资料分析，导入、
+//   移除资料，清空与资料分析写入结果时丢弃会话，保存目录、目录配置时不丢弃。
 // 与桌面版的请求序列对照见 tests/feasibilityReport/jobs.test.ts。
 import { createHash, randomUUID } from 'node:crypto';
 import { Readable } from 'node:stream';
@@ -26,9 +29,11 @@ import {
   FEASIBILITY_ANALYSIS_JOB_TYPE,
   FEASIBILITY_CONTENT_JOB_TYPE,
   FEASIBILITY_HUMAN_WRITING_JOB_TYPE,
+  FEASIBILITY_OUTLINE_ADJUSTMENT_JOB_TYPE,
   FEASIBILITY_OUTLINE_JOB_TYPE,
   FEASIBILITY_PARAMETERS_JOB_TYPE,
 } from '../../src/feasibilityReport/jobs.ts';
+import { findWorkspaceSnapshot, writeWorkspaceSnapshot } from '../../src/agent/workspaceSnapshots.ts';
 import {
   clearChapterContents,
   importSources,
@@ -51,7 +56,7 @@ import {
   type FeasibilityOutlineItem,
 } from '../../src/feasibilityReport/store.ts';
 import type { ObjectStore } from '../../src/files/objectStore.ts';
-import type { AgentRun, AgentStageOptions, JobAgent } from '../../src/agent/execution.ts';
+import type { AgentOpenOptions, AgentRun, AgentStageOptions, JobAgent } from '../../src/agent/execution.ts';
 import type { JobChatRequest, JobContext, JobTypeDefinition } from '../../src/jobs/definitions.ts';
 import { createJobDispatcher } from '../../src/jobs/queue.ts';
 import { jobTypeRegistry } from '../../src/jobs/registry.ts';
@@ -754,6 +759,237 @@ describe('接口', () => {
     const paused = await insertJob(member, projectId, FEASIBILITY_CONTENT_JOB_TYPE, 'paused');
     expect((await call(member, 'DELETE', reportUrl(projectId))).statusCode).toBe(200);
     expect(await statusOf(paused)).toBe('cancelled');
+  });
+});
+
+// ---- 目录调整（8.7b） ----
+
+const OUTLINE_KIND = 'feasibility-outline';
+
+/** 目录生成留下的会话：该类别当前的快照与引用它的已结束的生成任务（现场与执行者写下的相同）。 */
+async function seedOutlineSession(member: Member, projectId: string, status: 'succeeded' | 'failed' | 'cancelled' = 'succeeded') {
+  const snapshot = await writeWorkspaceSnapshot(appDb, member.context, memoryStore, { projectId, taskKind: OUTLINE_KIND, fileCount: 1 }, Readable.from([Buffer.from('tar')]));
+  const agent = {
+    version: 1,
+    session: `2026-11-19T01-02-03-004Z_${randomUUID()}.jsonl`,
+    stage: 'feasibility-outline',
+    stageIndex: 0,
+    promptedStage: 'feasibility-outline',
+    compactionPending: null,
+    baseline: { version: 1, groups: {} },
+    snapshot: snapshot.id,
+  };
+  const row = await superuser
+    .insertInto('jobs')
+    .values({
+      org_id: member.orgId,
+      project_id: projectId,
+      user_id: member.userId,
+      type: FEASIBILITY_OUTLINE_JOB_TYPE,
+      status,
+      lock_key: `project:${projectId}:feasibility-report`,
+      params: '{}',
+      checkpoint: JSON.stringify({ agent, task: { signature: 'generated' } }),
+      finished_at: new Date(),
+      ...(status === 'failed' ? { error_code: 'JOB_FAILED', error_message: '失败' } : {}),
+    })
+    .returning('id')
+    .executeTakeFirstOrThrow();
+  return { snapshot, agent, jobId: row.id };
+}
+
+const currentSnapshot = (member: Member, projectId: string) => findWorkspaceSnapshot(appDb, member.context, { projectId, taskKind: OUTLINE_KIND });
+
+/** 目录调整用的假 Agent：记下打开时接着的会话与放入的 outline.json，按脚本写出结果与最后一条回复。 */
+function adjustmentAgent(output: string, reply: string) {
+  const record = { opened: [] as (AgentOpenOptions | undefined)[], files: new Map<string, string>(), released: [] as string[], prompts: [] as string[], checkpoints: [] as unknown[] };
+  const run = {
+    sandbox: { id: 'sandbox-1' },
+    resumed: false,
+    continued: true,
+    unavailableProtectedFiles: [],
+    taskCheckpoint: null,
+    wasPrompted: () => false,
+    baseline: {
+      async write(_sandbox: unknown, _group: string, files: { path: string; data: Buffer }[]) {
+        for (const file of files) record.files.set(file.path, file.data.toString('utf8'));
+      },
+      release(_group: string, paths: string[]) {
+        record.released.push(...paths);
+        return paths;
+      },
+    },
+    async readFiles(paths: readonly string[]) {
+      return new Map([[paths[0]!, { size: output.length, data: Buffer.from(output, 'utf8') }]]);
+    },
+    async runStage(stage: AgentStageOptions<unknown>) {
+      record.prompts.push(stage.prompt);
+      const report = await stage.validate({ attempt: 1, restored: [] });
+      return { value: report.value, acceptedIssues: [], repairs: 0, executionRetries: 0 };
+    },
+    async assistantText() {
+      return { text: reply, truncated: false };
+    },
+    async checkpoint(task: unknown) {
+      record.checkpoints.push(task);
+    },
+    async close() {},
+  };
+  const agent: JobAgent = {
+    template: 'agent',
+    resuming: false,
+    open: async (options?: AgentOpenOptions) => {
+      record.opened.push(options);
+      return run as unknown as AgentRun;
+    },
+  };
+  return { agent, record };
+}
+
+describe('目录调整（8.7b）', () => {
+  it('直接执行（假 Agent）：接着目录生成的会话，outline.json 为当前目录（交给 Agent 修改）；写入调整后的目录，清空正文与关键参数，项目名称与概述沿用原目录', async () => {
+    const member = await newMember();
+    const { projectId } = await fixture(member, 'content');
+    await saveOutline(appDb, member.context, projectId, { outlineData: { outline: OUTLINE, project_name: '目录项目名', project_overview: '目录概述' }, reason: 'sort' });
+    const seeded = await seedOutlineSession(member, projectId);
+    const output = JSON.stringify({ outline: [{ title: '第一章 概述', description: '合并', children: [{ title: '项目概况', description: '' }] }, { title: '研究结论', description: '' }] });
+    const { agent, record } = adjustmentAgent(output, '已合并概述。');
+    const result = await runJob(FEASIBILITY_OUTLINE_ADJUSTMENT_JOB_TYPE, member, projectId, defaultResponder, { requirement: '合并概述' }, agent);
+    expect(result.error).toBeNull();
+    expect(result.requests).toEqual([]);
+    expect(record.opened).toEqual([{ continueFrom: seeded.agent }]);
+    expect(JSON.parse(record.files.get('outline.json')!)).toEqual({
+      outline: [
+        { id: '1', title: '概述', description: '', children: [{ id: '1.1', title: '项目概况', description: '' }, { id: '1.2', title: '编制依据', description: '' }] },
+        { id: '2', title: '项目建设方案', description: '管网工程方案' },
+      ],
+    });
+    expect(record.released).toEqual(['outline.json']);
+    expect(record.prompts[0]).toContain('用户的调整要求：\n合并概述');
+    expect(record.checkpoints).toEqual([{ signature: expect.any(String), summary: '已合并概述。' }]);
+    const state = await loadFeasibilityReport(appDb, member.context, projectId);
+    expect(state.outlineData).toEqual({
+      outline: [{ id: '1', title: '概述', description: '合并', children: [{ id: '1.1', title: '项目概况', description: '' }] }, { id: '2', title: '研究结论', description: '' }],
+      project_name: '目录项目名',
+      project_overview: '目录概述',
+    });
+    expect(state.keyParametersMarkdown).toBe('');
+    // 任务日志不含要求与说明。
+    expect(result.logs.join('\n')).not.toContain('合并概述');
+    expect(result.logs.join('\n')).not.toContain('已合并概述。');
+    // 没有可续用的会话（快照被丢弃）：失败，不打开沙箱。
+    await superuser.updateTable('agent_workspace_snapshots').set({ superseded_at: new Date() }).where('id', '=', seeded.snapshot.id).execute();
+    const missing = adjustmentAgent(output, '');
+    const failed = await runJob(FEASIBILITY_OUTLINE_ADJUSTMENT_JOB_TYPE, member, projectId, defaultResponder, { requirement: '合并概述' }, missing.agent);
+    expect(failed.error).toMatchObject({ code: 'FEASIBILITY_REPORT_OUTLINE_SESSION_MISSING', message: '报告目录生成的 Agent 工作空间不存在，请重新生成后再使用 AI 调整' });
+    expect(missing.record.opened).toEqual([]);
+  });
+
+  it('接口：没有目录 409、会话不能续用 409（文案与桌面版相同）、调整要求为空或过长 400；可以调整时 202，参数为去掉首尾空白的要求，写入 Agent 上限，与其他可研任务互斥', async () => {
+    const member = await newMember();
+    const { projectId } = await fixture(member, 'parameters');
+    const url = reportUrl(projectId, '/outline-adjustment-job');
+    expect((await call(member, 'GET', reportUrl(projectId))).json()).toMatchObject({ outlineAdjustable: false, outlineAdjustmentTask: null, outlineAdjustment: null });
+    const noSession = await call(member, 'POST', url, { requirement: '合并概述' });
+    expect(noSession.statusCode).toBe(409);
+    expect(noSession.json().error).toMatchObject({ code: 'FEASIBILITY_REPORT_OUTLINE_SESSION_MISSING', message: '报告目录生成的 Agent 工作空间不存在，请重新生成后再使用 AI 调整' });
+    // 被取消的生成任务的会话不续用。
+    await seedOutlineSession(member, projectId, 'cancelled');
+    expect((await call(member, 'POST', url, { requirement: '合并概述' })).statusCode).toBe(409);
+    await seedOutlineSession(member, projectId, 'failed');
+    expect((await call(member, 'GET', reportUrl(projectId))).json().outlineAdjustable).toBe(true);
+
+    for (const payload of [{ requirement: '   ' }, { requirement: '字'.repeat(2001) }, {}, { requirement: null }, { requirement: '合并', orgId: randomUUID() }]) {
+      expect((await call(member, 'POST', url, payload)).statusCode).toBe(400);
+    }
+    const started = await call(member, 'POST', url, { requirement: '  合并概述\n' });
+    expect(started.statusCode, started.body).toBe(202);
+    const job = started.json().job;
+    expect(job).toMatchObject({ type: FEASIBILITY_OUTLINE_ADJUSTMENT_JOB_TYPE, status: 'queued', projectId });
+    const row = await superuser.selectFrom('jobs').select(['lock_key', 'params']).where('id', '=', job.id).executeTakeFirstOrThrow();
+    expect(row).toEqual({ lock_key: `project:${projectId}:feasibility-report`, params: { requirement: '合并概述' } });
+    const budget = await superuser.selectFrom('agent_job_budgets').select(['cost_limit', 'turn_limit']).where('job_id', '=', job.id).executeTakeFirstOrThrow();
+    expect(budget).toEqual({ cost_limit: '50000', turn_limit: 500 });
+    expect((await call(member, 'POST', url, { requirement: '再调整' })).json().error.code).toBe('JOB_LOCKED');
+    expect((await call(member, 'GET', reportUrl(projectId))).json()).toMatchObject({
+      outlineAdjustmentTask: { id: job.id, type: FEASIBILITY_OUTLINE_ADJUSTMENT_JOB_TYPE, status: 'queued' },
+      outlineAdjustment: { requirement: '合并概述', summary: null },
+    });
+
+    const other = await newMember();
+    expect((await call(other, 'POST', url, { requirement: '合并概述' })).statusCode).toBe(404);
+    const empty = await newMember();
+    const { projectId: bare } = await fixture(empty, 'materials');
+    const noOutline = await call(empty, 'POST', reportUrl(bare, '/outline-adjustment-job'), { requirement: '合并概述' });
+    expect(noOutline.statusCode).toBe(409);
+    expect(noOutline.json().error).toMatchObject({ code: 'FEASIBILITY_REPORT_OUTLINE_REQUIRED', message: '当前没有可调整的目录，请先完成报告目录生成' });
+  });
+
+  it('状态中的说明：最近一次调整成功时为 checkpoint 中的说明（截到 2000 字），失败时为 null', async () => {
+    const member = await newMember();
+    const { projectId } = await fixture(member, 'outline');
+    const insert = async (status: string, summary: unknown) =>
+      superuser
+        .insertInto('jobs')
+        .values({
+          org_id: member.orgId,
+          project_id: projectId,
+          user_id: member.userId,
+          type: FEASIBILITY_OUTLINE_ADJUSTMENT_JOB_TYPE,
+          status,
+          params: JSON.stringify({ requirement: '合并概述' }),
+          checkpoint: JSON.stringify({ agent: {}, task: { signature: 's', summary } }),
+          finished_at: new Date(),
+          ...(status === 'failed' ? { error_code: 'JOB_FAILED', error_message: '失败' } : {}),
+        })
+        .execute();
+    await insert('succeeded', '已合并概述。');
+    expect((await call(member, 'GET', reportUrl(projectId))).json().outlineAdjustment).toEqual({ requirement: '合并概述', summary: '已合并概述。' });
+    await insert('failed', '不应显示');
+    expect((await call(member, 'GET', reportUrl(projectId))).json().outlineAdjustment).toEqual({ requirement: '合并概述', summary: null });
+    await insert('succeeded', '长'.repeat(3000));
+    expect((await call(member, 'GET', reportUrl(projectId))).json().outlineAdjustment.summary).toHaveLength(2000);
+    await insert('succeeded', 42);
+    expect((await call(member, 'GET', reportUrl(projectId))).json().outlineAdjustment).toEqual({ requirement: '合并概述', summary: null });
+  });
+
+  it('保存项目信息、资料分析，导入、移除资料，清空与资料分析写入结果时丢弃会话；保存目录、目录配置、关键参数时不丢弃', async () => {
+    const member = await newMember();
+    const { projectId, sources } = await fixture(member, 'parameters');
+    const keeps: [string, string, unknown][] = [
+      ['PUT', '/outline', { outlineData: { outline: OUTLINE }, reason: 'sort' }],
+      ['PUT', '/outline-config', { outlineTemplate: 'government', targetWords: 30000, referenceDocumentIds: [] }],
+      ['PUT', '/key-parameters', { markdown: '## 参数' }],
+    ];
+    const seeded = await seedOutlineSession(member, projectId);
+    for (const [method, path, payload] of keeps) {
+      expect((await call(member, method as 'PUT', reportUrl(projectId, path), payload)).statusCode).toBe(200);
+      expect((await currentSnapshot(member, projectId))?.id).toBe(seeded.snapshot.id);
+    }
+    expect(objects.has(seeded.snapshot.storageKey)).toBe(true);
+
+    const discards: [string, string, unknown][] = [
+      ['PUT', '/analysis', { markdown: '## 分析' }],
+      ['PUT', '/project-info', { projectInfo: PROJECT_INFO }],
+      ['PUT', '/sources', { fileIds: sources }],
+      ['DELETE', `/sources/${sources[1]}`, undefined],
+      ['DELETE', '', undefined],
+    ];
+    for (const [method, path, payload] of discards) {
+      const { snapshot } = await seedOutlineSession(member, projectId);
+      expect((await call(member, method as 'PUT', reportUrl(projectId, path), payload)).statusCode, `${method} ${path}`).toBe(200);
+      expect(await currentSnapshot(member, projectId), `${method} ${path}`).toBeNull();
+      // 有对象存储时一并删除对象与行。
+      expect(objects.has(snapshot.storageKey)).toBe(false);
+      expect(await superuser.selectFrom('agent_workspace_snapshots').select('id').where('id', '=', snapshot.id).executeTakeFirst()).toBeUndefined();
+    }
+
+    // 资料分析写入结果（目录被清空）时丢弃；输入已变化、结果未写入时不丢弃。
+    const analysed = await newMember();
+    const { projectId: other } = await fixture(analysed, 'outline');
+    await seedOutlineSession(analysed, other);
+    expect((await runJob(FEASIBILITY_ANALYSIS_JOB_TYPE, analysed, other)).error).toBeNull();
+    expect(await currentSnapshot(analysed, other)).toBeNull();
   });
 });
 

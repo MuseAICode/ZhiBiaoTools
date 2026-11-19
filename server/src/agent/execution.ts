@@ -11,8 +11,11 @@
 //   可选压缩失败时按原上下文继续并保留登记，续跑时在该阶段要求发出前补做；该阶段的要求发出后不再补做；
 // - assistantText()（8.6d2）：从工作区的会话文件取回 Agent 最后一条回复的全文（不经入口的标准输出，按不可信内容处理）；
 // - checkpoint()：先还原受保护文件，再经 context.agentWorkspace.saveCheckpoint 保存快照与 checkpoint（会话文件名、阶段、
-//   已发出的阶段、待补压缩、受保护文件的登记与任务自己的状态）；超出存储配额时 JobStorageQuotaError，会话随沙箱结束；
+//   已发出的阶段、待补压缩、受保护文件的登记、同时保存的快照 id 与任务自己的状态）；超出存储配额时 JobStorageQuotaError，会话随沙箱结束；
 // - close()：销毁沙箱、作废令牌（任务在 finally 中调用，withAgentRun 代为调用）。
+// - 跨任务续用（8.7b，桌面版 persistent_task.mode = 'resume'）：调整类任务首次执行时经 open({ continueFrom }) 接着另一个任务的会话
+//   （src/agent/continuation.ts 按快照 id 找到与当前快照同一对的现场）：放入该类任务当前的快照，续接会话与受保护文件的登记，阶段、
+//   已发出的阶段与待补压缩清空（新任务的要求照常发出）。之后的检查点与续跑与普通任务相同。
 //
 // 入口的结果与失败代码都是沙箱的说法，不被采信：失败后按数据库中的事实判断原因（#92 登记）——本次执行的失败报告（8.4b）、任务的
 // 费用与轮数上限（8.3a）、任务是否仍在本次执行中、令牌是否已到期，入口报告模型调用失败时再看模型调用路由在本条提示词（或压缩）
@@ -96,6 +99,7 @@ const CHECKPOINT_VERSION = 1;
 /** 阶段名：任务代码中的常量（与受保护文件的分组名同一规则）。 */
 const STAGE_PATTERN = /^[a-z][a-z0-9-]{0,63}$/;
 const MAX_STAGE_INDEX = 10_000;
+const SNAPSHOT_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const AGENT_SESSION_FILE = /^\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.jsonl$/;
 
 /** readFiles 的默认上限。 */
@@ -136,6 +140,11 @@ export interface AgentRunState {
   readonly compactionPending: AgentCompactionPending | null;
   /** 受保护文件的登记（8.6c2b 的 toState）。 */
   readonly baseline: AgentWorkspaceBaselineState;
+  /**
+   * 与本现场同时保存的工作区快照 id（8.7b）：续跑与跨任务续用时放入的快照须是它，否则会话与快照不是同一对、不可用。
+   * 8.7b 之前写下的现场没有这一项，按 null 读出（续跑时不核对）。
+   */
+  readonly snapshot: string | null;
 }
 
 export interface AgentRunCheckpoint {
@@ -169,12 +178,14 @@ export function parseAgentRunCheckpoint(checkpoint: Record<string, unknown> | nu
   const task = Object.hasOwn(checkpoint, 'task') ? checkpoint.task : null;
   if (!isPlainObject(agent) || (task !== null && !isPlainObject(task))) throw new TypeError('Agent 的 checkpoint 不合法');
   const { version, session, stage, stageIndex, promptedStage, baseline } = agent;
+  const snapshot = Object.hasOwn(agent, 'snapshot') ? agent.snapshot : null;
   if (
     version !== CHECKPOINT_VERSION ||
     (session !== null && (typeof session !== 'string' || !AGENT_SESSION_FILE.test(session))) ||
     (stage !== null && !isStage(stage)) ||
     !Number.isSafeInteger(stageIndex) || (stageIndex as number) < 0 || (stageIndex as number) > MAX_STAGE_INDEX ||
     (promptedStage !== null && !isStage(promptedStage)) ||
+    (snapshot !== null && (typeof snapshot !== 'string' || !SNAPSHOT_ID.test(snapshot))) ||
     !isPlainObject(baseline)
   ) {
     throw new TypeError('Agent 的 checkpoint 不合法');
@@ -188,6 +199,7 @@ export function parseAgentRunCheckpoint(checkpoint: Record<string, unknown> | nu
       promptedStage: promptedStage as string | null,
       compactionPending: parseCompactionPending(Object.hasOwn(agent, 'compactionPending') ? agent.compactionPending : null),
       baseline: baseline as unknown as AgentWorkspaceBaselineState,
+      snapshot: snapshot as string | null,
     },
     task: task as Record<string, unknown> | null,
   };
@@ -282,11 +294,13 @@ export interface AgentRun {
   readonly sandbox: SandboxRef;
   /** 受保护文件的登记（8.6c2b）：任务经 baseline.write 放入输入资料。 */
   readonly baseline: AgentWorkspaceBaseline;
-  /** 是否从 checkpoint 续跑（放入了上次的工作区快照）。 */
+  /** 是否从本任务的 checkpoint 续跑（放入了上次的工作区快照）。 */
   readonly resumed: boolean;
+  /** 是否接着另一个任务的会话（8.7b，open({ continueFrom })）：放入了该类任务当前的快照，阶段与已发出的阶段从空开始。 */
+  readonly continued: boolean;
   /** 续跑后原件仍不可用的受保护文件：任务须重新 baseline.write，否则需要还原时任务失败。 */
   readonly unavailableProtectedFiles: readonly string[];
-  /** checkpoint 中任务自己的状态（首次执行为 null）。 */
+  /** checkpoint 中任务自己的状态（首次执行、接着另一个任务的会话时为 null）。 */
   readonly taskCheckpoint: Record<string, unknown> | null;
   readonly session: string | null;
   readonly stage: string | null;
@@ -317,13 +331,21 @@ export interface AgentRun {
   close(): Promise<void>;
 }
 
+export interface AgentOpenOptions {
+  /**
+   * 跨任务续用（8.7b）：接着另一个任务的会话（findContinuableAgentSession 找到的现场，须有会话与快照 id）。只能用于首次执行
+   * （resuming 为 false）；续跑时放入本任务的快照，不能再给出。放入的快照不是该现场的快照时以 AGENT_WORKSPACE_RESTORE_FAILED 失败。
+   */
+  readonly continueFrom?: AgentRunState;
+}
+
 /** 任务上下文中的 Agent（context.agent）。 */
 export interface JobAgent {
   readonly template: AgentSandboxTemplate;
   /** checkpoint 中是否有执行者的现场（本次执行是续跑）。 */
   readonly resuming: boolean;
   /** 打开本次执行的沙箱与会话；一次执行只能打开一次。 */
-  open(): Promise<AgentRun>;
+  open(options?: AgentOpenOptions): Promise<AgentRun>;
 }
 
 export interface JobAgentOptions {
@@ -395,18 +417,28 @@ export function createJobAgent(options: JobAgentOptions): JobAgent {
   return Object.freeze({
     template,
     resuming: parsed !== null,
-    async open(): Promise<AgentRun> {
+    async open(openOptions: AgentOpenOptions = {}): Promise<AgentRun> {
       if (opened) throw new TypeError('一次执行只能打开一次 Agent 沙箱');
+      const inherited = openOptions.continueFrom === undefined ? null : continuationCheckpoint(openOptions.continueFrom, parsed);
       opened = true;
-      return openAgentRun(options, parsed, { db, driver, run, tenant, template, context });
+      return openAgentRun(options, inherited ?? parsed, { db, driver, run, tenant, template, context }, inherited !== null);
     },
   });
+}
+
+/** 跨任务续用的现场：形状同 checkpoint 逐项检查，须有会话与快照 id；阶段、已发出的阶段与待补压缩清空，任务状态为空。 */
+function continuationCheckpoint(source: AgentRunState, own: AgentRunCheckpoint | null): AgentRunCheckpoint {
+  if (own !== null) throw new TypeError('续跑的执行不能接着其他任务的会话');
+  const parsed = parseAgentRunCheckpoint({ agent: source as unknown as Record<string, unknown> });
+  if (!parsed || parsed.agent.session === null || parsed.agent.snapshot === null) throw new TypeError('接着的会话必须有会话文件与快照');
+  return { agent: { ...parsed.agent, stage: null, stageIndex: 0, promptedStage: null, compactionPending: null }, task: null };
 }
 
 async function openAgentRun(
   options: JobAgentOptions,
   parsed: AgentRunCheckpoint | null,
   deps: Pick<JobAgentOptions, 'db' | 'driver' | 'run' | 'tenant' | 'template' | 'context'>,
+  continued: boolean,
 ): Promise<AgentRun> {
   const { db, driver, run, tenant, template, context } = deps;
   const signal = context.signal;
@@ -459,6 +491,9 @@ async function openAgentRun(
         if (parsed.agent.session !== null || Object.keys(parsed.agent.baseline.groups ?? {}).length > 0) {
           throw new JobError(AGENT_WORKSPACE_RESTORE_FAILED_CODE, SESSION_MISSING_MESSAGE);
         }
+      } else if (parsed.agent.snapshot !== null && restored.id !== parsed.agent.snapshot) {
+        // 当前的快照已被其他任务替换（8.7b）：与现场中的会话不是同一对。
+        throw new JobError(AGENT_WORKSPACE_RESTORE_FAILED_CODE, SESSION_MISSING_MESSAGE);
       } else {
         unavailable = await baseline.recover(sandbox, { signal }).catch((error: unknown) => {
           throw sandboxFailure(error);
@@ -480,6 +515,7 @@ async function openAgentRun(
       stageIndex: parsed?.agent.stageIndex ?? 0,
       promptedStage: parsed?.agent.promptedStage ?? null,
       compactionPending: parsed?.agent.compactionPending ?? null,
+      snapshot: parsed?.agent.snapshot ?? null,
     };
     // 续跑后的第一条提示词之前检查一次 checkpoint 中的待补压缩（桌面版 resumePendingCompaction）。
     let resumeCompactionChecked = parsed === null;
@@ -754,12 +790,15 @@ async function openAgentRun(
       // 快照中的受保护文件须是原件（续跑时从快照中取回原件，8.6c2b）。
       const restored = await restoreProtected();
       await logRestored(restored);
-      const saved: AgentRunCheckpoint = {
-        agent: { version: CHECKPOINT_VERSION, ...state, baseline: baseline.toState() },
-        task,
-      };
+      const agentState = { version: CHECKPOINT_VERSION as typeof CHECKPOINT_VERSION, ...state, baseline: baseline.toState() };
       try {
-        await options.workspace.saveCheckpoint(current, saved as unknown as Record<string, unknown>, progress);
+        // 快照 id 写进现场：续跑与跨任务续用时据此确认放入的快照与会话是同一对（8.7b）。
+        const record = await options.workspace.saveCheckpoint(
+          current,
+          (snapshot) => ({ agent: { ...agentState, snapshot: snapshot.id }, task }) satisfies AgentRunCheckpoint as unknown as Record<string, unknown>,
+          progress,
+        );
+        state.snapshot = record.id;
       } catch (error) {
         // 超出存储配额：任务应立即退出、会话随沙箱结束；工作区被拒绝、过大：任务失败。
         throw sandboxFailure(error);
@@ -831,7 +870,8 @@ async function openAgentRun(
     return {
       sandbox: current,
       baseline,
-      resumed: parsed !== null,
+      resumed: parsed !== null && !continued,
+      continued,
       unavailableProtectedFiles: Object.freeze([...unavailable]),
       taskCheckpoint: parsed?.task ?? null,
       get session() {
@@ -862,9 +902,9 @@ async function openAgentRun(
  * 打开本次执行的 Agent 沙箱并执行 fn，结束（含失败、中止）时销毁沙箱、作废令牌。context.agent 为 null（agent 队列以外的任务、
  * 未登记 agentWorkspace、worker 未配置对象存储或 sandbox-runner）时抛 JobError(AGENT_UNAVAILABLE)。
  */
-export async function withAgentRun<T>(agent: JobAgent | null, fn: (run: AgentRun) => Promise<T>): Promise<T> {
+export async function withAgentRun<T>(agent: JobAgent | null, fn: (run: AgentRun) => Promise<T>, options?: AgentOpenOptions): Promise<T> {
   if (!agent) throw new JobError(AGENT_UNAVAILABLE_CODE, 'Agent 服务暂不可用，请稍后重新发起');
-  const run = await agent.open();
+  const run = await agent.open(options);
   try {
     return await fn(run);
   } finally {

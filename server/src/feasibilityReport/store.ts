@@ -11,7 +11,7 @@
 // 目录和关键参数；保存资料分析时清空目录和关键参数；保存目录（排序除外）时清空关键参数，并按 reason / idMap /
 // affectedNodeIds 清空受影响章节的正文；保存关键参数时清空全部正文。
 //
-// 第 6 步（6.12）与第 8 步（8.7a）的任务（src/feasibilityReport/jobs.ts）：资料解析结果经 saveSourceParse 写入；资料分析、目录、
+// 第 6 步（6.12）与第 8 步（8.7a、8.7b）的任务（src/feasibilityReport/jobs.ts）：资料解析结果经 saveSourceParse 写入；资料分析、目录、
 // 关键参数、正文由 saveAnalysisResult、saveOutlineResult、saveKeyParametersResult、clearChapterContents、saveChapterResult 写入，下游清空规则与用户保存相同，
 // 并带上任务开始时的输入签名（inputSignature），在写入的同一事务中（项目锁内）核对，不符时不写入。正文生成或审校任务未结束
 // （排队、运行、暂停、取消中）时用户不能保存目录、手工改正文（与桌面版 assertContentUnlocked 相同，409）。
@@ -49,6 +49,7 @@ import type { ObjectStore } from '../files/objectStore.ts';
 import { latestProjectJobs } from '../jobs/store.ts';
 import { jobBody, type JobBody } from '../jobs/view.ts';
 import { storageDisabled } from '../knowledgeBase/content.ts';
+import { findContinuableAgentSessionIn, type AgentSessionTarget } from '../agent/continuation.ts';
 
 /** 每个项目最多的可研资料数（与其他模块的招标文件相同）。 */
 export const FEASIBILITY_SOURCES_MAX = 20;
@@ -65,20 +66,34 @@ export type FeasibilityOutlineSaveReason = (typeof FEASIBILITY_OUTLINE_SAVE_REAS
 /** 任务读取合并的资料正文时 Markdown 的总大小上限（整份读入内存，与其他模块相同）。 */
 export const FEASIBILITY_MARKDOWN_READ_MAX_BYTES = 32 * 1024 * 1024;
 
-/** 可研报告的任务类型（6.12、8.7a，src/feasibilityReport/jobs.ts）。目录调整随 8.7b。 */
+/** 可研报告的任务类型（6.12、8.7a、8.7b，src/feasibilityReport/jobs.ts）。 */
 export const FEASIBILITY_ANALYSIS_JOB_TYPE = 'feasibility-analysis';
 /** 目录生成（8.7a）：agent 队列，在 agent 沙箱中由 Agent 写出目录。 */
 export const FEASIBILITY_OUTLINE_JOB_TYPE = 'feasibility-outline';
+/** 目录调整（8.7b）：agent 队列，接着目录生成（或上一次调整）的会话与工作区，按用户的要求改写目录。 */
+export const FEASIBILITY_OUTLINE_ADJUSTMENT_JOB_TYPE = 'feasibility-outline-adjustment';
 export const FEASIBILITY_PARAMETERS_JOB_TYPE = 'feasibility-parameters';
 export const FEASIBILITY_CONTENT_JOB_TYPE = 'feasibility-content';
 export const FEASIBILITY_HUMAN_WRITING_JOB_TYPE = 'feasibility-human-writing';
 export const FEASIBILITY_JOB_TYPES = [
   FEASIBILITY_ANALYSIS_JOB_TYPE,
   FEASIBILITY_OUTLINE_JOB_TYPE,
+  FEASIBILITY_OUTLINE_ADJUSTMENT_JOB_TYPE,
   FEASIBILITY_PARAMETERS_JOB_TYPE,
   FEASIBILITY_CONTENT_JOB_TYPE,
   FEASIBILITY_HUMAN_WRITING_JOB_TYPE,
 ] as const;
+/** 目录生成与目录调整共用的工作区快照类别（迁移 0040 的 task_kind）。 */
+export const FEASIBILITY_OUTLINE_TASK_KIND = 'feasibility-outline';
+/** 调整要求的字数上限（桌面版没有限制；放入提示词，限制在 2000 字以内）。 */
+export const FEASIBILITY_ADJUSTMENT_REQUIREMENT_MAX = 2000;
+/** 调整说明（Agent 最后一条回复）的字数上限：桌面版提示词要求不超过 200 字，超出的截短。 */
+export const FEASIBILITY_ADJUSTMENT_SUMMARY_MAX = 2000;
+
+/** 目录调整接着的会话：目录生成或上一次调整写下的、与当前快照同一对的现场（src/agent/continuation.ts）。 */
+export function feasibilityOutlineSessionTarget(projectId: string): AgentSessionTarget {
+  return { projectId, taskKind: FEASIBILITY_OUTLINE_TASK_KIND, jobTypes: [FEASIBILITY_OUTLINE_JOB_TYPE, FEASIBILITY_OUTLINE_ADJUSTMENT_JOB_TYPE] };
+}
 /** 持有正文锁的任务类型（与桌面版 assertContentUnlocked 检查的 contentTask、humanWritingTask 相同）。 */
 const CONTENT_LOCK_JOB_TYPES = [FEASIBILITY_CONTENT_JOB_TYPE, FEASIBILITY_HUMAN_WRITING_JOB_TYPE];
 
@@ -153,8 +168,15 @@ export interface FeasibilityReportState {
   /** 本项目最近一次的各类任务（与 GET /api/jobs/:jobId 相同的形式）；没有时为 null。 */
   analysisTask: JobBody | null;
   outlineTask: JobBody | null;
-  /** 目录调整随 8.7b，一律为 null。 */
-  outlineAdjustmentTask: null;
+  /** 最近一次目录调整（8.7b）。 */
+  outlineAdjustmentTask: JobBody | null;
+  /**
+   * 最近一次目录调整的要求与 Agent 的说明（桌面版 outlineAdjustmentTask.stats.adjustment）；没有调整任务时为 null。summary 是 AI 生成
+   * 的内容（按纯文本显示），调整还没有成功完成时为 null（前端显示失败原因或进度）。
+   */
+  outlineAdjustment: { requirement: string; summary: string | null } | null;
+  /** 能否发起目录调整：有目录，且目录生成（或上一次调整）的 Agent 会话可以续用（桌面版 hasPersistentTaskSession）。 */
+  outlineAdjustable: boolean;
   parametersTask: JobBody | null;
   contentTask: JobBody | null;
   humanWritingTask: JobBody | null;
@@ -383,6 +405,7 @@ export async function readState(trx: Trx, projectId: string): Promise<Feasibilit
     const job = jobs.get(type);
     return job ? jobBody(job) : null;
   };
+  const outlineData = await readOutline(trx, projectId, meta);
   return {
     step: meta?.step ?? 'materials',
     projectInfo: {
@@ -403,14 +426,27 @@ export async function readState(trx: Trx, projectId: string): Promise<Feasibilit
     targetWords: meta?.target_words ?? DEFAULT_TARGET_WORDS,
     referenceDocumentIds: await readReferenceDocumentIds(trx, projectId),
     keyParametersMarkdown: meta?.key_parameters_markdown ?? '',
-    outlineData: await readOutline(trx, projectId, meta),
+    outlineData,
     analysisTask: task(FEASIBILITY_ANALYSIS_JOB_TYPE),
     outlineTask: task(FEASIBILITY_OUTLINE_JOB_TYPE),
-    outlineAdjustmentTask: null,
+    outlineAdjustmentTask: task(FEASIBILITY_OUTLINE_ADJUSTMENT_JOB_TYPE),
+    outlineAdjustment: adjustmentOf(jobs.get(FEASIBILITY_OUTLINE_ADJUSTMENT_JOB_TYPE)),
+    outlineAdjustable: outlineData !== null && outlineData.outline.length > 0 && (await findContinuableAgentSessionIn(trx, feasibilityOutlineSessionTarget(projectId))) !== null,
     parametersTask: task(FEASIBILITY_PARAMETERS_JOB_TYPE),
     contentTask: task(FEASIBILITY_CONTENT_JOB_TYPE),
     humanWritingTask: task(FEASIBILITY_HUMAN_WRITING_JOB_TYPE),
   };
+}
+
+/** 调整任务的要求（任务参数）与成功后写下的说明（任务最后的 checkpoint 中，src/feasibilityReport/jobs.ts）。 */
+function adjustmentOf(job: { status: string; params: Record<string, unknown>; checkpoint: Record<string, unknown> | null } | undefined) {
+  if (!job) return null;
+  const requirement = typeof job.params.requirement === 'string' ? job.params.requirement : '';
+  const task = job.checkpoint?.task;
+  const summary = job.status === 'succeeded' && typeof task === 'object' && task !== null && typeof (task as Record<string, unknown>).summary === 'string'
+    ? ((task as Record<string, unknown>).summary as string).slice(0, FEASIBILITY_ADJUSTMENT_SUMMARY_MAX)
+    : null;
+  return { requirement, summary };
 }
 
 export async function loadFeasibilityReport(db: Kysely<Database>, context: TenantContext, projectId: string): Promise<FeasibilityReportState> {

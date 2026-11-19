@@ -90,11 +90,16 @@ export interface JobAgentWorkspace {
    */
   restore(sandbox: SandboxRef): Promise<WorkspaceSnapshotRecord | null>;
   /**
-   * 检查点：先保存工作区快照（替换当前的），成功后再保存 checkpoint（同 context.saveCheckpoint）。超出组织存储配额抛
+   * 检查点：先保存工作区快照（替换当前的），成功后再保存 checkpoint（同 context.saveCheckpoint）。checkpoint 可以是函数：取刚保存的
+   * 快照生成 checkpoint（8.7b：执行者把快照 id 写进现场，跨任务续用时据此确认快照与会话是同一对）。超出组织存储配额抛
    * JobStorageQuotaError（任务应立即退出，执行者暂停为 storage_quota）；工作区不符合规则或过大抛 JobError（任务失败）；
    * 这些情况下 checkpoint 不前进、旧快照保留。沙箱保存后仍可继续使用。
    */
-  saveCheckpoint(sandbox: SandboxRef, checkpoint: Record<string, unknown>, progress?: number): Promise<WorkspaceSnapshotRecord>;
+  saveCheckpoint(
+    sandbox: SandboxRef,
+    checkpoint: Record<string, unknown> | ((snapshot: WorkspaceSnapshotRecord) => Record<string, unknown>),
+    progress?: number,
+  ): Promise<WorkspaceSnapshotRecord>;
 }
 
 export interface JobAgentWorkspaceOptions {
@@ -135,7 +140,7 @@ export function createJobAgentWorkspace(options: JobAgentWorkspaceOptions): JobA
         throw error;
       }
     },
-    async saveCheckpoint(sandbox: SandboxRef, checkpoint: Record<string, unknown>, progress?: number) {
+    async saveCheckpoint(sandbox: SandboxRef, checkpoint: Record<string, unknown> | ((snapshot: WorkspaceSnapshotRecord) => Record<string, unknown>), progress?: number) {
       // 已超出配额：之后的检查点不再保存（任务应已退出），checkpoint 不前进。
       if (storageQuotaExceeded) throw new JobStorageQuotaError();
       let record: WorkspaceSnapshotRecord;
@@ -156,7 +161,7 @@ export function createJobAgentWorkspace(options: JobAgentWorkspaceOptions): JobA
         }
         throw error;
       }
-      await options.saveCheckpoint(checkpoint, progress);
+      await options.saveCheckpoint(typeof checkpoint === 'function' ? checkpoint(record) : checkpoint, progress);
       return record;
     },
   });
@@ -164,12 +169,12 @@ export function createJobAgentWorkspace(options: JobAgentWorkspaceOptions): JobA
 
 /**
  * 用户重置某类任务时丢弃这些任务类别的快照（8.7 起各业务的重置入口调用）。组织与用户来自请求的 TenantContext，项目须已经
- * requireProject 校验；返回被丢弃的类别。对象删除失败的留给清理任务。
+ * requireProject 校验；返回被丢弃的类别。对象删除失败的、store 为 null（api 未配置对象存储）时的对象，留给清理任务。
  */
 export async function discardAgentWorkspaceSnapshots(
   db: Kysely<Database>,
   context: TenantContext,
-  store: ObjectStore,
+  store: ObjectStore | null,
   projectId: string,
   taskKinds: readonly string[],
 ): Promise<string[]> {
