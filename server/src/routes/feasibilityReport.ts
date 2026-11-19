@@ -17,6 +17,7 @@
 // GET    /api/projects/:projectId/feasibility-report/sources/:fileId/markdown     资料解析出的 Markdown 原文（附件下载，还没有解析时为空）
 // DELETE /api/projects/:projectId/feasibility-report                              清空（资料进回收站）
 // POST   /api/projects/:projectId/feasibility-report/analysis-job                 开始资料分析（入队 feasibility-analysis）
+// POST   /api/projects/:projectId/feasibility-report/outline-job                  开始生成报告目录（入队 feasibility-outline，agent 队列，8.7a）
 // POST   /api/projects/:projectId/feasibility-report/key-parameters-job           开始生成关键参数（入队 feasibility-parameters）
 // POST   /api/projects/:projectId/feasibility-report/content-job                  开始正文生成与审校（入队 feasibility-content，{ onlyMissing? }）
 // POST   /api/projects/:projectId/feasibility-report/human-writing-job            开始自然化审校（入队 feasibility-human-writing）
@@ -26,7 +27,7 @@
 //
 // 导入资料后自动入队资料解析（6.6，src/parse/）。资料分析、关键参数、正文生成与审校是任务（6.12，src/feasibilityReport/jobs.ts），结果由任务
 // 经 Store 函数写入，进度、取消、暂停、继续经 /api/jobs 与 SSE；与桌面版相同，保存项目信息、资料分析、目录、关键参数，导入、移除资料和清空时
-// 取消本项目进行中的可研任务；正文生成或审校任务未结束时不能保存目录、手工改正文（409）。目录生成 / 调整随第 8 步；
+// 取消本项目进行中的可研任务；正文生成或审校任务未结束时不能保存目录、手工改正文（409）。目录生成在 agent 沙箱中执行（8.7a），目录调整随 8.7b；
 // readCombinedSourceMarkdown（Renderer 未调用）由任务在服务端合并，不开放为接口。
 //
 // 导出 Word（7.5e，取代桌面版可研页面的 export.word 与 export.openFile；做法与技术方案整本导出的 7.4h 相同）：POST 的请求体为
@@ -68,6 +69,7 @@ import {
   startFeasibilityAnalysis,
   startFeasibilityContent,
   startFeasibilityHumanWriting,
+  startFeasibilityOutline,
   startFeasibilityParameters,
 } from '../feasibilityReport/jobs.ts';
 import {
@@ -396,6 +398,11 @@ export async function registerFeasibilityReportRoutes(app: FastifyInstance, deps
 
   app.post<ProjectParams>('/:projectId/feasibility-report/analysis-job', { schema: { params: PROJECT_ID_PARAMS } }, async (request, reply) => {
     const job = await startFeasibilityAnalysis(deps.jobs, tenantOf(request), await project(request));
+    return reply.code(202).send({ job: jobBody(job) });
+  });
+
+  app.post<ProjectParams>('/:projectId/feasibility-report/outline-job', { schema: { params: PROJECT_ID_PARAMS } }, async (request, reply) => {
+    const job = await startFeasibilityOutline(deps.jobs, tenantOf(request), await project(request));
     return reply.code(202).send({ job: jobBody(job) });
   });
 

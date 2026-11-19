@@ -26,6 +26,7 @@ import {
   FEASIBILITY_ANALYSIS_JOB_TYPE,
   FEASIBILITY_CONTENT_JOB_TYPE,
   FEASIBILITY_HUMAN_WRITING_JOB_TYPE,
+  FEASIBILITY_OUTLINE_JOB_TYPE,
   FEASIBILITY_PARAMETERS_JOB_TYPE,
 } from '../../src/feasibilityReport/jobs.ts';
 import {
@@ -43,12 +44,14 @@ import {
   saveKeyParametersResult,
   saveOutline,
   saveOutlineConfig,
+  saveOutlineResult,
   saveProjectInfo,
   saveSourceParse,
   updateStep,
   type FeasibilityOutlineItem,
 } from '../../src/feasibilityReport/store.ts';
 import type { ObjectStore } from '../../src/files/objectStore.ts';
+import type { AgentRun, AgentStageOptions, JobAgent } from '../../src/agent/execution.ts';
 import type { JobChatRequest, JobContext, JobTypeDefinition } from '../../src/jobs/definitions.ts';
 import { createJobDispatcher } from '../../src/jobs/queue.ts';
 import { jobTypeRegistry } from '../../src/jobs/registry.ts';
@@ -260,7 +263,7 @@ interface RunResult {
 }
 
 /** 以给定的上下文直接执行任务类型的 run（不经队列）。 */
-async function runJob(type: string, member: Member, projectId: string, respond: Responder = defaultResponder, params: unknown = {}): Promise<RunResult> {
+async function runJob(type: string, member: Member, projectId: string, respond: Responder = defaultResponder, params: unknown = {}, agent: JobAgent | null = null): Promise<RunResult> {
   const definition = jobOf(type);
   const logs: string[] = [];
   const requests: JobChatRequest[] = [];
@@ -288,7 +291,7 @@ async function runJob(type: string, member: Member, projectId: string, respond: 
     objectStore: memoryStore,
     sandbox: null,
     agentWorkspace: null,
-    agent: null,
+    agent,
   };
   try {
     await definition.run(context);
@@ -414,6 +417,44 @@ describe('Store：输入签名与任务写入', () => {
     expect(state).toMatchObject({ analysisMarkdown: '## 任务分析', keyParametersMarkdown: '', outlineData: null });
   });
 
+  it('目录生成的结果（8.7a）：签名不符时不写入；相符时整体替换目录、清空正文与关键参数，写入项目名称与概述；超长字段截短', async () => {
+    const member = await newMember();
+    const { projectId } = await fixture(member, 'content');
+    const generated: FeasibilityOutlineItem[] = [
+      {
+        id: '1',
+        title: '概述',
+        description: '概述说明',
+        children: [{ id: '1.1', title: 'x'.repeat(2100), description: '叶子', knowledge_item_ids: ['doc::a', 'doc::b'] }],
+      },
+      { id: '2', title: '研究结论及建议', description: 'y'.repeat(20_100) },
+    ];
+    const input = { outline: generated, projectName: '城区供水管网改造工程', projectOverview: '## 项目概况\n\n管网 12 公里。' };
+    expect(await saveOutlineResult(appDb, member.context, projectId, input, 'stale')).toBe(false);
+    let state = await loadFeasibilityReport(appDb, member.context, projectId);
+    expect(state.outlineData!.outline.map((item) => item.id)).toEqual(['1', '2']);
+    expect(state.keyParametersMarkdown).not.toBe('');
+
+    const signature = await inputSignature(appDb, member.context, projectId);
+    expect(await saveOutlineResult(appDb, member.context, projectId, input, signature)).toBe(true);
+    state = await loadFeasibilityReport(appDb, member.context, projectId);
+    expect(state.keyParametersMarkdown).toBe('');
+    expect(state.outlineData).toEqual({
+      outline: [
+        { id: '1', title: '概述', description: '概述说明', children: [{ id: '1.1', title: 'x'.repeat(2000), description: '叶子', knowledge_item_ids: ['doc::a', 'doc::b'] }] },
+        { id: '2', title: '研究结论及建议', description: 'y'.repeat(20_000) },
+      ],
+      project_name: '城区供水管网改造工程',
+      project_overview: '## 项目概况\n\n管网 12 公里。',
+    });
+    expect(collectContents(state.outlineData!.outline)).toEqual([]);
+    // 写入后签名变化：同一任务的第二次写入被拒绝。
+    expect(await saveOutlineResult(appDb, member.context, projectId, input, signature)).toBe(false);
+    await expect(
+      saveOutlineResult(appDb, member.context, projectId, { ...input, outline: [{ id: '1', title: 'a', description: '' }, { id: '1', title: 'b', description: '' }] }, await inputSignature(appDb, member.context, projectId)),
+    ).rejects.toThrow(TypeError);
+  });
+
   it('合并的资料正文按导入顺序、以“## 文件名”开头；还没有解析的资料不在其中', async () => {
     const member = await newMember();
     const { projectId, sources } = await fixture(member);
@@ -444,7 +485,72 @@ function collectContents(items: readonly FeasibilityOutlineItem[]): string[] {
   return items.flatMap((item) => [...(item.content ? [`${item.id}:${item.content}`] : []), ...collectContents(item.children ?? [])]);
 }
 
+/** 脚本化的假 Agent：记下放入工作区的材料与提示词，读结果文件时返回给定的 outline.json。 */
+function scriptedAgent(output: string) {
+  const record = { files: new Map<string, string>(), prompts: [] as string[] };
+  const run = {
+    sandbox: { id: 'sandbox-1' },
+    resumed: false,
+    unavailableProtectedFiles: [],
+    taskCheckpoint: null,
+    wasPrompted: () => false,
+    baseline: {
+      async write(_sandbox: unknown, _group: string, files: { path: string; data: Buffer }[]) {
+        for (const file of files) record.files.set(file.path, file.data.toString('utf8'));
+      },
+    },
+    async readFiles(paths: readonly string[]) {
+      return new Map([[paths[0]!, { size: output.length, data: Buffer.from(output, 'utf8') }]]);
+    },
+    async runStage(stage: AgentStageOptions<unknown>) {
+      record.prompts.push(stage.prompt);
+      const report = await stage.validate({ attempt: 1, restored: [] });
+      return { value: report.value, acceptedIssues: [], repairs: 0, executionRetries: 0 };
+    },
+    async close() {},
+  };
+  const agent: JobAgent = { template: 'agent', resuming: false, open: async () => run as unknown as AgentRun };
+  return { agent, record };
+}
+
 describe('四类任务（直接执行）', () => {
+  it('目录生成（8.7a，假 Agent）：材料取已保存的目录配置与引用的知识库条目，写入目录并清空正文与关键参数；Agent 写的知识库条目只保留本次清单中的', async () => {
+    const member = await newMember();
+    const { projectId } = await fixture(member, 'content');
+    const document = await newKnowledgeDocument(member, [
+      { id: 'K1', title: '管网方案', resume: '管网工程方案', content: '正文' },
+      { id: 'K2', title: '无简介', resume: '', content: '只有正文' },
+    ]);
+    await saveOutlineConfig(appDb, member.context, projectId, { outlineTemplate: 'infrastructure', targetWords: 80000, referenceDocumentIds: [document] });
+    const output = JSON.stringify({
+      outline: [
+        { title: '第一章 概述', description: '概述', children: [{ title: '项目概况', description: '叶子', knowledge_item_ids: [`${document}::K1`, `${document}::K2`, 'other::K9'] }] },
+        { title: '研究结论', description: '' },
+      ],
+    });
+    const { agent, record } = scriptedAgent(output);
+    const result = await runJob(FEASIBILITY_OUTLINE_JOB_TYPE, member, projectId, defaultResponder, {}, agent);
+    expect(result.error).toBeNull();
+    expect(result.requests).toEqual([]);
+    expect([...record.files.keys()]).toEqual(['项目参数.md', '资料分析.md', '大纲模板.md', '参考知识库.md', '材料说明.md']);
+    expect(record.files.get('大纲模板.md')).toContain('# 选用的通用大纲：基础设施与公用事业大纲');
+    expect(record.files.get('大纲模板.md')).toContain('目标总字数约 80000 字。');
+    expect(JSON.parse(record.files.get('参考知识库.md')!)).toEqual([{ id: `${document}::K1`, title: '管网方案', resume: '管网工程方案' }]);
+    expect(record.files.get('资料分析.md')).toBe('## 项目概况\n\n管网 12 公里。');
+    expect(record.prompts[0]).toContain('目标总字数约 80000 字');
+    const state = await loadFeasibilityReport(appDb, member.context, projectId);
+    expect(state.outlineData).toEqual({
+      outline: [
+        { id: '1', title: '概述', description: '概述', children: [{ id: '1.1', title: '项目概况', description: '叶子', knowledge_item_ids: [`${document}::K1`] }] },
+        { id: '2', title: '研究结论', description: '' },
+      ],
+      project_name: '城区供水管网改造工程',
+      project_overview: '## 项目概况\n\n管网 12 公里。',
+    });
+    expect(state.keyParametersMarkdown).toBe('');
+  });
+
+
   it('资料分析读合并的资料正文，结果整理成 Markdown 写入并清空目录和关键参数', async () => {
     const member = await newMember();
     const { projectId } = await fixture(member, 'parameters');
@@ -529,6 +635,7 @@ describe('接口', () => {
       expect(response.json().error).toMatchObject({ code, message });
     };
     await expectConflict(reportUrl(empty, '/analysis-job'), 'FEASIBILITY_REPORT_PROJECT_INFO_REQUIRED', '请先填写项目名称');
+    await expectConflict(reportUrl(empty, '/outline-job'), 'FEASIBILITY_REPORT_ANALYSIS_REQUIRED', '请先完成资料分析');
     await expectConflict(reportUrl(empty, '/key-parameters-job'), 'FEASIBILITY_REPORT_OUTLINE_REQUIRED', '请先生成报告目录');
     await expectConflict(reportUrl(empty, '/content-job'), 'FEASIBILITY_REPORT_OUTLINE_REQUIRED', '请先生成报告目录');
     await expectConflict(reportUrl(empty, '/human-writing-job'), 'FEASIBILITY_REPORT_CONTENT_REQUIRED', '请先生成正文，再进行自然化审校');
@@ -551,6 +658,34 @@ describe('接口', () => {
     expect(content.statusCode, content.body).toBe(409);
     expect(content.json().error.code).toBe('FEASIBILITY_REPORT_KEY_PARAMETERS_REQUIRED');
     expect((await call(member, 'POST', reportUrl(projectId, '/content-job'), { resume: true })).statusCode).toBe(400);
+  });
+
+  it('开始目录生成（8.7a）：202，写入 Agent 任务上限；与其他可研任务互斥；状态中返回；保存资料分析时取消；不采用请求体字段', async () => {
+    const member = await newMember();
+    const { projectId } = await fixture(member, 'parameters');
+    const started = await call(member, 'POST', reportUrl(projectId, '/outline-job'));
+    expect(started.statusCode, started.body).toBe(202);
+    const job = started.json().job;
+    expect(job).toMatchObject({ type: FEASIBILITY_OUTLINE_JOB_TYPE, status: 'queued', projectId });
+    const row = await superuser.selectFrom('jobs').select(['lock_key', 'params']).where('id', '=', job.id).executeTakeFirstOrThrow();
+    expect(row).toEqual({ lock_key: `project:${projectId}:feasibility-report`, params: {} });
+    const budget = await superuser.selectFrom('agent_job_budgets').select(['cost_limit', 'turn_limit']).where('job_id', '=', job.id).executeTakeFirstOrThrow();
+    expect(budget).toEqual({ cost_limit: '50000', turn_limit: 500 });
+    const locked = await call(member, 'POST', reportUrl(projectId, '/analysis-job'));
+    expect(locked.statusCode).toBe(409);
+    expect(locked.json().error.code).toBe('JOB_LOCKED');
+    expect((await call(member, 'GET', reportUrl(projectId))).json().outlineTask).toMatchObject({ id: job.id, type: FEASIBILITY_OUTLINE_JOB_TYPE, status: 'queued' });
+    expect((await call(member, 'PUT', reportUrl(projectId, '/analysis'), { markdown: '## 新分析' })).statusCode).toBe(200);
+    expect(await statusOf(job.id)).toBe('cancelled');
+    // 请求体中的字段一律不采用：目录配置取已保存的，任务参数为空。
+    const again = await call(member, 'POST', reportUrl(projectId, '/outline-job'), { outlineTemplate: 'enterprise', orgId: randomUUID() });
+    expect(again.statusCode, again.body).toBe(202);
+    expect((await superuser.selectFrom('jobs').select('params').where('id', '=', again.json().job.id).executeTakeFirstOrThrow()).params).toEqual({});
+    const other = await newMember();
+    expect((await call(other, 'POST', reportUrl(projectId, '/outline-job'))).statusCode).toBe(404);
+    const poor = await newMember({ balance: 0n });
+    const { projectId: poorProject } = await fixture(poor, 'outline');
+    expect((await call(poor, 'POST', reportUrl(poorProject, '/outline-job'))).statusCode).toBe(402);
   });
 
   it('余额不足 402；其他组织的项目 404', async () => {

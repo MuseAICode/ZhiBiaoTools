@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { AGENT_TASK_LIMITS } from '../../src/agent/budget.ts';
 import { createJobTypeRegistry, DEFAULT_MAX_ATTEMPTS, maxAttemptsOf, type JobTypeDefinition } from '../../src/jobs/definitions.ts';
 import { JOB_TYPES, jobTypeRegistry } from '../../src/jobs/registry.ts';
 
@@ -25,7 +26,7 @@ describe('任务类型登记', () => {
     expect(maxAttemptsOf(definition('a', { maxAttempts: 1 }))).toBe(1);
   });
 
-  it('登记的业务任务类型：6.6 的文档解析（parse 队列、可续跑、不调用模型），6.9 的废标检查两类（ai 队列、可续跑、调用模型），6.10 的标书查重（ai 队列、可续跑、不调用模型），6.11 的技术方案两类、6.12 的可研报告四类、6.13a 的知识库文档准备与 6.13b 的知识库匹配（ai 队列、可续跑、调用模型），7.3d 的模板样张（export 队列、可续跑、不调用模型）', () => {
+  it('登记的业务任务类型：6.6 的文档解析（parse 队列、可续跑、不调用模型），6.9 的废标检查两类（ai 队列、可续跑、调用模型），6.10 的标书查重（ai 队列、可续跑、不调用模型），6.11 的技术方案两类、6.12 的可研报告四类、6.13a 的知识库文档准备与 6.13b 的知识库匹配（ai 队列、可续跑、调用模型），7.3d 的模板样张（export 队列、可续跑、不调用模型），8.7a 的可研目录生成（agent 队列、可续跑、调用模型、Agent 上限与工具、工作区快照）', () => {
     expect(JOB_TYPES.map((item) => item.type)).toEqual([
       'document-parse',
       'rejection-items-extraction',
@@ -34,6 +35,7 @@ describe('任务类型登记', () => {
       'bid-section-extraction',
       'bid-analysis',
       'feasibility-analysis',
+      'feasibility-outline',
       'feasibility-parameters',
       'feasibility-content',
       'feasibility-human-writing',
@@ -85,5 +87,13 @@ describe('任务类型登记', () => {
     expect(feasibilityExport.queue).toBe('export');
     expect(feasibilityExport.resumable).toBe(true);
     expect(feasibilityExport.billable).toBeFalsy();
+    const feasibilityOutline = jobTypeRegistry.get('feasibility-outline')!;
+    expect(feasibilityOutline.queue).toBe('agent');
+    expect(feasibilityOutline.resumable).toBe(true);
+    expect(feasibilityOutline.billable).toBe(true);
+    expect(feasibilityOutline.agentLimits).toEqual(AGENT_TASK_LIMITS.outline);
+    expect(feasibilityOutline.agentTools).toEqual(['ask-user', 'request-termination']);
+    expect(feasibilityOutline.agentWorkspace).toEqual({ taskKind: 'feasibility-outline' });
+    expect(feasibilityOutline.agentSandboxTemplate ?? 'agent').toBe('agent');
   });
 });
