@@ -27,7 +27,8 @@
 // saveBidSectionExtraction（多标段识别）；这几个函数接受任务开始时的输入签名（inputSignatures），在写入的同一事务中（项目锁内）
 // 核对，招标文件、投标范围变化后旧任务的写入被拒绝（6.11）。其余：
 // saveGeneratedOutline（目录生成的结果与字数控制快照）、saveContentSections / saveContentPlans / saveContentGenerationItem /
-// saveContentGenerationRuntime（第 8 步的正文生成）；全局事实生成同样经 saveGlobalFacts 写入。
+// saveContentGenerationRuntime（第 8 步的正文生成）；全局事实生成（8.7c1）经 saveGlobalFactsResult 写入（与 saveGlobalFacts
+// 相同的整理与清空，另核对 globalFactsInputSignature）。
 import { createHash } from 'node:crypto';
 import { sql, type Kysely, type Transaction } from 'kysely';
 import {
@@ -116,6 +117,10 @@ export const DEFAULT_EXPORT_TEMPLATE_KEY = 'standard-bid';
 /** 多标段识别与招标解析两类任务（第 6 步 6.11，src/technicalPlan/jobs.ts）。 */
 export const BID_SECTION_EXTRACTION_JOB_TYPE = 'bid-section-extraction';
 export const BID_ANALYSIS_JOB_TYPE = 'bid-analysis';
+/** 全局事实生成（第 8 步 8.7c1，src/technicalPlan/jobs.ts），agent 队列；任务类型与桌面版相同。 */
+export const GLOBAL_FACTS_JOB_TYPE = 'global-facts-generation';
+/** 全局事实生成的工作区快照类别（与桌面版的持久任务 technical-plan-global-facts 对应）。 */
+export const GLOBAL_FACTS_TASK_KIND = 'technical-plan-global-facts';
 
 /**
  * 技术方案的任务互斥（与桌面版 technical-plan 组的 group-exclusive 相同）：同一项目同时只有一个技术方案任务。第 8 步的目录、
@@ -254,7 +259,8 @@ export interface TechnicalPlanState extends TechnicalPlanGenerationConfig {
   globalFacts: TechnicalPlanGlobalFact[];
   outlineGenerationTask: null;
   outlineAdjustmentTask: null;
-  globalFactsTask: null;
+  /** 本项目最近一次的全局事实生成任务（8.7c1），没有时为 null。 */
+  globalFactsTask: JobBody | null;
   globalFactsAdjustmentTask: null;
   /** 各节的正文生成状态，按节点 id。 */
   contentGenerationSections: Record<string, ContentGenerationSection>;
@@ -700,9 +706,10 @@ export async function readState(trx: Trx, projectId: string): Promise<TechnicalP
   });
   const snapshot = meta?.outline_word_control_snapshot;
   const strip = ({ role: _role, detection: _detection, ...document }: DocumentRow): TechnicalPlanDocument => document;
-  const jobs = await latestProjectJobs(trx, projectId, [BID_SECTION_EXTRACTION_JOB_TYPE, BID_ANALYSIS_JOB_TYPE]);
+  const jobs = await latestProjectJobs(trx, projectId, [BID_SECTION_EXTRACTION_JOB_TYPE, BID_ANALYSIS_JOB_TYPE, GLOBAL_FACTS_JOB_TYPE]);
   const extractionTask = jobs.get(BID_SECTION_EXTRACTION_JOB_TYPE);
   const analysisTask = jobs.get(BID_ANALYSIS_JOB_TYPE);
+  const globalFactsTask = jobs.get(GLOBAL_FACTS_JOB_TYPE);
   // 与桌面版 recoverInterruptedBidAnalysisTask 相同：任务已结束时仍是 running 的解析项按未完成显示（只改读出的状态）。
   const analysisStale = isStale(analysisTask);
   for (const item of items) {
@@ -738,7 +745,7 @@ export async function readState(trx: Trx, projectId: string): Promise<TechnicalP
     globalFacts: await readGlobalFacts(trx, projectId),
     outlineGenerationTask: null,
     outlineAdjustmentTask: null,
-    globalFactsTask: null,
+    globalFactsTask: globalFactsTask ? jobBody(globalFactsTask) : null,
     globalFactsAdjustmentTask: null,
     contentGenerationSections: await readContentSections(trx, projectId, outlineRows, outline),
     contentGenerationPlans: await readContentPlans(trx, projectId),
@@ -1170,17 +1177,23 @@ async function tenderMarkdownSource(trx: Trx, projectId: string): Promise<Tender
   };
 }
 
-/** 读出各招标文件的 Markdown 并合并（与桌面版 tender-original.md 相同）。总大小超过上限时返回 422，不整体读入。 */
-async function readCombinedMarkdown(objectStore: ObjectStore | null, artifacts: TenderMarkdownSource['artifacts']): Promise<string> {
-  if (artifacts.length === 0) return '';
+/**
+ * 读出各 Markdown 产物的文本（按给出的顺序；对象已不在存储中的为 null）。总大小超过 TECHNICAL_PLAN_MARKDOWN_READ_MAX_BYTES 时
+ * 返回 422，不整体读入。
+ */
+async function readArtifactTexts(objectStore: ObjectStore | null, artifacts: readonly { storageKey: string; size: number }[]): Promise<(string | null)[]> {
+  if (artifacts.length === 0) return [];
   if (!objectStore) throw storageDisabled();
   let total = artifacts.reduce((sum, artifact) => sum + artifact.size, 0);
   if (total > TECHNICAL_PLAN_MARKDOWN_READ_MAX_BYTES) throw markdownTooLarge();
   total = 0;
-  const markdowns: string[] = [];
+  const texts: (string | null)[] = [];
   for (const artifact of artifacts) {
     const object = await objectStore.get(artifact.storageKey);
-    if (!object) continue;
+    if (!object) {
+      texts.push(null);
+      continue;
+    }
     const chunks: Buffer[] = [];
     for await (const chunk of object.body) {
       const buffer = Buffer.from(chunk as Uint8Array);
@@ -1191,9 +1204,16 @@ async function readCombinedMarkdown(objectStore: ObjectStore | null, artifacts: 
       }
       chunks.push(buffer);
     }
-    markdowns.push(Buffer.concat(chunks).toString('utf8'));
+    texts.push(Buffer.concat(chunks).toString('utf8'));
   }
-  return combineTenderMarkdown(markdowns);
+  return texts;
+}
+
+/** 读出各招标文件的 Markdown 并合并（与桌面版 tender-original.md 相同）。总大小超过上限时返回 422，不整体读入。 */
+async function readCombinedMarkdown(objectStore: ObjectStore | null, artifacts: TenderMarkdownSource['artifacts']): Promise<string> {
+  if (artifacts.length === 0) return '';
+  const texts = await readArtifactTexts(objectStore, artifacts);
+  return combineTenderMarkdown(texts.filter((text): text is string => text !== null));
 }
 
 /**
@@ -1435,10 +1455,37 @@ export async function saveGeneratedOutline(db: Kysely<Database>, context: Tenant
   });
 }
 
+/** 在已加项目锁的事务中整体替换全局事实并清空正文阶段；内容未变的分组沿用原来的 updated_at。 */
+async function replaceGlobalFacts(trx: Trx, context: TenantContext, projectId: string, normalized: ReturnType<typeof normalizeGlobalFactGroups>): Promise<void> {
+  const previous = new Map((await readGlobalFacts(trx, projectId)).map((fact) => [fact.id, fact]));
+  await trx.deleteFrom('technical_plan_global_fact_groups').where('project_id', '=', projectId).execute();
+  if (normalized.length > 0) {
+    await trx
+      .insertInto('technical_plan_global_fact_groups')
+      .values(
+        normalized.map((group, index) => {
+          const saved = previous.get(group.id);
+          const unchanged = saved && saved.title === group.title && saved.content === group.content;
+          return {
+            org_id: context.orgId,
+            project_id: projectId,
+            group_id: group.id,
+            title: group.title,
+            content: group.content,
+            sort_order: index,
+            ...(unchanged ? { updated_at: saved.updated_at } : {}),
+          };
+        }),
+      )
+      .execute();
+  }
+  await clearContentGeneration(trx, context, projectId);
+}
+
 /**
  * 保存全局事实（与桌面版 saveGlobalFacts 相同）：按 normalizeGlobalFactGroups 整理后整体替换，同时清空正文阶段
- * （clearContentGeneration：全部正文、正文生成状态、编排与运行进度）。内容未变的分组沿用原来的 updated_at。第 6 步的全局事实
- * 生成任务同样经它写入。分组过多或超长时返回 400。
+ * （clearContentGeneration：全部正文、正文生成状态、编排与运行进度）。内容未变的分组沿用原来的 updated_at。全局事实生成任务
+ * 经 saveGlobalFactsResult 写入（同样的整理与清空，另核对输入签名）。分组过多或超长时返回 400。
  */
 export async function saveGlobalFacts(db: Kysely<Database>, context: TenantContext, projectId: string, groups: unknown): Promise<TechnicalPlanState> {
   let normalized: ReturnType<typeof normalizeGlobalFactGroups>;
@@ -1450,29 +1497,7 @@ export async function saveGlobalFacts(db: Kysely<Database>, context: TenantConte
   }
   return withTenant(db, context, async (trx) => {
     await lockProject(trx, projectId);
-    const previous = new Map((await readGlobalFacts(trx, projectId)).map((fact) => [fact.id, fact]));
-    await trx.deleteFrom('technical_plan_global_fact_groups').where('project_id', '=', projectId).execute();
-    if (normalized.length > 0) {
-      await trx
-        .insertInto('technical_plan_global_fact_groups')
-        .values(
-          normalized.map((group, index) => {
-            const saved = previous.get(group.id);
-            const unchanged = saved && saved.title === group.title && saved.content === group.content;
-            return {
-              org_id: context.orgId,
-              project_id: projectId,
-              group_id: group.id,
-              title: group.title,
-              content: group.content,
-              sort_order: index,
-              ...(unchanged ? { updated_at: saved.updated_at } : {}),
-            };
-          }),
-        )
-        .execute();
-    }
-    await clearContentGeneration(trx, context, projectId);
+    await replaceGlobalFacts(trx, context, projectId, normalized);
     return readState(trx, projectId);
   });
 }
@@ -1954,4 +1979,155 @@ export async function saveContentGenerationRuntime(
     await lockProject(trx, projectId);
     await writeMeta(trx, context, projectId, { content_generation_runtime: value });
   });
+}
+
+// ---- 全局事实生成（第 8 步 8.7c1） ----
+
+/** 在事务中计算全局事实生成的输入签名（见 globalFactsInputSignature）。 */
+async function readGlobalFactsSignature(trx: Trx, projectId: string): Promise<string> {
+  const { analysis } = await readSignatures(trx, projectId);
+  const originalPlans = await trx
+    .selectFrom('technical_plan_documents')
+    .select(['file_id', 'status', 'markdown_artifact_id', 'content_hash'])
+    .where('project_id', '=', projectId)
+    .where('role', '=', 'original-plan')
+    .orderBy('created_at')
+    .orderBy('file_id')
+    .execute();
+  const items = await trx
+    .selectFrom('technical_plan_bid_items')
+    .select(['item_id', 'status', 'content'])
+    .where('project_id', '=', projectId)
+    .orderBy('item_id')
+    .execute();
+  const nodes = await trx
+    .selectFrom('technical_plan_outline_nodes')
+    .select(['node_id', 'parent_node_id', 'sort_order', 'level', 'title', 'description'])
+    .where('project_id', '=', projectId)
+    .orderBy('level')
+    .orderBy('parent_node_id')
+    .orderBy('sort_order')
+    .orderBy('node_id')
+    .execute();
+  const config = await trx.selectFrom('technical_plan_generation_config').select('global_facts_mode').where('project_id', '=', projectId).executeTakeFirst();
+  const references = await trx
+    .selectFrom('technical_plan_generation_reference_docs')
+    .select('document_id')
+    .where('project_id', '=', projectId)
+    .orderBy('sort_order')
+    .orderBy('document_id')
+    .execute();
+  const facts = await trx
+    .selectFrom('technical_plan_global_fact_groups')
+    .select(['group_id', 'title', 'content'])
+    .where('project_id', '=', projectId)
+    .orderBy('sort_order')
+    .orderBy('group_id')
+    .execute();
+  return sha256Hex(
+    JSON.stringify([
+      analysis,
+      originalPlans.map((row) => [row.file_id, row.status, row.markdown_artifact_id, row.content_hash]),
+      items.map((row) => [row.item_id, row.status, row.content]),
+      nodes.map((row) => [row.node_id, row.parent_node_id, row.sort_order, row.level, row.title, row.description]),
+      config?.global_facts_mode ?? null,
+      references.map((row) => row.document_id),
+      facts.map((row) => [row.group_id, row.title, row.content]),
+    ]),
+  );
+}
+
+/**
+ * 全局事实生成的输入签名（任务开始时读取，写入时传回）：招标文件与投标范围（招标解析的签名）、原方案、招标解析项的结果、目录的结构
+ * 与标题说明、全局事实的写法与引用的知识库文档，以及当前的全局事实（任务开始后用户手动保存了全局事实时，不覆盖）。知识库条目的
+ * 内容不在其中（与可研任务相同）。
+ */
+export async function globalFactsInputSignature(db: Kysely<Database>, context: TenantContext, projectId: string): Promise<string> {
+  return withTenant(db, context, (trx) => readGlobalFactsSignature(trx, projectId));
+}
+
+/**
+ * 全局事实生成任务的结果：与 saveGlobalFacts 相同整理后整体替换并清空正文阶段，在项目锁内核对输入签名，不符时不写入、返回 false。
+ * 分组过多或超长时抛 OutlineInputError（任务的提交校验已先检查）。
+ */
+export async function saveGlobalFactsResult(
+  db: Kysely<Database>,
+  context: TenantContext,
+  projectId: string,
+  groups: readonly { id: string; title: string; content: string }[],
+  expectedSignature: string,
+): Promise<boolean> {
+  const normalized = normalizeGlobalFactGroups(groups);
+  return withTenant(db, context, async (trx) => {
+    await lockProject(trx, projectId);
+    if ((await readGlobalFactsSignature(trx, projectId)) !== expectedSignature) return false;
+    await replaceGlobalFacts(trx, context, projectId, normalized);
+    return true;
+  });
+}
+
+export interface GlobalFactsSources {
+  /** 各招标文件解析出的 Markdown 原文（不按投标范围裁剪），按导入顺序；还没有解析出 Markdown 的文件不在其中。 */
+  tenderFiles: { fileName: string; markdown: string }[];
+  /** 原方案解析出的 Markdown（没有原方案或还没有解析出时为空）。 */
+  originalPlanMarkdown: string;
+}
+
+/**
+ * 全局事实生成读取的原文（桌面版 readTenderSourceMarkdown 与 readOriginalPlanMarkdown）：招标文件与原方案分别按
+ * TECHNICAL_PLAN_MARKDOWN_READ_MAX_BYTES 限制总大小（超过时 422）。tenders 为 false 时不读招标文件（选择了投标范围时，按投标范围
+ * 裁剪的正文经 readTenderMarkdown 读取）。
+ */
+export async function readGlobalFactsSources(
+  db: Kysely<Database>,
+  context: TenantContext,
+  projectId: string,
+  objectStore: ObjectStore | null,
+  options: { tenders: boolean },
+): Promise<GlobalFactsSources> {
+  const rows = await withTenant(db, context, (trx) =>
+    trx
+      .selectFrom('technical_plan_documents as d')
+      .innerJoin('files as f', 'f.id', 'd.file_id')
+      .innerJoin('artifacts as a', 'a.id', 'd.markdown_artifact_id')
+      .select(['d.role', 'd.created_at', 'f.display_name', 'a.storage_key', 'a.size_bytes'])
+      .where('d.project_id', '=', projectId)
+      .where('a.status', '=', 'ready')
+      .orderBy('d.sort_order')
+      .orderBy('d.created_at')
+      .orderBy('d.file_id')
+      .execute(),
+  );
+  const artifact = (row: (typeof rows)[number]) => ({ storageKey: row.storage_key, size: Number(row.size_bytes ?? 0) });
+  const tenders = options.tenders ? rows.filter((row) => row.role === 'tender') : [];
+  // 原方案只有一份；与 readState 相同取最近导入的一份。
+  const plan = rows.filter((row) => row.role === 'original-plan').reduce<(typeof rows)[number] | null>((latest, row) => (!latest || row.created_at > latest.created_at ? row : latest), null);
+  const texts = await readArtifactTexts(objectStore, tenders.map(artifact));
+  const [planText] = plan ? await readArtifactTexts(objectStore, [artifact(plan)]) : [null];
+  return {
+    tenderFiles: tenders.flatMap((row, index) => (texts[index] === null ? [] : [{ fileName: row.display_name, markdown: texts[index]! }])),
+    originalPlanMarkdown: planText ?? '',
+  };
+}
+
+/** 生成配置引用的知识库文档中的条目（桌面版 knowledgeBaseService.readReferences），按引用顺序、文档内按条目顺序。 */
+export async function readGlobalFactsKnowledgeItems(
+  db: Kysely<Database>,
+  context: TenantContext,
+  projectId: string,
+): Promise<{ documentId: string; itemId: string; title: string; resume: string; content: string }[]> {
+  const rows = await withTenant(db, context, (trx) =>
+    trx
+      .selectFrom('technical_plan_generation_reference_docs as r')
+      .innerJoin('knowledge_documents as d', 'd.id', 'r.document_id')
+      .innerJoin('knowledge_items as i', 'i.document_id', 'd.id')
+      .select(['r.document_id', 'i.item_id', 'i.title', 'i.resume', 'i.content'])
+      .where('r.project_id', '=', projectId)
+      .orderBy('r.sort_order')
+      .orderBy('r.document_id')
+      .orderBy('i.sort_order')
+      .orderBy('i.item_id')
+      .execute(),
+  );
+  return rows.map((row) => ({ documentId: row.document_id, itemId: row.item_id, title: row.title, resume: row.resume, content: row.content }));
 }

@@ -26,7 +26,7 @@ describe('任务类型登记', () => {
     expect(maxAttemptsOf(definition('a', { maxAttempts: 1 }))).toBe(1);
   });
 
-  it('登记的业务任务类型：6.6 的文档解析（parse 队列、可续跑、不调用模型），6.9 的废标检查两类（ai 队列、可续跑、调用模型），6.10 的标书查重（ai 队列、可续跑、不调用模型），6.11 的技术方案两类、6.12 的可研报告四类、6.13a 的知识库文档准备与 6.13b 的知识库匹配（ai 队列、可续跑、调用模型），7.3d 的模板样张（export 队列、可续跑、不调用模型），8.7a 的可研目录生成与 8.7b 的可研目录调整（agent 队列、可续跑、调用模型、Agent 上限与工具、共用的工作区快照、成功后保留）', () => {
+  it('登记的业务任务类型：6.6 的文档解析（parse 队列、可续跑、不调用模型），6.9 的废标检查两类（ai 队列、可续跑、调用模型），6.10 的标书查重（ai 队列、可续跑、不调用模型），6.11 的技术方案两类、6.12 的可研报告四类、6.13a 的知识库文档准备与 6.13b 的知识库匹配（ai 队列、可续跑、调用模型），7.3d 的模板样张（export 队列、可续跑、不调用模型），8.7a 的可研目录生成与 8.7b 的可研目录调整（agent 队列、可续跑、调用模型、Agent 上限与工具、共用的工作区快照、成功后保留），8.7c1 的技术方案全局事实生成（agent 队列、可续跑、调用模型、Agent 上限与工具、工作区快照，成功后不保留）', () => {
     expect(JOB_TYPES.map((item) => item.type)).toEqual([
       'document-parse',
       'rejection-items-extraction',
@@ -34,6 +34,7 @@ describe('任务类型登记', () => {
       'duplicate-analysis',
       'bid-section-extraction',
       'bid-analysis',
+      'global-facts-generation',
       'feasibility-analysis',
       'feasibility-outline',
       'feasibility-outline-adjustment',
@@ -96,6 +97,16 @@ describe('任务类型登记', () => {
     expect(feasibilityOutline.agentTools).toEqual(['ask-user', 'request-termination']);
     expect(feasibilityOutline.agentWorkspace).toEqual({ taskKind: 'feasibility-outline', keepAfterSuccess: true });
     expect(feasibilityOutline.agentSandboxTemplate ?? 'agent').toBe('agent');
+    const globalFacts = jobTypeRegistry.get('global-facts-generation')!;
+    expect(globalFacts.queue).toBe('agent');
+    expect(globalFacts.resumable).toBe(true);
+    expect(globalFacts.billable).toBe(true);
+    expect(globalFacts.agentLimits).toEqual(AGENT_TASK_LIMITS.outline);
+    expect(globalFacts.agentTools).toEqual(['ask-user', 'request-termination']);
+    expect(globalFacts.agentWorkspace).toEqual({ taskKind: 'technical-plan-global-facts' });
+    expect(globalFacts.agentSandboxTemplate ?? 'agent').toBe('agent');
+    expect(globalFacts.parseParams({})).toEqual({});
+    for (const bad of [{ globalFactsMode: 'omit' }, null, []]) expect(() => globalFacts.parseParams(bad)).toThrow(TypeError);
     const adjustment = jobTypeRegistry.get('feasibility-outline-adjustment')!;
     expect(adjustment.queue).toBe('agent');
     expect(adjustment.resumable).toBe(true);

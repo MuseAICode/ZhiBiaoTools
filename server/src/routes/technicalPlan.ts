@@ -24,6 +24,7 @@
 // DELETE /api/projects/:projectId/technical-plan                                    清空（招标文件与原方案进回收站）
 // POST   /api/projects/:projectId/technical-plan/bid-section-extraction             开始多标段识别（入队 bid-section-extraction）
 // POST   /api/projects/:projectId/technical-plan/bid-analysis                       开始招标解析（入队 bid-analysis）
+// POST   /api/projects/:projectId/technical-plan/global-facts-generation            开始生成全局事实（入队 global-facts-generation，agent 队列，8.7c1）
 // POST   /api/projects/:projectId/technical-plan/export                             整本导出 Word（入队 technical-plan-export，7.4h）
 // GET    /api/projects/:projectId/technical-plan/export/:requestId                  整本导出的状态（pending / ready / expired）、提示与消息
 // GET    /api/projects/:projectId/technical-plan/export/:requestId/content          导出的 docx（附件下载）
@@ -31,7 +32,8 @@
 // 导入招标文件、上传原方案后自动入队文档解析（6.6，src/parse/）。多标段识别与招标解析是任务（6.11，src/technicalPlan/jobs.ts），结果由任务
 // 经 Store 函数写入，进度、取消、暂停、继续经 /api/jobs 与 SSE；与桌面版相同，招标文件变化（导入、移除）和清空时取消本项目进行中的技术方案
 // 任务。疑似多标段检测（桌面版 checkBidSections）由解析任务在 worker 中算出，在 GET 的 bidSectionDetection 中返回。
-// 目录生成 / 调整、全局事实生成 / 调整、正文生成、小节 Word 预览 previewContentWord 随第 8 步；openBidTemplate 随第 8 步（它打开的投标模板由模板提取生成，模板提取随第 8 步）。
+// 全局事实生成在 agent 沙箱中执行（8.7c1，src/technicalPlan/jobs.ts），全局事实的写法与引用的知识库文档取已保存的生成配置，请求体不采用。
+// 目录生成 / 调整、全局事实调整、正文生成、小节 Word 预览 previewContentWord 随第 8 步；openBidTemplate 随第 8 步（它打开的投标模板由模板提取生成，模板提取随第 8 步）。
 //
 // 整本导出 Word（7.4h，取代桌面版 export.word 的技术方案整本导出与 export.openFile）：POST 经 enqueueTechnicalPlanExport 取快照入队
 // （没有目录、没有有效模板、标题超过六级 400，快照过大 413，本项目已有未结束的整本导出 409 JOB_LOCKED，均不入队），按用户限流
@@ -79,7 +81,7 @@ import {
   TECHNICAL_PLAN_OUTLINE_NODES_MAX,
   TECHNICAL_PLAN_OUTLINE_SAVE_REASONS,
 } from '../technicalPlan/outline.ts';
-import { cancelTechnicalPlanJobs, startBidAnalysis, startBidSectionExtraction } from '../technicalPlan/jobs.ts';
+import { cancelTechnicalPlanJobs, startBidAnalysis, startBidSectionExtraction, startGlobalFactsGeneration } from '../technicalPlan/jobs.ts';
 import {
   clearTechnicalPlan,
   findTenderFileMarkdown,
@@ -481,6 +483,11 @@ export async function registerTechnicalPlanRoutes(app: FastifyInstance, deps: Te
       return reply.code(202).send({ job: jobBody(job) });
     },
   );
+
+  app.post<ProjectParams>('/:projectId/technical-plan/global-facts-generation', { schema: { params: PROJECT_ID_PARAMS } }, async (request, reply) => {
+    const job = await startGlobalFactsGeneration(deps.jobs, tenantOf(request), await project(request));
+    return reply.code(202).send({ job: jobBody(job) });
+  });
 
   app.post<ProjectParams>('/:projectId/technical-plan/export', { schema: { params: PROJECT_ID_PARAMS } }, async (request, reply) => {
     const context = tenantOf(request);

@@ -827,6 +827,16 @@ worker 经 sandbox-runner 执行 agent 模板登记的唯一命令 `run`（`node
 - **丢弃会话**（桌面版 `deleteFeasibilityOutlineAgentTask`）：保存项目信息、资料分析，导入、移除资料，清空时由接口在取消任务之后丢弃，资料分析写入结果（目录被清空）时由任务丢弃；保存目录、目录配置、关键参数不丢弃（桌面版相同，调整时以数据库中的目录为准）。新的目录生成不预先丢弃，第一个检查点替换快照。`discardWorkspaceSnapshot` 的对象存储可以为 `null`（api 未配置时只标为已被替换，对象与行留给清理任务）。
 - **接口**：`POST /api/projects/:projectId/feasibility-report/outline-adjustment-job`（`{ requirement }`，202；要求为空 / 过长 / 多余字段 400；没有目录 409 `FEASIBILITY_REPORT_OUTLINE_REQUIRED`；会话不能续用 409 `FEASIBILITY_REPORT_OUTLINE_SESSION_MISSING`）。
 
+### 7.32 实现（路线图 8.7c1）：技术方案全局事实生成
+
+第一个技术方案的 Agent 任务（`global-facts-generation`，`src/technicalPlan/jobs.ts`；材料、提示词与提交校验在 `globalFactsAgent.ts`，与桌面版 `globalFactsTaskV2.cjs` 逐项对照）。
+
+- **登记**：agent 队列、可续跑、调用模型；上限 `AGENT_TASK_LIMITS.outline`；业务工具 `ask-user`、`request-termination`；工作区快照类别 `technical-plan-global-facts`，8.7c1 成功后丢弃（全局事实调整接着会话的 `keepAfterSuccess` 与重置入口的丢弃随 8.7c2）；模板 `agent`。互斥键与其他技术方案任务相同（`project:{projectId}:technical-plan`），导入、移除招标文件与清空时一并取消。
+- **输入**：开始时从数据库读取：招标正文（多标段且选择了投标范围时为 `readTenderMarkdown` 按投标范围裁剪的一份，否则 `readGlobalFactsSources` 读各招标文件的原文与文件名）、项目概述、招标解析结果、目录、原方案（有时）、引用的知识库文档的完整条目（`readGlobalFactsKnowledgeItems`）与全局事实的写法（生成配置，由 `PATCH .../generation-config` 先保存；接口 `POST .../technical-plan/global-facts-generation` 不采用请求体）。没有招标文件或未解析完成、没有目录、原方案未解析完成或失败时 409。招标文件在工作区中的文件名由桌面版规则得出，不符合 agent 工作区的路径规则（第 7.20 节）时不允许的字符换成 `_` 并按字节截短。
+- **提交校验**：与桌面版 `validateGlobalFactsOutput` 相同：按预置 Schema（Ajv，allErrors + strict；服务端新增直接依赖 `ajv` 8.20.0，与桌面版、agent 镜像同一版本）校验、按桌面版整理（标题压成一行、内容去掉首尾空白、id 规范化去重），不是合法 JSON、Schema 错误、没有可用分组是阻塞问题，经提交修复退回 Agent（第 7.27 节）；不是合法 JSON 时说明不附解析器的错误信息；Schema 错误至多 200 条（提交校验报告的上限，超出合并为一条）；另按服务端的全局事实上限（100 组、字数）检查；结果文件过大时为阻塞问题。
+- **写入与输入签名**：`saveGlobalFactsResult` 与 `saveGlobalFacts` 相同整体替换并清空正文阶段（桌面版在开始时清空全局事实，这里在写入时替换，失败时保留原来的），在项目锁内核对 `globalFactsInputSignature`（招标文件与投标范围、原方案、招标解析项、目录结构与标题说明、全局事实的写法、引用的知识库文档、当前的全局事实；不含知识库条目内容、步骤、正文与正文生成选项）。续跑与可研目录生成相同（签名在 checkpoint 中，已发出阶段要求时只发“继续之前的任务”）。
+- **状态**：`globalFactsTask` 为本项目最近一次的全局事实生成任务。
+
 ## 8. 部署架构
 
 ### 8.0 部署位置（已决定，第 9 节第 13、14 项）
