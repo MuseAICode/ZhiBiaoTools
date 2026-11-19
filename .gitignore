@@ -35,6 +35,8 @@ openxmlhelper/**/obj/
 client/vendor/openxml-tools/
 
 # 临时和缓存文件
+# 本地 Redis / Valkey 的持久化文件（不带路径，任意目录都忽略，含根目录与 server/）
+dump.rdb
 *.tmp
 *.temp
 .DS_Store
