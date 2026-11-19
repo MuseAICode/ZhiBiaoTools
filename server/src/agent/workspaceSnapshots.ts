@@ -97,7 +97,9 @@ interface SupersededSnapshot {
 }
 
 /** 删除被替换的快照：先删对象，成功后再删行。任何一步失败都保留这一行（已被替换的立即过期，由清理任务重试）。 */
-async function purgeSuperseded(db: Kysely<Database>, context: TenantContext, store: ObjectStore, rows: readonly SupersededSnapshot[]): Promise<void> {
+async function purgeSuperseded(db: Kysely<Database>, context: TenantContext, store: ObjectStore | null, rows: readonly SupersededSnapshot[]): Promise<void> {
+  // 没有对象存储（api 未配置）时只标为已被替换，对象与行留给清理任务。
+  if (!store) return;
   for (const row of rows) {
     try {
       await store.delete(row.storage_key);
@@ -278,13 +280,13 @@ export async function openWorkspaceSnapshot(
 }
 
 /**
- * 丢弃当前的快照（任务成功完成且不再需要续跑、或用户重置该类任务时）：标为已被替换，再删除对象和行（失败的留给清理任务）。
- * 返回是否有快照被丢弃。
+ * 丢弃当前的快照（任务成功完成且不再需要续跑、或用户重置该类任务时）：标为已被替换，再删除对象和行（失败的、以及 store 为 null 时
+ * 的，留给清理任务）。返回是否有快照被丢弃。
  */
 export async function discardWorkspaceSnapshot(
   db: Kysely<Database>,
   context: TenantContext,
-  store: ObjectStore,
+  store: ObjectStore | null,
   target: WorkspaceSnapshotTarget,
 ): Promise<boolean> {
   assertTarget(target);

@@ -234,3 +234,44 @@ export function buildFeasibilityOutlineAgentInput(state: FeasibilityOutlineInput
   files.push({ path: '材料说明.md', content: `本次任务实际提供的材料如下。只使用这些文件，不要猜测未提供的材料。\n\n${fileCatalog}` });
   return { files, prompt: createFeasibilityOutlinePrompt(fileCatalog, hasKnowledge, state.targetWords) };
 }
+
+// ---- 目录调整（8.7b，与桌面版 feasibilityOutlineAdjustmentTask.cjs 相同） ----
+
+/** 交给 Agent 的当前目录（与桌面版 buildAgentOutlineInput 相同）：只含 id、标题、说明、叶子的知识库条目与子目录，不含正文。 */
+export function buildAgentOutlineInput(outline: readonly FeasibilityOutlineItem[]): { outline: unknown[] } {
+  const strip = (items: readonly FeasibilityOutlineItem[]): unknown[] =>
+    items.map((item) => {
+      const hasChildren = Array.isArray(item.children) && item.children.length > 0;
+      const knowledgeItemIds = Array.isArray(item.knowledge_item_ids) ? item.knowledge_item_ids.map((value) => String(value || '').trim()).filter(Boolean) : [];
+      return {
+        id: String(item.id || ''),
+        title: String(item.title || '').trim(),
+        description: String(item.description || '').trim(),
+        ...(!hasChildren && knowledgeItemIds.length ? { knowledge_item_ids: knowledgeItemIds } : {}),
+        ...(hasChildren ? { children: strip(item.children!) } : {}),
+      };
+    });
+  return { outline: strip(outline) };
+}
+
+/** outline.json 的内容（与桌面版相同：两个空格缩进）。 */
+export function feasibilityOutlineAdjustmentFile(outline: readonly FeasibilityOutlineItem[]): string {
+  return JSON.stringify(buildAgentOutlineInput(outline), null, 2);
+}
+
+/** 目录调整的提示词（与桌面版 createFeasibilityOutlineAdjustmentPrompt 相同）。调整要求是用户输入，原样放入。 */
+export function createFeasibilityOutlineAdjustmentPrompt(requirement: string): string {
+  const OUTLINE_OUTPUT_FILE = FEASIBILITY_OUTLINE_OUTPUT_FILE;
+  return `用户已经在当前可行性研究报告目录基础上提出新的调整要求。程序已把当前最新的完整目录覆盖写入 ${OUTLINE_OUTPUT_FILE}（用户可能在主界面手动修改过目录，请以该文件为准，不要沿用你记忆中的旧目录）。
+
+用户的调整要求：
+${requirement}
+
+请按以下要求完成目录调整：
+1. 先读取 ${OUTLINE_OUTPUT_FILE}，理解当前目录结构，再严格按照用户的调整要求修改；与要求无关的节点保持原样，不要顺带重写。
+2. 修改后仍须保持完整根结构 {"outline":[...]}：每项包含 title、description，非叶子项再包含 children。叶子可保留或填写 knowledge_item_ids。不要写入 content。
+3. 目录最多三级。title 只写纯标题，不要带章节编号或 Markdown 标记。与调整无关的叶子 knowledge_item_ids 应原样保留。
+4. 材料或用户要求足以判断时直接执行，不要调用 ask-user。
+5. 将调整后的完整目录覆盖写回 ${OUTLINE_OUTPUT_FILE}。程序已为该文件预置 Schema，写入后调用 json-validation，只传 {"file_path":"${OUTLINE_OUTPUT_FILE}"}；校验失败后必须先修改文件，再重新校验。
+6. 全部完成后，用简体中文输出一段简短的最终总结（不超过 200 字，不使用 Markdown 标题），说明本次实际做了哪些目录调整；如有未能执行的要求，一并说明原因。该总结会直接展示给用户。`;
+}

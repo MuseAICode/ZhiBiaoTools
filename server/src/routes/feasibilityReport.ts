@@ -18,6 +18,7 @@
 // DELETE /api/projects/:projectId/feasibility-report                              清空（资料进回收站）
 // POST   /api/projects/:projectId/feasibility-report/analysis-job                 开始资料分析（入队 feasibility-analysis）
 // POST   /api/projects/:projectId/feasibility-report/outline-job                  开始生成报告目录（入队 feasibility-outline，agent 队列，8.7a）
+// POST   /api/projects/:projectId/feasibility-report/outline-adjustment-job       AI 调整报告目录（入队 feasibility-outline-adjustment，{ requirement }，8.7b）
 // POST   /api/projects/:projectId/feasibility-report/key-parameters-job           开始生成关键参数（入队 feasibility-parameters）
 // POST   /api/projects/:projectId/feasibility-report/content-job                  开始正文生成与审校（入队 feasibility-content，{ onlyMissing? }）
 // POST   /api/projects/:projectId/feasibility-report/human-writing-job            开始自然化审校（入队 feasibility-human-writing）
@@ -27,7 +28,8 @@
 //
 // 导入资料后自动入队资料解析（6.6，src/parse/）。资料分析、关键参数、正文生成与审校是任务（6.12，src/feasibilityReport/jobs.ts），结果由任务
 // 经 Store 函数写入，进度、取消、暂停、继续经 /api/jobs 与 SSE；与桌面版相同，保存项目信息、资料分析、目录、关键参数，导入、移除资料和清空时
-// 取消本项目进行中的可研任务；正文生成或审校任务未结束时不能保存目录、手工改正文（409）。目录生成在 agent 沙箱中执行（8.7a），目录调整随 8.7b；
+// 取消本项目进行中的可研任务；正文生成或审校任务未结束时不能保存目录、手工改正文（409）。目录生成与调整在 agent 沙箱中执行（8.7a、8.7b），
+// 调整接着生成的会话与工作区；保存项目信息、资料分析，导入、移除资料和清空时另丢弃这个会话（工作区快照，桌面版 deleteFeasibilityOutlineAgentTask）；
 // readCombinedSourceMarkdown（Renderer 未调用）由任务在服务端合并，不开放为接口。
 //
 // 导出 Word（7.5e，取代桌面版可研页面的 export.word 与 export.openFile；做法与技术方案整本导出的 7.4h 相同）：POST 的请求体为
@@ -66,14 +68,17 @@ import {
 import type { Database, FeasibilityReportStep } from '../db/schema.ts';
 import {
   cancelFeasibilityReportJobs,
+  discardFeasibilityOutlineSession,
   startFeasibilityAnalysis,
   startFeasibilityContent,
   startFeasibilityHumanWriting,
   startFeasibilityOutline,
+  startFeasibilityOutlineAdjustment,
   startFeasibilityParameters,
 } from '../feasibilityReport/jobs.ts';
 import {
   clearFeasibilityReport,
+  FEASIBILITY_ADJUSTMENT_REQUIREMENT_MAX,
   FEASIBILITY_OUTLINE_NODES_MAX,
   FEASIBILITY_OUTLINE_SAVE_REASONS,
   FEASIBILITY_REFERENCE_DOCUMENTS_MAX,
@@ -219,6 +224,14 @@ const CONTENT_JOB_SCHEMA = {
   additionalProperties: false,
 } as const;
 
+// 调整要求：长度按字符检查，去掉首尾空白后不能为空由服务检查（400）。
+const OUTLINE_ADJUSTMENT_JOB_SCHEMA = {
+  type: 'object',
+  properties: { requirement: { type: 'string', maxLength: FEASIBILITY_ADJUSTMENT_REQUIREMENT_MAX } },
+  required: ['requirement'],
+  additionalProperties: false,
+} as const;
+
 type ProjectParams = { Params: { projectId: string } };
 type SourceParams = { Params: { projectId: string; fileId: string } };
 type ExportParams = { Params: { projectId: string; requestId: string } };
@@ -286,8 +299,9 @@ export async function registerFeasibilityReportRoutes(app: FastifyInstance, deps
    * 保存上游内容、资料变化和清空后取消进行中的可研任务。桌面版在提交前取消；这里在提交后取消，提交与取消之间旧任务的写入因签名不符
    * 被拒绝，响应中的状态在取消后重新读取。
    */
-  async function cancelJobsAndReload(request: FastifyRequest, projectId: string) {
+  async function cancelJobsAndReload(request: FastifyRequest, projectId: string, options: { discardSession?: boolean } = {}) {
     await cancelFeasibilityReportJobs(deps.jobs, tenantOf(request), projectId);
+    if (options.discardSession) await discardFeasibilityOutlineSession(db, tenantOf(request), deps.objectStore, projectId);
     return loadFeasibilityReport(db, tenantOf(request), projectId);
   }
 
@@ -307,7 +321,7 @@ export async function registerFeasibilityReportRoutes(app: FastifyInstance, deps
     async (request) => {
       const projectId = await project(request);
       await saveProjectInfo(db, tenantOf(request), projectId, request.body.projectInfo);
-      return cancelJobsAndReload(request, projectId);
+      return cancelJobsAndReload(request, projectId, { discardSession: true });
     },
   );
 
@@ -317,7 +331,7 @@ export async function registerFeasibilityReportRoutes(app: FastifyInstance, deps
     async (request) => {
       const projectId = await project(request);
       await saveAnalysis(db, tenantOf(request), projectId, request.body.markdown);
-      return cancelJobsAndReload(request, projectId);
+      return cancelJobsAndReload(request, projectId, { discardSession: true });
     },
   );
 
@@ -360,14 +374,14 @@ export async function registerFeasibilityReportRoutes(app: FastifyInstance, deps
       const projectId = await project(request);
       const result = await importSources(db, tenantOf(request), projectId, request.body.fileIds);
       await enqueueDocumentParses(deps.jobs, tenantOf(request), projectId, 'feasibility-report', result.addedFileIds);
-      return { ...result, state: await cancelJobsAndReload(request, projectId) };
+      return { ...result, state: await cancelJobsAndReload(request, projectId, { discardSession: true }) };
     },
   );
 
   app.delete<SourceParams>('/:projectId/feasibility-report/sources/:fileId', { schema: { params: SOURCE_PARAMS } }, async (request) => {
     const projectId = await project(request);
     await removeSource(db, tenantOf(request), projectId, request.params.fileId);
-    return cancelJobsAndReload(request, projectId);
+    return cancelJobsAndReload(request, projectId, { discardSession: true });
   });
 
   // 与 /api/artifacts/:artifactId/content 相同：一律附件、nosniff、sandbox CSP，Markdown 原文不会在本站内被当作页面渲染。
@@ -393,6 +407,7 @@ export async function registerFeasibilityReportRoutes(app: FastifyInstance, deps
     const projectId = await project(request);
     const result = await clearFeasibilityReport(db, tenantOf(request), projectId);
     await cancelFeasibilityReportJobs(deps.jobs, tenantOf(request), projectId);
+    await discardFeasibilityOutlineSession(db, tenantOf(request), deps.objectStore, projectId);
     return result;
   });
 
@@ -405,6 +420,15 @@ export async function registerFeasibilityReportRoutes(app: FastifyInstance, deps
     const job = await startFeasibilityOutline(deps.jobs, tenantOf(request), await project(request));
     return reply.code(202).send({ job: jobBody(job) });
   });
+
+  app.post<ProjectParams & { Body: { requirement: string } }>(
+    '/:projectId/feasibility-report/outline-adjustment-job',
+    { schema: { params: PROJECT_ID_PARAMS, body: OUTLINE_ADJUSTMENT_JOB_SCHEMA } },
+    async (request, reply) => {
+      const job = await startFeasibilityOutlineAdjustment(deps.jobs, tenantOf(request), await project(request), request.body);
+      return reply.code(202).send({ job: jobBody(job) });
+    },
+  );
 
   app.post<ProjectParams>('/:projectId/feasibility-report/key-parameters-job', { schema: { params: PROJECT_ID_PARAMS } }, async (request, reply) => {
     const job = await startFeasibilityParameters(deps.jobs, tenantOf(request), await project(request));

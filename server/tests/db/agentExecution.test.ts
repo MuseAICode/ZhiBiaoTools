@@ -11,7 +11,10 @@
 // 5. checkpoint 的形状检查与任务类型登记的模板；
 // 6. 阶段交接压缩（8.6d2）：压缩请求的字段、压缩期间业务工具清空、成功 / 无需压缩时清除登记；可选压缩失败按原上下文继续、
 //    该阶段要求发出后清除；必须的压缩失败、余额不足按数据库中的事实；压缩中被暂停时续跑在该阶段要求发出前补做；
-//    回复全文从会话文件取回（超过入口结果的 16 KiB），会话文件被改坏时为 null。
+//    回复全文从会话文件取回（超过入口结果的 16 KiB），会话文件被改坏时为 null；
+// 7. 跨任务续用（8.7b）：现场写下同时保存的快照 id；调整类任务接着已结束的生成任务的会话（放入快照、续接会话与受保护文件的登记，
+//    阶段与已发出的阶段清空），之后按自己的现场续跑；查找只采用与当前快照同一对、已结束（成功或失败）的同组任务；快照被其他任务
+//    替换后续跑与续用都失败；程序错误（续跑时再给出、现场没有快照）。
 import { randomUUID } from 'node:crypto';
 import { Readable } from 'node:stream';
 import type { Redis } from 'ioredis';
@@ -31,12 +34,14 @@ import {
   parseAgentRunCheckpoint,
   withAgentRun,
   type AgentRun,
+  type AgentRunState,
 } from '../../src/agent/execution.ts';
 import { AGENT_ENTRY_FAILED_CODE, type AgentPromptTool } from '../../src/agent/entry.ts';
 import { lookupAgentJobToken } from '../../src/agent/tokenStore.ts';
 import { recordAgentModelRejection, type AgentModelRejectionReason } from '../../src/agent/modelRejections.ts';
 import { AGENT_WORKSPACE_RESTORE_FAILED_CODE } from '../../src/agent/workspaceJob.ts';
-import { findWorkspaceSnapshot } from '../../src/agent/workspaceSnapshots.ts';
+import { discardWorkspaceSnapshot, findWorkspaceSnapshot } from '../../src/agent/workspaceSnapshots.ts';
+import { findContinuableAgentSession } from '../../src/agent/continuation.ts';
 import type { WorkspaceSandboxDriver } from '../../src/agent/workspaceSandbox.ts';
 import { creditOrganization } from '../../src/billing/ledger.ts';
 import { migrateToLatest } from '../../src/db/migrator.ts';
@@ -281,6 +286,9 @@ afterAll(async () => {
 
 type Step = (run: AgentRun, context: JobContext<Record<string, never>>) => Promise<void>;
 let steps: Step[] = [];
+/** 续用类测试任务（test-agent-continue）首次执行时接着的现场：按 continuation 查找（8.7b）。 */
+const CONTINUE_TYPES = ['test-agent-keep', 'test-agent-continue'];
+let continueLookup: ((context: JobContext<Record<string, never>>) => Promise<AgentRunState | undefined>) | null = null;
 let executions = 0;
 const seenAgent: boolean[] = [];
 
@@ -299,7 +307,8 @@ function agentType(type: string, extra: Partial<JobTypeDefinition<Record<string,
       const step = steps[executions];
       executions += 1;
       if (!step) return;
-      await withAgentRun(context.agent, (run) => step(run, context));
+      const continueFrom = continueLookup && type === 'test-agent-continue' && !context.agent?.resuming ? await continueLookup(context) : undefined;
+      await withAgentRun(context.agent, (run) => step(run, context), continueFrom ? { continueFrom } : undefined);
     },
     ...extra,
   };
@@ -309,12 +318,16 @@ const registry = createJobTypeRegistry([
   agentType('test-agent-exec'),
   agentType('test-agent-content', { agentSandboxTemplate: 'agent-content' }),
   (({ agentWorkspace: _omitted, ...rest }) => rest)(agentType('test-agent-no-workspace')),
+  agentType('test-agent-keep', { agentWorkspace: { taskKind: KIND, keepAfterSuccess: true } }),
+  agentType('test-agent-continue', { agentWorkspace: { taskKind: KIND, keepAfterSuccess: true } }),
+  agentType('test-agent-other', { agentWorkspace: { taskKind: KIND, keepAfterSuccess: true } }),
 ]);
 
 beforeEach(() => {
   steps = [];
   executions = 0;
   seenAgent.length = 0;
+  continueLookup = null;
 });
 
 async function startRunner() {
@@ -353,8 +366,8 @@ async function waitStatus(jobId: string, status: string, what: string) {
   }, 15_000, what);
 }
 
-async function enqueue(member: Member, dispatcher: JobDispatcher, type = 'test-agent-exec') {
-  const projectId = await newProject(member);
+async function enqueue(member: Member, dispatcher: JobDispatcher, type = 'test-agent-exec', project?: string) {
+  const projectId = project ?? (await newProject(member));
   const job = await enqueueJob({ db: appDb, registry, dispatcher, log: testLogger().log, agentQuota: { orgAgentRunningLimit: 10 } }, member.context, { type, params: {}, projectId });
   return { job, projectId };
 }
@@ -863,7 +876,10 @@ describe('检查点与续跑', () => {
       task: { step: 1 },
     });
     expect(JSON.stringify(paused.checkpoint)).not.toContain('agt_');
-    expect(await findWorkspaceSnapshot(appDb, member.context, { projectId, taskKind: KIND })).not.toBeNull();
+    const pausedSnapshot = await findWorkspaceSnapshot(appDb, member.context, { projectId, taskKind: KIND });
+    expect(pausedSnapshot).not.toBeNull();
+    // 现场写下同时保存的快照 id（8.7b）。
+    expect((paused.checkpoint as { agent: { snapshot: string } }).agent.snapshot).toBe(pausedSnapshot!.id);
 
     fake.state.script = () => ({ ok: true });
     expect((await requestResume(appDb, member.context, job.id)).dispatch).toBe(true);
@@ -1157,8 +1173,254 @@ describe('阶段交接压缩与回复全文（8.6d2）', () => {
   });
 });
 
+describe('跨任务续用（8.7b）', () => {
+  const STAGE_A = { stage: 'outline', prompt: '生成目录', tools: TOOLS } as const;
+  const STAGE_B = { stage: 'outline-adjustment', prompt: '调整目录', tools: TOOLS } as const;
+  const target = (projectId: string) => ({ projectId, taskKind: KIND, jobTypes: CONTINUE_TYPES });
+
+  async function waitDone(jobId: string, status: 'succeeded' | 'failed' | 'paused', what: string) {
+    return waitFor(async () => {
+      const row = await jobRow(jobId);
+      if (row.status !== status && ['succeeded', 'failed', 'cancelled'].includes(row.status)) throw new Error(`${what}：${row.status} ${row.error_code} ${row.error_message}`);
+      return row.status === status ? row : null;
+    }, 15_000, what);
+  }
+
+  /** 生成任务：写入受保护的材料，一条提示词，检查点（工作区中另有交给 Agent 的结果文件）。 */
+  async function generate(member: Member, dispatcher: JobDispatcher, projectId?: string) {
+    let session: string | null = null;
+    steps.push(async (run) => {
+      await run.baseline.write(run.sandbox, 'input', [{ path: '材料.md', data: Buffer.from('原件') }]);
+      await run.prompt(STAGE_A);
+      run.sandbox && fake.state.calls.at(-1)!.workspace.set('outline.json', Buffer.from('{"outline":[]}'));
+      session = run.session;
+      await run.checkpoint({ step: 'generated' });
+    });
+    const { job, projectId: project } = await enqueue(member, dispatcher, 'test-agent-keep', projectId);
+    const row = await waitDone(job.id, 'succeeded', '生成成功');
+    return { job, projectId: project, row, session: session as string | null };
+  }
+
+  it('接着已结束的生成任务的会话：放入快照、续接会话与受保护文件的登记，阶段清空；之后的检查点写下新的快照 id，再下一次调整接着它', async () => {
+    const { dispatcher } = await startRunner();
+    const member = await newMember();
+    const generated = await generate(member, dispatcher);
+    const snapshot = await findWorkspaceSnapshot(appDb, member.context, { projectId: generated.projectId, taskKind: KIND });
+    expect(snapshot).not.toBeNull();
+    expect((generated.row.checkpoint as { agent: AgentRunState }).agent.snapshot).toBe(snapshot!.id);
+    const source = await findContinuableAgentSession(appDb, member.context, target(generated.projectId));
+    expect(source).toEqual({ jobId: generated.job.id, state: (generated.row.checkpoint as { agent: AgentRunState }).agent });
+
+    continueLookup = async (context) => (await findContinuableAgentSession(appDb, member.context, target(context.projectId!)))?.state;
+    let seen: Record<string, unknown> | null = null;
+    steps.push(async (run) => {
+      seen = {
+        resumed: run.resumed,
+        continued: run.continued,
+        session: run.session,
+        stage: run.stage,
+        stageIndex: run.stageIndex,
+        promptedA: run.wasPrompted('outline'),
+        promptedB: run.wasPrompted('outline-adjustment'),
+        task: run.taskCheckpoint,
+        unavailable: run.unavailableProtectedFiles,
+        original: run.baseline.original('材料.md')?.toString() ?? null,
+        output: (await run.readFiles(['outline.json'])).get('outline.json')?.data?.toString() ?? null,
+      };
+      await run.prompt({ ...STAGE_B, prompt: run.wasPrompted('outline-adjustment') ? '继续之前的任务' : '调整目录' });
+      await run.checkpoint({ step: 'adjusted' });
+    });
+    const { job: adjust } = await enqueue(member, dispatcher, 'test-agent-continue', generated.projectId);
+    const adjusted = await waitDone(adjust.id, 'succeeded', '调整成功');
+    expect(seen).toEqual({
+      resumed: false,
+      continued: true,
+      session: generated.session,
+      stage: null,
+      stageIndex: 0,
+      promptedA: false,
+      promptedB: false,
+      task: null,
+      unavailable: [],
+      original: '原件',
+      output: '{"outline":[]}',
+    });
+    const last = fake.state.calls.at(-1)!;
+    expect(last.request).toMatchObject({ prompt: '调整目录', session: generated.session });
+    expect(last.workspace.get('材料.md')?.toString()).toBe('原件');
+    const after = await findWorkspaceSnapshot(appDb, member.context, { projectId: generated.projectId, taskKind: KIND });
+    expect(after!.id).not.toBe(snapshot!.id);
+    expect(adjusted.checkpoint).toMatchObject({
+      agent: { session: generated.session, stage: 'outline-adjustment', promptedStage: 'outline-adjustment', snapshot: after!.id, baseline: { groups: { input: { '材料.md': { size: 6 } } } } },
+      task: { step: 'adjusted' },
+    });
+    // 生成任务的现场与当前快照不再是同一对：下一次调整接着调整任务的会话。
+    expect((await findContinuableAgentSession(appDb, member.context, target(generated.projectId)))?.jobId).toBe(adjust.id);
+    let second: Record<string, unknown> | null = null;
+    steps.push(async (run) => {
+      second = { continued: run.continued, session: run.session, promptedB: run.wasPrompted('outline-adjustment') };
+      await run.prompt(STAGE_B);
+    });
+    const { job: again } = await enqueue(member, dispatcher, 'test-agent-continue', generated.projectId);
+    await waitDone(again.id, 'succeeded', '第二次调整成功');
+    // 新任务的要求照常发出（已发出的阶段不从上一个任务继承）。
+    expect(second).toEqual({ continued: true, session: generated.session, promptedB: false });
+    expect(fake.state.calls.at(-1)!.request).toMatchObject({ prompt: '调整目录', session: generated.session });
+  });
+
+  it('调整任务暂停后续跑：用自己的现场（不再接着其他会话），只发“继续”', async () => {
+    const { dispatcher } = await startRunner();
+    const member = await newMember();
+    const generated = await generate(member, dispatcher);
+    const lookups: string[] = [];
+    continueLookup = async (context) => {
+      lookups.push(context.jobId);
+      return (await findContinuableAgentSession(appDb, member.context, target(context.projectId!)))?.state;
+    };
+    let resumedState: Record<string, unknown> | null = null;
+    steps.push(
+      async (run, context) => {
+        await run.prompt(STAGE_B);
+        await run.checkpoint({ step: 1 });
+        await requestPause(appDb, member.context, context.jobId);
+        fake.state.script = () => ({ ok: false, code: 'RUN_ENDED' });
+        await run.prompt(STAGE_B);
+      },
+      async (run) => {
+        resumedState = { resumed: run.resumed, continued: run.continued, session: run.session, prompted: run.wasPrompted('outline-adjustment'), task: run.taskCheckpoint };
+        await run.prompt({ ...STAGE_B, prompt: run.wasPrompted('outline-adjustment') ? '继续之前的任务' : '调整目录' });
+      },
+    );
+    const { job } = await enqueue(member, dispatcher, 'test-agent-continue', generated.projectId);
+    await waitDone(job.id, 'paused', '调整暂停');
+    fake.state.script = () => ({ ok: true });
+    await requestResume(appDb, member.context, job.id);
+    await dispatcher.dispatch({ id: job.id, orgId: member.orgId, type: 'test-agent-continue', queue: 'agent' });
+    await waitDone(job.id, 'succeeded', '续跑成功');
+    expect(lookups).toEqual([job.id]);
+    expect(resumedState).toEqual({ resumed: true, continued: false, session: generated.session, prompted: true, task: { step: 1 } });
+    expect(fake.state.calls.at(-1)!.request).toMatchObject({ prompt: '继续之前的任务', session: generated.session });
+  });
+
+  it('查找：只采用与当前快照同一对、已结束（成功或失败）的同组任务；被取消的、其他类型的、其他组织的、快照已被替换或丢弃的不采用', async () => {
+    const { dispatcher } = await startRunner();
+    const member = await newMember();
+    const generated = await generate(member, dispatcher);
+    const current = (await findWorkspaceSnapshot(appDb, member.context, { projectId: generated.projectId, taskKind: KIND }))!;
+    const checkpoint = generated.row.checkpoint as Record<string, unknown>;
+    expect((await findContinuableAgentSession(appDb, member.context, target(generated.projectId)))?.jobId).toBe(generated.job.id);
+    // 同一现场写到其他状态、其他类型的任务上：都不采用（以生成任务为准）。
+    const later = async (type: string, status: string, value: unknown = checkpoint) => {
+      const row = await superuser.insertInto('jobs').values({
+        org_id: member.orgId, project_id: generated.projectId, user_id: member.userId, type, status, params: '{}', checkpoint: JSON.stringify(value),
+        created_at: new Date(Date.now() + 60_000), ...(['succeeded', 'failed', 'cancelled'].includes(status) ? { finished_at: new Date() } : {}),
+        ...(status === 'failed' ? { error_code: 'JOB_FAILED', error_message: '失败' } : {}),
+      }).returning('id').executeTakeFirstOrThrow();
+      return row.id;
+    };
+    for (const [type, status] of [['test-agent-continue', 'cancelled'], ['test-agent-other', 'succeeded'], ['test-agent-continue', 'paused']] as const) {
+      const id = await later(type, status);
+      expect((await findContinuableAgentSession(appDb, member.context, target(generated.projectId)))?.jobId).toBe(generated.job.id);
+      await superuser.deleteFrom('jobs').where('id', '=', id).execute();
+    }
+    // 较新的失败的同组任务：采用它。
+    const failed = await later('test-agent-continue', 'failed');
+    expect((await findContinuableAgentSession(appDb, member.context, target(generated.projectId)))?.jobId).toBe(failed);
+    await superuser.deleteFrom('jobs').where('id', '=', failed).execute();
+    // 最新的同一对的现场形状不对、没有会话：不采用（也不退回更早的任务，按没有可续用的会话处理）。
+    for (const agent of [{ ...(checkpoint.agent as object), session: null }, { ...(checkpoint.agent as object), version: 9 }]) {
+      const id = await later('test-agent-continue', 'succeeded', { agent });
+      expect(await findContinuableAgentSession(appDb, member.context, target(generated.projectId))).toBeNull();
+      await superuser.deleteFrom('jobs').where('id', '=', id).execute();
+    }
+    // 其他组织看不到；类型列表为空时为 null。
+    const other = await newMember();
+    expect(await findContinuableAgentSession(appDb, other.context, target(generated.projectId))).toBeNull();
+    expect(await findContinuableAgentSession(appDb, member.context, { ...target(generated.projectId), jobTypes: [] })).toBeNull();
+    // 快照被丢弃：没有可续用的会话。
+    expect(await discardWorkspaceSnapshot(appDb, member.context, null, { projectId: generated.projectId, taskKind: KIND })).toBe(true);
+    expect(await findContinuableAgentSession(appDb, member.context, target(generated.projectId))).toBeNull();
+    // 只标为已被替换（没有对象存储），对象留给清理任务。
+    expect(store.objects.has(current.storageKey)).toBe(true);
+  });
+
+  it('快照被其他任务替换后：接着旧现场、按旧现场续跑都以 AGENT_WORKSPACE_RESTORE_FAILED 失败，不执行入口', async () => {
+    const { dispatcher } = await startRunner();
+    const member = await newMember();
+    const generated = await generate(member, dispatcher);
+    const stale = (generated.row.checkpoint as { agent: AgentRunState }).agent;
+    // 另一个同类任务写下新的快照（例如被取消的任务在退出前保存了检查点）。
+    steps.push(async (run) => {
+      await run.prompt(STAGE_A);
+      await run.checkpoint(null);
+    });
+    await waitDone((await enqueue(member, dispatcher, 'test-agent-other', generated.projectId)).job.id, 'succeeded', '其他任务成功');
+    continueLookup = async () => stale;
+    steps.push(async (run) => {
+      await run.prompt(STAGE_B);
+    });
+    const calls = fake.state.calls.length;
+    const { job } = await enqueue(member, dispatcher, 'test-agent-continue', generated.projectId);
+    const row = await waitDone(job.id, 'failed', '续用失败');
+    expect(row.error_code).toBe(AGENT_WORKSPACE_RESTORE_FAILED_CODE);
+    expect(fake.state.calls).toHaveLength(calls);
+    expect(fake.state.destroyed).toEqual(fake.state.created.map((entry) => entry.id));
+
+    // 本任务暂停期间快照被另一个同类任务替换：续跑失败。步骤按执行顺序：暂停的任务、替换快照的任务、续跑。
+    steps.push(
+      async (run, context) => {
+        await run.prompt(STAGE_A);
+        await run.checkpoint({ step: 1 });
+        await requestPause(appDb, member.context, context.jobId);
+        fake.state.script = () => ({ ok: false, code: 'RUN_ENDED' });
+        await run.prompt(STAGE_A);
+      },
+      async (run) => {
+        await run.prompt(STAGE_A);
+        await run.checkpoint(null);
+      },
+      async (run) => {
+        await run.prompt(STAGE_A);
+      },
+    );
+    const { job: paused } = await enqueue(member, dispatcher, 'test-agent-exec');
+    const pausedRow = await waitDone(paused.id, 'paused', '任务暂停');
+    const projectId = (await superuser.selectFrom('jobs').select('project_id').where('id', '=', paused.id).executeTakeFirstOrThrow()).project_id as string;
+    fake.state.script = () => ({ ok: true });
+    // 直接以另一个任务在同一项目写下新的快照（互斥键之外的情形）。
+    await superuser.updateTable('jobs').set({ lock_key: null }).where('id', '=', paused.id).execute();
+    const replacing = await enqueue(member, dispatcher, 'test-agent-other', projectId);
+    await waitDone(replacing.job.id, 'succeeded', '替换快照');
+    expect((await findWorkspaceSnapshot(appDb, member.context, { projectId, taskKind: KIND }))!.id).not.toBe((pausedRow.checkpoint as { agent: AgentRunState }).agent.snapshot);
+    const before = fake.state.calls.length;
+    await requestResume(appDb, member.context, paused.id);
+    await dispatcher.dispatch({ id: paused.id, orgId: member.orgId, type: 'test-agent-exec', queue: 'agent' });
+    const resumed = await waitDone(paused.id, 'failed', '续跑失败');
+    expect(resumed.error_code).toBe(AGENT_WORKSPACE_RESTORE_FAILED_CODE);
+    expect(fake.state.calls).toHaveLength(before);
+  });
+
+  it('程序错误：续跑时再给出 continueFrom、现场没有会话或快照 id 时 TypeError，不建沙箱', async () => {
+    const { dispatcher } = await startRunner();
+    const member = await newMember();
+    const generated = await generate(member, dispatcher);
+    const state = (generated.row.checkpoint as { agent: AgentRunState }).agent;
+    for (const bad of [{ ...state, snapshot: null }, { ...state, session: null }, { ...state, session: '../x' }]) {
+      continueLookup = async () => bad;
+      steps.push(async (run) => {
+        await run.prompt(STAGE_B);
+      });
+      const created = fake.state.created.length;
+      const { job } = await enqueue(member, dispatcher, 'test-agent-continue', generated.projectId);
+      const row = await waitDone(job.id, 'failed', '程序错误');
+      expect(row.error_code).toBe('JOB_FAILED');
+      expect(fake.state.created).toHaveLength(created);
+    }
+  });
+});
+
 describe('checkpoint 的形状与登记', () => {
-  const base = { version: 1, session: null, stage: null, stageIndex: 0, promptedStage: null, compactionPending: null, baseline: { version: 1, groups: {} } };
+  const base = { version: 1, session: null, stage: null, stageIndex: 0, promptedStage: null, compactionPending: null, baseline: { version: 1, groups: {} }, snapshot: null };
   const pending = { stage: 'content', instructions: '总结已完成的阶段', optional: true };
 
   it('没有 agent 键时为首次执行；合法的现场原样读出；8.6d1 写下的现场（没有待补压缩）按 null 读出', () => {
@@ -1167,8 +1429,11 @@ describe('checkpoint 的形状与登记', () => {
     expect(parseAgentRunCheckpoint({ agent: base, task: { a: 1 } })).toEqual({ agent: base, task: { a: 1 } });
     expect(parseAgentRunCheckpoint({ agent: base })).toEqual({ agent: base, task: null });
     expect(parseAgentRunCheckpoint({ agent: { ...base, compactionPending: pending } })).toEqual({ agent: { ...base, compactionPending: pending }, task: null });
-    const { compactionPending: _omitted, ...legacy } = base;
+    const { compactionPending: _omitted, snapshot: _snapshot, ...legacy } = base;
     expect(parseAgentRunCheckpoint({ agent: legacy })).toEqual({ agent: base, task: null });
+    // 8.7b 之前写下的现场没有快照 id：按 null 读出。
+    const withSnapshot = { ...base, snapshot: randomUUID() };
+    expect(parseAgentRunCheckpoint({ agent: withSnapshot })).toEqual({ agent: withSnapshot, task: null });
   });
 
   it.each([
@@ -1187,6 +1452,9 @@ describe('checkpoint 的形状与登记', () => {
     ['待补压缩的 optional 不是布尔值', { agent: { ...base, compactionPending: { ...pending, optional: 'yes' } } }],
     ['待补压缩多余字段', { agent: { ...base, compactionPending: { ...pending, session: 'x' } } }],
     ['任务状态不是对象', { agent: base, task: 'x' }],
+    ['快照 id 不是 UUID', { agent: { ...base, snapshot: '../x' } }],
+    ['快照 id 不是字符串', { agent: { ...base, snapshot: 1 } }],
+    ['快照 id 大写', { agent: { ...base, snapshot: randomUUID().toUpperCase() } }],
   ])('不合法：%s', (_name, checkpoint) => {
     expect(() => parseAgentRunCheckpoint(checkpoint as Record<string, unknown>)).toThrow(TypeError);
   });

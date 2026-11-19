@@ -811,10 +811,21 @@ worker 经 sandbox-runner 执行 agent 模板登记的唯一命令 `run`（`node
 
 第一个接到第 7.27 节执行者上的真实 Agent 任务（`feasibility-outline`，`src/feasibilityReport/jobs.ts`；材料与结果整理在 `outlineAgent.ts`、`outlineTemplates.ts`，与桌面版 `feasibilityOutlineTask.cjs` 逐项对照）。
 
-- **登记**：agent 队列、可续跑、调用模型；上限取 `AGENT_TASK_LIMITS.outline`（5 元 / 500 轮，8.7f 按 P95 重定）；业务工具 `ask-user`、`request-termination`（桌面版顶层任务的失败报告须经用户确认）；工作区快照类别 `feasibility-outline`，成功后丢弃（目录调整接着生成的会话在 8.7b 设计）；模板 `agent`（墙钟 30 分钟）。互斥键与其他可研任务相同（`project:{projectId}:feasibility-report`），保存上游内容时一并取消。
+- **登记**：agent 队列、可续跑、调用模型；上限取 `AGENT_TASK_LIMITS.outline`（5 元 / 500 轮，8.7f 按 P95 重定）；业务工具 `ask-user`、`request-termination`（桌面版顶层任务的失败报告须经用户确认）；工作区快照类别 `feasibility-outline`，8.7a 时成功后丢弃，8.7b 起成功后保留（`keepAfterSuccess`，供目录调整接着会话，见第 7.31 节）；模板 `agent`（墙钟 30 分钟）。互斥键与其他可研任务相同（`project:{projectId}:feasibility-report`），保存上游内容时一并取消。
 - **输入**：开始时从数据库读取资料分析（为空 409 / 失败“请先完成资料分析”）、项目参数、已保存的目录配置与引用的知识库轻量条目；接口 `POST .../feasibility-report/outline-job` 不接受参数（桌面版在开始时保存目录配置，Web 版由 `PUT .../outline-config` 先保存）。材料以受保护文件放入工作区，提示词、预置 Schema、工具与桌面版相同。
 - **结果**：桌面版没有提交校验、不重试（`max_retries` 0），Web 版相同：Agent 结束后读出 `outline.json`（按不可信数据处理，只取约定字段并转成字符串，最多三级、按桌面版截短数量，知识库条目只保留本次清单中的，节点 id 由程序按位置分配）；不是合法 JSON、没有可用目录、文件过大时失败，说明是固定文字、不含文件内容；节点数超过 2000（服务端目录上限）时失败。经 `saveOutlineResult` 整体替换目录、清空正文与关键参数（桌面版在开始时清空，这里在写入时清空，与资料分析任务相同），超长字段截短。
 - **续跑与输入签名**：每条提示词之后保存检查点，task 状态只有首次执行开始时的输入签名；续跑时签名与当前不符即失败（不按新输入接着旧会话），已发出阶段要求时只发“继续之前的任务”、不重新放入材料（原件不可用时按同一输入重新放入）；写入时在同一事务中核对签名。
+
+### 7.31 实现（路线图 8.7b）：跨任务续用会话与可研报告目录调整
+
+桌面版的调整类任务接着对应生成任务的持久会话继续（`persistent_task.mode = 'resume'`）。Web 版的会话文件在工作区快照中（每个项目、每类任务只保留最近一次，第 7.19 节），执行者的现场在写下该快照的任务的 checkpoint 中（第 7.27 节）；8.7b 把两者绑定，并接入第一个调整任务（`feasibility-outline-adjustment`）。
+
+- **快照 id 写进现场**（`src/agent/execution.ts`、`workspaceJob.ts`）：`context.agentWorkspace.saveCheckpoint` 的 checkpoint 可以是函数，取刚保存的快照生成；执行者把快照 id 写进现场的 `snapshot`（8.7b 之前写下的现场没有，按 `null` 读出、续跑时不核对）。续跑放入快照后核对：快照已被其他任务替换（id 不符）时以 `AGENT_WORKSPACE_RESTORE_FAILED` 失败、不执行入口，不再把不是同一对的会话与快照拼在一起。
+- **跨任务续用**（`src/agent/continuation.ts`、`open({ continueFrom })`）：`findContinuableAgentSession` 找该类任务当前的快照，再找本项目中给定几类任务里、现场的快照 id 正是它的**已结束（成功或失败）**任务（取最新的一个，现场须合法、有会话文件，否则按找不到处理）。被取消的任务不采用：保存上游内容或重置时任务被取消，取消到退出之间仍可能保存检查点、写下新的快照；暂停中、排队中、执行中的任务持有互斥键，调整任务此时无法入队。调整任务首次执行时把找到的现场交给 `open({ continueFrom })`：放入当前快照并核对 id，续接会话文件与受保护文件的登记（取回原件），阶段、已发出的阶段与待补压缩清空（新任务的要求照常发出），`run.continued` 为真、`run.resumed` 为假；之后的检查点写下新的快照 id，续跑按本任务自己的现场。续跑时再给出 `continueFrom`、现场没有会话或快照 id 是程序错误。
+- **目录调整**（`src/feasibilityReport/jobs.ts`，与桌面版 `feasibilityOutlineAdjustmentTask.cjs` 逐项对照）：登记与目录生成相同（agent 队列、上限 `outline`、`ask-user` / `request-termination`、快照类别 `feasibility-outline`），两者都 `keepAfterSuccess`。参数只有 `requirement`（去掉首尾空白、不为空、至多 2000 字）。没有目录、会话不能续用时失败（文案与桌面版相同，入队时也检查，409）。当前目录（数据库中的，可能被用户手动改过）按桌面版 `buildAgentOutlineInput` 写入 `outline.json`，写入后解除登记（交给 Agent 修改，不还原）；生成时的材料仍受保护，原件不可用时按当前输入重新放入。提示词、工具、预置 Schema、不做提交修复与桌面版相同；结果与生成相同整理，经 `saveOutlineResult` 整体替换目录、清空正文与关键参数，项目名称与概述沿用原目录的，带首次执行开始时的输入签名。
+- **调整说明**：Agent 最后一条回复的全文（`run.assistantText`，至多 2000 字），取不到时为“报告目录已按要求调整完成。”；是 AI 生成的内容，不写任务日志，随最后的检查点写进本任务的 checkpoint（`{ signature, summary }`，先于写入目录），页面状态的 `outlineAdjustment` 给出最近一次调整的要求与成功后的说明，`outlineAdjustable` 给出能否调整（有目录且会话可以续用）。
+- **丢弃会话**（桌面版 `deleteFeasibilityOutlineAgentTask`）：保存项目信息、资料分析，导入、移除资料，清空时由接口在取消任务之后丢弃，资料分析写入结果（目录被清空）时由任务丢弃；保存目录、目录配置、关键参数不丢弃（桌面版相同，调整时以数据库中的目录为准）。新的目录生成不预先丢弃，第一个检查点替换快照。`discardWorkspaceSnapshot` 的对象存储可以为 `null`（api 未配置时只标为已被替换，对象与行留给清理任务）。
+- **接口**：`POST /api/projects/:projectId/feasibility-report/outline-adjustment-job`（`{ requirement }`，202；要求为空 / 过长 / 多余字段 400；没有目录 409 `FEASIBILITY_REPORT_OUTLINE_REQUIRED`；会话不能续用 409 `FEASIBILITY_REPORT_OUTLINE_SESSION_MISSING`）。
 
 ## 8. 部署架构
 
