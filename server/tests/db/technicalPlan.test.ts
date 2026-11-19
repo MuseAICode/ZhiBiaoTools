@@ -906,6 +906,7 @@ describe('Store', () => {
       outlineWordControlSnapshot: null,
       globalFacts: [],
       outlineGenerationTask: null,
+      outlineSelection: null,
       outlineAdjustmentTask: null,
       outlineAdjustment: null,
       outlineAdjustable: false,

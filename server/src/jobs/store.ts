@@ -61,6 +61,7 @@ import { AGENT_BUDGET_EXHAUSTED_REASONS, AGENT_BUDGET_MAX_COST_LIMIT, AGENT_BUDG
 import { AGENT_BUDGET_CONFIRM_ROLES } from '../db/migrations/0034_agent_job_budget_confirm.ts';
 import { UNITS_PER_YUAN } from '../billing/ledger.ts';
 import { STORAGE_QUOTA_PAUSE_REASON } from '../db/migrations/0041_job_pause_storage_quota.ts';
+import { WAITING_FOR_SELECTION_PAUSE_REASON } from '../db/migrations/0044_job_pause_selection.ts';
 import { withOrgContext, withTenant, type TenantContext } from '../db/tenant.ts';
 import { AppError } from '../errors.ts';
 import { serializeJsonObject } from '../jsonObject.ts';
@@ -425,6 +426,10 @@ export async function requestResume(
       if (isTaskLimitReason(row.pause_reason)) {
         throw new AppError(409, 'JOB_TASK_LIMIT_CONFIRM_REQUIRED', '任务已达到费用或调用次数上限，需由发起人或组织管理员确认后继续');
       }
+      // 等待用户确认选择而暂停的（8.7e1）：只能经该任务类型的确认接口继续（confirmJobSelection，选择写进 checkpoint）。
+      if (row.pause_reason === WAITING_FOR_SELECTION_PAUSE_REASON) {
+        throw new AppError(409, 'JOB_SELECTION_REQUIRED', '任务正在等待确认，确认后会自动继续');
+      }
       // 等待回答超时而暂停的（8.4c1）：问题仍在等待时须先回答（回答后自动继续）；问题已不在等待（暂停前刚好被回答）时照常继续。
       if (isWaitingForUserReason(row.pause_reason) && (await findPendingAgentQuestion(trx, jobId)) !== null) {
         throw new AppError(409, 'JOB_ANSWER_REQUIRED', '任务正在等待回答 Agent 的问题，回答后会自动继续');
@@ -516,6 +521,56 @@ export async function answerAgentQuestion(
     const job = toRecord(updated);
     await appendEvent(trx, job, 'resumed', '已回答 Agent 的问题，任务继续', { questionId: question.id, userId: context.userId });
     return { job, dispatch: true, questionId: question.id };
+  });
+}
+
+export interface JobSelectionInput {
+  /** 任务所属的项目与任务类型（确认接口按业务分开，不是这个项目、这个类型的任务按不存在处理）。 */
+  projectId: string;
+  type: string;
+  /**
+   * 按 checkpoint 中待确认的内容校验用户的选择，返回写进任务的新 checkpoint（在任务行加锁之后调用）。选择不合法时抛 AppError（400），
+   * checkpoint 中没有待确认的内容时抛 AppError（409）；什么都不改。
+   */
+  apply(checkpoint: Record<string, unknown> | null): Record<string, unknown>;
+}
+
+/**
+ * 确认任务等待的选择（8.7e1，迁移 0044_job_pause_selection；例如技术方案目录生成的一级目录确认）：任务须因等待确认而暂停
+ * （waiting_for_selection），否则 409 JOB_SELECTION_NOT_PENDING；限任务发起人或组织的 owner / admin（与回答 Agent 的问题相同）。
+ * 选择由 input.apply 校验并写进 checkpoint，任务回到 queued（需要派发），续跑时任务从 checkpoint 取回选择并再次校验。继续前照常
+ * 检查最低启动余额与当日运行时长，不足时 402 / 429、什么都不改（仍在等待确认）。任务行先加锁，并发确认只有第一个生效。
+ */
+export async function confirmJobSelection(
+  db: Kysely<Database>,
+  context: TenantContext,
+  jobId: string,
+  input: JobSelectionInput,
+  checkBalance: (type: string) => boolean = () => false,
+  agentQuota?: AgentQuotaOptions,
+): Promise<JobChange> {
+  return withTenant(db, context, async (trx) => {
+    const row = await lockJob(trx, jobId);
+    if (!row || row.project_id !== input.projectId || row.type !== input.type) throw jobNotFound();
+    if (isFinalStatus(row.status)) throw jobFinished();
+    if (row.status !== 'paused' || row.pause_reason !== WAITING_FOR_SELECTION_PAUSE_REASON) {
+      throw new AppError(409, 'JOB_SELECTION_NOT_PENDING', '任务当前不在等待确认的状态');
+    }
+    if (row.user_id !== context.userId && !(AGENT_QUESTION_ANSWER_ROLES as readonly string[]).includes(context.role)) {
+      throw new AppError(403, 'JOB_SELECTION_FORBIDDEN', '只有任务发起人或组织管理员可以确认');
+    }
+    const checkpoint = serialize(input.apply(row.checkpoint), JOB_CHECKPOINT_MAX_BYTES, 'checkpoint');
+    if (checkBalance(row.type)) await assertJobStartBalance(trx);
+    if (await isAgentJob(trx, jobId)) await assertAgentDailyRuntimeAvailable(trx, context.orgId, agentQuota);
+    const updated = await trx
+      .updateTable('jobs')
+      .set({ status: 'queued', pause_reason: null, checkpoint })
+      .where('id', '=', jobId)
+      .returningAll()
+      .executeTakeFirstOrThrow();
+    const job = toRecord(updated);
+    await appendEvent(trx, job, 'resumed', '已确认，任务继续', { userId: context.userId });
+    return { job, dispatch: true };
   });
 }
 
@@ -797,6 +852,8 @@ export function isTaskLimitReason(reason: JobPauseReason | null): reason is Agen
   return reason !== null && (AGENT_BUDGET_EXHAUSTED_REASONS as readonly string[]).includes(reason);
 }
 
+const WAITING_FOR_SELECTION_PAUSE_MESSAGE = '等待确认，确认后任务会继续';
+
 const AGENT_WAITING_FOR_USER_PAUSE_MESSAGE = 'Agent 的问题长时间未回答，任务已暂停，回答后会自动继续';
 
 const STORAGE_QUOTA_PAUSE_MESSAGE = '组织存储空间已满，无法保存 Agent 的工作区，任务已暂停，请删除不需要的文件后继续';
@@ -828,7 +885,9 @@ export type RunOutcome =
   /** 保存 Agent 工作区快照时超出组织存储配额（8.5c）：暂停为 paused / storage_quota，已请求取消时仍为 cancelled。 */
   | { kind: 'storage-quota' }
   /** Agent 的模型调用因没有选择模型 / 所选模型不可用被拒绝（8.6d3）：暂停为 paused / 该原因，已请求取消时仍为 cancelled。 */
-  | { kind: 'model-unavailable'; reason: 'model_not_configured' | 'model_unavailable' };
+  | { kind: 'model-unavailable'; reason: 'model_not_configured' | 'model_unavailable' }
+  /** 任务等待用户确认选择（8.7e1）：暂停为 paused / waiting_for_selection；已请求取消、暂停时按请求收尾。 */
+  | { kind: 'waiting-for-selection' };
 
 /**
  * 结束一次执行。成功即 succeeded（即使期间请求了取消，工作已完成）；失败即 failed，除非已请求取消（cancelled）；
@@ -924,6 +983,17 @@ export async function finishRun(db: Kysely<Database>, run: RunRef, outcome: RunO
         .returningAll()
         .executeTakeFirstOrThrow();
       await appendEvent(trx, toRecord(updated), 'paused', AGENT_DAILY_RUNTIME_PAUSE_MESSAGE, { reason: AGENT_DAILY_RUNTIME_PAUSE_REASON });
+      return 'paused';
+    }
+    // 等待用户确认选择（8.7e1）：已请求取消、暂停的按请求收尾（releaseInTrx；手动暂停后的“继续”同样不放行，见 requestResume）。
+    if (outcome.kind === 'waiting-for-selection' && row.status === 'running' && !row.pause_requested) {
+      const updated = await trx
+        .updateTable('jobs')
+        .set({ status: 'paused', pause_reason: WAITING_FOR_SELECTION_PAUSE_REASON, pause_requested: false, run_id: null, lease_expires_at: null })
+        .where('id', '=', row.id)
+        .returningAll()
+        .executeTakeFirstOrThrow();
+      await appendEvent(trx, toRecord(updated), 'paused', WAITING_FOR_SELECTION_PAUSE_MESSAGE, { reason: WAITING_FOR_SELECTION_PAUSE_REASON });
       return 'paused';
     }
     // 等待回答超时（8.4c1）：问题仍在等待（本次执行的）才暂停；暂停前刚好被回答的按中止收尾（回到 queued，续跑时取回答案）。

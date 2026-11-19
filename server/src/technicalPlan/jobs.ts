@@ -29,8 +29,8 @@ import type { TenantContext } from '../db/tenant.ts';
 import { AppError } from '../errors.ts';
 import { createJobChat, resolveJobModel, type JobChat } from '../jobs/chat.ts';
 import { abortableDelay, isJobStop } from '../jobs/control.ts';
-import { JobError, JobInterruptedError, type JobContext, type JobTypeDefinition } from '../jobs/definitions.ts';
-import { cancelJob, enqueueJob, type JobServiceDependencies } from '../jobs/service.ts';
+import { JobError, JobInterruptedError, JobSelectionRequiredError, type JobContext, type JobTypeDefinition } from '../jobs/definitions.ts';
+import { cancelJob, confirmJobSelectionAndDispatch, enqueueJob, type JobServiceDependencies } from '../jobs/service.ts';
 import { listJobs, type JobRecord } from '../jobs/store.ts';
 import type { Kysely } from 'kysely';
 import { AGENT_TASK_LIMITS } from '../agent/budget.ts';
@@ -53,13 +53,29 @@ import {
 } from './globalFactsAgent.ts';
 import { OutlineInputError } from './outline.ts';
 import {
+  applyOutlineSelection,
+  buildInitialOutlineInput,
   collectOutlineIds,
   createOutlineAdjustmentPrompt,
+  createOutputRepairPrompt,
+  defaultOutlineSelection,
+  finalOutlineOf,
+  INITIAL_OUTLINE_STAGE,
+  initialOutlineNeedsKnowledge,
+  isMissingTechnicalScoreItems,
+  lockedOutlineRoots,
   OUTLINE_JSON_SCHEMA,
   OUTLINE_OUTPUT_FILE,
   outlineAdjustmentFile,
+  OutlineSelectionInputError,
+  readOutlineSelectionState,
+  validateInitialOutlineOutput,
   validateOutlineOutput,
   type AcceptedOutlineItem,
+  type InitialOutlineInput,
+  type OutlineGenerationMode,
+  type OutlineSelectionChange,
+  type OutlineSelectionRecord,
 } from './outlineAgent.ts';
 import { extractBidSections, SectionExtractionError } from './sectionExtraction.ts';
 import {
@@ -74,8 +90,10 @@ import {
   OUTLINE_ADJUSTMENT_JOB_TYPE,
   OUTLINE_ADJUSTMENT_REQUIREMENT_MAX,
   OUTLINE_ADJUSTMENT_SUMMARY_MAX,
+  OUTLINE_GENERATION_JOB_TYPE,
   OUTLINE_TASK_KIND,
   outlineAdjustmentInputSignature,
+  outlineGenerationInputSignature,
   outlineSessionTarget,
   globalFactsSessionTarget,
   inputSignatures,
@@ -84,12 +102,14 @@ import {
   readGlobalFactsKnowledgeItems,
   readGlobalFactsSources,
   readOriginalTenderMarkdown,
+  readOutlineKnowledgeMarkdowns,
   readTenderMarkdown,
   resetBidAnalysisForRerun,
   saveBidItems,
   saveBidSectionExtraction,
   saveGlobalFactsResult,
   saveOutlineAdjustmentResult,
+  saveOutlineGenerationResult,
   technicalPlanLockKey,
   type TechnicalPlanState,
 } from './store.ts';
@@ -102,6 +122,7 @@ export {
   GLOBAL_FACTS_JOB_TYPE,
   GLOBAL_FACTS_TASK_KIND,
   OUTLINE_ADJUSTMENT_JOB_TYPE,
+  OUTLINE_GENERATION_JOB_TYPE,
   OUTLINE_TASK_KIND,
 };
 
@@ -810,8 +831,229 @@ function createOutlineAdjustmentJob(): JobTypeDefinition<OutlineAdjustmentParams
   };
 }
 
+// ---- 目录生成（8.7e1） ----
+
+export interface OutlineGenerationParams {
+  /** 用户确认以无技术评分项模式生成目录（桌面版 no_technical_score_mode；技术评分项缺失时必须为 true）。 */
+  noTechnicalScoreMode: boolean;
+}
+
+function parseOutlineGenerationParams(raw: unknown): OutlineGenerationParams {
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) throw new TypeError('目录生成任务参数不合法');
+  const { noTechnicalScoreMode, ...rest } = raw as Record<string, unknown>;
+  if (Object.keys(rest).length > 0 || typeof noTechnicalScoreMode !== 'boolean') throw new TypeError('目录生成任务参数不合法');
+  return { noTechnicalScoreMode };
+}
+
+const TECH_REQUIREMENTS_REQUIRED: Problem = { code: 'TECHNICAL_PLAN_TECH_REQUIREMENTS_REQUIRED', message: '请先完成技术评分要求解析，再生成目录' };
+const NO_TECHNICAL_SCORE_CONFIRM_REQUIRED: Problem = {
+  code: 'TECHNICAL_PLAN_NO_TECHNICAL_SCORE_CONFIRM_REQUIRED',
+  message: '请先确认是否以无技术评分项模式生成目录',
+};
+
+/** 目录生成的前置条件（与桌面版 runOutlineGenerationTaskV2 开始时的检查相同；原方案未解析完成的两条是 Web 版新增的，同 8.7c1）。 */
+function outlineGenerationProblem(state: TechnicalPlanState, confirmedNoTechnicalScore: boolean): Problem | null {
+  const task = state.bidAnalysisTasks.techRequirements;
+  const content = String(task?.content || '').trim();
+  if (task?.status !== 'success' || !content) return TECH_REQUIREMENTS_REQUIRED;
+  if (isMissingTechnicalScoreItems(content) && !confirmedNoTechnicalScore) return NO_TECHNICAL_SCORE_CONFIRM_REQUIRED;
+  const plan = state.originalPlanFile;
+  if (plan?.status === 'error') return { code: 'TECHNICAL_PLAN_ORIGINAL_PLAN_FAILED', message: '原方案解析失败，请移除后重新上传' };
+  if (plan && (plan.status !== 'success' || !plan.markdownArtifactId)) {
+    return { code: 'TECHNICAL_PLAN_ORIGINAL_PLAN_NOT_READY', message: '原方案尚未解析完成，请稍后再试' };
+  }
+  return null;
+}
+
+/** 目录生成放入的材料（受保护文件）与预置的 outline.json（交给 Agent 写入）。 */
+const OUTLINE_GENERATION_INPUT_GROUP = 'outline-generation-inputs';
+const OUTLINE_GENERATION_INPUT_CHANGED_MESSAGE = '招标文件、解析结果、原方案、目录配置、目录或全局事实已变化，本次结果已丢弃，请重新开始';
+/** 8.7e2 之前：选择了需要 AI 扩展的一级目录时任务失败（见 createOutlineGenerationJob）。 */
+export const OUTLINE_STAGE_UNAVAILABLE_CODE = 'TECHNICAL_PLAN_OUTLINE_STAGE_UNAVAILABLE';
+const OUTLINE_STAGE_UNAVAILABLE_MESSAGE = '所选一级目录需要 AI 继续生成子目录，该功能尚未开放；目前只能使用无需 AI 扩展的一级目录';
+
+function outlineGenerationInputChanged(): JobError {
+  return new JobError('TECHNICAL_PLAN_INPUT_CHANGED', OUTLINE_GENERATION_INPUT_CHANGED_MESSAGE);
+}
+
+/** 目录生成的一级目录阶段的材料与提示词（首次执行放入；续跑时原件不可用才重新放入）。前置条件不满足时以对应的 JobError 失败。 */
+async function readInitialOutlineMaterials(
+  context: JobContext<OutlineGenerationParams>,
+  projectId: string,
+  state: TechnicalPlanState,
+): Promise<{ input: InitialOutlineInput; mode: OutlineGenerationMode }> {
+  const { db, tenant, params } = context;
+  const problem = outlineGenerationProblem(state, params.noTechnicalScoreMode);
+  if (problem) throw new JobError(problem.code, problem.message);
+  const noTechnicalScoreMode = isMissingTechnicalScoreItems(state.techRequirements);
+  const hasOriginalPlan = state.originalPlanFile !== null;
+  const originalPlanMarkdown = hasOriginalPlan
+    ? (await readForJob(() => readGlobalFactsSources(db, tenant, projectId, context.objectStore, { tenders: false }))).originalPlanMarkdown
+    : '';
+  const source = {
+    outlineMode: state.outlineMode,
+    hasOriginalPlan,
+    outlineExpansionMode: state.outlineExpansionMode,
+    originalPlanMarkdown,
+    responseFileRequirements: state.bidAnalysisTasks.responseFileRequirements?.content || '',
+    projectOverview: state.projectOverview,
+    techRequirements: state.techRequirements,
+    noTechnicalScoreMode,
+    knowledgeMarkdowns: [] as string[],
+  };
+  if (initialOutlineNeedsKnowledge(source) && state.referenceKnowledgeDocumentIds.length > 0) {
+    source.knowledgeMarkdowns = await readForJob(() => readOutlineKnowledgeMarkdowns(db, tenant, projectId, context.objectStore));
+  }
+  return { input: buildInitialOutlineInput(source), mode: state.outlineMode };
+}
+
+/**
+ * 目录生成（8.7e1，取代桌面版 outlineGenerationTaskV2.cjs 的 runOutlineGenerationTaskV2 的一级目录与确认部分）：
+ * - 输入在任务开始时从数据库读取：技术评分要求（须解析成功；技术评分项缺失时须确认无技术评分项模式，任务参数 noTechnicalScoreMode）、
+ *   响应文件要求、项目概述、原方案（有时）、目录的组织方式 / 扩展方式 / 字数控制与引用的知识库文档（生成配置，由 PATCH .../generation-config
+ *   先保存；桌面版随开始任务的参数传入），无技术评分项模式下另读知识库文档的 Markdown；
+ * - 一级目录阶段：材料（响应文件要求.md、技术评分信息.md、项目概述.md、原方案.md、参考知识库/参考资料-*.md，按模式取舍）登记为受保护
+ *   文件，预置空的 outline.json；提示词、预置 Schema、工具与桌面版相同；提交校验与桌面版 validateOutlineOutput(content) 相同（经提交修复），
+ *   另限制一级目录数与大小；通过后与桌面版 continueTask 相同写回 outline.json；
+ * - 一级目录确认（桌面版 waitForOutlineSelection）：生成的一级目录与默认选择（桌面版 defaultSelectedIds）随检查点写进 checkpoint
+ *   （{ signature, selection }），任务抛出 JobSelectionRequiredError、暂停为 waiting_for_selection（沙箱销毁，不占 Agent 并发与运行时长）；
+ *   用户经 POST .../outline-selection 确认（confirmOutlineSelection，写入 checkpoint 的 confirmed）后任务续跑。确认前被手动继续时再次暂停；
+ * - 确认后：所选一级目录（按原顺序重新编号）都不需要 AI 扩展时（没有 ai-generate），与桌面版相同直接整理为最终目录（桌面版
+ *   buildFinalOutline），经 saveOutlineGenerationResult 带输入签名整体替换目录、清空正文与全局事实、写入字数控制快照，再丢弃全局事实的
+ *   会话（桌面版目录生成开始时删除）；这一路不再打开沙箱。需要 AI 扩展的后续阶段（评分规划、叶子分配、子目录生成、叶子调整、目录审查）
+ *   随 8.7e2，在此之前以 TECHNICAL_PLAN_OUTLINE_STAGE_UNAVAILABLE 失败；
+ * - 桌面版有模板填写一级目录时并行执行投标模板提取（属 8.13）：按 8.7e1 开始前用户的决定先不接入，这类一级目录照常保留其处理方式；
+ * - 可续跑：每条提示词之后保存检查点（工作区快照与 checkpoint，签名在其中），续跑时输入已变化即失败；成功后保留快照（keepAfterSuccess），
+ *   目录调整接着这次的会话。
+ */
+function createOutlineGenerationJob(): JobTypeDefinition<OutlineGenerationParams> {
+  return {
+    type: OUTLINE_GENERATION_JOB_TYPE,
+    queue: 'agent',
+    resumable: true,
+    billable: true,
+    agentLimits: AGENT_TASK_LIMITS.outline,
+    agentTools: GLOBAL_FACTS_BUSINESS_TOOLS,
+    agentWorkspace: { taskKind: OUTLINE_TASK_KIND, keepAfterSuccess: true },
+    parseParams: parseOutlineGenerationParams,
+    async run(context) {
+      const { db, tenant } = context;
+      const projectId = context.projectId;
+      if (!projectId) throw new JobError('TECHNICAL_PLAN_FAILED', '目录生成失败');
+      // 先取签名再读状态与材料：读取期间输入变化时签名已过期，写入被拒绝。
+      const current = await outlineGenerationInputSignature(db, tenant, projectId);
+      const state = await loadTechnicalPlan(db, tenant, projectId);
+      const saved = checkpointSignature(isPlainRecord(context.checkpoint?.task) ? context.checkpoint.task : null);
+      if (saved !== null && saved !== current) throw outlineGenerationInputChanged();
+      const signature = saved ?? current;
+      const { selection, confirmed } = readOutlineSelectionState(context.checkpoint?.task);
+      if (confirmed) {
+        await finishOutlineSelection(context, projectId, state, confirmed, signature);
+        return;
+      }
+      // 已生成一级目录、尚未确认（确认前被手动继续）：再次等待确认。
+      if (selection) throw new JobSelectionRequiredError();
+      const { input, mode } = await readInitialOutlineMaterials(context, projectId, state);
+      await withAgentRun(context.agent, async (run) => {
+        if (!run.resumed) {
+          await context.log('开始生成一级目录');
+          await context.setProgress(10);
+          await run.baseline.write(
+            run.sandbox,
+            OUTLINE_GENERATION_INPUT_GROUP,
+            input.files.map((file) => ({ path: file.path, data: Buffer.from(file.content, 'utf8') })),
+            { replace: true, signal: context.signal },
+          );
+          // 与桌面版 prepare_output_files 相同：预置空的 outline.json，交给 Agent 写入。
+          await writeOutlineFile(context, run, '');
+        } else if (run.unavailableProtectedFiles.length > 0) {
+          // 续跑时材料在快照中；原件不可用（快照中的副本被改动）时按同一输入重新放入。
+          await run.baseline.write(
+            run.sandbox,
+            OUTLINE_GENERATION_INPUT_GROUP,
+            input.files.map((file) => ({ path: file.path, data: Buffer.from(file.content, 'utf8') })),
+            { replace: true, signal: context.signal },
+          );
+        }
+        const stage = await run.runStage<{ outline: AcceptedOutlineItem[] }>({
+          stage: INITIAL_OUTLINE_STAGE,
+          stageIndex: 0,
+          prompt: run.wasPrompted(INITIAL_OUTLINE_STAGE) ? CONTINUE_PROMPT : input.prompt,
+          tools: GLOBAL_FACTS_TOOLS,
+          jsonSchemas: { [OUTLINE_OUTPUT_FILE]: OUTLINE_JSON_SCHEMA },
+          outputFile: OUTLINE_OUTPUT_FILE,
+          // 与桌面版 max_retries 1 + buildRetryPrompt 相同：执行失败时 createOutputRepairPrompt 返回 null，不重试。
+          maxExecutionRetries: 1,
+          retryPrompt: () => null,
+          repairPrompt: () => createOutputRepairPrompt(INITIAL_OUTLINE_STAGE),
+          checkpointAfterPrompt: () => ({ signature }),
+          validate: async () => {
+            const file = (await run.readFiles([OUTLINE_OUTPUT_FILE])).get(OUTLINE_OUTPUT_FILE);
+            if (file && file.data === null) return { value: null, issues: [{ severity: 'blocking' as const, message: `${OUTLINE_OUTPUT_FILE}过大，无法读取` }] };
+            return validateInitialOutlineOutput(file?.data?.toString('utf8') ?? '');
+          },
+        });
+        const accepted = stage.value;
+        if (!accepted?.outline.length) throw new JobError('TECHNICAL_PLAN_OUTLINE_INVALID', '一级目录生成结果不可用');
+        if (context.signal.aborted) throw new JobInterruptedError();
+        // 与桌面版 continueTask 相同：分配了正式 id、编号后的一级目录写回 outline.json。
+        await writeOutlineFile(context, run, JSON.stringify(accepted, null, 2));
+        const pending: OutlineSelectionRecord = { items: accepted.outline, selectedIds: defaultOutlineSelection(accepted.outline, mode) };
+        await context.log('一级目录已生成，等待用户确认');
+        await run.checkpoint({ signature, selection: pending }, 30);
+      });
+      throw new JobSelectionRequiredError();
+    },
+  };
+}
+
+const isPlainRecord = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null && !Array.isArray(value);
+
+/** 一级目录确认之后（见 createOutlineGenerationJob）。 */
+async function finishOutlineSelection(
+  context: JobContext<OutlineGenerationParams>,
+  projectId: string,
+  state: TechnicalPlanState,
+  confirmed: OutlineSelectionRecord,
+  signature: string,
+): Promise<void> {
+  const { db, tenant } = context;
+  const lockedRoots = lockedOutlineRoots(confirmed.items, confirmed.selectedIds);
+  if (!lockedRoots.length) throw new JobError('TECHNICAL_PLAN_OUTLINE_INVALID', '请至少选择一个一级目录');
+  if (lockedRoots.some((item) => item.content_mode === 'ai-generate')) throw new JobError(OUTLINE_STAGE_UNAVAILABLE_CODE, OUTLINE_STAGE_UNAVAILABLE_MESSAGE);
+  await context.log('一级目录已确认，所选目录无需 AI 扩展');
+  await context.setProgress(35);
+  const outline = finalOutlineOf(lockedRoots);
+  await context.log('所选一级目录已整理完成');
+  await context.setProgress(98);
+  let written: boolean;
+  try {
+    written = await saveOutlineGenerationResult(
+      db,
+      tenant,
+      projectId,
+      { outline, projectOverview: state.projectOverview, wordControl: state.outlineWordControlOptions },
+      signature,
+    );
+  } catch (error) {
+    if (error instanceof OutlineInputError) throw new JobError('TECHNICAL_PLAN_OUTLINE_INVALID', error.message, { cause: error });
+    throw error;
+  }
+  if (!written) throw outlineGenerationInputChanged();
+  // 全局事实已清空：全局事实的会话不再续用（桌面版目录生成开始时删除）。目录的会话保留给目录调整。丢弃失败的留给下一次生成替换。
+  await discardAgentWorkspaceSnapshots(db, tenant, context.objectStore, projectId, [GLOBAL_FACTS_TASK_KIND]).catch(() => {});
+  await context.log('所选一级目录整理完成');
+}
+
 export function createTechnicalPlanJobs(options: TechnicalPlanJobOptions = {}): JobTypeDefinition<any>[] {
-  return [createSectionExtractionJob(options), createAnalysisJob(options), createGlobalFactsJob(), createGlobalFactsAdjustmentJob(), createOutlineAdjustmentJob()];
+  return [
+    createSectionExtractionJob(options),
+    createAnalysisJob(options),
+    createGlobalFactsJob(),
+    createGlobalFactsAdjustmentJob(),
+    createOutlineGenerationJob(),
+    createOutlineAdjustmentJob(),
+  ];
 }
 
 export const technicalPlanJobs = createTechnicalPlanJobs();
@@ -859,7 +1101,14 @@ export async function startBidAnalysis(
  * 其后续写入因签名不符被拒绝。已结束的任务跳过。
  */
 export async function cancelTechnicalPlanJobs(jobs: JobServiceDependencies, context: TenantContext, projectId: string): Promise<void> {
-  const types: readonly string[] = [BID_SECTION_EXTRACTION_JOB_TYPE, BID_ANALYSIS_JOB_TYPE, GLOBAL_FACTS_JOB_TYPE, GLOBAL_FACTS_ADJUSTMENT_JOB_TYPE, OUTLINE_ADJUSTMENT_JOB_TYPE];
+  const types: readonly string[] = [
+    BID_SECTION_EXTRACTION_JOB_TYPE,
+    BID_ANALYSIS_JOB_TYPE,
+    GLOBAL_FACTS_JOB_TYPE,
+    GLOBAL_FACTS_ADJUSTMENT_JOB_TYPE,
+    OUTLINE_GENERATION_JOB_TYPE,
+    OUTLINE_ADJUSTMENT_JOB_TYPE,
+  ];
   const active = await listJobs(jobs.db, context, { projectId, active: true, limit: 20 });
   for (const job of active) {
     if (!types.includes(job.type)) continue;
@@ -906,6 +1155,58 @@ export async function startOutlineAdjustment(jobs: JobServiceDependencies, conte
   if (!state.outlineData?.outline.length) throw conflict(OUTLINE_REQUIRED);
   if (!state.outlineAdjustable) throw conflict(OUTLINE_SESSION_MISSING);
   return enqueueJob(jobs, context, { type: OUTLINE_ADJUSTMENT_JOB_TYPE, projectId, lockKey: technicalPlanLockKey(projectId), params: { requirement } });
+}
+
+/**
+ * 开始生成目录（取代桌面版 tasks.startOutlineGeneration，8.7e1）：目录的组织方式、扩展方式、字数控制与引用的知识库文档取已保存的生成配置
+ * （PATCH .../generation-config）；noTechnicalScoreMode 为用户对“无技术评分项模式”的确认（技术评分项缺失时必须为 true，否则 409）。
+ * 技术评分要求未解析成功、原方案未解析完成时 409（文案与桌面版相同）；已有进行中的技术方案任务（含等待确认一级目录的目录生成）时
+ * 409 JOB_LOCKED。入 agent 队列。
+ */
+export async function startOutlineGeneration(
+  jobs: JobServiceDependencies,
+  context: TenantContext,
+  projectId: string,
+  input: { noTechnicalScoreMode?: boolean },
+): Promise<JobRecord> {
+  const noTechnicalScoreMode = input.noTechnicalScoreMode === true;
+  const problem = outlineGenerationProblem(await loadTechnicalPlan(jobs.db, context, projectId), noTechnicalScoreMode);
+  if (problem) throw conflict(problem);
+  return enqueueJob(jobs, context, { type: OUTLINE_GENERATION_JOB_TYPE, projectId, lockKey: technicalPlanLockKey(projectId), params: { noTechnicalScoreMode } });
+}
+
+export interface OutlineSelectionInput {
+  /** 等待确认的目录生成任务（桌面版 taskId）。 */
+  jobId: string;
+  /** 使用的一级目录（至少一个）。 */
+  selectedIds: unknown[];
+  /** 对一级目录属性与内容处理模式的修改（桌面版确认对话框中的修改），可省略。 */
+  changes?: OutlineSelectionChange[];
+}
+
+/**
+ * 确认一级目录（取代桌面版 tasks.confirmOutlineSelection，8.7e1）：目录生成任务须正在等待确认（暂停为 waiting_for_selection），限任务
+ * 发起人或组织 owner / admin（src/jobs/store.ts 的 confirmJobSelection）。选择与修改按任务 checkpoint 中待确认的一级目录校验
+ * （applyOutlineSelection；标题、说明与 id 以服务端保存的为准），不合法时 400；之后任务回到 queued 并派发。不是本项目的目录生成任务 404。
+ */
+export async function confirmOutlineSelection(jobs: JobServiceDependencies, context: TenantContext, projectId: string, input: OutlineSelectionInput): Promise<JobRecord> {
+  return confirmJobSelectionAndDispatch(jobs, context, input.jobId, {
+    projectId,
+    type: OUTLINE_GENERATION_JOB_TYPE,
+    apply(checkpoint) {
+      const task = isPlainRecord(checkpoint?.task) ? checkpoint.task : null;
+      const { selection, confirmed } = readOutlineSelectionState(task);
+      if (!checkpoint || !task || !selection || confirmed) throw new AppError(409, 'JOB_SELECTION_NOT_PENDING', '一级目录生成结果已变化，请重新打开后再选择');
+      let result: { items: AcceptedOutlineItem[]; selectedIds: string[] };
+      try {
+        result = applyOutlineSelection(selection.items, input.selectedIds, input.changes ?? []);
+      } catch (error) {
+        if (error instanceof OutlineSelectionInputError) throw new AppError(400, 'TECHNICAL_PLAN_INVALID', error.message, { cause: error });
+        throw error;
+      }
+      return { ...checkpoint, task: { ...task, confirmed: result } };
+    },
+  });
 }
 
 /**
