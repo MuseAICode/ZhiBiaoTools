@@ -135,6 +135,24 @@ export function globalFactsSessionTarget(projectId: string): AgentSessionTarget 
 }
 
 /**
+ * 技术方案目录生成（第 8 步 8.7e，尚未实现）：任务类型与桌面版相同，先登记名称，供目录调整查找可以续用的会话。8.7e 之前没有任务写下
+ * 该类别的快照，目录调整一律因找不到会话而 409。
+ */
+export const OUTLINE_GENERATION_JOB_TYPE = 'outline-generation';
+/** 技术方案目录调整（第 8 步 8.7d）：agent 队列，接着目录生成（或上一次调整）的会话与工作区；任务类型与桌面版相同。 */
+export const OUTLINE_ADJUSTMENT_JOB_TYPE = 'outline-adjustment';
+/** 目录生成与调整共用的工作区快照类别（与桌面版的持久任务 technical-plan-outline-generation 对应）。 */
+export const OUTLINE_TASK_KIND = 'technical-plan-outline-generation';
+/** 目录调整要求与说明的字数上限（与全局事实调整相同）。 */
+export const OUTLINE_ADJUSTMENT_REQUIREMENT_MAX = GLOBAL_FACTS_ADJUSTMENT_REQUIREMENT_MAX;
+export const OUTLINE_ADJUSTMENT_SUMMARY_MAX = GLOBAL_FACTS_ADJUSTMENT_SUMMARY_MAX;
+
+/** 目录调整接着的会话：目录生成或上一次调整写下的、与当前快照同一对的现场（src/agent/continuation.ts）。 */
+export function outlineSessionTarget(projectId: string): AgentSessionTarget {
+  return { projectId, taskKind: OUTLINE_TASK_KIND, jobTypes: [OUTLINE_GENERATION_JOB_TYPE, OUTLINE_ADJUSTMENT_JOB_TYPE] };
+}
+
+/**
  * 技术方案的任务互斥（与桌面版 technical-plan 组的 group-exclusive 相同）：同一项目同时只有一个技术方案任务。第 8 步的目录、
  * 全局事实、正文生成任务使用同一个键。
  */
@@ -270,7 +288,12 @@ export interface TechnicalPlanState extends TechnicalPlanGenerationConfig {
   outlineWordControlSnapshot: OutlineWordControlOptions | null;
   globalFacts: TechnicalPlanGlobalFact[];
   outlineGenerationTask: null;
-  outlineAdjustmentTask: null;
+  /** 本项目最近一次的目录调整任务（8.7d），没有时为 null。 */
+  outlineAdjustmentTask: JobBody | null;
+  /** 最近一次目录调整的要求与 Agent 的说明（桌面版 outlineAdjustmentTask.stats.adjustment），形式与 globalFactsAdjustment 相同。 */
+  outlineAdjustment: { requirement: string; summary: string | null } | null;
+  /** 能否发起目录调整：有目录，且目录生成（或上一次调整）的 Agent 会话可以续用（桌面版 hasPersistentTaskSession）。 */
+  outlineAdjustable: boolean;
   /** 本项目最近一次的全局事实生成任务（8.7c1），没有时为 null。 */
   globalFactsTask: JobBody | null;
   /** 本项目最近一次的全局事实调整任务（8.7c2），没有时为 null。 */
@@ -726,11 +749,18 @@ export async function readState(trx: Trx, projectId: string): Promise<TechnicalP
   });
   const snapshot = meta?.outline_word_control_snapshot;
   const strip = ({ role: _role, detection: _detection, ...document }: DocumentRow): TechnicalPlanDocument => document;
-  const jobs = await latestProjectJobs(trx, projectId, [BID_SECTION_EXTRACTION_JOB_TYPE, BID_ANALYSIS_JOB_TYPE, GLOBAL_FACTS_JOB_TYPE, GLOBAL_FACTS_ADJUSTMENT_JOB_TYPE]);
+  const jobs = await latestProjectJobs(trx, projectId, [
+    BID_SECTION_EXTRACTION_JOB_TYPE,
+    BID_ANALYSIS_JOB_TYPE,
+    GLOBAL_FACTS_JOB_TYPE,
+    GLOBAL_FACTS_ADJUSTMENT_JOB_TYPE,
+    OUTLINE_ADJUSTMENT_JOB_TYPE,
+  ]);
   const extractionTask = jobs.get(BID_SECTION_EXTRACTION_JOB_TYPE);
   const analysisTask = jobs.get(BID_ANALYSIS_JOB_TYPE);
   const globalFactsTask = jobs.get(GLOBAL_FACTS_JOB_TYPE);
   const globalFactsAdjustmentTask = jobs.get(GLOBAL_FACTS_ADJUSTMENT_JOB_TYPE);
+  const outlineAdjustmentTask = jobs.get(OUTLINE_ADJUSTMENT_JOB_TYPE);
   const globalFacts = await readGlobalFacts(trx, projectId);
   // 与桌面版 recoverInterruptedBidAnalysisTask 相同：任务已结束时仍是 running 的解析项按未完成显示（只改读出的状态）。
   const analysisStale = isStale(analysisTask);
@@ -766,7 +796,9 @@ export async function readState(trx: Trx, projectId: string): Promise<TechnicalP
     outlineWordControlSnapshot: snapshot ? normalizeWordControl(snapshot) : null,
     globalFacts,
     outlineGenerationTask: null,
-    outlineAdjustmentTask: null,
+    outlineAdjustmentTask: outlineAdjustmentTask ? jobBody(outlineAdjustmentTask) : null,
+    outlineAdjustment: adjustmentOf(outlineAdjustmentTask),
+    outlineAdjustable: outline !== null && (await findContinuableAgentSessionIn(trx, outlineSessionTarget(projectId))) !== null,
     globalFactsTask: globalFactsTask ? jobBody(globalFactsTask) : null,
     globalFactsAdjustmentTask: globalFactsAdjustmentTask ? jobBody(globalFactsAdjustmentTask) : null,
     globalFactsAdjustment: adjustmentOf(globalFactsAdjustmentTask),
@@ -778,7 +810,7 @@ export async function readState(trx: Trx, projectId: string): Promise<TechnicalP
   };
 }
 
-/** 调整任务的要求（任务参数）与成功后写下的说明（任务最后的 checkpoint 中，src/technicalPlan/jobs.ts）。 */
+/** 调整任务（全局事实调整、目录调整，说明上限相同）的要求（任务参数）与成功后写下的说明（任务最后的 checkpoint 中，src/technicalPlan/jobs.ts）。 */
 function adjustmentOf(job: Pick<JobRecord, 'status' | 'params' | 'checkpoint'> | undefined): TechnicalPlanState['globalFactsAdjustment'] {
   if (!job) return null;
   const requirement = typeof job.params.requirement === 'string' ? job.params.requirement : '';
@@ -2119,6 +2151,97 @@ export async function saveGlobalFactsResult(
     await lockProject(trx, projectId);
     if ((await readGlobalFactsSignature(trx, projectId)) !== expectedSignature) return false;
     await replaceGlobalFacts(trx, context, projectId, normalized);
+    return true;
+  });
+}
+
+async function readOutlineAdjustmentSignature(trx: Trx, projectId: string): Promise<string> {
+  const { analysis } = await readSignatures(trx, projectId);
+  const nodes = await trx
+    .selectFrom('technical_plan_outline_nodes')
+    .select([
+      'node_id',
+      'parent_node_id',
+      'sort_order',
+      'level',
+      'title',
+      'description',
+      'content_mode',
+      'content_mode_note',
+      'source_requirement_id',
+      'source_requirement_title',
+      'knowledge_item_ids',
+      sql<string>`md5(content)`.as('content_md5'),
+    ])
+    .where('project_id', '=', projectId)
+    .orderBy('level')
+    .orderBy('parent_node_id')
+    .orderBy('sort_order')
+    .orderBy('node_id')
+    .execute();
+  const meta = await trx.selectFrom('technical_plan_meta').select(['outline_project_name', 'outline_project_overview']).where('project_id', '=', projectId).executeTakeFirst();
+  return sha256Hex(
+    JSON.stringify([
+      analysis,
+      nodes.map((row) => [
+        row.node_id,
+        row.parent_node_id,
+        row.sort_order,
+        row.level,
+        row.title,
+        row.description,
+        row.content_mode,
+        row.content_mode_note,
+        row.source_requirement_id,
+        row.source_requirement_title,
+        row.knowledge_item_ids,
+        row.content_md5,
+      ]),
+      meta?.outline_project_name ?? null,
+      meta?.outline_project_overview ?? null,
+    ]),
+  );
+}
+
+/**
+ * 目录调整的输入签名（8.7d；任务开始时读取，写入时传回）：招标文件与投标范围（招标解析的签名）与当前目录（各节点的全部字段、正文的
+ * 摘要、目录的项目名称与概述）。任务开始后用户改过目录（排序、编辑、增删、正文）或招标文件、投标范围变化时，调整结果不覆盖。
+ */
+export async function outlineAdjustmentInputSignature(db: Kysely<Database>, context: TenantContext, projectId: string): Promise<string> {
+  return withTenant(db, context, (trx) => readOutlineAdjustmentSignature(trx, projectId));
+}
+
+/**
+ * 目录调整任务的结果（8.7d）：与 saveOutline 的 replace 相同整体替换目录，清空全部正文、正文生成状态、编排与运行进度（桌面版
+ * saveOutline({ reason: 'replace' })），字数控制快照不变。在项目锁内核对输入签名，不符时不写入、返回 false。目录不合法时抛
+ * OutlineInputError（任务的提交校验已先检查）。
+ */
+export async function saveOutlineAdjustmentResult(
+  db: Kysely<Database>,
+  context: TenantContext,
+  projectId: string,
+  outlineData: { outline: unknown; project_name?: string | undefined; project_overview?: string | undefined },
+  expectedSignature: string,
+): Promise<boolean> {
+  const rows = flattenOutline(outlineData.outline);
+  if (rows.length === 0) throw new OutlineInputError('目录不能为空');
+  const header = outlineHeader(outlineData);
+  return withTenant(db, context, async (trx) => {
+    await lockProject(trx, projectId);
+    if ((await readOutlineAdjustmentSignature(trx, projectId)) !== expectedSignature) return false;
+    await writeOutlineNodes(
+      trx,
+      context,
+      projectId,
+      rows.map((row) => ({ ...row, content: '' })),
+    );
+    await trx.deleteFrom('technical_plan_content_sections').where('project_id', '=', projectId).execute();
+    await trx.deleteFrom('technical_plan_content_plans').where('project_id', '=', projectId).execute();
+    await writeMeta(trx, context, projectId, {
+      content_generation_runtime: null,
+      outline_project_name: header.name,
+      outline_project_overview: header.overview,
+    });
     return true;
   });
 }

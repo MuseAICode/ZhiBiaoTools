@@ -32,11 +32,14 @@ import {
   createTechnicalPlanJobs,
   GLOBAL_FACTS_ADJUSTMENT_JOB_TYPE,
   GLOBAL_FACTS_JOB_TYPE,
+  OUTLINE_ADJUSTMENT_JOB_TYPE,
 } from '../../src/technicalPlan/jobs.ts';
 import {
   globalFactsInputSignature,
   importTenderFiles,
   loadTechnicalPlan,
+  OUTLINE_GENERATION_JOB_TYPE,
+  outlineAdjustmentInputSignature,
   readGlobalFactsKnowledgeItems,
   readGlobalFactsSources,
   saveBidItems,
@@ -49,6 +52,7 @@ import {
   saveGlobalFacts,
   saveGlobalFactsResult,
   saveOutline,
+  saveOutlineAdjustmentResult,
   setOriginalPlan,
   updateStep,
 } from '../../src/technicalPlan/store.ts';
@@ -547,15 +551,26 @@ describe('接口', () => {
 
 const FACTS_KIND = 'technical-plan-global-facts';
 
+const OUTLINE_KIND = 'technical-plan-outline-generation';
+
 /** 全局事实生成留下的会话：该类别当前的快照与引用它的已结束的生成任务（现场与执行者写下的相同）。 */
-async function seedFactsSession(member: Member, projectId: string, status: 'succeeded' | 'failed' | 'cancelled' = 'succeeded') {
-  const snapshot = await writeWorkspaceSnapshot(appDb, member.context, memoryStore, { projectId, taskKind: FACTS_KIND, fileCount: 1 }, Readable.from([Buffer.from('tar')]));
+function seedFactsSession(member: Member, projectId: string, status: 'succeeded' | 'failed' | 'cancelled' = 'succeeded') {
+  return seedSession(member, projectId, status, FACTS_KIND, GLOBAL_FACTS_JOB_TYPE, 'global-facts');
+}
+
+/** 目录生成（8.7e，尚未实现）留下的会话：形式与执行者写下的相同，任务类型为预留的 outline-generation。 */
+function seedOutlineSession(member: Member, projectId: string, status: 'succeeded' | 'failed' | 'cancelled' = 'succeeded') {
+  return seedSession(member, projectId, status, OUTLINE_KIND, OUTLINE_GENERATION_JOB_TYPE, 'outline-review');
+}
+
+async function seedSession(member: Member, projectId: string, status: 'succeeded' | 'failed' | 'cancelled', taskKind: string, type: string, stage: string) {
+  const snapshot = await writeWorkspaceSnapshot(appDb, member.context, memoryStore, { projectId, taskKind, fileCount: 1 }, Readable.from([Buffer.from('tar')]));
   const agent = {
     version: 1,
     session: `2026-11-19T01-02-03-004Z_${randomUUID()}.jsonl`,
-    stage: 'global-facts',
+    stage,
     stageIndex: 0,
-    promptedStage: 'global-facts',
+    promptedStage: stage,
     compactionPending: null,
     baseline: { version: 1, groups: {} },
     snapshot: snapshot.id,
@@ -566,7 +581,7 @@ async function seedFactsSession(member: Member, projectId: string, status: 'succ
       org_id: member.orgId,
       project_id: projectId,
       user_id: member.userId,
-      type: GLOBAL_FACTS_JOB_TYPE,
+      type,
       status,
       lock_key: `project:${projectId}:technical-plan`,
       params: '{}',
@@ -580,6 +595,7 @@ async function seedFactsSession(member: Member, projectId: string, status: 'succ
 }
 
 const currentFactsSnapshot = (member: Member, projectId: string) => findWorkspaceSnapshot(appDb, member.context, { projectId, taskKind: FACTS_KIND });
+const currentOutlineSnapshot = (member: Member, projectId: string) => findWorkspaceSnapshot(appDb, member.context, { projectId, taskKind: OUTLINE_KIND });
 
 const FACTS = [
   { id: 'schedule', title: '工期变量', content: '- 工期：180 日历天。' },
@@ -587,7 +603,7 @@ const FACTS = [
 ];
 
 /** 全局事实调整用的假 Agent：记下打开时接着的会话与放入的 global-facts.json，按脚本写出结果与最后一条回复。 */
-function adjustmentAgent(output: string, reply: string) {
+function adjustmentAgent(output: string, reply: string, beforeValidate?: () => Promise<void>) {
   const record = { opened: [] as (AgentOpenOptions | undefined)[], files: new Map<string, string>(), released: [] as string[], prompts: [] as string[], checkpoints: [] as unknown[] };
   const run = {
     sandbox: { id: 'sandbox-1' },
@@ -610,7 +626,9 @@ function adjustmentAgent(output: string, reply: string) {
     },
     async runStage(stage: AgentStageOptions<unknown>) {
       record.prompts.push(stage.prompt);
+      await beforeValidate?.();
       const report = await stage.validate({ attempt: 1, restored: [] });
+      if (report.issues.length) throw new Error(`提交校验未通过：${report.issues.map((issue) => issue.message).join('；')}`);
       return { value: report.value, acceptedIssues: [], repairs: 0, executionRetries: 0 };
     },
     async assistantText() {
@@ -763,12 +781,15 @@ describe('全局事实调整（8.7c2）', () => {
       ['DELETE', '/original-plan', undefined],
     ];
     const seeded = await seedFactsSession(member, projectId);
+    const outlineSeeded = await seedOutlineSession(member, projectId);
     for (const [method, path, payload] of keeps) {
       const response = await call(member, method as 'PUT', planUrl(projectId, path), payload);
       expect(response.statusCode, `${method} ${path} ${response.body}`).toBe(200);
       expect((await currentFactsSnapshot(member, projectId))?.id, `${method} ${path}`).toBe(seeded.snapshot.id);
+      expect((await currentOutlineSnapshot(member, projectId))?.id, `${method} ${path}`).toBe(outlineSeeded.snapshot.id);
     }
     expect(objects.has(seeded.snapshot.storageKey)).toBe(true);
+    expect(objects.has(outlineSeeded.snapshot.storageKey)).toBe(true);
 
     const sections = [
       { id: 's1', title: '一标段', includeRanges: [{ startLine: 1, endLine: 1 }] },
@@ -794,12 +815,17 @@ describe('全局事实调整（8.7c2）', () => {
     for (const [method, path, payload, prepare] of discards) {
       await prepare?.();
       const { snapshot } = await seedFactsSession(member, projectId);
+      const { snapshot: outlineSnapshot } = await seedOutlineSession(member, projectId);
       const response = await call(member, method as 'PUT', planUrl(projectId, path), payload);
       expect(response.statusCode, `${method} ${path} ${response.body}`).toBe(200);
       expect(await currentFactsSnapshot(member, projectId), `${method} ${path}`).toBeNull();
+      // 目录的会话在同样的入口一并丢弃（8.7d，桌面版 deleteOutlineAgentTask）。
+      expect(await currentOutlineSnapshot(member, projectId), `${method} ${path}`).toBeNull();
       // 有对象存储时一并删除对象与行。
-      expect(objects.has(snapshot.storageKey)).toBe(false);
-      expect(await superuser.selectFrom('agent_workspace_snapshots').select('id').where('id', '=', snapshot.id).executeTakeFirst()).toBeUndefined();
+      for (const removed of [snapshot, outlineSnapshot]) {
+        expect(objects.has(removed.storageKey)).toBe(false);
+        expect(await superuser.selectFrom('agent_workspace_snapshots').select('id').where('id', '=', removed.id).executeTakeFirst()).toBeUndefined();
+      }
     }
   });
 
@@ -831,12 +857,194 @@ describe('全局事实调整（8.7c2）', () => {
       await definition.run(context).catch(() => {});
     };
     await seedFactsSession(member, projectId);
+    await seedOutlineSession(member, projectId);
     await run(BID_ANALYSIS_JOB_TYPE, { taskIds: ['projectInfo'], forceRerun: false });
     expect(await currentFactsSnapshot(member, projectId)).not.toBeNull();
+    expect(await currentOutlineSnapshot(member, projectId)).not.toBeNull();
     await run(BID_ANALYSIS_JOB_TYPE, { taskIds: null, forceRerun: true });
     expect(await currentFactsSnapshot(member, projectId)).toBeNull();
+    expect(await currentOutlineSnapshot(member, projectId)).toBeNull();
     await seedFactsSession(member, projectId);
+    await seedOutlineSession(member, projectId);
     await run(BID_SECTION_EXTRACTION_JOB_TYPE, {});
     expect(await currentFactsSnapshot(member, projectId)).toBeNull();
+    expect(await currentOutlineSnapshot(member, projectId)).toBeNull();
+  });
+});
+
+// ---- 目录调整（8.7d） ----
+
+describe('目录调整（8.7d）', () => {
+  it('输入签名：目录（排序、编辑、正文）、目录的项目名称与招标文件变化时改变；全局事实、生成配置的写法与步骤不影响；saveOutlineAdjustmentResult 在签名不符时不写入', async () => {
+    const member = await newMember();
+    const { projectId, nodes, tenders } = await fixture(member);
+    const signature = () => outlineAdjustmentInputSignature(appDb, member.context, projectId);
+    let current = await signature();
+    const unchanged = async (label: string) => expect(await signature(), label).toBe(current);
+    const changed = async (label: string) => {
+      const next = await signature();
+      expect(next, label).not.toBe(current);
+      current = next;
+    };
+    await saveGlobalFacts(appDb, member.context, projectId, FACTS);
+    await unchanged('全局事实');
+    await saveGenerationConfig(appDb, member.context, projectId, { globalFactsMode: 'omit' });
+    await unchanged('全局事实的写法');
+    await updateStep(appDb, member.context, projectId, 'global-facts');
+    await unchanged('步骤');
+    await saveChapterContent(appDb, member.context, projectId, nodes[1]!, '手写正文');
+    await changed('正文');
+    const sorted = {
+      outline: [
+        { id: nodes[2], title: '实施方案', description: '', children: [{ id: nodes[3], title: '进度计划', description: '工期' }] },
+        { id: nodes[0], title: '项目理解', description: '背景', children: [{ id: nodes[1], title: '建设目标', description: '' }] },
+      ],
+    };
+    await saveOutline(appDb, member.context, projectId, { outlineData: sorted, reason: 'sort' });
+    await changed('排序');
+    sorted.outline[0]!.title = '实施方案（改）';
+    await saveOutline(appDb, member.context, projectId, { outlineData: sorted, reason: 'edit' });
+    await changed('编辑');
+    await saveOutline(appDb, member.context, projectId, { outlineData: { ...sorted, project_name: '新名称' }, reason: 'sort' });
+    await changed('项目名称');
+    await saveDocumentParse(appDb, member.context, projectId, tenders[0]!, { contentHash: sha256('改过的正文') });
+    await changed('招标文件');
+
+    const adjusted = { outline: [{ id: nodes[2], title: '只剩一章', description: '说明', content_mode: 'ai-generate' }] };
+    expect(await saveOutlineAdjustmentResult(appDb, member.context, projectId, adjusted, 'stale')).toBe(false);
+    expect((await loadTechnicalPlan(appDb, member.context, projectId)).outlineData!.outline).toHaveLength(2);
+    expect(await saveOutlineAdjustmentResult(appDb, member.context, projectId, adjusted, current)).toBe(true);
+    const state = await loadTechnicalPlan(appDb, member.context, projectId);
+    expect(state.outlineData).toEqual({ outline: [{ id: nodes[2], number: '1', title: '只剩一章', description: '说明', content_mode: 'ai-generate' }] });
+  });
+
+  it('直接执行（假 Agent）：接着生成的会话，outline.json 为当前目录；写入调整后的目录（沿用已有 id、新节点分配 id、项目名称与概述不变）并清空正文；开始后目录被改时不覆盖；没有会话时失败', async () => {
+    const member = await newMember();
+    const { projectId, nodes } = await fixture(member);
+    await saveOutline(appDb, member.context, projectId, {
+      outlineData: { ...(await loadTechnicalPlan(appDb, member.context, projectId)).outlineData, project_name: '智慧水务', project_overview: '概述' },
+      reason: 'sort',
+    });
+    await saveChapterContent(appDb, member.context, projectId, nodes[1]!, '旧正文');
+    const seeded = await seedOutlineSession(member, projectId);
+    const output = JSON.stringify({
+      outline: [
+        {
+          id: nodes[0],
+          title: '项目理解',
+          description: '背景',
+          attr: '技术',
+          children: [
+            { id: nodes[1], title: '建设目标与范围', description: '', content_mode: 'ai-generate' },
+            { id: null, title: '需求分析', description: '需求', content_mode: 'ai-generate' },
+          ],
+        },
+        { id: nodes[2], title: '实施方案', description: '', attr: '技术', content_mode: 'ai-generate' },
+      ],
+    });
+    const { agent, record } = adjustmentAgent(output, '已新增需求分析。');
+    const result = await runJob(member, projectId, agent, OUTLINE_ADJUSTMENT_JOB_TYPE, { requirement: '新增需求分析' });
+    expect(result.error).toBeNull();
+    expect(record.opened).toEqual([{ continueFrom: seeded.agent }]);
+    expect([...record.files.keys()]).toEqual(['outline.json']);
+    expect(record.released).toEqual(['outline.json', 'outline.json']);
+    expect(record.prompts[0]).toContain('用户的调整要求：\n新增需求分析');
+    expect(record.checkpoints).toEqual([{ signature: expect.any(String), summary: '已新增需求分析。' }]);
+    const state = await loadTechnicalPlan(appDb, member.context, projectId);
+    const outline = state.outlineData!;
+    expect(outline.project_name).toBe('智慧水务');
+    expect(outline.project_overview).toBe('概述');
+    expect(outline.outline.map((item) => [item.id, item.title, item.children?.map((child) => child.title)])).toEqual([
+      [nodes[0], '项目理解', ['建设目标与范围', '需求分析']],
+      [nodes[2], '实施方案', undefined],
+    ]);
+    const added = outline.outline[0]!.children![1]!;
+    expect(added.id).not.toBe(nodes[3]);
+    // 写回工作区的 outline.json 与写入数据库的 id 相同。
+    expect(JSON.parse(record.files.get('outline.json')!).outline[0].children[1].id).toBe(added.id);
+    expect(state.contentGenerationSections[nodes[1]!]?.content ?? '').toBe('');
+    expect(result.logs.join('\n')).not.toContain('新增需求分析');
+
+    // 开始后用户改了目录：结果不覆盖。
+    const seededAgain = await seedOutlineSession(member, projectId);
+    const before = await loadTechnicalPlan(appDb, member.context, projectId);
+    const raced = adjustmentAgent(JSON.stringify({ outline: [{ id: nodes[0], title: '改', description: 'x', content_mode: 'ai-generate' }] }), '', async () => {
+      await saveChapterContent(appDb, member.context, projectId, added.id, '用户刚写的正文');
+    });
+    const racedResult = await runJob(member, projectId, raced.agent, OUTLINE_ADJUSTMENT_JOB_TYPE, { requirement: '只留一章' });
+    expect(racedResult.error).toMatchObject({ code: 'TECHNICAL_PLAN_INPUT_CHANGED' });
+    expect(raced.record.opened).toEqual([{ continueFrom: seededAgain.agent }]);
+    const after = await loadTechnicalPlan(appDb, member.context, projectId);
+    expect(after.outlineData!.outline.map((item) => item.id)).toEqual(before.outlineData!.outline.map((item) => item.id));
+
+    // 未知的 id：提交校验不通过。
+    await seedOutlineSession(member, projectId);
+    const unknown = adjustmentAgent(JSON.stringify({ outline: [{ id: randomUUID(), title: '伪造', description: 'x', content_mode: 'ai-generate' }] }), '');
+    expect(((await runJob(member, projectId, unknown.agent, OUTLINE_ADJUSTMENT_JOB_TYPE, { requirement: '调整' })).error as Error).message).toContain('目录包含未知 ID');
+
+    // 没有可续用的会话：失败，不打开沙箱。
+    await superuser.updateTable('agent_workspace_snapshots').set({ superseded_at: new Date() }).where('task_kind', '=', OUTLINE_KIND).where('project_id', '=', projectId).execute();
+    const missing = adjustmentAgent(output, '');
+    const failed = await runJob(member, projectId, missing.agent, OUTLINE_ADJUSTMENT_JOB_TYPE, { requirement: '调整' });
+    expect(failed.error).toMatchObject({ code: 'TECHNICAL_PLAN_OUTLINE_SESSION_MISSING', message: '目录生成的 Agent 工作空间不存在，请重新生成目录后再使用 AI 调整' });
+    expect(missing.record.opened).toEqual([]);
+  });
+
+  it('接口：没有目录 409、会话不能续用 409（文案与桌面版相同）、要求为空或过长 400；可以调整时 202，写入 Agent 上限，与其他技术方案任务互斥；状态中的说明；清空时取消；其他组织 404', async () => {
+    const member = await newMember();
+    const { projectId } = await fixture(member, { outline: false });
+    const url = planUrl(projectId, '/outline-adjustment');
+    const noOutline = await call(member, 'POST', url, { requirement: '删去进度计划' });
+    expect(noOutline.statusCode).toBe(409);
+    expect(noOutline.json().error).toMatchObject({ code: 'TECHNICAL_PLAN_OUTLINE_REQUIRED', message: '当前没有可调整的目录，请先完成目录生成' });
+    await saveGeneratedOutline(appDb, member.context, projectId, { outlineData: { outline: [{ id: randomUUID(), title: '一章', description: '' }] }, wordControlSnapshot: null });
+    expect((await call(member, 'GET', planUrl(projectId))).json()).toMatchObject({ outlineAdjustable: false, outlineAdjustmentTask: null, outlineAdjustment: null });
+    const noSession = await call(member, 'POST', url, { requirement: '删去进度计划' });
+    expect(noSession.statusCode).toBe(409);
+    expect(noSession.json().error).toMatchObject({ code: 'TECHNICAL_PLAN_OUTLINE_SESSION_MISSING', message: '目录生成的 Agent 工作空间不存在，请重新生成目录后再使用 AI 调整' });
+    // 被取消的生成任务的会话不续用；全局事实的会话不能用于目录调整。
+    await seedOutlineSession(member, projectId, 'cancelled');
+    await seedFactsSession(member, projectId);
+    expect((await call(member, 'POST', url, { requirement: '删去' })).statusCode).toBe(409);
+    await seedOutlineSession(member, projectId, 'failed');
+    expect((await call(member, 'GET', planUrl(projectId))).json().outlineAdjustable).toBe(true);
+
+    for (const payload of [{ requirement: '   ' }, { requirement: '字'.repeat(2001) }, {}, { requirement: null }, { requirement: '删去', orgId: randomUUID() }]) {
+      expect((await call(member, 'POST', url, payload)).statusCode).toBe(400);
+    }
+    const started = await call(member, 'POST', url, { requirement: '  删去进度计划\n' });
+    expect(started.statusCode, started.body).toBe(202);
+    const job = started.json().job;
+    expect(job).toMatchObject({ type: OUTLINE_ADJUSTMENT_JOB_TYPE, status: 'queued', projectId });
+    const row = await superuser.selectFrom('jobs').select(['lock_key', 'params']).where('id', '=', job.id).executeTakeFirstOrThrow();
+    expect(row).toEqual({ lock_key: `project:${projectId}:technical-plan`, params: { requirement: '删去进度计划' } });
+    const budget = await superuser.selectFrom('agent_job_budgets').select(['cost_limit', 'turn_limit']).where('job_id', '=', job.id).executeTakeFirstOrThrow();
+    expect(budget).toEqual({ cost_limit: '50000', turn_limit: 500 });
+    expect((await call(member, 'POST', planUrl(projectId, '/global-facts-generation'))).json().error.code).toBe('JOB_LOCKED');
+    expect((await call(member, 'GET', planUrl(projectId))).json()).toMatchObject({
+      outlineAdjustmentTask: { id: job.id, type: OUTLINE_ADJUSTMENT_JOB_TYPE, status: 'queued' },
+      outlineAdjustment: { requirement: '删去进度计划', summary: null },
+    });
+    expect((await call(member, 'DELETE', planUrl(projectId))).statusCode).toBe(200);
+    expect(await statusOf(job.id)).toBe('cancelled');
+
+    // 成功的调整：状态中给出说明。
+    await superuser
+      .insertInto('jobs')
+      .values({
+        org_id: member.orgId,
+        project_id: projectId,
+        user_id: member.userId,
+        type: OUTLINE_ADJUSTMENT_JOB_TYPE,
+        status: 'succeeded',
+        params: JSON.stringify({ requirement: '合并章节' }),
+        checkpoint: JSON.stringify({ agent: {}, task: { signature: 's', summary: '已合并。' } }),
+        finished_at: new Date(),
+      })
+      .execute();
+    expect((await call(member, 'GET', planUrl(projectId))).json().outlineAdjustment).toEqual({ requirement: '合并章节', summary: '已合并。' });
+
+    const other = await newMember();
+    expect((await call(other, 'POST', url, { requirement: '删去' })).statusCode).toBe(404);
   });
 });

@@ -26,6 +26,7 @@
 // POST   /api/projects/:projectId/technical-plan/bid-analysis                       开始招标解析（入队 bid-analysis）
 // POST   /api/projects/:projectId/technical-plan/global-facts-generation            开始生成全局事实（入队 global-facts-generation，agent 队列，8.7c1）
 // POST   /api/projects/:projectId/technical-plan/global-facts-adjustment            AI 调整全局事实（入队 global-facts-adjustment，{ requirement }，8.7c2）
+// POST   /api/projects/:projectId/technical-plan/outline-adjustment                 AI 调整目录（入队 outline-adjustment，{ requirement }，8.7d）
 // POST   /api/projects/:projectId/technical-plan/export                             整本导出 Word（入队 technical-plan-export，7.4h）
 // GET    /api/projects/:projectId/technical-plan/export/:requestId                  整本导出的状态（pending / ready / expired）、提示与消息
 // GET    /api/projects/:projectId/technical-plan/export/:requestId/content          导出的 docx（附件下载）
@@ -86,11 +87,12 @@ import {
 } from '../technicalPlan/outline.ts';
 import {
   cancelTechnicalPlanJobs,
-  discardGlobalFactsSession,
+  discardTechnicalPlanSessions,
   startBidAnalysis,
   startBidSectionExtraction,
   startGlobalFactsAdjustment,
   startGlobalFactsGeneration,
+  startOutlineAdjustment,
 } from '../technicalPlan/jobs.ts';
 import {
   clearTechnicalPlan,
@@ -139,6 +141,7 @@ const FILE_PARAMS = {
 } as const;
 
 // 调整要求：长度按字符检查，去掉首尾空白后不能为空由服务检查（400）。
+/** 全局事实调整与目录调整的请求体（要求的字数上限相同）。 */
 const GLOBAL_FACTS_ADJUSTMENT_SCHEMA = {
   type: 'object',
   properties: { requirement: { type: 'string', maxLength: GLOBAL_FACTS_ADJUSTMENT_REQUIREMENT_MAX } },
@@ -356,17 +359,20 @@ export async function registerTechnicalPlanRoutes(app: FastifyInstance, deps: Te
 
   /**
    * 招标文件变化、清空后取消进行中的技术方案任务。桌面版在提交前取消；这里在提交后取消，提交与取消之间旧任务的写入因签名不符被拒绝，
-   * 响应中的状态在取消后重新读取，与桌面版一致。取消之后丢弃全局事实的会话（下游已清空，桌面版 clearDownstreamFromTender /
-   * clearTechnicalPlan 的 deleteGlobalFactsAgentTask）。
+   * 响应中的状态在取消后重新读取，与桌面版一致。取消之后丢弃目录与全局事实的会话（下游已清空，桌面版 clearDownstreamFromTender /
+   * clearTechnicalPlan 的 deleteOutlineAgentTask 与 deleteGlobalFactsAgentTask）。
    */
   async function cancelJobs(request: FastifyRequest, projectId: string): Promise<void> {
     await cancelTechnicalPlanJobs(deps.jobs, tenantOf(request), projectId);
     await discardSession(request, projectId);
   }
 
-  /** 丢弃全局事实生成与调整的会话（8.7c2，桌面版 deleteGlobalFactsAgentTask）：下游被清空（目录、全局事实）之后调用。 */
+  /**
+   * 丢弃目录与全局事实的会话（8.7c2 / 8.7d，桌面版 deleteOutlineAgentTask 与 deleteGlobalFactsAgentTask）：下游被清空（目录、全局事实）
+   * 之后调用。
+   */
   async function discardSession(request: FastifyRequest, projectId: string): Promise<void> {
-    await discardGlobalFactsSession(db, tenantOf(request), deps.objectStore, projectId);
+    await discardTechnicalPlanSessions(db, tenantOf(request), deps.objectStore, projectId);
   }
 
   app.get<ProjectParams>('/:projectId/technical-plan', { schema: { params: PROJECT_ID_PARAMS } }, async (request) =>
@@ -544,6 +550,15 @@ export async function registerTechnicalPlanRoutes(app: FastifyInstance, deps: Te
     { schema: { params: PROJECT_ID_PARAMS, body: GLOBAL_FACTS_ADJUSTMENT_SCHEMA } },
     async (request, reply) => {
       const job = await startGlobalFactsAdjustment(deps.jobs, tenantOf(request), await project(request), request.body);
+      return reply.code(202).send({ job: jobBody(job) });
+    },
+  );
+
+  app.post<ProjectParams & { Body: { requirement: string } }>(
+    '/:projectId/technical-plan/outline-adjustment',
+    { schema: { params: PROJECT_ID_PARAMS, body: GLOBAL_FACTS_ADJUSTMENT_SCHEMA } },
+    async (request, reply) => {
+      const job = await startOutlineAdjustment(deps.jobs, tenantOf(request), await project(request), request.body);
       return reply.code(202).send({ job: jobBody(job) });
     },
   );

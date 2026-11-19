@@ -1,13 +1,16 @@
 // 技术方案的任务（取代桌面版 taskService.cjs 的 bid-section-extraction / bid-analysis / global-facts-generation /
-// global-facts-adjustment 与 bidSectionExtractionTask.cjs、bidAnalysisTask.cjs、globalFactsTaskV2.cjs、globalFactsAdjustmentTask.cjs 的
-// run* 函数），会调用模型（入队检查最低启动余额）。各类任务互斥（lock_key 为 project:{projectId}:technical-plan，与桌面版 technical-plan
+// global-facts-adjustment / outline-adjustment 与 bidSectionExtractionTask.cjs、bidAnalysisTask.cjs、globalFactsTaskV2.cjs、
+// globalFactsAdjustmentTask.cjs、outlineAdjustmentTask.cjs 的 run* 函数），会调用模型（入队检查最低启动余额）。各类任务互斥（lock_key 为 project:{projectId}:technical-plan，与桌面版 technical-plan
 // 组的 group-exclusive 相同）：
 // - 多标段识别、招标解析（路线图第 6 步 6.11）：ai 队列；
 // - 全局事实生成（第 8 步 8.7c1）：agent 队列，在 agent 沙箱中由 Agent 读工作区材料写出 global-facts.json（见 createGlobalFactsJob）；
 // - 全局事实调整（第 8 步 8.7c2）：agent 队列，接着全局事实生成（或上一次调整）的会话与工作区，按用户的要求改写 global-facts.json
 //   （见 createGlobalFactsAdjustmentJob）。两者共用工作区快照类别 technical-plan-global-facts，成功后保留快照供下一次调整续用；
 //   导入、移除招标文件，切换单 / 多标段，选择投标范围，多标段识别开始，全部重新解析，目录被清空与清空技术方案时丢弃
-//   （discardGlobalFactsSession，桌面版 deleteGlobalFactsAgentTask）。
+//   （discardTechnicalPlanSessions，桌面版 deleteGlobalFactsAgentTask）；
+// - 目录调整（第 8 步 8.7d）：agent 队列，接着目录生成（8.7e，尚未实现）或上一次调整的会话与工作区，按用户的要求改写 outline.json
+//   （见 createOutlineAdjustmentJob）。目录生成与调整共用工作区快照类别 technical-plan-outline-generation；与全局事实的会话在同样的入口
+//   一并丢弃（桌面版 deleteOutlineAgentTask 与 deleteGlobalFactsAgentTask 总是一起调用）。
 //
 // - 输入在任务开始时从数据库读取，不取自任务参数：招标文件须全部解析成功；多标段识别读合并的原始招标正文，招标解析读按投标
 //   范围裁剪后的正文（readTenderMarkdown）和已保存的解析配置（选中的解析项）。模型取组织设置中选择的平台模型；
@@ -49,6 +52,15 @@ import {
   type GlobalFactsAgentInput,
 } from './globalFactsAgent.ts';
 import { OutlineInputError } from './outline.ts';
+import {
+  collectOutlineIds,
+  createOutlineAdjustmentPrompt,
+  OUTLINE_JSON_SCHEMA,
+  OUTLINE_OUTPUT_FILE,
+  outlineAdjustmentFile,
+  validateOutlineOutput,
+  type AcceptedOutlineItem,
+} from './outlineAgent.ts';
 import { extractBidSections, SectionExtractionError } from './sectionExtraction.ts';
 import {
   BID_ANALYSIS_JOB_TYPE,
@@ -59,6 +71,12 @@ import {
   GLOBAL_FACTS_JOB_TYPE,
   GLOBAL_FACTS_TASK_KIND,
   globalFactsInputSignature,
+  OUTLINE_ADJUSTMENT_JOB_TYPE,
+  OUTLINE_ADJUSTMENT_REQUIREMENT_MAX,
+  OUTLINE_ADJUSTMENT_SUMMARY_MAX,
+  OUTLINE_TASK_KIND,
+  outlineAdjustmentInputSignature,
+  outlineSessionTarget,
   globalFactsSessionTarget,
   inputSignatures,
   loadTechnicalPlan,
@@ -71,12 +89,21 @@ import {
   saveBidItems,
   saveBidSectionExtraction,
   saveGlobalFactsResult,
+  saveOutlineAdjustmentResult,
   technicalPlanLockKey,
   type TechnicalPlanState,
 } from './store.ts';
 import { BID_ANALYSIS_TASKS, bidItemLabel, isBidItemId } from './tender.ts';
 
-export { BID_ANALYSIS_JOB_TYPE, BID_SECTION_EXTRACTION_JOB_TYPE, GLOBAL_FACTS_ADJUSTMENT_JOB_TYPE, GLOBAL_FACTS_JOB_TYPE, GLOBAL_FACTS_TASK_KIND };
+export {
+  BID_ANALYSIS_JOB_TYPE,
+  BID_SECTION_EXTRACTION_JOB_TYPE,
+  GLOBAL_FACTS_ADJUSTMENT_JOB_TYPE,
+  GLOBAL_FACTS_JOB_TYPE,
+  GLOBAL_FACTS_TASK_KIND,
+  OUTLINE_ADJUSTMENT_JOB_TYPE,
+  OUTLINE_TASK_KIND,
+};
 
 /** 预热请求结束后稍候再发后续请求（与桌面版 PREFIX_WARMUP_SETTLE_MS 相同）：部分服务在请求结束后才异步构建前缀缓存。 */
 const PREFIX_WARMUP_SETTLE_MS = 1500;
@@ -144,6 +171,13 @@ const GLOBAL_FACTS_SESSION_MISSING: Problem = {
   message: '全局事实设定的 Agent 工作空间不存在，请重新生成后再使用 AI 调整',
 };
 
+/** 目录调整的前置条件（文案与桌面版 runOutlineAdjustmentTask 相同）。 */
+const OUTLINE_REQUIRED: Problem = { code: 'TECHNICAL_PLAN_OUTLINE_REQUIRED', message: '当前没有可调整的目录，请先完成目录生成' };
+const OUTLINE_SESSION_MISSING: Problem = {
+  code: 'TECHNICAL_PLAN_OUTLINE_SESSION_MISSING',
+  message: '目录生成的 Agent 工作空间不存在，请重新生成目录后再使用 AI 调整',
+};
+
 // ---- 参数 ----
 
 export interface BidAnalysisParams {
@@ -174,19 +208,31 @@ export interface GlobalFactsAdjustmentParams {
   requirement: string;
 }
 
-/** 调整要求的规范化（与可研目录调整相同）：去掉 NUL 与首尾空白；为空或过长时返回 null。 */
-function normalizeRequirement(raw: unknown): string | null {
+/** 目录调整的参数（与全局事实调整相同，至多 OUTLINE_ADJUSTMENT_REQUIREMENT_MAX 字）。 */
+export type OutlineAdjustmentParams = GlobalFactsAdjustmentParams;
+
+/** 调整要求的规范化（与可研目录调整相同）：去掉 NUL 与首尾空白；为空或超过 max 字时返回 null。 */
+function normalizeRequirement(raw: unknown, max: number): string | null {
   if (typeof raw !== 'string') return null;
   const requirement = raw.replace(/\0/g, '').trim();
-  return requirement && [...requirement].length <= GLOBAL_FACTS_ADJUSTMENT_REQUIREMENT_MAX ? requirement : null;
+  return requirement && [...requirement].length <= max ? requirement : null;
 }
 
-function parseAdjustmentParams(raw: unknown): GlobalFactsAdjustmentParams {
-  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) throw new TypeError('全局事实调整任务参数不合法');
-  const { requirement, ...rest } = raw as Record<string, unknown>;
-  const normalized = normalizeRequirement(requirement);
-  if (Object.keys(rest).length > 0 || normalized === null || normalized !== requirement) throw new TypeError('全局事实调整任务参数不合法');
-  return { requirement: normalized };
+function adjustmentParamsParser(what: string, max: number): (raw: unknown) => GlobalFactsAdjustmentParams {
+  return (raw) => {
+    if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) throw new TypeError(`${what}任务参数不合法`);
+    const { requirement, ...rest } = raw as Record<string, unknown>;
+    const normalized = normalizeRequirement(requirement, max);
+    if (Object.keys(rest).length > 0 || normalized === null || normalized !== requirement) throw new TypeError(`${what}任务参数不合法`);
+    return { requirement: normalized };
+  };
+}
+
+/** 接口收到的调整要求：为空或过长时 400（文案与全局事实调整相同）。 */
+function requestedRequirement(raw: unknown, max: number): string {
+  const requirement = normalizeRequirement(raw, max);
+  if (requirement === null) throw new AppError(400, 'TECHNICAL_PLAN_INVALID', String(raw ?? '').trim() ? `调整要求超过 ${max} 字` : '调整要求不能为空');
+  return requirement;
 }
 
 // ---- 公共 ----
@@ -233,8 +279,8 @@ function createSectionExtractionJob(options: TechnicalPlanJobOptions): JobTypeDe
         await context.log('招标文件已变化，本次识别已放弃');
         return;
       }
-      // 目录与全局事实已清空：全局事实的会话不再续用（桌面版 clearDownstreamFromBidSectionChange）。丢弃失败的留给下一次生成替换。
-      await discardGlobalFactsSession(db, tenant, context.objectStore, projectId).catch(() => {});
+      // 目录与全局事实已清空：目录与全局事实的会话不再续用（桌面版 clearDownstreamFromBidSectionChange）。丢弃失败的留给下一次生成替换。
+      await discardTechnicalPlanSessions(db, tenant, context.objectStore, projectId).catch(() => {});
       await context.log('开始识别招标文件中的标段范围。');
       await context.setProgress(5);
       let sections;
@@ -316,8 +362,8 @@ function createAnalysisJob(options: TechnicalPlanJobOptions): JobTypeDefinition<
           await context.log('招标文件或投标范围已变化，本次解析已放弃');
           return;
         }
-        // 目录与全局事实已清空：全局事实的会话不再续用（桌面版目录被清空时删除持久任务）。丢弃失败的留给下一次生成替换。
-        await discardGlobalFactsSession(db, tenant, context.objectStore, projectId).catch(() => {});
+        // 目录与全局事实已清空：目录与全局事实的会话不再续用（桌面版目录被清空时删除持久任务）。丢弃失败的留给下一次生成替换。
+        await discardTechnicalPlanSessions(db, tenant, context.objectStore, projectId).catch(() => {});
         for (const task of selectedTasks) statuses.set(task.id, 'idle');
       }
       const tasksToRun = requested || params.forceRerun ? scopedTasks : scopedTasks.filter((task) => statuses.get(task.id) !== 'success');
@@ -582,7 +628,7 @@ function createGlobalFactsAdjustmentJob(): JobTypeDefinition<GlobalFactsAdjustme
     agentLimits: AGENT_TASK_LIMITS.outline,
     agentTools: GLOBAL_FACTS_BUSINESS_TOOLS,
     agentWorkspace: { taskKind: GLOBAL_FACTS_TASK_KIND, keepAfterSuccess: true },
-    parseParams: parseAdjustmentParams,
+    parseParams: adjustmentParamsParser('全局事实调整', GLOBAL_FACTS_ADJUSTMENT_REQUIREMENT_MAX),
     async run(context) {
       const { db, tenant, params } = context;
       const projectId = context.projectId;
@@ -645,8 +691,127 @@ function createGlobalFactsAdjustmentJob(): JobTypeDefinition<GlobalFactsAdjustme
   };
 }
 
+// ---- 目录调整（8.7d） ----
+
+/** 目录调整的阶段（与桌面版 initial_stage 相同）。 */
+export const OUTLINE_ADJUSTMENT_STAGE = 'outline-adjustment';
+/** 目录调整放入的当前目录（交给 Agent 修改，写入后解除登记，不还原）。 */
+const OUTLINE_OUTPUT_GROUP = 'outline-output';
+/** 调整说明取不到时（与桌面版相同）。 */
+const OUTLINE_ADJUSTMENT_DEFAULT_SUMMARY = '目录已按要求调整完成。';
+const OUTLINE_INPUT_CHANGED_MESSAGE = '招标文件、投标范围或目录已变化，本次结果已丢弃，请重新开始';
+
+/** outline.json 交给 Agent 修改：覆盖写入后解除登记（不是受保护文件）。 */
+async function writeOutlineFile(context: JobContext<unknown>, run: AgentRun, content: string): Promise<void> {
+  await run.baseline.write(run.sandbox, OUTLINE_OUTPUT_GROUP, [{ path: OUTLINE_OUTPUT_FILE, data: Buffer.from(content, 'utf8') }], { replace: true, signal: context.signal });
+  run.baseline.release(OUTLINE_OUTPUT_GROUP, [OUTLINE_OUTPUT_FILE]);
+}
+
+/**
+ * 目录调整（8.7d，取代桌面版 outlineAdjustmentTask.cjs 的 runOutlineAdjustmentTask）：
+ * - 首次执行接着目录生成（或上一次调整）的会话与工作区（src/agent/continuation.ts：与当前快照同一对、已结束的生成或调整任务的现场）；
+ *   没有目录、找不到会话时失败（文案与桌面版相同，入队时也检查）。目录生成随 8.7e，在此之前没有可以续用的会话。续跑时用本任务自己的
+ *   现场（只发“继续之前的任务”）；
+ * - 当前目录（数据库中的，用户可能手动改过）按桌面版 buildAgentOutlineInput 写入 outline.json，交给 Agent 修改、不登记为受保护文件；
+ *   与桌面版相同不放入其他材料（生成时放入的材料仍是受保护文件；原件不可用时由 8.7e 按当前输入重新放入，见路线图）；提示词、阶段、
+ *   工具、预置 Schema 与桌面版相同；
+ * - 提交校验与桌面版 validateOutlineOutput(..., { checkSchema: false }) 相同（JSON、目录结构、节点 id 只能沿用当前目录的，经提交修复），
+ *   另按服务端的目录上限检查；通过后新节点分配 id、编号，与桌面版 continueTask 相同写回 outline.json（之后的检查点与会话看到的是正式 id）；
+ * - 结果经 saveOutlineAdjustmentResult 整体替换目录、清空正文与正文生成状态（桌面版 saveOutline 的 replace），目录的项目名称与概述沿用
+ *   原目录的；带上首次执行开始时的输入签名（招标文件、投标范围与目录），之后它们变化时写入被拒绝；
+ * - 调整说明（桌面版 stats.adjustment.summary）：Agent 最后一条回复的全文（run.assistantText，至多 2000 字），取不到时为桌面版的固定
+ *   说明；它是 AI 生成的内容，不写进任务日志，写进本任务最后的 checkpoint（{ signature, summary }），由页面状态的 outlineAdjustment
+ *   给出（按纯文本显示，第 9 步）。成功后保留快照，下一次调整接着这次的会话。
+ */
+function createOutlineAdjustmentJob(): JobTypeDefinition<OutlineAdjustmentParams> {
+  return {
+    type: OUTLINE_ADJUSTMENT_JOB_TYPE,
+    queue: 'agent',
+    resumable: true,
+    billable: true,
+    agentLimits: AGENT_TASK_LIMITS.outline,
+    agentTools: GLOBAL_FACTS_BUSINESS_TOOLS,
+    agentWorkspace: { taskKind: OUTLINE_TASK_KIND, keepAfterSuccess: true },
+    parseParams: adjustmentParamsParser('目录调整', OUTLINE_ADJUSTMENT_REQUIREMENT_MAX),
+    async run(context) {
+      const { db, tenant, params } = context;
+      const projectId = context.projectId;
+      if (!projectId) throw new JobError('TECHNICAL_PLAN_FAILED', '目录 AI 调整失败');
+      const current = await outlineAdjustmentInputSignature(db, tenant, projectId);
+      const state = await loadTechnicalPlan(db, tenant, projectId);
+      const outlineData = state.outlineData;
+      if (!outlineData?.outline.length) throw new JobError(OUTLINE_REQUIRED.code, OUTLINE_REQUIRED.message);
+      // 首次执行：接着目录生成（或上一次调整）的会话；续跑：本任务自己的现场。
+      let continueFrom: AgentRunState | undefined;
+      if (context.agent && !context.agent.resuming) {
+        const source = await findContinuableAgentSession(db, tenant, outlineSessionTarget(projectId));
+        if (!source) throw new JobError(OUTLINE_SESSION_MISSING.code, OUTLINE_SESSION_MISSING.message);
+        continueFrom = source.state;
+      }
+      const knownIds = collectOutlineIds(outlineData.outline);
+      await withAgentRun(
+        context.agent,
+        async (run) => {
+          const saved = checkpointSignature(run.taskCheckpoint);
+          if (saved !== null && saved !== current) throw new JobError('TECHNICAL_PLAN_INPUT_CHANGED', OUTLINE_INPUT_CHANGED_MESSAGE);
+          const signature = saved ?? current;
+          if (!run.resumed) {
+            await context.log('开始 AI 调整目录');
+            await context.setProgress(10);
+            // 当前目录覆盖写入 outline.json（与桌面版 files 相同）。续跑时 Agent 可能已改写，不再覆盖。
+            await writeOutlineFile(context, run, outlineAdjustmentFile(outlineData.outline));
+          }
+          await context.log(run.resumed ? 'Agent 继续调整目录。' : 'Agent 正在调整目录。');
+          await context.setProgress(20);
+          const stage = await run.runStage<{ outline: AcceptedOutlineItem[] }>({
+            stage: OUTLINE_ADJUSTMENT_STAGE,
+            prompt: run.wasPrompted(OUTLINE_ADJUSTMENT_STAGE) ? CONTINUE_PROMPT : createOutlineAdjustmentPrompt(params.requirement),
+            tools: GLOBAL_FACTS_TOOLS,
+            jsonSchemas: { [OUTLINE_OUTPUT_FILE]: OUTLINE_JSON_SCHEMA },
+            outputFile: OUTLINE_OUTPUT_FILE,
+            maxExecutionRetries: 0,
+            checkpointAfterPrompt: () => ({ signature }),
+            validate: async () => {
+              const file = (await run.readFiles([OUTLINE_OUTPUT_FILE])).get(OUTLINE_OUTPUT_FILE);
+              if (file && file.data === null) return { value: null, issues: [{ severity: 'blocking' as const, message: `${OUTLINE_OUTPUT_FILE}过大，无法读取` }] };
+              return validateOutlineOutput(file?.data?.toString('utf8') ?? '', knownIds, { checkSchema: false });
+            },
+          });
+          const accepted = stage.value;
+          if (!accepted?.outline.length) throw new JobError('TECHNICAL_PLAN_OUTLINE_INVALID', '目录调整结果不可用');
+          if (context.signal.aborted) throw new JobInterruptedError();
+          // 与桌面版 continueTask 相同：分配了正式 id、编号后的目录写回 outline.json。
+          await writeOutlineFile(context, run, JSON.stringify(accepted, null, 2));
+          const reply = await run.assistantText({ maxChars: OUTLINE_ADJUSTMENT_SUMMARY_MAX });
+          const summary = reply?.text.trim() || OUTLINE_ADJUSTMENT_DEFAULT_SUMMARY;
+          await context.setProgress(95);
+          // 说明先随检查点保存（写入目录之后签名即变化，不能再续跑），再写入目录。
+          await run.checkpoint({ signature, summary }, 95);
+          let written: boolean;
+          try {
+            // 与桌面版相同：项目名称、概述沿用原目录的。
+            written = await saveOutlineAdjustmentResult(
+              db,
+              tenant,
+              projectId,
+              { outline: accepted.outline, project_name: outlineData.project_name, project_overview: outlineData.project_overview },
+              signature,
+            );
+          } catch (error) {
+            if (error instanceof OutlineInputError) throw new JobError('TECHNICAL_PLAN_OUTLINE_INVALID', error.message, { cause: error });
+            throw error;
+          }
+          if (!written) throw new JobError('TECHNICAL_PLAN_INPUT_CHANGED', OUTLINE_INPUT_CHANGED_MESSAGE);
+        },
+        continueFrom ? { continueFrom } : undefined,
+      );
+      await context.log('目录 AI 调整完成');
+    },
+  };
+}
+
 export function createTechnicalPlanJobs(options: TechnicalPlanJobOptions = {}): JobTypeDefinition<any>[] {
-  return [createSectionExtractionJob(options), createAnalysisJob(options), createGlobalFactsJob(), createGlobalFactsAdjustmentJob()];
+  return [createSectionExtractionJob(options), createAnalysisJob(options), createGlobalFactsJob(), createGlobalFactsAdjustmentJob(), createOutlineAdjustmentJob()];
 }
 
 export const technicalPlanJobs = createTechnicalPlanJobs();
@@ -694,7 +859,7 @@ export async function startBidAnalysis(
  * 其后续写入因签名不符被拒绝。已结束的任务跳过。
  */
 export async function cancelTechnicalPlanJobs(jobs: JobServiceDependencies, context: TenantContext, projectId: string): Promise<void> {
-  const types: readonly string[] = [BID_SECTION_EXTRACTION_JOB_TYPE, BID_ANALYSIS_JOB_TYPE, GLOBAL_FACTS_JOB_TYPE, GLOBAL_FACTS_ADJUSTMENT_JOB_TYPE];
+  const types: readonly string[] = [BID_SECTION_EXTRACTION_JOB_TYPE, BID_ANALYSIS_JOB_TYPE, GLOBAL_FACTS_JOB_TYPE, GLOBAL_FACTS_ADJUSTMENT_JOB_TYPE, OUTLINE_ADJUSTMENT_JOB_TYPE];
   const active = await listJobs(jobs.db, context, { projectId, active: true, limit: 20 });
   for (const job of active) {
     if (!types.includes(job.type)) continue;
@@ -723,10 +888,7 @@ export async function startGlobalFactsGeneration(jobs: JobServiceDependencies, c
  * 没有全局事实、全局事实生成的会话不能续用时 409（文案与桌面版相同）；已有进行中的技术方案任务时 409 JOB_LOCKED。入 agent 队列。
  */
 export async function startGlobalFactsAdjustment(jobs: JobServiceDependencies, context: TenantContext, projectId: string, input: { requirement: string }): Promise<JobRecord> {
-  const requirement = normalizeRequirement(input.requirement);
-  if (requirement === null) {
-    throw new AppError(400, 'TECHNICAL_PLAN_INVALID', String(input.requirement ?? '').trim() ? `调整要求超过 ${GLOBAL_FACTS_ADJUSTMENT_REQUIREMENT_MAX} 字` : '调整要求不能为空');
-  }
+  const requirement = requestedRequirement(input.requirement, GLOBAL_FACTS_ADJUSTMENT_REQUIREMENT_MAX);
   const state = await loadTechnicalPlan(jobs.db, context, projectId);
   if (!state.globalFacts.length) throw conflict(GLOBAL_FACTS_REQUIRED);
   if (!state.globalFactsAdjustable) throw conflict(GLOBAL_FACTS_SESSION_MISSING);
@@ -734,10 +896,24 @@ export async function startGlobalFactsAdjustment(jobs: JobServiceDependencies, c
 }
 
 /**
- * 丢弃全局事实生成与调整的会话（工作区快照，8.7c2；桌面版 deleteGlobalFactsAgentTask）：导入、移除招标文件，切换单 / 多标段，选择投标
- * 范围，目录被清空，清空技术方案时由接口调用，多标段识别开始与全部重新解析时由任务调用。store 为 null 时只标为已被替换、对象留给
- * 清理任务。被取消的任务在退出前仍可能保存检查点（写下新的快照），它的会话不会被续用（src/agent/continuation.ts 只采用已结束的任务）。
+ * 开始 AI 调整目录（取代桌面版 tasks.startOutlineAdjustment，8.7d）：调整要求去掉首尾空白后不能为空、至多 2000 字（400）；没有目录、
+ * 目录生成的会话不能续用时 409（文案与桌面版相同；目录生成随 8.7e，在此之前一律不能续用）；已有进行中的技术方案任务时 409 JOB_LOCKED。
+ * 入 agent 队列。
  */
-export async function discardGlobalFactsSession(db: Kysely<Database>, context: TenantContext, store: ObjectStore | null, projectId: string): Promise<void> {
-  await discardAgentWorkspaceSnapshots(db, context, store, projectId, [GLOBAL_FACTS_TASK_KIND]);
+export async function startOutlineAdjustment(jobs: JobServiceDependencies, context: TenantContext, projectId: string, input: { requirement: string }): Promise<JobRecord> {
+  const requirement = requestedRequirement(input.requirement, OUTLINE_ADJUSTMENT_REQUIREMENT_MAX);
+  const state = await loadTechnicalPlan(jobs.db, context, projectId);
+  if (!state.outlineData?.outline.length) throw conflict(OUTLINE_REQUIRED);
+  if (!state.outlineAdjustable) throw conflict(OUTLINE_SESSION_MISSING);
+  return enqueueJob(jobs, context, { type: OUTLINE_ADJUSTMENT_JOB_TYPE, projectId, lockKey: technicalPlanLockKey(projectId), params: { requirement } });
+}
+
+/**
+ * 丢弃目录与全局事实的会话（工作区快照，8.7c2 / 8.7d；桌面版 deleteOutlineAgentTask 与 deleteGlobalFactsAgentTask，两者在同样的入口
+ * 一起调用）：导入、移除招标文件，切换单 / 多标段，选择投标范围，目录被清空，清空技术方案时由接口调用，多标段识别开始与全部重新解析时
+ * 由任务调用。store 为 null 时只标为已被替换、对象留给清理任务。被取消的任务在退出前仍可能保存检查点（写下新的快照），它的会话不会被
+ * 续用（src/agent/continuation.ts 只采用已结束的任务）。
+ */
+export async function discardTechnicalPlanSessions(db: Kysely<Database>, context: TenantContext, store: ObjectStore | null, projectId: string): Promise<void> {
+  await discardAgentWorkspaceSnapshots(db, context, store, projectId, [OUTLINE_TASK_KIND, GLOBAL_FACTS_TASK_KIND]);
 }

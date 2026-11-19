@@ -847,6 +847,16 @@ worker 经 sandbox-runner 执行 agent 模板登记的唯一命令 `run`（`node
 - **丢弃会话**（桌面版 `deleteGlobalFactsAgentTask`）：接口在导入（有新文件时）/ 移除招标文件与清空（取消任务之后）、切换单 / 多标段（`saveGenerationConfigReporting` / `saveBidAnalysisConfigReporting` 报告下游被清空）、选择投标范围、保存后目录为空时丢弃；多标段识别与全部重新解析的任务在清空下游之后丢弃。保存全局事实、目录排序 / 编辑、其他生成配置不丢弃。
 - **接口**：`POST /api/projects/:projectId/technical-plan/global-facts-adjustment`（`{ requirement }`，202；要求为空 / 过长 / 多余字段 400；409 `TECHNICAL_PLAN_GLOBAL_FACTS_REQUIRED` / `TECHNICAL_PLAN_GLOBAL_FACTS_SESSION_MISSING` / `JOB_LOCKED`）。
 
+### 7.34 实现（路线图 8.7d）：技术方案目录调整
+
+第三个调整任务（`outline-adjustment`，`src/technicalPlan/jobs.ts`；`outline.json`、提示词、预置 Schema 与提交校验在 `outlineAgent.ts`，与桌面版 `outlineAdjustmentTask.cjs`、`outlineGenerationTaskV2.cjs` 逐项对照），沿用第 7.31 节的跨任务续用。
+
+- **登记**：agent 队列、上限 `outline`、`ask-user` / `request-termination`、快照类别 `technical-plan-outline-generation`、`keepAfterSuccess`。参数只有 `requirement`（去掉首尾空白、不为空、至多 2000 字）。没有目录、会话不能续用时失败（文案与桌面版相同，入队时也检查，409）。同组任务类型为 `outline-generation`（目录生成，8.7e 实现）与 `outline-adjustment`；8.7e 之前没有可以续用的会话。
+- **执行**：首次执行把找到的现场交给 `open({ continueFrom })`；当前目录（数据库中的）按桌面版 `buildAgentOutlineInput` 写入 `outline.json`，写入后解除登记。提交校验与桌面版 `validateOutlineOutput(..., { checkSchema: false })` 相同（节点 id 只能沿用当前目录的，新节点填 null），另按服务端目录上限检查；通过后新节点分配 id、编号并写回 `outline.json`。结果经 `saveOutlineAdjustmentResult` 带首次执行开始时的 `outlineAdjustmentInputSignature`（招标文件与投标范围、目录各节点的全部字段与正文摘要、项目名称与概述）整体替换目录、清空正文与正文生成状态。
+- **调整说明**：与第 7.31 节相同（至多 2000 字，取不到时为“目录已按要求调整完成。”，写进 checkpoint，不写任务日志）；页面状态的 `outlineAdjustment` 与 `outlineAdjustable`。
+- **丢弃会话**：目录与全局事实的会话在同样的入口一并丢弃（`discardTechnicalPlanSessions`，桌面版 `deleteOutlineAgentTask` 与 `deleteGlobalFactsAgentTask` 总是一起调用），入口见第 7.33 节。
+- **接口**：`POST /api/projects/:projectId/technical-plan/outline-adjustment`（`{ requirement }`，202；400；409 `TECHNICAL_PLAN_OUTLINE_REQUIRED` / `TECHNICAL_PLAN_OUTLINE_SESSION_MISSING` / `JOB_LOCKED`）。
+
 ## 8. 部署架构
 
 ### 8.0 部署位置（已决定，第 9 节第 13、14 项）
