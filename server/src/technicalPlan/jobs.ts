@@ -1,7 +1,8 @@
-// 技术方案的两类任务（路线图第 6 步 6.11；取代桌面版 taskService.cjs 的 bid-section-extraction / bid-analysis 与
-// bidSectionExtractionTask.cjs、bidAnalysisTask.cjs 的 runBidSectionExtractionTask / runBidAnalysisTask），ai 队列，会调用模型
-// （入队检查最低启动余额）。两类任务互斥（lock_key 为 project:{projectId}:technical-plan，与桌面版 technical-plan 组的
-// group-exclusive 相同）。
+// 技术方案的任务（取代桌面版 taskService.cjs 的 bid-section-extraction / bid-analysis / global-facts-generation 与
+// bidSectionExtractionTask.cjs、bidAnalysisTask.cjs、globalFactsTaskV2.cjs 的 run* 函数），会调用模型（入队检查最低启动余额）。
+// 各类任务互斥（lock_key 为 project:{projectId}:technical-plan，与桌面版 technical-plan 组的 group-exclusive 相同）：
+// - 多标段识别、招标解析（路线图第 6 步 6.11）：ai 队列；
+// - 全局事实生成（第 8 步 8.7c1）：agent 队列，在 agent 沙箱中由 Agent 读工作区材料写出 global-facts.json（见 createGlobalFactsJob）。
 //
 // - 输入在任务开始时从数据库读取，不取自任务参数：招标文件须全部解析成功；多标段识别读合并的原始招标正文，招标解析读按投标
 //   范围裁剪后的正文（readTenderMarkdown）和已保存的解析配置（选中的解析项）。模型取组织设置中选择的平台模型；
@@ -23,24 +24,42 @@ import { abortableDelay, isJobStop } from '../jobs/control.ts';
 import { JobError, JobInterruptedError, type JobContext, type JobTypeDefinition } from '../jobs/definitions.ts';
 import { cancelJob, enqueueJob, type JobServiceDependencies } from '../jobs/service.ts';
 import { listJobs, type JobRecord } from '../jobs/store.ts';
+import { AGENT_TASK_LIMITS } from '../agent/budget.ts';
+import type { AgentPromptTool } from '../agent/entry.ts';
+import { withAgentRun } from '../agent/execution.ts';
+import {
+  buildGlobalFactsAgentInput,
+  GLOBAL_FACTS_JSON_SCHEMA,
+  GLOBAL_FACTS_OUTPUT_FILE,
+  globalFactsKnowledgeItems,
+  validateGlobalFactsOutput,
+  type GlobalFactGroup,
+} from './globalFactsAgent.ts';
+import { OutlineInputError } from './outline.ts';
 import { extractBidSections, SectionExtractionError } from './sectionExtraction.ts';
 import {
   BID_ANALYSIS_JOB_TYPE,
   BID_SECTION_EXTRACTION_JOB_TYPE,
+  GLOBAL_FACTS_JOB_TYPE,
+  GLOBAL_FACTS_TASK_KIND,
+  globalFactsInputSignature,
   inputSignatures,
   loadTechnicalPlan,
   prepareBidSectionExtraction,
+  readGlobalFactsKnowledgeItems,
+  readGlobalFactsSources,
   readOriginalTenderMarkdown,
   readTenderMarkdown,
   resetBidAnalysisForRerun,
   saveBidItems,
   saveBidSectionExtraction,
+  saveGlobalFactsResult,
   technicalPlanLockKey,
   type TechnicalPlanState,
 } from './store.ts';
 import { BID_ANALYSIS_TASKS, bidItemLabel, isBidItemId } from './tender.ts';
 
-export { BID_ANALYSIS_JOB_TYPE, BID_SECTION_EXTRACTION_JOB_TYPE };
+export { BID_ANALYSIS_JOB_TYPE, BID_SECTION_EXTRACTION_JOB_TYPE, GLOBAL_FACTS_JOB_TYPE, GLOBAL_FACTS_TASK_KIND };
 
 /** 预热请求结束后稍候再发后续请求（与桌面版 PREFIX_WARMUP_SETTLE_MS 相同）：部分服务在请求结束后才异步构建前缀缓存。 */
 const PREFIX_WARMUP_SETTLE_MS = 1500;
@@ -86,6 +105,21 @@ function analysisProblem(state: TechnicalPlanState): Problem | null {
   return null;
 }
 
+const GLOBAL_FACTS_TENDER_MISSING = '请先上传招标文件，再生成全局事实';
+
+/** 全局事实生成的前置条件（与桌面版 runGlobalFactsTaskV2 开始时的检查相同；原方案未解析完成的两条是 Web 版新增的）。 */
+function globalFactsProblem(state: TechnicalPlanState): Problem | null {
+  const problem = tenderProblem(state, GLOBAL_FACTS_TENDER_MISSING);
+  if (problem) return problem;
+  if (!state.outlineData?.outline.length) return { code: 'TECHNICAL_PLAN_OUTLINE_REQUIRED', message: '请先生成目录，再生成全局事实' };
+  const plan = state.originalPlanFile;
+  if (plan?.status === 'error') return { code: 'TECHNICAL_PLAN_ORIGINAL_PLAN_FAILED', message: '原方案解析失败，请移除后重新上传' };
+  if (plan && (plan.status !== 'success' || !plan.markdownArtifactId)) {
+    return { code: 'TECHNICAL_PLAN_ORIGINAL_PLAN_NOT_READY', message: '原方案尚未解析完成，请稍后再试' };
+  }
+  return null;
+}
+
 // ---- 参数 ----
 
 export interface BidAnalysisParams {
@@ -114,7 +148,7 @@ function parseAnalysisParams(raw: unknown): BidAnalysisParams {
 // ---- 公共 ----
 
 /** 读取正文时的接口错误（过大、投标范围失效、存储不可用）转成给用户看的任务错误。 */
-async function readForJob(read: () => Promise<string>): Promise<string> {
+async function readForJob<T>(read: () => Promise<T>): Promise<T> {
   try {
     return await read();
   } catch (error) {
@@ -289,8 +323,156 @@ function createAnalysisJob(options: TechnicalPlanJobOptions): JobTypeDefinition<
   };
 }
 
+// ---- 全局事实生成（8.7c1） ----
+
+/** 全局事实生成的阶段（与桌面版 initial_stage 相同）。 */
+export const GLOBAL_FACTS_STAGE = 'global-facts';
+/** 工作区材料的受保护文件分组。 */
+const GLOBAL_FACTS_INPUT_GROUP = 'input';
+/** 续跑时该阶段的要求已在会话中发出：只请 Agent 继续（与桌面版 CONTINUE_PROMPT 相同）。 */
+const CONTINUE_PROMPT = '继续之前的任务';
+/** 与桌面版相同：原生工具、json-validation、ask-user 与需用户确认的失败报告（顶层任务的 report-failure 即 request-termination）。 */
+const GLOBAL_FACTS_TOOLS: readonly AgentPromptTool[] = ['read', 'write', 'edit', 'bash', 'grep', 'find', 'ls', 'json-validation', 'ask-user', 'request-termination'];
+const GLOBAL_FACTS_BUSINESS_TOOLS = ['ask-user', 'request-termination'] as const;
+const GLOBAL_FACTS_INPUT_CHANGED_MESSAGE = '招标文件、解析结果、目录或全局事实已变化，本次结果已丢弃，请重新开始';
+
+function globalFactsInputChanged(): JobError {
+  return new JobError('TECHNICAL_PLAN_INPUT_CHANGED', GLOBAL_FACTS_INPUT_CHANGED_MESSAGE);
+}
+
+/** checkpoint 中任务自己的状态：首次执行开始时的输入签名（续跑时核对，写入时传回）。 */
+function checkpointSignature(raw: Record<string, unknown> | null): string | null {
+  return raw && typeof raw.signature === 'string' && raw.signature !== '' ? raw.signature : null;
+}
+
+/**
+ * 全局事实生成（取代桌面版 globalFactsTaskV2.cjs 的 runGlobalFactsTaskV2）：
+ * - 输入在任务开始时从数据库读取：招标正文（多标段且选择了投标范围时为按投标范围裁剪的一份，否则为各招标文件的原文）、项目概述、
+ *   招标解析结果（项目信息、甲方信息、交货和服务要求）、目录、原方案（有时）、引用的知识库文档的完整条目与全局事实的写法（生成配置，
+ *   由 PATCH .../generation-config 先保存；桌面版随开始任务的参数传入）；
+ * - 工作区材料（招标文件/*.md、项目概述.md、招标解析结果.md、技术方案目录.md、标段说明.md、参考知识库/条目-*.md、原方案.md、
+ *   材料说明.md）登记为受保护文件，提示词、预置 Schema 与工具与桌面版相同（src/technicalPlan/globalFactsAgent.ts）；
+ * - 提交校验与桌面版 validateGlobalFactsOutput 相同（不是合法 JSON、不符合 Schema、没有可用分组为阻塞问题，经提交修复退回 Agent，
+ *   max_retries 0 只表示执行失败不重试），另按服务端的全局事实上限检查；
+ * - 结果经 saveGlobalFactsResult 整体替换全局事实并清空正文阶段（桌面版在开始时清空全局事实，这里在写入时替换：失败时保留原来的），
+ *   带上首次执行开始时的输入签名：之后招标文件、投标范围、原方案、解析结果、目录、全局事实的写法、引用的知识库文档或全局事实变化时，
+ *   写入被拒绝；
+ * - 可续跑：每条提示词之后保存检查点（工作区快照与 checkpoint，签名在其中），暂停（费用 / 轮数上限、余额不足、存储配额）或 worker
+ *   失联后续接会话，只发“继续之前的任务”；续跑时输入已变化即失败；
+ * - 成功后丢弃快照：全局事实 AI 调整接着这次会话（keepAfterSuccess）与重置入口的丢弃随 8.7c2。
+ */
+function createGlobalFactsJob(): JobTypeDefinition<Record<string, never>> {
+  return {
+    type: GLOBAL_FACTS_JOB_TYPE,
+    queue: 'agent',
+    resumable: true,
+    billable: true,
+    agentLimits: AGENT_TASK_LIMITS.outline,
+    agentTools: GLOBAL_FACTS_BUSINESS_TOOLS,
+    agentWorkspace: { taskKind: GLOBAL_FACTS_TASK_KIND },
+    parseParams: (raw) => {
+      if (typeof raw !== 'object' || raw === null || Array.isArray(raw) || Object.keys(raw).length > 0) throw new TypeError('全局事实生成任务参数不合法');
+      return {};
+    },
+    async run(context) {
+      const { db, tenant } = context;
+      const projectId = context.projectId;
+      if (!projectId) throw new JobError('TECHNICAL_PLAN_FAILED', '全局事实生成失败');
+      // 先取签名再读状态与正文：读取期间输入变化时签名已过期，写入被拒绝。
+      const current = await globalFactsInputSignature(db, tenant, projectId);
+      const state = await loadTechnicalPlan(db, tenant, projectId);
+      const problem = globalFactsProblem(state);
+      if (problem) throw new JobError(problem.code, problem.message);
+      // 与桌面版 hasSelectedBidSection 相同：多标段且选择了投标范围时只用按投标范围裁剪的正文。
+      const usingSection = state.bidSectionMode === 'multiple' && Boolean(state.selectedSection?.id);
+      const sources = await readForJob(() => readGlobalFactsSources(db, tenant, projectId, context.objectStore, { tenders: !usingSection }));
+      const tenderSources = usingSection
+        ? [{ fileName: '当前投标范围', markdown: (await readForJob(() => readTenderMarkdown(db, tenant, projectId, context.objectStore))).trim(), isWorkingCopy: true }]
+        : sources.tenderFiles.map((file) => ({ fileName: file.fileName, markdown: file.markdown.trim(), isWorkingCopy: false }));
+      const tenders = tenderSources.filter((source) => source.markdown);
+      if (!tenders.length) throw new JobError('TECHNICAL_PLAN_TENDER_EMPTY', GLOBAL_FACTS_TENDER_MISSING);
+      const originalPlanMarkdown = state.originalPlanFile ? sources.originalPlanMarkdown.trim() : '';
+      if (state.originalPlanFile && !originalPlanMarkdown) throw new JobError('TECHNICAL_PLAN_ORIGINAL_PLAN_REQUIRED', '请先上传原方案，再生成全局事实');
+      const referenced = state.referenceKnowledgeDocumentIds.length > 0;
+      const knowledgeItems = referenced ? globalFactsKnowledgeItems(await readGlobalFactsKnowledgeItems(db, tenant, projectId)) : [];
+      const selectedSection = state.selectedSection ? (state.bidSections.find((section) => section.id === state.selectedSection!.id) ?? null) : null;
+      const input = buildGlobalFactsAgentInput(
+        {
+          tenderSources: tenders,
+          selectedSection,
+          projectOverview: state.projectOverview,
+          bidAnalysisTasks: state.bidAnalysisTasks,
+          outline: state.outlineData!.outline,
+          originalPlanMarkdown,
+          globalFactsMode: state.globalFactsMode,
+        },
+        knowledgeItems,
+      );
+      await withAgentRun(context.agent, async (run) => {
+        const saved = checkpointSignature(run.taskCheckpoint);
+        if (saved !== null && saved !== current) throw globalFactsInputChanged();
+        const signature = saved ?? current;
+        if (!run.resumed) {
+          await context.log('开始生成全局事实变量。');
+          await context.setProgress(5);
+          if (!referenced) {
+            await context.log('未选择参考知识库。');
+            await context.setProgress(8);
+          } else {
+            await context.log(knowledgeItems.length ? `已读取 ${knowledgeItems.length} 条知识库完整条目。` : '未读取到可用知识库完整条目。');
+            await context.setProgress(14);
+          }
+          // 与桌面版相同，进度只增不减（选择了知识库时已到 14）。
+          await context.log('正在准备全局事实工作区材料。');
+          await context.setProgress(referenced ? 14 : 12);
+        }
+        // 续跑时材料在快照中；原件不可用（快照中的副本被改动）时按同一输入重新放入。
+        if (!run.resumed || run.unavailableProtectedFiles.length > 0) {
+          await run.baseline.write(
+            run.sandbox,
+            GLOBAL_FACTS_INPUT_GROUP,
+            input.files.map((file) => ({ path: file.path, data: Buffer.from(file.content, 'utf8') })),
+            { replace: true, signal: context.signal },
+          );
+        }
+        await context.log(run.resumed ? 'Agent 继续整理全局事实变量。' : 'Agent 正在整理全局事实变量。');
+        await context.setProgress(18);
+        const stage = await run.runStage<GlobalFactGroup[]>({
+          stage: GLOBAL_FACTS_STAGE,
+          stageIndex: 0,
+          prompt: run.wasPrompted(GLOBAL_FACTS_STAGE) ? CONTINUE_PROMPT : input.prompt,
+          tools: GLOBAL_FACTS_TOOLS,
+          jsonSchemas: { [GLOBAL_FACTS_OUTPUT_FILE]: GLOBAL_FACTS_JSON_SCHEMA },
+          outputFile: GLOBAL_FACTS_OUTPUT_FILE,
+          maxExecutionRetries: 0,
+          checkpointAfterPrompt: () => ({ signature }),
+          async validate() {
+            const file = (await run.readFiles([GLOBAL_FACTS_OUTPUT_FILE])).get(GLOBAL_FACTS_OUTPUT_FILE);
+            if (file && file.data === null) return { value: null, issues: [{ severity: 'blocking', message: `${GLOBAL_FACTS_OUTPUT_FILE}过大，无法读取` }] };
+            return validateGlobalFactsOutput(file?.data?.toString('utf8') ?? '');
+          },
+        });
+        const groups = stage.value;
+        if (!groups?.length) throw new JobError('TECHNICAL_PLAN_GLOBAL_FACTS_INVALID', '全局事实结果缺少 groups');
+        if (context.signal.aborted) throw new JobInterruptedError();
+        await context.log(`全局事实变量整理完成：${groups.length} 个大项。`);
+        await context.setProgress(95);
+        let written: boolean;
+        try {
+          written = await saveGlobalFactsResult(db, tenant, projectId, groups, signature);
+        } catch (error) {
+          if (error instanceof OutlineInputError) throw new JobError('TECHNICAL_PLAN_GLOBAL_FACTS_INVALID', error.message, { cause: error });
+          throw error;
+        }
+        if (!written) throw globalFactsInputChanged();
+      });
+      await context.log('全局事实变量生成完成。');
+    },
+  };
+}
+
 export function createTechnicalPlanJobs(options: TechnicalPlanJobOptions = {}): JobTypeDefinition<any>[] {
-  return [createSectionExtractionJob(options), createAnalysisJob(options)];
+  return [createSectionExtractionJob(options), createAnalysisJob(options), createGlobalFactsJob()];
 }
 
 export const technicalPlanJobs = createTechnicalPlanJobs();
@@ -338,7 +520,7 @@ export async function startBidAnalysis(
  * 其后续写入因签名不符被拒绝。已结束的任务跳过。
  */
 export async function cancelTechnicalPlanJobs(jobs: JobServiceDependencies, context: TenantContext, projectId: string): Promise<void> {
-  const types: readonly string[] = [BID_SECTION_EXTRACTION_JOB_TYPE, BID_ANALYSIS_JOB_TYPE];
+  const types: readonly string[] = [BID_SECTION_EXTRACTION_JOB_TYPE, BID_ANALYSIS_JOB_TYPE, GLOBAL_FACTS_JOB_TYPE];
   const active = await listJobs(jobs.db, context, { projectId, active: true, limit: 20 });
   for (const job of active) {
     if (!types.includes(job.type)) continue;
@@ -349,4 +531,15 @@ export async function cancelTechnicalPlanJobs(jobs: JobServiceDependencies, cont
       throw error;
     }
   }
+}
+
+/**
+ * 开始生成全局事实（取代桌面版 tasks.startGlobalFactsGeneration，8.7c1）：全局事实的写法与引用的知识库文档取已保存的生成配置
+ * （PATCH .../generation-config）。入 agent 队列，另受每组织 Agent 任务并发与每日时长的限制（8.3d）。没有招标文件或未解析完成、
+ * 没有目录、原方案未解析完成时 409（文案与桌面版相同）；已有进行中的技术方案任务时 409 JOB_LOCKED。
+ */
+export async function startGlobalFactsGeneration(jobs: JobServiceDependencies, context: TenantContext, projectId: string): Promise<JobRecord> {
+  const problem = globalFactsProblem(await loadTechnicalPlan(jobs.db, context, projectId));
+  if (problem) throw conflict(problem);
+  return enqueueJob(jobs, context, { type: GLOBAL_FACTS_JOB_TYPE, projectId, lockKey: technicalPlanLockKey(projectId), params: {} });
 }

@@ -15,6 +15,8 @@
 //   运行桌面版的可研导出代码（src/export/feasibilityJob.ts）。
 // - feasibility-outline（8.7a）：可研报告目录生成，agent 队列，lock_key 与其他可研任务相同，在 agent 沙箱中由 Agent 写出目录
 //   （src/feasibilityReport/jobs.ts）。
+// - global-facts-generation（8.7c1）：技术方案全局事实生成，agent 队列，lock_key 与其他技术方案任务相同，在 agent 沙箱中由 Agent
+//   写出全局事实（src/technicalPlan/jobs.ts）。
 import { duplicateAnalysisJob } from '../duplicateCheck/job.ts';
 import { technicalPlanExportJob } from '../export/documentJob.ts';
 import { feasibilityReportExportJob } from '../export/feasibilityJob.ts';
