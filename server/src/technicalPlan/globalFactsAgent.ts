@@ -441,3 +441,36 @@ export function buildGlobalFactsAgentInput(state: GlobalFactsAgentInputState, kn
   files.push({ path: '材料说明.md', content: `本次任务实际提供的材料如下。只使用这些文件，不要猜测未提供的材料。\n\n${fileCatalog}` });
   return { files, prompt: createGlobalFactsPrompt(fileCatalog, knowledgeItems.length > 0, Boolean(originalPlanMarkdown), state.globalFactsMode) };
 }
+
+// ---- 全局事实调整（8.7c2，与桌面版 globalFactsAdjustmentTask.cjs 相同） ----
+
+/** 交给 Agent 的当前全局事实（与桌面版 buildAgentFactsInput 相同）：只含 id、标题（去掉首尾空白）与内容。 */
+export function buildAgentFactsInput(groups: readonly { id?: unknown; title?: unknown; content?: unknown }[]): { groups: GlobalFactGroup[] } {
+  return {
+    groups: (Array.isArray(groups) ? groups : []).map((group) => ({
+      id: String(group?.id || ''),
+      title: String(group?.title || '').trim(),
+      content: String(group?.content || ''),
+    })),
+  };
+}
+
+/** global-facts.json 的内容（与桌面版相同：两个空格缩进）。 */
+export function globalFactsAdjustmentFile(groups: readonly { id?: unknown; title?: unknown; content?: unknown }[]): string {
+  return JSON.stringify(buildAgentFactsInput(groups), null, 2);
+}
+
+/** 全局事实调整的提示词（与桌面版 createGlobalFactsAdjustmentPrompt 相同）。调整要求是用户输入，原样放入。 */
+export function createGlobalFactsAdjustmentPrompt(requirement: string): string {
+  return `用户已经在当前全局事实基础上提出新的调整要求。程序已把当前最新的完整结果覆盖写入 ${GLOBAL_FACTS_OUTPUT_FILE}（用户可能在主界面手动修改过，请以该文件为准，不要沿用你记忆中的旧内容）。
+
+用户的调整要求：
+${requirement}
+
+请按以下要求完成调整：
+1. 以当前文件为准，先定位用户要求涉及的节点或事实项，并读取必要上下文。优先使用 edit 局部修改；涉及多个节点或条目的统一调整时，可使用 bash 配合 node、jq 处理。
+2. 修改后仍须保持完整根结构 {"groups":[{"id":"...","title":"...","content":"..."}]}：每项包含 id、title、content。
+3. 材料或用户要求足以判断时直接执行。不确定且不同选择会实质影响结果时，可以自行决定是否调用 ask-user；不要为了确认而反复提问。
+4. 将调整结果保存到 ${GLOBAL_FACTS_OUTPUT_FILE}，保存后保持完整文件结构和未涉及内容。程序已为该文件预置 Schema，写入后调用 json-validation，只传 {"file_path":"${GLOBAL_FACTS_OUTPUT_FILE}"}；校验失败后必须先修改文件，再重新校验。
+5. 全部完成后，用简体中文输出一段简短的最终总结（不超过 200 字，不使用 Markdown 标题），说明本次实际做了哪些调整；如有未能执行的要求，一并说明原因。该总结会直接展示给用户。`;
+}

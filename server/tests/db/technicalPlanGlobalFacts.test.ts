@@ -6,13 +6,16 @@
 // - 任务经真实数据库执行（假 Agent）：材料取自数据库，写入全局事实并清空正文阶段；开始后用户手动保存了全局事实时不覆盖；
 // - 接口：POST .../global-facts-generation 的前置检查（文案与桌面版相同）、202 与 Agent 任务上限、与其他技术方案任务互斥、请求体不采用、
 //   余额不足 402、其他组织 404；状态中的 globalFactsTask；招标文件变化与清空时取消。
-// 与桌面版逐项对照见 tests/technicalPlan/globalFactsJob.test.ts。
+// - 全局事实调整（8.7c2）：直接执行（假 Agent，接着生成的会话）、接口（前置检查、参数、202、互斥）、状态中的说明与能否调整、各重置入口
+//   丢弃会话（导入 / 移除招标文件、切换单 / 多标段、选择投标范围、目录被清空、清空，多标段识别开始与全部重新解析）与不丢弃的入口。
+// 与桌面版逐项对照见 tests/technicalPlan/globalFactsJob.test.ts、globalFactsAdjustmentJob.test.ts。
 import { createHash, randomUUID } from 'node:crypto';
 import { Readable } from 'node:stream';
 import type { FastifyInstance } from 'fastify';
 import type { Kysely } from 'kysely';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import type { AgentRun, AgentStageOptions, JobAgent } from '../../src/agent/execution.ts';
+import type { AgentOpenOptions, AgentRun, AgentStageOptions, JobAgent } from '../../src/agent/execution.ts';
+import { findWorkspaceSnapshot, writeWorkspaceSnapshot } from '../../src/agent/workspaceSnapshots.ts';
 import { buildApp } from '../../src/app.ts';
 import { writeArtifact } from '../../src/artifacts/store.ts';
 import { DEFAULT_AUTH_RATE_LIMITS, type AuthRateLimitSettings } from '../../src/auth/rateLimit.ts';
@@ -23,7 +26,13 @@ import type { Database } from '../../src/db/schema.ts';
 import type { TenantContext } from '../../src/db/tenant.ts';
 import type { ObjectStore } from '../../src/files/objectStore.ts';
 import type { JobContext } from '../../src/jobs/definitions.ts';
-import { createTechnicalPlanJobs, GLOBAL_FACTS_JOB_TYPE } from '../../src/technicalPlan/jobs.ts';
+import {
+  BID_ANALYSIS_JOB_TYPE,
+  BID_SECTION_EXTRACTION_JOB_TYPE,
+  createTechnicalPlanJobs,
+  GLOBAL_FACTS_ADJUSTMENT_JOB_TYPE,
+  GLOBAL_FACTS_JOB_TYPE,
+} from '../../src/technicalPlan/jobs.ts';
 import {
   globalFactsInputSignature,
   importTenderFiles,
@@ -31,6 +40,7 @@ import {
   readGlobalFactsKnowledgeItems,
   readGlobalFactsSources,
   saveBidItems,
+  saveBidSectionExtraction,
   saveChapterContent,
   saveContentGenerationOptions,
   saveDocumentParse,
@@ -243,16 +253,17 @@ function scriptedAgent(output: string, beforeValidate?: () => Promise<void>) {
   return { agent, record };
 }
 
-const globalFactsJob = createTechnicalPlanJobs().find((job) => job.type === GLOBAL_FACTS_JOB_TYPE)!;
+const technicalPlanJobs = createTechnicalPlanJobs();
 
-async function runJob(member: Member, projectId: string, agent: JobAgent): Promise<{ error: unknown; logs: string[] }> {
+async function runJob(member: Member, projectId: string, agent: JobAgent | null, type = GLOBAL_FACTS_JOB_TYPE, params: unknown = {}): Promise<{ error: unknown; logs: string[] }> {
+  const definition = technicalPlanJobs.find((job) => job.type === type)!;
   const logs: string[] = [];
   const context: JobContext<any> = {
     jobId: randomUUID(),
     projectId,
-    type: GLOBAL_FACTS_JOB_TYPE,
+    type,
     attempt: 1,
-    params: {},
+    params: definition.parseParams(params),
     checkpoint: null,
     tenant: member.context,
     db: appDb,
@@ -269,7 +280,7 @@ async function runJob(member: Member, projectId: string, agent: JobAgent): Promi
     agent,
   };
   try {
-    await globalFactsJob.run(context);
+    await definition.run(context);
     return { error: null, logs };
   } catch (error) {
     return { error, logs };
@@ -529,5 +540,303 @@ describe('接口', () => {
     expect(started.statusCode, started.body).toBe(202);
     expect((await call(member, 'DELETE', planUrl(projectId))).statusCode).toBe(200);
     expect(await statusOf(started.json().job.id)).toBe('cancelled');
+  });
+});
+
+// ---- 全局事实调整（8.7c2） ----
+
+const FACTS_KIND = 'technical-plan-global-facts';
+
+/** 全局事实生成留下的会话：该类别当前的快照与引用它的已结束的生成任务（现场与执行者写下的相同）。 */
+async function seedFactsSession(member: Member, projectId: string, status: 'succeeded' | 'failed' | 'cancelled' = 'succeeded') {
+  const snapshot = await writeWorkspaceSnapshot(appDb, member.context, memoryStore, { projectId, taskKind: FACTS_KIND, fileCount: 1 }, Readable.from([Buffer.from('tar')]));
+  const agent = {
+    version: 1,
+    session: `2026-11-19T01-02-03-004Z_${randomUUID()}.jsonl`,
+    stage: 'global-facts',
+    stageIndex: 0,
+    promptedStage: 'global-facts',
+    compactionPending: null,
+    baseline: { version: 1, groups: {} },
+    snapshot: snapshot.id,
+  };
+  const row = await superuser
+    .insertInto('jobs')
+    .values({
+      org_id: member.orgId,
+      project_id: projectId,
+      user_id: member.userId,
+      type: GLOBAL_FACTS_JOB_TYPE,
+      status,
+      lock_key: `project:${projectId}:technical-plan`,
+      params: '{}',
+      checkpoint: JSON.stringify({ agent, task: { signature: 'generated' } }),
+      finished_at: new Date(),
+      ...(status === 'failed' ? { error_code: 'JOB_FAILED', error_message: '失败' } : {}),
+    })
+    .returning('id')
+    .executeTakeFirstOrThrow();
+  return { snapshot, agent, jobId: row.id };
+}
+
+const currentFactsSnapshot = (member: Member, projectId: string) => findWorkspaceSnapshot(appDb, member.context, { projectId, taskKind: FACTS_KIND });
+
+const FACTS = [
+  { id: 'schedule', title: '工期变量', content: '- 工期：180 日历天。' },
+  { id: 'team', title: '项目角色变量', content: '- 项目经理：张伟。' },
+];
+
+/** 全局事实调整用的假 Agent：记下打开时接着的会话与放入的 global-facts.json，按脚本写出结果与最后一条回复。 */
+function adjustmentAgent(output: string, reply: string) {
+  const record = { opened: [] as (AgentOpenOptions | undefined)[], files: new Map<string, string>(), released: [] as string[], prompts: [] as string[], checkpoints: [] as unknown[] };
+  const run = {
+    sandbox: { id: 'sandbox-1' },
+    resumed: false,
+    continued: true,
+    unavailableProtectedFiles: [],
+    taskCheckpoint: null,
+    wasPrompted: () => false,
+    baseline: {
+      async write(_sandbox: unknown, _group: string, files: { path: string; data: Buffer }[]) {
+        for (const file of files) record.files.set(file.path, file.data.toString('utf8'));
+      },
+      release(_group: string, paths: string[]) {
+        record.released.push(...paths);
+        return paths;
+      },
+    },
+    async readFiles(paths: readonly string[]) {
+      return new Map([[paths[0]!, { size: output.length, data: Buffer.from(output, 'utf8') }]]);
+    },
+    async runStage(stage: AgentStageOptions<unknown>) {
+      record.prompts.push(stage.prompt);
+      const report = await stage.validate({ attempt: 1, restored: [] });
+      return { value: report.value, acceptedIssues: [], repairs: 0, executionRetries: 0 };
+    },
+    async assistantText() {
+      return { text: reply, truncated: false };
+    },
+    async checkpoint(task: unknown) {
+      record.checkpoints.push(task);
+    },
+    async close() {},
+  };
+  const agent: JobAgent = {
+    template: 'agent',
+    resuming: false,
+    open: async (options?: AgentOpenOptions) => {
+      record.opened.push(options);
+      return run as unknown as AgentRun;
+    },
+  };
+  return { agent, record };
+}
+
+const ADJUSTED = JSON.stringify({ groups: [{ id: 'schedule', title: '工期变量', content: '- 工期：150 日历天。' }, { id: 'Quality', title: '质量变量', content: '- 质量目标：合格。' }] });
+
+describe('全局事实调整（8.7c2）', () => {
+  it('直接执行（假 Agent）：接着生成的会话，global-facts.json 为当前全局事实（交给 Agent 修改）；写入调整后的全局事实并清空正文阶段；没有会话时失败', async () => {
+    const member = await newMember();
+    const { projectId, nodes } = await fixture(member);
+    await saveGlobalFacts(appDb, member.context, projectId, FACTS);
+    await saveChapterContent(appDb, member.context, projectId, nodes[1]!, '旧正文');
+    const seeded = await seedFactsSession(member, projectId);
+    const { agent, record } = adjustmentAgent(ADJUSTED, '已把工期改为 150 天。');
+    const result = await runJob(member, projectId, agent, GLOBAL_FACTS_ADJUSTMENT_JOB_TYPE, { requirement: '工期改为 150 天' });
+    expect(result.error).toBeNull();
+    expect(record.opened).toEqual([{ continueFrom: seeded.agent }]);
+    expect(JSON.parse(record.files.get('global-facts.json')!)).toEqual({ groups: FACTS });
+    expect([...record.files.keys()]).toEqual(['global-facts.json']);
+    expect(record.released).toEqual(['global-facts.json']);
+    expect(record.prompts[0]).toContain('用户的调整要求：\n工期改为 150 天');
+    expect(record.checkpoints).toEqual([{ signature: expect.any(String), summary: '已把工期改为 150 天。' }]);
+    const state = await loadTechnicalPlan(appDb, member.context, projectId);
+    expect(state.globalFacts.map(({ id, title, content }) => ({ id, title, content }))).toEqual([
+      { id: 'schedule', title: '工期变量', content: '- 工期：150 日历天。' },
+      { id: 'quality', title: '质量变量', content: '- 质量目标：合格。' },
+    ]);
+    expect(state.contentGenerationSections[nodes[1]!]?.content ?? '').toBe('');
+    // 任务日志不含要求与说明。
+    expect(result.logs.join('\n')).not.toContain('工期改为 150 天');
+    expect(result.logs.join('\n')).not.toContain('已把工期改为 150 天。');
+
+    // 没有可续用的会话（快照被丢弃）：失败，不打开沙箱。
+    await superuser.updateTable('agent_workspace_snapshots').set({ superseded_at: new Date() }).where('id', '=', seeded.snapshot.id).execute();
+    const missing = adjustmentAgent(ADJUSTED, '');
+    const failed = await runJob(member, projectId, missing.agent, GLOBAL_FACTS_ADJUSTMENT_JOB_TYPE, { requirement: '工期改为 150 天' });
+    expect(failed.error).toMatchObject({ code: 'TECHNICAL_PLAN_GLOBAL_FACTS_SESSION_MISSING', message: '全局事实设定的 Agent 工作空间不存在，请重新生成后再使用 AI 调整' });
+    expect(missing.record.opened).toEqual([]);
+  });
+
+  it('接口：没有全局事实 409、会话不能续用 409（文案与桌面版相同）、调整要求为空或过长 400；可以调整时 202，参数为去掉首尾空白的要求，写入 Agent 上限，与其他技术方案任务互斥；其他组织 404', async () => {
+    const member = await newMember();
+    const { projectId } = await fixture(member);
+    const url = planUrl(projectId, '/global-facts-adjustment');
+    const noFacts = await call(member, 'POST', url, { requirement: '统一工期' });
+    expect(noFacts.statusCode).toBe(409);
+    expect(noFacts.json().error).toMatchObject({ code: 'TECHNICAL_PLAN_GLOBAL_FACTS_REQUIRED', message: '当前没有可调整的全局事实，请先完成全局事实设定' });
+    await saveGlobalFacts(appDb, member.context, projectId, FACTS);
+    expect((await call(member, 'GET', planUrl(projectId))).json()).toMatchObject({ globalFactsAdjustable: false, globalFactsAdjustmentTask: null, globalFactsAdjustment: null });
+    const noSession = await call(member, 'POST', url, { requirement: '统一工期' });
+    expect(noSession.statusCode).toBe(409);
+    expect(noSession.json().error).toMatchObject({ code: 'TECHNICAL_PLAN_GLOBAL_FACTS_SESSION_MISSING', message: '全局事实设定的 Agent 工作空间不存在，请重新生成后再使用 AI 调整' });
+    // 被取消的生成任务的会话不续用。
+    await seedFactsSession(member, projectId, 'cancelled');
+    expect((await call(member, 'POST', url, { requirement: '统一工期' })).statusCode).toBe(409);
+    await seedFactsSession(member, projectId, 'failed');
+    expect((await call(member, 'GET', planUrl(projectId))).json().globalFactsAdjustable).toBe(true);
+
+    for (const payload of [{ requirement: '   ' }, { requirement: '字'.repeat(2001) }, {}, { requirement: null }, { requirement: '统一', orgId: randomUUID() }]) {
+      expect((await call(member, 'POST', url, payload)).statusCode).toBe(400);
+    }
+    const started = await call(member, 'POST', url, { requirement: '  统一工期\n' });
+    expect(started.statusCode, started.body).toBe(202);
+    const job = started.json().job;
+    expect(job).toMatchObject({ type: GLOBAL_FACTS_ADJUSTMENT_JOB_TYPE, status: 'queued', projectId });
+    const row = await superuser.selectFrom('jobs').select(['lock_key', 'params']).where('id', '=', job.id).executeTakeFirstOrThrow();
+    expect(row).toEqual({ lock_key: `project:${projectId}:technical-plan`, params: { requirement: '统一工期' } });
+    const budget = await superuser.selectFrom('agent_job_budgets').select(['cost_limit', 'turn_limit']).where('job_id', '=', job.id).executeTakeFirstOrThrow();
+    expect(budget).toEqual({ cost_limit: '50000', turn_limit: 500 });
+    expect((await call(member, 'POST', planUrl(projectId, '/global-facts-generation'))).json().error.code).toBe('JOB_LOCKED');
+    expect((await call(member, 'GET', planUrl(projectId))).json()).toMatchObject({
+      globalFactsAdjustmentTask: { id: job.id, type: GLOBAL_FACTS_ADJUSTMENT_JOB_TYPE, status: 'queued' },
+      globalFactsAdjustment: { requirement: '统一工期', summary: null },
+    });
+    // 清空技术方案时取消进行中的调整。
+    expect((await call(member, 'DELETE', planUrl(projectId))).statusCode).toBe(200);
+    expect(await statusOf(job.id)).toBe('cancelled');
+
+    const other = await newMember();
+    expect((await call(other, 'POST', url, { requirement: '统一工期' })).statusCode).toBe(404);
+  });
+
+  it('状态中的说明：最近一次调整成功时为 checkpoint 中的说明（截到 2000 字），失败时为 null', async () => {
+    const member = await newMember();
+    const { projectId } = await fixture(member);
+    const insert = async (status: string, summary: unknown) =>
+      superuser
+        .insertInto('jobs')
+        .values({
+          org_id: member.orgId,
+          project_id: projectId,
+          user_id: member.userId,
+          type: GLOBAL_FACTS_ADJUSTMENT_JOB_TYPE,
+          status,
+          params: JSON.stringify({ requirement: '统一工期' }),
+          checkpoint: JSON.stringify({ agent: {}, task: { signature: 's', summary } }),
+          finished_at: new Date(),
+          ...(status === 'failed' ? { error_code: 'JOB_FAILED', error_message: '失败' } : {}),
+        })
+        .execute();
+    await insert('succeeded', '已统一工期。');
+    expect((await call(member, 'GET', planUrl(projectId))).json().globalFactsAdjustment).toEqual({ requirement: '统一工期', summary: '已统一工期。' });
+    await insert('failed', '不应显示');
+    expect((await call(member, 'GET', planUrl(projectId))).json().globalFactsAdjustment).toEqual({ requirement: '统一工期', summary: null });
+    await insert('succeeded', '长'.repeat(3000));
+    expect((await call(member, 'GET', planUrl(projectId))).json().globalFactsAdjustment.summary).toHaveLength(2000);
+    await insert('succeeded', 42);
+    expect((await call(member, 'GET', planUrl(projectId))).json().globalFactsAdjustment).toEqual({ requirement: '统一工期', summary: null });
+  });
+
+  it('导入、移除招标文件，切换单 / 多标段，选择投标范围，目录被清空，清空时丢弃会话；保存全局事实、目录排序、生成配置的其他字段、步骤、原方案时不丢弃', async () => {
+    const member = await newMember();
+    const { projectId, tenders, nodes } = await fixture(member);
+    const keeps: [string, string, unknown][] = [
+      ['PUT', '/global-facts', { globalFacts: FACTS }],
+      [
+        'PUT',
+        '/outline',
+        {
+          outlineData: {
+            outline: [
+              { id: nodes[2], title: '实施方案', description: '', children: [{ id: nodes[3], title: '进度计划', description: '工期' }] },
+              { id: nodes[0], title: '项目理解', description: '背景', children: [{ id: nodes[1], title: '建设目标', description: '' }] },
+            ],
+          },
+          reason: 'sort',
+        },
+      ],
+      ['PATCH', '/generation-config', { globalFactsMode: 'omit', bidSectionMode: 'single' }],
+      ['PUT', '/bid-analysis-config', { mode: 'custom', selectedTaskIds: ['projectInfo'], bidSectionMode: 'single' }],
+      ['PATCH', '/step', { step: 'global-facts' }],
+      ['PUT', '/original-plan', { fileId: await newFile(member, '原方案.docx') }],
+      ['DELETE', '/original-plan', undefined],
+    ];
+    const seeded = await seedFactsSession(member, projectId);
+    for (const [method, path, payload] of keeps) {
+      const response = await call(member, method as 'PUT', planUrl(projectId, path), payload);
+      expect(response.statusCode, `${method} ${path} ${response.body}`).toBe(200);
+      expect((await currentFactsSnapshot(member, projectId))?.id, `${method} ${path}`).toBe(seeded.snapshot.id);
+    }
+    expect(objects.has(seeded.snapshot.storageKey)).toBe(true);
+
+    const sections = [
+      { id: 's1', title: '一标段', includeRanges: [{ startLine: 1, endLine: 1 }] },
+      { id: 's2', title: '二标段', includeRanges: [{ startLine: 3, endLine: 3 }] },
+    ];
+    const discards: [string, string, unknown, (() => Promise<void>)?][] = [
+      ['PATCH', '/generation-config', { bidSectionMode: 'multiple' }],
+      ['PATCH', '/generation-config', { bidSectionMode: 'single' }],
+      ['PUT', '/bid-analysis-config', { mode: 'custom', selectedTaskIds: ['projectInfo'], bidSectionMode: 'multiple' }],
+      [
+        'PUT',
+        '/bid-section',
+        { sectionId: 's1' },
+        async () => {
+          await saveBidSectionExtraction(appDb, member.context, projectId, { status: 'success', sections });
+        },
+      ],
+      ['PUT', '/outline', { outlineData: null, reason: 'replace' }],
+      ['POST', '/tender-files', { fileIds: [await newFile(member, '补充文件.docx')] }],
+      ['DELETE', `/tender-files/${tenders[1]}`, undefined],
+      ['DELETE', '', undefined],
+    ];
+    for (const [method, path, payload, prepare] of discards) {
+      await prepare?.();
+      const { snapshot } = await seedFactsSession(member, projectId);
+      const response = await call(member, method as 'PUT', planUrl(projectId, path), payload);
+      expect(response.statusCode, `${method} ${path} ${response.body}`).toBe(200);
+      expect(await currentFactsSnapshot(member, projectId), `${method} ${path}`).toBeNull();
+      // 有对象存储时一并删除对象与行。
+      expect(objects.has(snapshot.storageKey)).toBe(false);
+      expect(await superuser.selectFrom('agent_workspace_snapshots').select('id').where('id', '=', snapshot.id).executeTakeFirst()).toBeUndefined();
+    }
+  });
+
+  it('多标段识别开始、全部重新解析（目录与全局事实被清空）时由任务丢弃会话；只重新解析部分解析项时不丢弃', async () => {
+    const member = await newMember();
+    const { projectId } = await fixture(member);
+    const failingAi = { chat: async () => { throw new Error('模型不可用'); } };
+    const run = async (type: string, params: unknown) => {
+      const definition = technicalPlanJobs.find((job) => job.type === type)!;
+      const context: JobContext<any> = {
+        jobId: randomUUID(),
+        projectId,
+        type,
+        attempt: 1,
+        params: definition.parseParams(params),
+        checkpoint: null,
+        tenant: member.context,
+        db: appDb,
+        signal: new AbortController().signal,
+        async setProgress() {},
+        async saveCheckpoint() {},
+        async log() {},
+        ai: failingAi as never,
+        objectStore: memoryStore,
+        sandbox: null,
+        agentWorkspace: null,
+        agent: null,
+      };
+      await definition.run(context).catch(() => {});
+    };
+    await seedFactsSession(member, projectId);
+    await run(BID_ANALYSIS_JOB_TYPE, { taskIds: ['projectInfo'], forceRerun: false });
+    expect(await currentFactsSnapshot(member, projectId)).not.toBeNull();
+    await run(BID_ANALYSIS_JOB_TYPE, { taskIds: null, forceRerun: true });
+    expect(await currentFactsSnapshot(member, projectId)).toBeNull();
+    await seedFactsSession(member, projectId);
+    await run(BID_SECTION_EXTRACTION_JOB_TYPE, {});
+    expect(await currentFactsSnapshot(member, projectId)).toBeNull();
   });
 });

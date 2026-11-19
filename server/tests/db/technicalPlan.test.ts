@@ -909,6 +909,8 @@ describe('Store', () => {
       outlineAdjustmentTask: null,
       globalFactsTask: null,
       globalFactsAdjustmentTask: null,
+      globalFactsAdjustment: null,
+      globalFactsAdjustable: false,
       contentGenerationSections: {},
       contentGenerationPlans: {},
       contentGenerationRuntime: null,
