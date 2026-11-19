@@ -1,8 +1,13 @@
-// 技术方案的任务（取代桌面版 taskService.cjs 的 bid-section-extraction / bid-analysis / global-facts-generation 与
-// bidSectionExtractionTask.cjs、bidAnalysisTask.cjs、globalFactsTaskV2.cjs 的 run* 函数），会调用模型（入队检查最低启动余额）。
-// 各类任务互斥（lock_key 为 project:{projectId}:technical-plan，与桌面版 technical-plan 组的 group-exclusive 相同）：
+// 技术方案的任务（取代桌面版 taskService.cjs 的 bid-section-extraction / bid-analysis / global-facts-generation /
+// global-facts-adjustment 与 bidSectionExtractionTask.cjs、bidAnalysisTask.cjs、globalFactsTaskV2.cjs、globalFactsAdjustmentTask.cjs 的
+// run* 函数），会调用模型（入队检查最低启动余额）。各类任务互斥（lock_key 为 project:{projectId}:technical-plan，与桌面版 technical-plan
+// 组的 group-exclusive 相同）：
 // - 多标段识别、招标解析（路线图第 6 步 6.11）：ai 队列；
-// - 全局事实生成（第 8 步 8.7c1）：agent 队列，在 agent 沙箱中由 Agent 读工作区材料写出 global-facts.json（见 createGlobalFactsJob）。
+// - 全局事实生成（第 8 步 8.7c1）：agent 队列，在 agent 沙箱中由 Agent 读工作区材料写出 global-facts.json（见 createGlobalFactsJob）；
+// - 全局事实调整（第 8 步 8.7c2）：agent 队列，接着全局事实生成（或上一次调整）的会话与工作区，按用户的要求改写 global-facts.json
+//   （见 createGlobalFactsAdjustmentJob）。两者共用工作区快照类别 technical-plan-global-facts，成功后保留快照供下一次调整续用；
+//   导入、移除招标文件，切换单 / 多标段，选择投标范围，多标段识别开始，全部重新解析，目录被清空与清空技术方案时丢弃
+//   （discardGlobalFactsSession，桌面版 deleteGlobalFactsAgentTask）。
 //
 // - 输入在任务开始时从数据库读取，不取自任务参数：招标文件须全部解析成功；多标段识别读合并的原始招标正文，招标解析读按投标
 //   范围裁剪后的正文（readTenderMarkdown）和已保存的解析配置（选中的解析项）。模型取组织设置中选择的平台模型；
@@ -24,25 +29,37 @@ import { abortableDelay, isJobStop } from '../jobs/control.ts';
 import { JobError, JobInterruptedError, type JobContext, type JobTypeDefinition } from '../jobs/definitions.ts';
 import { cancelJob, enqueueJob, type JobServiceDependencies } from '../jobs/service.ts';
 import { listJobs, type JobRecord } from '../jobs/store.ts';
+import type { Kysely } from 'kysely';
 import { AGENT_TASK_LIMITS } from '../agent/budget.ts';
+import { findContinuableAgentSession } from '../agent/continuation.ts';
 import type { AgentPromptTool } from '../agent/entry.ts';
-import { withAgentRun } from '../agent/execution.ts';
+import { withAgentRun, type AgentRun, type AgentRunState } from '../agent/execution.ts';
+import { discardAgentWorkspaceSnapshots } from '../agent/workspaceJob.ts';
+import type { Database } from '../db/schema.ts';
+import type { ObjectStore } from '../files/objectStore.ts';
 import {
   buildGlobalFactsAgentInput,
+  createGlobalFactsAdjustmentPrompt,
+  globalFactsAdjustmentFile,
   GLOBAL_FACTS_JSON_SCHEMA,
   GLOBAL_FACTS_OUTPUT_FILE,
   globalFactsKnowledgeItems,
   validateGlobalFactsOutput,
   type GlobalFactGroup,
+  type GlobalFactsAgentInput,
 } from './globalFactsAgent.ts';
 import { OutlineInputError } from './outline.ts';
 import { extractBidSections, SectionExtractionError } from './sectionExtraction.ts';
 import {
   BID_ANALYSIS_JOB_TYPE,
   BID_SECTION_EXTRACTION_JOB_TYPE,
+  GLOBAL_FACTS_ADJUSTMENT_JOB_TYPE,
+  GLOBAL_FACTS_ADJUSTMENT_REQUIREMENT_MAX,
+  GLOBAL_FACTS_ADJUSTMENT_SUMMARY_MAX,
   GLOBAL_FACTS_JOB_TYPE,
   GLOBAL_FACTS_TASK_KIND,
   globalFactsInputSignature,
+  globalFactsSessionTarget,
   inputSignatures,
   loadTechnicalPlan,
   prepareBidSectionExtraction,
@@ -59,7 +76,7 @@ import {
 } from './store.ts';
 import { BID_ANALYSIS_TASKS, bidItemLabel, isBidItemId } from './tender.ts';
 
-export { BID_ANALYSIS_JOB_TYPE, BID_SECTION_EXTRACTION_JOB_TYPE, GLOBAL_FACTS_JOB_TYPE, GLOBAL_FACTS_TASK_KIND };
+export { BID_ANALYSIS_JOB_TYPE, BID_SECTION_EXTRACTION_JOB_TYPE, GLOBAL_FACTS_ADJUSTMENT_JOB_TYPE, GLOBAL_FACTS_JOB_TYPE, GLOBAL_FACTS_TASK_KIND };
 
 /** 预热请求结束后稍候再发后续请求（与桌面版 PREFIX_WARMUP_SETTLE_MS 相同）：部分服务在请求结束后才异步构建前缀缓存。 */
 const PREFIX_WARMUP_SETTLE_MS = 1500;
@@ -120,6 +137,13 @@ function globalFactsProblem(state: TechnicalPlanState): Problem | null {
   return null;
 }
 
+/** 全局事实调整的前置条件（文案与桌面版 runGlobalFactsAdjustmentTask 相同）。 */
+const GLOBAL_FACTS_REQUIRED: Problem = { code: 'TECHNICAL_PLAN_GLOBAL_FACTS_REQUIRED', message: '当前没有可调整的全局事实，请先完成全局事实设定' };
+const GLOBAL_FACTS_SESSION_MISSING: Problem = {
+  code: 'TECHNICAL_PLAN_GLOBAL_FACTS_SESSION_MISSING',
+  message: '全局事实设定的 Agent 工作空间不存在，请重新生成后再使用 AI 调整',
+};
+
 // ---- 参数 ----
 
 export interface BidAnalysisParams {
@@ -143,6 +167,26 @@ function parseAnalysisParams(raw: unknown): BidAnalysisParams {
     throw new TypeError('招标解析项不合法');
   }
   return { taskIds: [...taskIds], forceRerun };
+}
+
+export interface GlobalFactsAdjustmentParams {
+  /** 用户的调整要求（去掉首尾空白，不为空，至多 GLOBAL_FACTS_ADJUSTMENT_REQUIREMENT_MAX 字）。 */
+  requirement: string;
+}
+
+/** 调整要求的规范化（与可研目录调整相同）：去掉 NUL 与首尾空白；为空或过长时返回 null。 */
+function normalizeRequirement(raw: unknown): string | null {
+  if (typeof raw !== 'string') return null;
+  const requirement = raw.replace(/\0/g, '').trim();
+  return requirement && [...requirement].length <= GLOBAL_FACTS_ADJUSTMENT_REQUIREMENT_MAX ? requirement : null;
+}
+
+function parseAdjustmentParams(raw: unknown): GlobalFactsAdjustmentParams {
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) throw new TypeError('全局事实调整任务参数不合法');
+  const { requirement, ...rest } = raw as Record<string, unknown>;
+  const normalized = normalizeRequirement(requirement);
+  if (Object.keys(rest).length > 0 || normalized === null || normalized !== requirement) throw new TypeError('全局事实调整任务参数不合法');
+  return { requirement: normalized };
 }
 
 // ---- 公共 ----
@@ -189,6 +233,8 @@ function createSectionExtractionJob(options: TechnicalPlanJobOptions): JobTypeDe
         await context.log('招标文件已变化，本次识别已放弃');
         return;
       }
+      // 目录与全局事实已清空：全局事实的会话不再续用（桌面版 clearDownstreamFromBidSectionChange）。丢弃失败的留给下一次生成替换。
+      await discardGlobalFactsSession(db, tenant, context.objectStore, projectId).catch(() => {});
       await context.log('开始识别招标文件中的标段范围。');
       await context.setProgress(5);
       let sections;
@@ -270,6 +316,8 @@ function createAnalysisJob(options: TechnicalPlanJobOptions): JobTypeDefinition<
           await context.log('招标文件或投标范围已变化，本次解析已放弃');
           return;
         }
+        // 目录与全局事实已清空：全局事实的会话不再续用（桌面版目录被清空时删除持久任务）。丢弃失败的留给下一次生成替换。
+        await discardGlobalFactsSession(db, tenant, context.objectStore, projectId).catch(() => {});
         for (const task of selectedTasks) statuses.set(task.id, 'idle');
       }
       const tasksToRun = requested || params.forceRerun ? scopedTasks : scopedTasks.filter((task) => statuses.get(task.id) !== 'success');
@@ -323,12 +371,18 @@ function createAnalysisJob(options: TechnicalPlanJobOptions): JobTypeDefinition<
   };
 }
 
-// ---- 全局事实生成（8.7c1） ----
+// ---- 全局事实生成（8.7c1）与调整（8.7c2） ----
 
 /** 全局事实生成的阶段（与桌面版 initial_stage 相同）。 */
 export const GLOBAL_FACTS_STAGE = 'global-facts';
+/** 全局事实调整的阶段（与桌面版 initial_stage 相同）。 */
+export const GLOBAL_FACTS_ADJUSTMENT_STAGE = 'global-facts-adjustment';
 /** 工作区材料的受保护文件分组。 */
 const GLOBAL_FACTS_INPUT_GROUP = 'input';
+/** 全局事实调整放入的当前全局事实（交给 Agent 修改，写入后解除登记，不还原）。 */
+const GLOBAL_FACTS_OUTPUT_GROUP = 'output';
+/** 调整说明取不到时（与桌面版相同）。 */
+const GLOBAL_FACTS_ADJUSTMENT_DEFAULT_SUMMARY = '全局事实已按要求调整完成。';
 /** 续跑时该阶段的要求已在会话中发出：只请 Agent 继续（与桌面版 CONTINUE_PROMPT 相同）。 */
 const CONTINUE_PROMPT = '继续之前的任务';
 /** 与桌面版相同：原生工具、json-validation、ask-user 与需用户确认的失败报告（顶层任务的 report-failure 即 request-termination）。 */
@@ -345,6 +399,88 @@ function checkpointSignature(raw: Record<string, unknown> | null): string | null
   return raw && typeof raw.signature === 'string' && raw.signature !== '' ? raw.signature : null;
 }
 
+interface GlobalFactsMaterials {
+  input: GlobalFactsAgentInput;
+  /** 生成配置是否引用了知识库文档。 */
+  referenced: boolean;
+  /** 读到的知识库完整条目数。 */
+  knowledgeCount: number;
+}
+
+/**
+ * 全局事实生成的工作区材料与提示词（生成时放入；调整时生成放入的原件不可用才按当前输入重新放入）。前置条件不满足时以对应的 JobError
+ * 失败（与入队时的检查相同）。
+ */
+async function readGlobalFactsMaterials(context: JobContext<unknown>, projectId: string, state: TechnicalPlanState): Promise<GlobalFactsMaterials> {
+  const { db, tenant } = context;
+  const problem = globalFactsProblem(state);
+  if (problem) throw new JobError(problem.code, problem.message);
+  // 与桌面版 hasSelectedBidSection 相同：多标段且选择了投标范围时只用按投标范围裁剪的正文。
+  const usingSection = state.bidSectionMode === 'multiple' && Boolean(state.selectedSection?.id);
+  const sources = await readForJob(() => readGlobalFactsSources(db, tenant, projectId, context.objectStore, { tenders: !usingSection }));
+  const tenderSources = usingSection
+    ? [{ fileName: '当前投标范围', markdown: (await readForJob(() => readTenderMarkdown(db, tenant, projectId, context.objectStore))).trim(), isWorkingCopy: true }]
+    : sources.tenderFiles.map((file) => ({ fileName: file.fileName, markdown: file.markdown.trim(), isWorkingCopy: false }));
+  const tenders = tenderSources.filter((source) => source.markdown);
+  if (!tenders.length) throw new JobError('TECHNICAL_PLAN_TENDER_EMPTY', GLOBAL_FACTS_TENDER_MISSING);
+  const originalPlanMarkdown = state.originalPlanFile ? sources.originalPlanMarkdown.trim() : '';
+  if (state.originalPlanFile && !originalPlanMarkdown) throw new JobError('TECHNICAL_PLAN_ORIGINAL_PLAN_REQUIRED', '请先上传原方案，再生成全局事实');
+  const referenced = state.referenceKnowledgeDocumentIds.length > 0;
+  const knowledgeItems = referenced ? globalFactsKnowledgeItems(await readGlobalFactsKnowledgeItems(db, tenant, projectId)) : [];
+  const selectedSection = state.selectedSection ? (state.bidSections.find((section) => section.id === state.selectedSection!.id) ?? null) : null;
+  const input = buildGlobalFactsAgentInput(
+    {
+      tenderSources: tenders,
+      selectedSection,
+      projectOverview: state.projectOverview,
+      bidAnalysisTasks: state.bidAnalysisTasks,
+      outline: state.outlineData!.outline,
+      originalPlanMarkdown,
+      globalFactsMode: state.globalFactsMode,
+    },
+    knowledgeItems,
+  );
+  return { input, referenced, knowledgeCount: knowledgeItems.length };
+}
+
+/** 工作区材料登记为受保护文件放入沙箱。 */
+async function writeGlobalFactsInputs(context: JobContext<unknown>, run: AgentRun, input: GlobalFactsAgentInput): Promise<void> {
+  await run.baseline.write(
+    run.sandbox,
+    GLOBAL_FACTS_INPUT_GROUP,
+    input.files.map((file) => ({ path: file.path, data: Buffer.from(file.content, 'utf8') })),
+    { replace: true, signal: context.signal },
+  );
+}
+
+/** 生成与调整共用的提交校验：与桌面版 validateGlobalFactsOutput 相同，阻塞问题经提交修复退回 Agent。 */
+function globalFactsValidator(run: AgentRun) {
+  return async () => {
+    const file = (await run.readFiles([GLOBAL_FACTS_OUTPUT_FILE])).get(GLOBAL_FACTS_OUTPUT_FILE);
+    if (file && file.data === null) return { value: null, issues: [{ severity: 'blocking' as const, message: `${GLOBAL_FACTS_OUTPUT_FILE}过大，无法读取` }] };
+    return validateGlobalFactsOutput(file?.data?.toString('utf8') ?? '');
+  };
+}
+
+/** 生成与调整的结果：没有可用分组时失败。 */
+function checkedGlobalFacts(context: JobContext<unknown>, groups: GlobalFactGroup[] | null): GlobalFactGroup[] {
+  if (!groups?.length) throw new JobError('TECHNICAL_PLAN_GLOBAL_FACTS_INVALID', '全局事实结果缺少 groups');
+  if (context.signal.aborted) throw new JobInterruptedError();
+  return groups;
+}
+
+/** 写入结果（带输入签名）；超出服务端上限时失败，签名不符时以 TECHNICAL_PLAN_INPUT_CHANGED 失败。 */
+async function writeGlobalFactsResult(context: JobContext<unknown>, projectId: string, groups: GlobalFactGroup[], signature: string): Promise<void> {
+  let written: boolean;
+  try {
+    written = await saveGlobalFactsResult(context.db, context.tenant, projectId, groups, signature);
+  } catch (error) {
+    if (error instanceof OutlineInputError) throw new JobError('TECHNICAL_PLAN_GLOBAL_FACTS_INVALID', error.message, { cause: error });
+    throw error;
+  }
+  if (!written) throw globalFactsInputChanged();
+}
+
 /**
  * 全局事实生成（取代桌面版 globalFactsTaskV2.cjs 的 runGlobalFactsTaskV2）：
  * - 输入在任务开始时从数据库读取：招标正文（多标段且选择了投标范围时为按投标范围裁剪的一份，否则为各招标文件的原文）、项目概述、
@@ -359,7 +495,7 @@ function checkpointSignature(raw: Record<string, unknown> | null): string | null
  *   写入被拒绝；
  * - 可续跑：每条提示词之后保存检查点（工作区快照与 checkpoint，签名在其中），暂停（费用 / 轮数上限、余额不足、存储配额）或 worker
  *   失联后续接会话，只发“继续之前的任务”；续跑时输入已变化即失败；
- * - 成功后丢弃快照：全局事实 AI 调整接着这次会话（keepAfterSuccess）与重置入口的丢弃随 8.7c2。
+ * - 成功后保留快照（8.7c2，keepAfterSuccess）：全局事实调整接着这次的会话与工作区（桌面版的持久任务）。新的生成在第一个检查点替换快照。
  */
 function createGlobalFactsJob(): JobTypeDefinition<Record<string, never>> {
   return {
@@ -369,7 +505,7 @@ function createGlobalFactsJob(): JobTypeDefinition<Record<string, never>> {
     billable: true,
     agentLimits: AGENT_TASK_LIMITS.outline,
     agentTools: GLOBAL_FACTS_BUSINESS_TOOLS,
-    agentWorkspace: { taskKind: GLOBAL_FACTS_TASK_KIND },
+    agentWorkspace: { taskKind: GLOBAL_FACTS_TASK_KIND, keepAfterSuccess: true },
     parseParams: (raw) => {
       if (typeof raw !== 'object' || raw === null || Array.isArray(raw) || Object.keys(raw).length > 0) throw new TypeError('全局事实生成任务参数不合法');
       return {};
@@ -381,33 +517,7 @@ function createGlobalFactsJob(): JobTypeDefinition<Record<string, never>> {
       // 先取签名再读状态与正文：读取期间输入变化时签名已过期，写入被拒绝。
       const current = await globalFactsInputSignature(db, tenant, projectId);
       const state = await loadTechnicalPlan(db, tenant, projectId);
-      const problem = globalFactsProblem(state);
-      if (problem) throw new JobError(problem.code, problem.message);
-      // 与桌面版 hasSelectedBidSection 相同：多标段且选择了投标范围时只用按投标范围裁剪的正文。
-      const usingSection = state.bidSectionMode === 'multiple' && Boolean(state.selectedSection?.id);
-      const sources = await readForJob(() => readGlobalFactsSources(db, tenant, projectId, context.objectStore, { tenders: !usingSection }));
-      const tenderSources = usingSection
-        ? [{ fileName: '当前投标范围', markdown: (await readForJob(() => readTenderMarkdown(db, tenant, projectId, context.objectStore))).trim(), isWorkingCopy: true }]
-        : sources.tenderFiles.map((file) => ({ fileName: file.fileName, markdown: file.markdown.trim(), isWorkingCopy: false }));
-      const tenders = tenderSources.filter((source) => source.markdown);
-      if (!tenders.length) throw new JobError('TECHNICAL_PLAN_TENDER_EMPTY', GLOBAL_FACTS_TENDER_MISSING);
-      const originalPlanMarkdown = state.originalPlanFile ? sources.originalPlanMarkdown.trim() : '';
-      if (state.originalPlanFile && !originalPlanMarkdown) throw new JobError('TECHNICAL_PLAN_ORIGINAL_PLAN_REQUIRED', '请先上传原方案，再生成全局事实');
-      const referenced = state.referenceKnowledgeDocumentIds.length > 0;
-      const knowledgeItems = referenced ? globalFactsKnowledgeItems(await readGlobalFactsKnowledgeItems(db, tenant, projectId)) : [];
-      const selectedSection = state.selectedSection ? (state.bidSections.find((section) => section.id === state.selectedSection!.id) ?? null) : null;
-      const input = buildGlobalFactsAgentInput(
-        {
-          tenderSources: tenders,
-          selectedSection,
-          projectOverview: state.projectOverview,
-          bidAnalysisTasks: state.bidAnalysisTasks,
-          outline: state.outlineData!.outline,
-          originalPlanMarkdown,
-          globalFactsMode: state.globalFactsMode,
-        },
-        knowledgeItems,
-      );
+      const { input, referenced, knowledgeCount } = await readGlobalFactsMaterials(context, projectId, state);
       await withAgentRun(context.agent, async (run) => {
         const saved = checkpointSignature(run.taskCheckpoint);
         if (saved !== null && saved !== current) throw globalFactsInputChanged();
@@ -419,7 +529,7 @@ function createGlobalFactsJob(): JobTypeDefinition<Record<string, never>> {
             await context.log('未选择参考知识库。');
             await context.setProgress(8);
           } else {
-            await context.log(knowledgeItems.length ? `已读取 ${knowledgeItems.length} 条知识库完整条目。` : '未读取到可用知识库完整条目。');
+            await context.log(knowledgeCount ? `已读取 ${knowledgeCount} 条知识库完整条目。` : '未读取到可用知识库完整条目。');
             await context.setProgress(14);
           }
           // 与桌面版相同，进度只增不减（选择了知识库时已到 14）。
@@ -427,14 +537,7 @@ function createGlobalFactsJob(): JobTypeDefinition<Record<string, never>> {
           await context.setProgress(referenced ? 14 : 12);
         }
         // 续跑时材料在快照中；原件不可用（快照中的副本被改动）时按同一输入重新放入。
-        if (!run.resumed || run.unavailableProtectedFiles.length > 0) {
-          await run.baseline.write(
-            run.sandbox,
-            GLOBAL_FACTS_INPUT_GROUP,
-            input.files.map((file) => ({ path: file.path, data: Buffer.from(file.content, 'utf8') })),
-            { replace: true, signal: context.signal },
-          );
-        }
+        if (!run.resumed || run.unavailableProtectedFiles.length > 0) await writeGlobalFactsInputs(context, run, input);
         await context.log(run.resumed ? 'Agent 继续整理全局事实变量。' : 'Agent 正在整理全局事实变量。');
         await context.setProgress(18);
         const stage = await run.runStage<GlobalFactGroup[]>({
@@ -446,33 +549,104 @@ function createGlobalFactsJob(): JobTypeDefinition<Record<string, never>> {
           outputFile: GLOBAL_FACTS_OUTPUT_FILE,
           maxExecutionRetries: 0,
           checkpointAfterPrompt: () => ({ signature }),
-          async validate() {
-            const file = (await run.readFiles([GLOBAL_FACTS_OUTPUT_FILE])).get(GLOBAL_FACTS_OUTPUT_FILE);
-            if (file && file.data === null) return { value: null, issues: [{ severity: 'blocking', message: `${GLOBAL_FACTS_OUTPUT_FILE}过大，无法读取` }] };
-            return validateGlobalFactsOutput(file?.data?.toString('utf8') ?? '');
-          },
+          validate: globalFactsValidator(run),
         });
-        const groups = stage.value;
-        if (!groups?.length) throw new JobError('TECHNICAL_PLAN_GLOBAL_FACTS_INVALID', '全局事实结果缺少 groups');
-        if (context.signal.aborted) throw new JobInterruptedError();
+        const groups = checkedGlobalFacts(context, stage.value);
         await context.log(`全局事实变量整理完成：${groups.length} 个大项。`);
         await context.setProgress(95);
-        let written: boolean;
-        try {
-          written = await saveGlobalFactsResult(db, tenant, projectId, groups, signature);
-        } catch (error) {
-          if (error instanceof OutlineInputError) throw new JobError('TECHNICAL_PLAN_GLOBAL_FACTS_INVALID', error.message, { cause: error });
-          throw error;
-        }
-        if (!written) throw globalFactsInputChanged();
+        await writeGlobalFactsResult(context, projectId, groups, signature);
       });
       await context.log('全局事实变量生成完成。');
     },
   };
 }
 
+/**
+ * 全局事实调整（8.7c2，取代桌面版 globalFactsAdjustmentTask.cjs 的 runGlobalFactsAdjustmentTask）：
+ * - 首次执行接着全局事实生成（或上一次调整）的会话与工作区（src/agent/continuation.ts：与当前快照同一对、已结束的生成或调整任务的
+ *   现场）；没有全局事实、找不到会话时失败（文案与桌面版相同，入队时也检查）。续跑时用本任务自己的现场（只发“继续之前的任务”）；
+ * - 当前全局事实（数据库中的，用户可能手动改过）按桌面版 buildAgentFactsInput 写入 global-facts.json，交给 Agent 修改、不登记为受保护
+ *   文件；生成时放入的材料仍是受保护文件，原件不可用时按当前的输入重新放入；提示词、工具、预置 Schema、提交校验（经提交修复）与桌面版相同；
+ * - 结果与生成相同经 saveGlobalFactsResult 整体替换全局事实并清空正文阶段（桌面版 invalidateContentGeneration），带上首次执行开始时的
+ *   输入签名（与生成相同），之后输入或全局事实变化时写入被拒绝；
+ * - 调整说明（桌面版 stats.adjustment.summary）：Agent 最后一条回复的全文（run.assistantText，至多 2000 字），取不到时为桌面版的固定
+ *   说明；它是 AI 生成的内容，不写进任务日志，写进本任务最后的 checkpoint（{ signature, summary }），由页面状态的 globalFactsAdjustment
+ *   给出（按纯文本显示，第 9 步）。成功后保留快照，下一次调整接着这次的会话。
+ */
+function createGlobalFactsAdjustmentJob(): JobTypeDefinition<GlobalFactsAdjustmentParams> {
+  return {
+    type: GLOBAL_FACTS_ADJUSTMENT_JOB_TYPE,
+    queue: 'agent',
+    resumable: true,
+    billable: true,
+    agentLimits: AGENT_TASK_LIMITS.outline,
+    agentTools: GLOBAL_FACTS_BUSINESS_TOOLS,
+    agentWorkspace: { taskKind: GLOBAL_FACTS_TASK_KIND, keepAfterSuccess: true },
+    parseParams: parseAdjustmentParams,
+    async run(context) {
+      const { db, tenant, params } = context;
+      const projectId = context.projectId;
+      if (!projectId) throw new JobError('TECHNICAL_PLAN_FAILED', '全局事实 AI 调整失败');
+      const current = await globalFactsInputSignature(db, tenant, projectId);
+      const state = await loadTechnicalPlan(db, tenant, projectId);
+      if (!state.globalFacts.length) throw new JobError(GLOBAL_FACTS_REQUIRED.code, GLOBAL_FACTS_REQUIRED.message);
+      // 首次执行：接着全局事实生成（或上一次调整）的会话；续跑：本任务自己的现场。
+      let continueFrom: AgentRunState | undefined;
+      if (context.agent && !context.agent.resuming) {
+        const source = await findContinuableAgentSession(db, tenant, globalFactsSessionTarget(projectId));
+        if (!source) throw new JobError(GLOBAL_FACTS_SESSION_MISSING.code, GLOBAL_FACTS_SESSION_MISSING.message);
+        continueFrom = source.state;
+      }
+      await withAgentRun(
+        context.agent,
+        async (run) => {
+          const saved = checkpointSignature(run.taskCheckpoint);
+          if (saved !== null && saved !== current) throw globalFactsInputChanged();
+          const signature = saved ?? current;
+          if (!run.resumed) {
+            await context.log('开始 AI 调整全局事实');
+            await context.setProgress(10);
+            // 当前全局事实覆盖写入 global-facts.json（与桌面版 files 相同），交给 Agent 修改：写入后解除登记，不还原。续跑时 Agent 可能已
+            // 改写，不再覆盖。
+            await run.baseline.write(
+              run.sandbox,
+              GLOBAL_FACTS_OUTPUT_GROUP,
+              [{ path: GLOBAL_FACTS_OUTPUT_FILE, data: Buffer.from(globalFactsAdjustmentFile(state.globalFacts), 'utf8') }],
+              { replace: true, signal: context.signal },
+            );
+            run.baseline.release(GLOBAL_FACTS_OUTPUT_GROUP, [GLOBAL_FACTS_OUTPUT_FILE]);
+          }
+          // 生成时放入的材料原件不可用（快照中的副本被改动）：按当前的输入重新放入。
+          if (run.unavailableProtectedFiles.length > 0) await writeGlobalFactsInputs(context, run, (await readGlobalFactsMaterials(context, projectId, state)).input);
+          await context.log(run.resumed ? 'Agent 继续调整全局事实。' : 'Agent 正在调整全局事实。');
+          await context.setProgress(20);
+          const stage = await run.runStage<GlobalFactGroup[]>({
+            stage: GLOBAL_FACTS_ADJUSTMENT_STAGE,
+            prompt: run.wasPrompted(GLOBAL_FACTS_ADJUSTMENT_STAGE) ? CONTINUE_PROMPT : createGlobalFactsAdjustmentPrompt(params.requirement),
+            tools: GLOBAL_FACTS_TOOLS,
+            jsonSchemas: { [GLOBAL_FACTS_OUTPUT_FILE]: GLOBAL_FACTS_JSON_SCHEMA },
+            outputFile: GLOBAL_FACTS_OUTPUT_FILE,
+            maxExecutionRetries: 0,
+            checkpointAfterPrompt: () => ({ signature }),
+            validate: globalFactsValidator(run),
+          });
+          const groups = checkedGlobalFacts(context, stage.value);
+          const reply = await run.assistantText({ maxChars: GLOBAL_FACTS_ADJUSTMENT_SUMMARY_MAX });
+          const summary = reply?.text.trim() || GLOBAL_FACTS_ADJUSTMENT_DEFAULT_SUMMARY;
+          await context.setProgress(95);
+          // 说明先随检查点保存（写入全局事实之后签名即变化，不能再续跑），再写入全局事实。
+          await run.checkpoint({ signature, summary }, 95);
+          await writeGlobalFactsResult(context, projectId, groups, signature);
+        },
+        continueFrom ? { continueFrom } : undefined,
+      );
+      await context.log('全局事实 AI 调整完成');
+    },
+  };
+}
+
 export function createTechnicalPlanJobs(options: TechnicalPlanJobOptions = {}): JobTypeDefinition<any>[] {
-  return [createSectionExtractionJob(options), createAnalysisJob(options), createGlobalFactsJob()];
+  return [createSectionExtractionJob(options), createAnalysisJob(options), createGlobalFactsJob(), createGlobalFactsAdjustmentJob()];
 }
 
 export const technicalPlanJobs = createTechnicalPlanJobs();
@@ -520,7 +694,7 @@ export async function startBidAnalysis(
  * 其后续写入因签名不符被拒绝。已结束的任务跳过。
  */
 export async function cancelTechnicalPlanJobs(jobs: JobServiceDependencies, context: TenantContext, projectId: string): Promise<void> {
-  const types: readonly string[] = [BID_SECTION_EXTRACTION_JOB_TYPE, BID_ANALYSIS_JOB_TYPE, GLOBAL_FACTS_JOB_TYPE];
+  const types: readonly string[] = [BID_SECTION_EXTRACTION_JOB_TYPE, BID_ANALYSIS_JOB_TYPE, GLOBAL_FACTS_JOB_TYPE, GLOBAL_FACTS_ADJUSTMENT_JOB_TYPE];
   const active = await listJobs(jobs.db, context, { projectId, active: true, limit: 20 });
   for (const job of active) {
     if (!types.includes(job.type)) continue;
@@ -542,4 +716,28 @@ export async function startGlobalFactsGeneration(jobs: JobServiceDependencies, c
   const problem = globalFactsProblem(await loadTechnicalPlan(jobs.db, context, projectId));
   if (problem) throw conflict(problem);
   return enqueueJob(jobs, context, { type: GLOBAL_FACTS_JOB_TYPE, projectId, lockKey: technicalPlanLockKey(projectId), params: {} });
+}
+
+/**
+ * 开始 AI 调整全局事实（取代桌面版 tasks.startGlobalFactsAdjustment，8.7c2）：调整要求去掉首尾空白后不能为空、至多 2000 字（400）；
+ * 没有全局事实、全局事实生成的会话不能续用时 409（文案与桌面版相同）；已有进行中的技术方案任务时 409 JOB_LOCKED。入 agent 队列。
+ */
+export async function startGlobalFactsAdjustment(jobs: JobServiceDependencies, context: TenantContext, projectId: string, input: { requirement: string }): Promise<JobRecord> {
+  const requirement = normalizeRequirement(input.requirement);
+  if (requirement === null) {
+    throw new AppError(400, 'TECHNICAL_PLAN_INVALID', String(input.requirement ?? '').trim() ? `调整要求超过 ${GLOBAL_FACTS_ADJUSTMENT_REQUIREMENT_MAX} 字` : '调整要求不能为空');
+  }
+  const state = await loadTechnicalPlan(jobs.db, context, projectId);
+  if (!state.globalFacts.length) throw conflict(GLOBAL_FACTS_REQUIRED);
+  if (!state.globalFactsAdjustable) throw conflict(GLOBAL_FACTS_SESSION_MISSING);
+  return enqueueJob(jobs, context, { type: GLOBAL_FACTS_ADJUSTMENT_JOB_TYPE, projectId, lockKey: technicalPlanLockKey(projectId), params: { requirement } });
+}
+
+/**
+ * 丢弃全局事实生成与调整的会话（工作区快照，8.7c2；桌面版 deleteGlobalFactsAgentTask）：导入、移除招标文件，切换单 / 多标段，选择投标
+ * 范围，目录被清空，清空技术方案时由接口调用，多标段识别开始与全部重新解析时由任务调用。store 为 null 时只标为已被替换、对象留给
+ * 清理任务。被取消的任务在退出前仍可能保存检查点（写下新的快照），它的会话不会被续用（src/agent/continuation.ts 只采用已结束的任务）。
+ */
+export async function discardGlobalFactsSession(db: Kysely<Database>, context: TenantContext, store: ObjectStore | null, projectId: string): Promise<void> {
+  await discardAgentWorkspaceSnapshots(db, context, store, projectId, [GLOBAL_FACTS_TASK_KIND]);
 }

@@ -25,6 +25,7 @@
 // POST   /api/projects/:projectId/technical-plan/bid-section-extraction             开始多标段识别（入队 bid-section-extraction）
 // POST   /api/projects/:projectId/technical-plan/bid-analysis                       开始招标解析（入队 bid-analysis）
 // POST   /api/projects/:projectId/technical-plan/global-facts-generation            开始生成全局事实（入队 global-facts-generation，agent 队列，8.7c1）
+// POST   /api/projects/:projectId/technical-plan/global-facts-adjustment            AI 调整全局事实（入队 global-facts-adjustment，{ requirement }，8.7c2）
 // POST   /api/projects/:projectId/technical-plan/export                             整本导出 Word（入队 technical-plan-export，7.4h）
 // GET    /api/projects/:projectId/technical-plan/export/:requestId                  整本导出的状态（pending / ready / expired）、提示与消息
 // GET    /api/projects/:projectId/technical-plan/export/:requestId/content          导出的 docx（附件下载）
@@ -33,7 +34,9 @@
 // 经 Store 函数写入，进度、取消、暂停、继续经 /api/jobs 与 SSE；与桌面版相同，招标文件变化（导入、移除）和清空时取消本项目进行中的技术方案
 // 任务。疑似多标段检测（桌面版 checkBidSections）由解析任务在 worker 中算出，在 GET 的 bidSectionDetection 中返回。
 // 全局事实生成在 agent 沙箱中执行（8.7c1，src/technicalPlan/jobs.ts），全局事实的写法与引用的知识库文档取已保存的生成配置，请求体不采用。
-// 目录生成 / 调整、全局事实调整、正文生成、小节 Word 预览 previewContentWord 随第 8 步；openBidTemplate 随第 8 步（它打开的投标模板由模板提取生成，模板提取随第 8 步）。
+// 全局事实调整（8.7c2）接着生成的会话与工作区；导入、移除招标文件，切换单 / 多标段，选择投标范围，目录被清空与清空时另丢弃这个会话
+// （工作区快照，桌面版 deleteGlobalFactsAgentTask）。
+// 目录生成 / 调整、正文生成、小节 Word 预览 previewContentWord 随第 8 步；openBidTemplate 随第 8 步（它打开的投标模板由模板提取生成，模板提取随第 8 步）。
 //
 // 整本导出 Word（7.4h，取代桌面版 export.word 的技术方案整本导出与 export.openFile）：POST 经 enqueueTechnicalPlanExport 取快照入队
 // （没有目录、没有有效模板、标题超过六级 400，快照过大 413，本项目已有未结束的整本导出 409 JOB_LOCKED，均不入队），按用户限流
@@ -81,7 +84,14 @@ import {
   TECHNICAL_PLAN_OUTLINE_NODES_MAX,
   TECHNICAL_PLAN_OUTLINE_SAVE_REASONS,
 } from '../technicalPlan/outline.ts';
-import { cancelTechnicalPlanJobs, startBidAnalysis, startBidSectionExtraction, startGlobalFactsGeneration } from '../technicalPlan/jobs.ts';
+import {
+  cancelTechnicalPlanJobs,
+  discardGlobalFactsSession,
+  startBidAnalysis,
+  startBidSectionExtraction,
+  startGlobalFactsAdjustment,
+  startGlobalFactsGeneration,
+} from '../technicalPlan/jobs.ts';
 import {
   clearTechnicalPlan,
   findTenderFileMarkdown,
@@ -91,14 +101,15 @@ import {
   removeOriginalPlan,
   removeTenderFile,
   resetContentGeneration,
-  saveBidAnalysisConfig,
+  saveBidAnalysisConfigReporting,
   saveChapterContent,
   saveContentGenerationOptions,
-  saveGenerationConfig,
+  saveGenerationConfigReporting,
   saveGlobalFacts,
   saveOutline,
   selectBidSection,
   setOriginalPlan,
+  GLOBAL_FACTS_ADJUSTMENT_REQUIREMENT_MAX,
   TECHNICAL_PLAN_REFERENCE_DOCUMENTS_MAX,
   TECHNICAL_PLAN_TENDER_FILES_MAX,
   updateStep,
@@ -124,6 +135,14 @@ const FILE_PARAMS = {
   type: 'object',
   properties: { ...PROJECT_ID_PARAMS.properties, fileId: UUID },
   required: ['projectId', 'fileId'],
+  additionalProperties: false,
+} as const;
+
+// 调整要求：长度按字符检查，去掉首尾空白后不能为空由服务检查（400）。
+const GLOBAL_FACTS_ADJUSTMENT_SCHEMA = {
+  type: 'object',
+  properties: { requirement: { type: 'string', maxLength: GLOBAL_FACTS_ADJUSTMENT_REQUIREMENT_MAX } },
+  required: ['requirement'],
   additionalProperties: false,
 } as const;
 
@@ -337,10 +356,17 @@ export async function registerTechnicalPlanRoutes(app: FastifyInstance, deps: Te
 
   /**
    * 招标文件变化、清空后取消进行中的技术方案任务。桌面版在提交前取消；这里在提交后取消，提交与取消之间旧任务的写入因签名不符被拒绝，
-   * 响应中的状态在取消后重新读取，与桌面版一致。
+   * 响应中的状态在取消后重新读取，与桌面版一致。取消之后丢弃全局事实的会话（下游已清空，桌面版 clearDownstreamFromTender /
+   * clearTechnicalPlan 的 deleteGlobalFactsAgentTask）。
    */
   async function cancelJobs(request: FastifyRequest, projectId: string): Promise<void> {
     await cancelTechnicalPlanJobs(deps.jobs, tenantOf(request), projectId);
+    await discardSession(request, projectId);
+  }
+
+  /** 丢弃全局事实生成与调整的会话（8.7c2，桌面版 deleteGlobalFactsAgentTask）：下游被清空（目录、全局事实）之后调用。 */
+  async function discardSession(request: FastifyRequest, projectId: string): Promise<void> {
+    await discardGlobalFactsSession(db, tenantOf(request), deps.objectStore, projectId);
   }
 
   app.get<ProjectParams>('/:projectId/technical-plan', { schema: { params: PROJECT_ID_PARAMS } }, async (request) =>
@@ -356,13 +382,25 @@ export async function registerTechnicalPlanRoutes(app: FastifyInstance, deps: Te
   app.patch<ProjectParams & { Body: GenerationConfigPatch }>(
     '/:projectId/technical-plan/generation-config',
     { schema: { params: PROJECT_ID_PARAMS, body: GENERATION_CONFIG_SCHEMA } },
-    async (request) => saveGenerationConfig(db, tenantOf(request), await project(request), request.body),
+    async (request) => {
+      const projectId = await project(request);
+      const { state, downstreamCleared } = await saveGenerationConfigReporting(db, tenantOf(request), projectId, request.body);
+      if (!downstreamCleared) return state;
+      await discardSession(request, projectId);
+      return loadTechnicalPlan(db, tenantOf(request), projectId);
+    },
   );
 
   app.put<ProjectParams & { Body: BidAnalysisConfigInput }>(
     '/:projectId/technical-plan/bid-analysis-config',
     { schema: { params: PROJECT_ID_PARAMS, body: BID_ANALYSIS_CONFIG_SCHEMA } },
-    async (request) => saveBidAnalysisConfig(db, tenantOf(request), await project(request), request.body),
+    async (request) => {
+      const projectId = await project(request);
+      const { state, downstreamCleared } = await saveBidAnalysisConfigReporting(db, tenantOf(request), projectId, request.body);
+      if (!downstreamCleared) return state;
+      await discardSession(request, projectId);
+      return loadTechnicalPlan(db, tenantOf(request), projectId);
+    },
   );
 
   app.put<ProjectParams & { Body: { contentGenerationOptions: Partial<ContentGenerationOptions> } }>(
@@ -433,13 +471,25 @@ export async function registerTechnicalPlanRoutes(app: FastifyInstance, deps: Te
   app.put<ProjectParams & { Body: { sectionId: string } }>(
     '/:projectId/technical-plan/bid-section',
     { schema: { params: PROJECT_ID_PARAMS, body: BID_SECTION_SCHEMA } },
-    async (request) => selectBidSection(db, tenantOf(request), await project(request), request.body.sectionId, deps.objectStore),
+    async (request) => {
+      const projectId = await project(request);
+      await selectBidSection(db, tenantOf(request), projectId, request.body.sectionId, deps.objectStore);
+      await discardSession(request, projectId);
+      return loadTechnicalPlan(db, tenantOf(request), projectId);
+    },
   );
 
   app.put<ProjectParams & { Body: SaveOutlineInput }>(
     '/:projectId/technical-plan/outline',
     { schema: { params: PROJECT_ID_PARAMS, body: OUTLINE_SCHEMA }, bodyLimit: OUTLINE_BODY_LIMIT },
-    async (request) => saveOutline(db, tenantOf(request), await project(request), request.body),
+    async (request) => {
+      const projectId = await project(request);
+      const state = await saveOutline(db, tenantOf(request), projectId, request.body);
+      // 目录被清空（桌面版 outlineData 为 null 时删除持久任务）：全局事实的会话不再续用。
+      if (state.outlineData !== null) return state;
+      await discardSession(request, projectId);
+      return loadTechnicalPlan(db, tenantOf(request), projectId);
+    },
   );
 
   app.put<ProjectParams & { Body: { globalFacts: unknown[] } }>(
@@ -488,6 +538,15 @@ export async function registerTechnicalPlanRoutes(app: FastifyInstance, deps: Te
     const job = await startGlobalFactsGeneration(deps.jobs, tenantOf(request), await project(request));
     return reply.code(202).send({ job: jobBody(job) });
   });
+
+  app.post<ProjectParams & { Body: { requirement: string } }>(
+    '/:projectId/technical-plan/global-facts-adjustment',
+    { schema: { params: PROJECT_ID_PARAMS, body: GLOBAL_FACTS_ADJUSTMENT_SCHEMA } },
+    async (request, reply) => {
+      const job = await startGlobalFactsAdjustment(deps.jobs, tenantOf(request), await project(request), request.body);
+      return reply.code(202).send({ job: jobBody(job) });
+    },
+  );
 
   app.post<ProjectParams>('/:projectId/technical-plan/export', { schema: { params: PROJECT_ID_PARAMS } }, async (request, reply) => {
     const context = tenantOf(request);

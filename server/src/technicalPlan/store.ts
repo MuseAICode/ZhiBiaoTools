@@ -27,8 +27,8 @@
 // saveBidSectionExtraction（多标段识别）；这几个函数接受任务开始时的输入签名（inputSignatures），在写入的同一事务中（项目锁内）
 // 核对，招标文件、投标范围变化后旧任务的写入被拒绝（6.11）。其余：
 // saveGeneratedOutline（目录生成的结果与字数控制快照）、saveContentSections / saveContentPlans / saveContentGenerationItem /
-// saveContentGenerationRuntime（第 8 步的正文生成）；全局事实生成（8.7c1）经 saveGlobalFactsResult 写入（与 saveGlobalFacts
-// 相同的整理与清空，另核对 globalFactsInputSignature）。
+// saveContentGenerationRuntime（第 8 步的正文生成）；全局事实生成与调整（8.7c1、8.7c2）经 saveGlobalFactsResult 写入（与
+// saveGlobalFacts 相同的整理与清空，另核对 globalFactsInputSignature）。
 import { createHash } from 'node:crypto';
 import { sql, type Kysely, type Transaction } from 'kysely';
 import {
@@ -75,6 +75,7 @@ import type { ObjectStore } from '../files/objectStore.ts';
 import { isFinalStatus, latestProjectJobs, type JobRecord } from '../jobs/store.ts';
 import { jobBody, type JobBody } from '../jobs/view.ts';
 import { storageDisabled } from '../knowledgeBase/content.ts';
+import { findContinuableAgentSessionIn, type AgentSessionTarget } from '../agent/continuation.ts';
 import {
   combineBidSectionDetections,
   parseBidSectionDetectionSummary,
@@ -119,8 +120,19 @@ export const BID_SECTION_EXTRACTION_JOB_TYPE = 'bid-section-extraction';
 export const BID_ANALYSIS_JOB_TYPE = 'bid-analysis';
 /** 全局事实生成（第 8 步 8.7c1，src/technicalPlan/jobs.ts），agent 队列；任务类型与桌面版相同。 */
 export const GLOBAL_FACTS_JOB_TYPE = 'global-facts-generation';
-/** 全局事实生成的工作区快照类别（与桌面版的持久任务 technical-plan-global-facts 对应）。 */
+/** 全局事实调整（第 8 步 8.7c2）：agent 队列，接着全局事实生成（或上一次调整）的会话与工作区；任务类型与桌面版相同。 */
+export const GLOBAL_FACTS_ADJUSTMENT_JOB_TYPE = 'global-facts-adjustment';
+/** 全局事实生成与调整共用的工作区快照类别（与桌面版的持久任务 technical-plan-global-facts 对应）。 */
 export const GLOBAL_FACTS_TASK_KIND = 'technical-plan-global-facts';
+/** 调整要求的字数上限（桌面版没有限制；放入提示词，与可研目录调整相同限制在 2000 字以内）。 */
+export const GLOBAL_FACTS_ADJUSTMENT_REQUIREMENT_MAX = 2000;
+/** 调整说明（Agent 最后一条回复）的字数上限：桌面版提示词要求不超过 200 字，超出的截短。 */
+export const GLOBAL_FACTS_ADJUSTMENT_SUMMARY_MAX = 2000;
+
+/** 全局事实调整接着的会话：全局事实生成或上一次调整写下的、与当前快照同一对的现场（src/agent/continuation.ts）。 */
+export function globalFactsSessionTarget(projectId: string): AgentSessionTarget {
+  return { projectId, taskKind: GLOBAL_FACTS_TASK_KIND, jobTypes: [GLOBAL_FACTS_JOB_TYPE, GLOBAL_FACTS_ADJUSTMENT_JOB_TYPE] };
+}
 
 /**
  * 技术方案的任务互斥（与桌面版 technical-plan 组的 group-exclusive 相同）：同一项目同时只有一个技术方案任务。第 8 步的目录、
@@ -261,7 +273,15 @@ export interface TechnicalPlanState extends TechnicalPlanGenerationConfig {
   outlineAdjustmentTask: null;
   /** 本项目最近一次的全局事实生成任务（8.7c1），没有时为 null。 */
   globalFactsTask: JobBody | null;
-  globalFactsAdjustmentTask: null;
+  /** 本项目最近一次的全局事实调整任务（8.7c2），没有时为 null。 */
+  globalFactsAdjustmentTask: JobBody | null;
+  /**
+   * 最近一次全局事实调整的要求与 Agent 的说明（桌面版 globalFactsAdjustmentTask.stats.adjustment）；没有调整任务时为 null。summary 是 AI
+   * 生成的内容（按纯文本显示），调整还没有成功完成时为 null（前端显示失败原因或进度）。
+   */
+  globalFactsAdjustment: { requirement: string; summary: string | null } | null;
+  /** 能否发起全局事实调整：有全局事实，且全局事实生成（或上一次调整）的 Agent 会话可以续用（桌面版 hasPersistentTaskSession）。 */
+  globalFactsAdjustable: boolean;
   /** 各节的正文生成状态，按节点 id。 */
   contentGenerationSections: Record<string, ContentGenerationSection>;
   /** 各节的正文编排，按节点 id。 */
@@ -706,10 +726,12 @@ export async function readState(trx: Trx, projectId: string): Promise<TechnicalP
   });
   const snapshot = meta?.outline_word_control_snapshot;
   const strip = ({ role: _role, detection: _detection, ...document }: DocumentRow): TechnicalPlanDocument => document;
-  const jobs = await latestProjectJobs(trx, projectId, [BID_SECTION_EXTRACTION_JOB_TYPE, BID_ANALYSIS_JOB_TYPE, GLOBAL_FACTS_JOB_TYPE]);
+  const jobs = await latestProjectJobs(trx, projectId, [BID_SECTION_EXTRACTION_JOB_TYPE, BID_ANALYSIS_JOB_TYPE, GLOBAL_FACTS_JOB_TYPE, GLOBAL_FACTS_ADJUSTMENT_JOB_TYPE]);
   const extractionTask = jobs.get(BID_SECTION_EXTRACTION_JOB_TYPE);
   const analysisTask = jobs.get(BID_ANALYSIS_JOB_TYPE);
   const globalFactsTask = jobs.get(GLOBAL_FACTS_JOB_TYPE);
+  const globalFactsAdjustmentTask = jobs.get(GLOBAL_FACTS_ADJUSTMENT_JOB_TYPE);
+  const globalFacts = await readGlobalFacts(trx, projectId);
   // 与桌面版 recoverInterruptedBidAnalysisTask 相同：任务已结束时仍是 running 的解析项按未完成显示（只改读出的状态）。
   const analysisStale = isStale(analysisTask);
   for (const item of items) {
@@ -742,16 +764,30 @@ export async function readState(trx: Trx, projectId: string): Promise<TechnicalP
     bidAnalysisTask: analysisTask ? jobBody(analysisTask) : null,
     outlineData: outline,
     outlineWordControlSnapshot: snapshot ? normalizeWordControl(snapshot) : null,
-    globalFacts: await readGlobalFacts(trx, projectId),
+    globalFacts,
     outlineGenerationTask: null,
     outlineAdjustmentTask: null,
     globalFactsTask: globalFactsTask ? jobBody(globalFactsTask) : null,
-    globalFactsAdjustmentTask: null,
+    globalFactsAdjustmentTask: globalFactsAdjustmentTask ? jobBody(globalFactsAdjustmentTask) : null,
+    globalFactsAdjustment: adjustmentOf(globalFactsAdjustmentTask),
+    globalFactsAdjustable: globalFacts.length > 0 && (await findContinuableAgentSessionIn(trx, globalFactsSessionTarget(projectId))) !== null,
     contentGenerationSections: await readContentSections(trx, projectId, outlineRows, outline),
     contentGenerationPlans: await readContentPlans(trx, projectId),
     contentGenerationRuntime: meta?.content_generation_runtime ?? null,
     contentGenerationTask: null,
   };
+}
+
+/** 调整任务的要求（任务参数）与成功后写下的说明（任务最后的 checkpoint 中，src/technicalPlan/jobs.ts）。 */
+function adjustmentOf(job: Pick<JobRecord, 'status' | 'params' | 'checkpoint'> | undefined): TechnicalPlanState['globalFactsAdjustment'] {
+  if (!job) return null;
+  const requirement = typeof job.params.requirement === 'string' ? job.params.requirement : '';
+  const task = job.checkpoint?.task;
+  const summary =
+    job.status === 'succeeded' && typeof task === 'object' && task !== null && typeof (task as Record<string, unknown>).summary === 'string'
+      ? ((task as Record<string, unknown>).summary as string).slice(0, GLOBAL_FACTS_ADJUSTMENT_SUMMARY_MAX)
+      : null;
+  return { requirement, summary };
 }
 
 export async function loadTechnicalPlan(db: Kysely<Database>, context: TenantContext, projectId: string): Promise<TechnicalPlanState> {
@@ -935,16 +971,27 @@ export async function saveGenerationConfig(
   projectId: string,
   partial: GenerationConfigPatch,
 ): Promise<TechnicalPlanState> {
+  return (await saveGenerationConfigReporting(db, context, projectId, partial)).state;
+}
+
+/** 同 saveGenerationConfig，另返回是否切换了单 / 多标段（清空了下游；接口据此丢弃全局事实的会话，8.7c2）。 */
+export async function saveGenerationConfigReporting(
+  db: Kysely<Database>,
+  context: TenantContext,
+  projectId: string,
+  partial: GenerationConfigPatch,
+): Promise<{ state: TechnicalPlanState; downstreamCleared: boolean }> {
   return withTenant(db, context, async (trx) => {
     await lockProject(trx, projectId);
     const current = await readGenerationConfig(trx, projectId);
     const nextSectionMode = hasOwn(partial, 'bidSectionMode') ? (partial.bidSectionMode === 'multiple' ? 'multiple' : 'single') : current.bidSectionMode;
-    if (nextSectionMode !== current.bidSectionMode) {
+    const downstreamCleared = nextSectionMode !== current.bidSectionMode;
+    if (downstreamCleared) {
       await clearDownstreamFromBidSectionChange(trx, context, projectId);
       await writeMeta(trx, context, projectId, RESET_BID_SECTIONS);
     }
     await updateGenerationConfig(trx, context, projectId, partial);
-    return readState(trx, projectId);
+    return { state: await readState(trx, projectId), downstreamCleared };
   });
 }
 
@@ -961,8 +1008,18 @@ export async function saveBidAnalysisConfig(
   projectId: string,
   input: BidAnalysisConfigInput,
 ): Promise<TechnicalPlanState> {
+  return (await saveBidAnalysisConfigReporting(db, context, projectId, input)).state;
+}
+
+/** 同 saveBidAnalysisConfig，另返回是否切换了单 / 多标段（清空了下游；接口据此丢弃全局事实的会话，8.7c2）。 */
+export async function saveBidAnalysisConfigReporting(
+  db: Kysely<Database>,
+  context: TenantContext,
+  projectId: string,
+  input: BidAnalysisConfigInput,
+): Promise<{ state: TechnicalPlanState; downstreamCleared: boolean }> {
   const config = normalizeBidAnalysisConfig(input.mode, input.selectedTaskIds);
-  return saveGenerationConfig(db, context, projectId, {
+  return saveGenerationConfigReporting(db, context, projectId, {
     bidAnalysisMode: config.mode,
     bidAnalysisSelectedTaskIds: config.selectedTaskIds,
     ...(input.bidSectionMode === undefined ? {} : { bidSectionMode: oneOf(input.bidSectionMode, TECHNICAL_PLAN_BID_SECTION_MODES, 'single') }),
@@ -2047,7 +2104,7 @@ export async function globalFactsInputSignature(db: Kysely<Database>, context: T
 }
 
 /**
- * 全局事实生成任务的结果：与 saveGlobalFacts 相同整理后整体替换并清空正文阶段，在项目锁内核对输入签名，不符时不写入、返回 false。
+ * 全局事实生成与调整任务的结果：与 saveGlobalFacts 相同整理后整体替换并清空正文阶段，在项目锁内核对输入签名，不符时不写入、返回 false。
  * 分组过多或超长时抛 OutlineInputError（任务的提交校验已先检查）。
  */
 export async function saveGlobalFactsResult(
