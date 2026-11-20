@@ -362,6 +362,7 @@ Markdown 中远程图片的下载（`docs/EXTERNAL_SERVICES.md` §2.9）URL 来�
 
 - 取消 / 暂停：api 把 `jobs.status` 改为 `cancelling` / `paused`（执行中的暂停记为 `pause_requested`）并向控制频道 `{BullMQ 前缀}:jobs:control` 发布任务 id（6.3；原设计为每个任务一个 `cancel:{jobId}`）；worker 收到后对正在执行的该任务立即续租一次，从 `jobs` 读到请求，消息本身不被信任；worker 内每个任务持有 `AbortController`，收到信号后在下一个检查点退出（现有 `agentInterruption.cjs`、`pauseContentGeneration` 的语义保留）；
 - Agent 正在等用户回答（`ask-user`）时，任务状态为 `running`，问题存进 `agent_questions`，经 SSE 的 `job.question` 事件通知、`GET /api/jobs/:id` 的 `pendingQuestion` 读取，回答经 `POST /api/jobs/:id/answer` 写入，等待中的工具调用随即取回；等待超过 10 分钟任务暂停为 `waiting_for_user`，回答后自动继续（8.4c1，见第 7.17 节）。桌面版的自动确认（到时自动选推荐项）不做，随第 9 步再定；
+- 任务需要用户确认一项选择才能继续时（例如技术方案目录生成的一级目录确认，8.7e1）：任务先保存检查点（待确认的内容写在 checkpoint 中）再抛 `JobSelectionRequiredError`，执行者把任务暂停为 `waiting_for_selection`（迁移 `0044_job_pause_selection`；已请求暂停 / 取消的按请求收尾），沙箱随即销毁、不占 Agent 并发与运行时长；普通的“继续”返回 409 `JOB_SELECTION_REQUIRED`，只能经该任务类型的确认接口继续（`confirmJobSelection`：限任务发起人或 `owner` / `admin`，选择由业务代码按 checkpoint 中待确认的内容校验后写进 checkpoint，任务回到 `queued`，继续前照常检查最低启动余额与当日运行时长），见第 7.35 节；
 - 恢复：worker 崩溃后租约过期，由对账收回并交给其他 worker，任务从 `jobs.checkpoint` 继续（现有“重启恢复”逻辑改成读 `jobs` 表；不依赖 BullMQ 的 stalled 检测，它在 Redis 被清空后无从发现）。6.2 中取消、暂停由执行者续租时从 `jobs` 读到；6.3 接入控制频道后立即送达，错过消息时仍在下一次续租时发现。Agent 任务的会话文件和工作区在对象存储中有快照（第 7.3 节），可以从最近一次快照恢复。
 
 ## 6. 文件上传、存储与下载
@@ -851,11 +852,23 @@ worker 经 sandbox-runner 执行 agent 模板登记的唯一命令 `run`（`node
 
 第三个调整任务（`outline-adjustment`，`src/technicalPlan/jobs.ts`；`outline.json`、提示词、预置 Schema 与提交校验在 `outlineAgent.ts`，与桌面版 `outlineAdjustmentTask.cjs`、`outlineGenerationTaskV2.cjs` 逐项对照），沿用第 7.31 节的跨任务续用。
 
-- **登记**：agent 队列、上限 `outline`、`ask-user` / `request-termination`、快照类别 `technical-plan-outline-generation`、`keepAfterSuccess`。参数只有 `requirement`（去掉首尾空白、不为空、至多 2000 字）。没有目录、会话不能续用时失败（文案与桌面版相同，入队时也检查，409）。同组任务类型为 `outline-generation`（目录生成，8.7e 实现）与 `outline-adjustment`；8.7e 之前没有可以续用的会话。
+- **登记**：agent 队列、上限 `outline`、`ask-user` / `request-termination`、快照类别 `technical-plan-outline-generation`、`keepAfterSuccess`。参数只有 `requirement`（去掉首尾空白、不为空、至多 2000 字）。没有目录、会话不能续用时失败（文案与桌面版相同，入队时也检查，409）。同组任务类型为 `outline-generation`（目录生成，8.7e1 起，第 7.35 节）与 `outline-adjustment`。
 - **执行**：首次执行把找到的现场交给 `open({ continueFrom })`；当前目录（数据库中的）按桌面版 `buildAgentOutlineInput` 写入 `outline.json`，写入后解除登记。提交校验与桌面版 `validateOutlineOutput(..., { checkSchema: false })` 相同（节点 id 只能沿用当前目录的，新节点填 null），另按服务端目录上限检查；通过后新节点分配 id、编号并写回 `outline.json`。结果经 `saveOutlineAdjustmentResult` 带首次执行开始时的 `outlineAdjustmentInputSignature`（招标文件与投标范围、目录各节点的全部字段与正文摘要、项目名称与概述）整体替换目录、清空正文与正文生成状态。
 - **调整说明**：与第 7.31 节相同（至多 2000 字，取不到时为“目录已按要求调整完成。”，写进 checkpoint，不写任务日志）；页面状态的 `outlineAdjustment` 与 `outlineAdjustable`。
 - **丢弃会话**：目录与全局事实的会话在同样的入口一并丢弃（`discardTechnicalPlanSessions`，桌面版 `deleteOutlineAgentTask` 与 `deleteGlobalFactsAgentTask` 总是一起调用），入口见第 7.33 节。
 - **接口**：`POST /api/projects/:projectId/technical-plan/outline-adjustment`（`{ requirement }`，202；400；409 `TECHNICAL_PLAN_OUTLINE_REQUIRED` / `TECHNICAL_PLAN_OUTLINE_SESSION_MISSING` / `JOB_LOCKED`）。
+
+### 7.35 实现（路线图 8.7e1）：技术方案目录生成的一级目录与确认
+
+目录生成（`outline-generation`，`src/technicalPlan/jobs.ts`；材料、提示词、提交校验与确认的校验在 `outlineAgent.ts`，与桌面版 `outlineGenerationTaskV2.cjs`、`taskService.cjs` 逐项对照）的第一部分：生成一级目录、等待用户确认，确认后所选一级目录无需 AI 扩展时整理为最终目录。需要 AI 扩展的后续阶段（评分规划、叶子分配、子目录生成、叶子调整、目录审查）随 8.7e2。
+
+- **登记**：agent 队列、上限 `outline`、`ask-user` / `request-termination`、快照类别 `technical-plan-outline-generation`、`keepAfterSuccess`（目录调整接着它的会话，第 7.34 节）。参数只有 `noTechnicalScoreMode`（用户对“无技术评分项模式”的确认；技术评分项缺失时必须为 true）。目录的组织方式、扩展方式、字数控制与引用的知识库文档取已保存的生成配置。
+- **前置条件**（入队与执行时相同，文案与桌面版相同）：技术评分要求须解析成功（409 `TECHNICAL_PLAN_TECH_REQUIREMENTS_REQUIRED`），技术评分项缺失而未确认时 409 `TECHNICAL_PLAN_NO_TECHNICAL_SCORE_CONFIRM_REQUIRED`；原方案未解析完成 / 解析失败时 409（Web 版新增，同第 7.32 节）。
+- **一级目录阶段**：材料（`响应文件要求.md`、`技术评分信息.md`、`项目概述.md`、`原方案.md`、`参考知识库/参考资料-*.md`，按组织方式、是否只按原方案与无技术评分项模式取舍，与桌面版相同）登记为受保护文件，预置空的 `outline.json`；提示词、阶段 `initial-outline`、工具、`outline.json` 的预置 Schema 与桌面版相同；提交校验与桌面版 `validateOutlineOutput(content)` 相同（经提交修复，执行失败不重试），另限一级目录至多 100 项、内容至多 256 KiB（待确认的内容写在 checkpoint 中）；通过后写回 `outline.json`。
+- **确认**：生成的一级目录与默认选择（桌面版 `defaultSelectedIds`）随检查点写进 checkpoint（`{ signature, selection }`），任务暂停为 `waiting_for_selection`（第 5.6 节）。`POST /api/projects/:projectId/technical-plan/outline-selection`（`{ jobId, selectedIds, changes? }`）经 `confirmJobSelection` 确认：选择须非空、不重复、都是待确认的一级目录，`changes` 只能改属性与内容处理模式（桌面版确认对话框能改的），标题、说明与 id 以服务端保存的为准；确认的选择写进 checkpoint 的 `confirmed`，任务回到 `queued`。页面状态的 `outlineGenerationTask` 与 `outlineSelection`（`items`、`selected_ids`、`confirmed`）。
+- **确认之后**：所选一级目录按原顺序重新编号；都不需要 AI 扩展（没有 `ai-generate`）时整理为最终目录（桌面版 `buildFinalOutline`），经 `saveOutlineGenerationResult` 带首次执行开始时的 `outlineGenerationInputSignature`（目录调整的签名加原方案、招标解析项、组织方式 / 扩展方式 / 字数控制、引用的知识库文档与全局事实）整体替换目录、清空正文与全局事实、写入字数控制快照，再丢弃全局事实的会话；这一路不打开沙箱。需要 AI 扩展时以 `TECHNICAL_PLAN_OUTLINE_STAGE_UNAVAILABLE` 失败（8.7e2 之前）。
+- **投标模板提取**：桌面版有模板填写一级目录时并行执行（属 8.13）；8.7e1 开始前用户决定先不接入，模板填写的一级目录照常保留其处理方式。
+- **接口**：`POST /api/projects/:projectId/technical-plan/outline-generation`（`{ noTechnicalScoreMode? }`，202；409 见上 / `JOB_LOCKED`）；确认见上（200；400；403 `JOB_SELECTION_FORBIDDEN`；404；409 `JOB_SELECTION_NOT_PENDING`；402 / 429）。
 
 ## 8. 部署架构
 

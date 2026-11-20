@@ -8,7 +8,7 @@ import type { TenantContext } from '../db/tenant.ts';
 import type { JobTypeRegistry } from './definitions.ts';
 import { NULL_JOB_NOTIFIER, type JobNotifier } from './notify.ts';
 import type { JobDispatcher } from './queue.ts';
-import { answerAgentQuestion, confirmTaskLimit, insertJobSuperseding, requestCancel, requestPause, requestResume, type AgentAnswerInput, type InsertedJob, type JobRecord, type NewJob } from './store.ts';
+import { answerAgentQuestion, confirmJobSelection, confirmTaskLimit, insertJobSuperseding, requestCancel, requestPause, requestResume, type AgentAnswerInput, type InsertedJob, type JobSelectionInput, type JobRecord, type NewJob } from './store.ts';
 
 export interface JobServiceDependencies {
   db: Kysely<Database>;
@@ -97,6 +97,17 @@ export async function answerJobQuestion(deps: JobServiceDependencies, context: T
   const notifier = deps.notifier ?? NULL_JOB_NOTIFIER;
   await notifier.changed(change.job);
   await notifier.question(change.job, change.questionId, 'answered');
+  if (change.dispatch) await dispatchBestEffort(deps, change.job);
+  return change.job;
+}
+
+/**
+ * 确认任务等待的选择（8.7e1，例如技术方案目录生成的一级目录）：发起人或组织 owner / admin；任务须因等待确认而暂停。选择写进
+ * checkpoint 后任务回到 queued 并派发（余额不足 402、当日运行时长用完 429，什么都不改）。
+ */
+export async function confirmJobSelectionAndDispatch(deps: JobServiceDependencies, context: TenantContext, jobId: string, input: JobSelectionInput): Promise<JobRecord> {
+  const change = await confirmJobSelection(deps.db, context, jobId, input, (type) => deps.registry.get(type)?.billable === true, deps.agentQuota);
+  await (deps.notifier ?? NULL_JOB_NOTIFIER).changed(change.job);
   if (change.dispatch) await dispatchBestEffort(deps, change.job);
   return change.job;
 }

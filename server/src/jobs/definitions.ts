@@ -205,6 +205,19 @@ export class JobModelUnavailableError extends Error {
   }
 }
 
+/**
+ * 任务需要用户确认一项选择才能继续（8.7e1，迁移 0044_job_pause_selection；例如技术方案目录生成的一级目录确认）：任务先保存检查点
+ * （待确认的内容写在 checkpoint 中），再抛出本错误；执行者把任务暂停为 paused / waiting_for_selection。用户经该任务类型的确认接口
+ * 提交选择（src/jobs/store.ts 的 confirmJobSelection 把选择写进 checkpoint）后任务回到 queued，续跑时任务从 checkpoint 取回选择；
+ * 普通的“继续”不放行。
+ */
+export class JobSelectionRequiredError extends Error {
+  constructor(options?: ErrorOptions) {
+    super('job is waiting for the user to confirm a selection', options);
+    this.name = 'JobSelectionRequiredError';
+  }
+}
+
 /** 租约已丢失（被对账收回或任务已被别人结束）：当前执行者的写入不再生效，应立即退出。 */
 export class JobInterruptedError extends Error {
   constructor() {

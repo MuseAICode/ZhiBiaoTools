@@ -58,7 +58,8 @@ import type { TECHNICAL_PLAN_CONTENT_MODES } from './migrations/0019_technical_p
 import type { JOB_EVENT_KINDS, JOB_STATUSES } from './migrations/0021_jobs.ts';
 import type { AGENT_BUDGET_EXHAUSTED_REASONS } from './migrations/0033_agent_job_budgets.ts';
 import type { AGENT_QUESTION_STATUSES } from './migrations/0039_agent_questions.ts';
-import type { AGENT_MODEL_REJECTION_REASONS, JOB_PAUSE_REASONS } from './migrations/0043_agent_model_rejections.ts';
+import type { AGENT_MODEL_REJECTION_REASONS } from './migrations/0043_agent_model_rejections.ts';
+import type { JOB_PAUSE_REASONS } from './migrations/0044_job_pause_selection.ts';
 import type { ProjectKind } from '../projects/store.ts';
 
 type Timestamp = ColumnType<Date, Date | string, Date | string>;

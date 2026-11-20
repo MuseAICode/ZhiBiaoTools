@@ -4,3 +4,5 @@ coverage/
 .env
 .env.*
 .dev-secrets/
+# 本地 Redis / Valkey 的持久化文件
+dump.rdb

@@ -6,7 +6,7 @@
 // 3. 重置：discardAgentWorkspaceSnapshots 只丢弃给出的类别，其他项目、其他类别、其他组织不受影响；
 // 4. 登记：只有 agent 队列能登记，类别须符合 0040 的规则；
 // 5. 执行者端到端：成功后丢弃快照（keepAfterSuccess 保留）；超出配额暂停为 storage_quota（任务吞掉错误也暂停），删除文件后普通的“继续”
-//    从上一个检查点续跑；暂停后继续时恢复上次的工作区；恢复失败、工作区被拒绝时任务失败；没有对象存储或 driver 不能整体取回时为 null；
+//    从上一个检查点续跑；等待用户确认选择时暂停为 waiting_for_selection（8.7e1），确认后续跑；暂停后继续时恢复上次的工作区；恢复失败、工作区被拒绝时任务失败；没有对象存储或 driver 不能整体取回时为 null；
 // 6. 回滚 0041：storage_quota 暂停的任务按手动暂停处理。
 // 沙箱用内存桩（取回经与真实 driver 相同的 toOutputArchive，放入按模板的输入规则校验），对象存储用内存实现。
 import { randomUUID } from 'node:crypto';
@@ -36,6 +36,7 @@ import { DOCUMENT_MAX_BYTES, ORG_STORAGE_QUOTA_BYTES } from '../../src/files/pol
 import {
   createJobTypeRegistry,
   JobError,
+  JobSelectionRequiredError,
   JobStorageQuotaError,
   type JobContext,
   type JobTypeDefinition,
@@ -43,7 +44,7 @@ import {
 import { createJobDispatcher, type JobDispatcher } from '../../src/jobs/queue.ts';
 import { createJobRunner, type JobRunner } from '../../src/jobs/runner.ts';
 import { enqueueJob } from '../../src/jobs/service.ts';
-import { listJobEvents, requestPause, requestResume } from '../../src/jobs/store.ts';
+import { confirmJobSelection, listJobEvents, requestPause, requestResume } from '../../src/jobs/store.ts';
 import { bullmqConnection } from '../../src/redis.ts';
 import { readArchive, SandboxArchiveError, validateArchiveStream } from '../../src/sandbox/archive.ts';
 import { SandboxError, type SandboxDriver, type SandboxRef } from '../../src/sandbox/driver.ts';
@@ -642,6 +643,34 @@ describe('执行者端到端', () => {
     expect(await waitStatus(job.id, 'paused', '任务暂停')).toMatchObject({ pause_reason: 'storage_quota', checkpoint: null });
   });
 
+  it('任务抛出 JobSelectionRequiredError（8.7e1）：暂停为 waiting_for_selection、checkpoint 保留；普通继续 409，确认后回到 queued，续跑时看到确认的选择', async () => {
+    const { dispatcher } = await startRunner();
+    const member = await newMember();
+    fake.state.output = gnuTar(WORKSPACE);
+    steps = [
+      async (context) => {
+        await context.agentWorkspace!.saveCheckpoint(sandboxRef(context.jobId), { step: 1 }, 30);
+        throw new JobSelectionRequiredError();
+      },
+      async () => {},
+    ];
+    const { job, projectId } = await enqueue(member, dispatcher, 'test-ws-keep');
+    expect(await waitStatus(job.id, 'paused', '等待确认')).toMatchObject({ pause_reason: 'waiting_for_selection', checkpoint: { step: 1 } });
+    const events = await listJobEvents(appDb, member.context, job.id, 50);
+    expect(events.find((event) => event.kind === 'paused')).toMatchObject({ message: '等待确认，确认后任务会继续', data: { reason: 'waiting_for_selection' } });
+    await expect(requestResume(appDb, member.context, job.id)).rejects.toMatchObject({ code: 'JOB_SELECTION_REQUIRED' });
+    // 类型或项目不符按不存在处理；apply 的结果写进 checkpoint。
+    await expect(confirmJobSelection(appDb, member.context, job.id, { projectId, type: 'test-ws-job', apply: (checkpoint) => checkpoint! })).rejects.toMatchObject({ code: 'JOB_NOT_FOUND' });
+    await expect(confirmJobSelection(appDb, member.context, job.id, { projectId: randomUUID(), type: 'test-ws-keep', apply: (checkpoint) => checkpoint! })).rejects.toMatchObject({ code: 'JOB_NOT_FOUND' });
+    const change = await confirmJobSelection(appDb, member.context, job.id, { projectId, type: 'test-ws-keep', apply: (checkpoint) => ({ ...checkpoint, confirmed: true }) });
+    expect(change).toMatchObject({ dispatch: true, job: { status: 'queued', pauseReason: null } });
+    await expect(confirmJobSelection(appDb, member.context, job.id, { projectId, type: 'test-ws-keep', apply: (checkpoint) => checkpoint! })).rejects.toMatchObject({ code: 'JOB_SELECTION_NOT_PENDING' });
+    await dispatcher.dispatch({ id: job.id, orgId: member.orgId, type: 'test-ws-keep', queue: 'agent' });
+    await waitStatus(job.id, 'succeeded', '确认后续跑成功');
+    expect(seen.map((entry) => entry.checkpoint)).toEqual([null, { step: 1, confirmed: true }]);
+    expect((await snapshotRows(projectId)).map((row) => row.superseded_at)).toEqual([null]);
+  });
+
   it('暂停后继续：恢复上次检查点的工作区；快照被篡改时任务以 AGENT_WORKSPACE_RESTORE_FAILED 失败、快照被丢弃', async () => {
     const { dispatcher } = await startRunner();
     const member = await newMember();
@@ -724,6 +753,7 @@ describe('迁移 0041', () => {
 
     const owner = connect(testDb.ownerConfig);
     try {
+      expect((await migrateDown(owner)).results?.map((result) => result.migrationName)).toEqual(['0044_job_pause_selection']);
       expect((await migrateDown(owner)).results?.map((result) => result.migrationName)).toEqual(['0043_agent_model_rejections']);
       expect((await migrateDown(owner)).results?.map((result) => result.migrationName)).toEqual(['0042_agent_tool_scopes']);
       expect((await migrateDown(owner)).results?.map((result) => result.migrationName)).toEqual(['0041_job_pause_storage_quota']);

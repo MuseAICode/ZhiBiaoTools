@@ -28,6 +28,7 @@
 // Agent 执行（8.6d1，src/agent/execution.ts）：agent 队列中工作区快照可用的任务另有 context.agent（沙箱、令牌、逐条提示词、
 // 提交校验与检查点）；任务抛出的 JobBalanceExhaustedError（沙箱中的模型调用余额不足）同样暂停为 insufficient_balance，
 // JobModelUnavailableError（没有选择模型 / 所选模型不可用，8.6d3）暂停为 model_not_configured / model_unavailable。
+// 任务抛出的 JobSelectionRequiredError（等待用户确认选择，8.7e1）暂停为 waiting_for_selection，经该任务类型的确认接口继续。
 import { randomUUID } from 'node:crypto';
 import { DelayedError, Worker, type Job, type RedisOptions as BullmqRedisOptions } from 'bullmq';
 import { Redis } from 'ioredis';
@@ -51,6 +52,7 @@ import {
   JobError,
   JobInterruptedError,
   JobModelUnavailableError,
+  JobSelectionRequiredError,
   JobStorageQuotaError,
   JobTaskLimitError,
   maxAttemptsOf,
@@ -354,6 +356,9 @@ export function createJobRunner(options: JobRunnerOptions): JobRunner {
       } else if (controller.signal.reason === 'agent-question-timeout' && !lost) {
         // 等待用户回答超时（8.4c1）：暂停为 waiting_for_user，用户回答后自动继续。
         outcome = { kind: 'waiting-for-user' };
+      } else if (error instanceof JobSelectionRequiredError && !controller.signal.aborted) {
+        // 等待用户确认选择（8.7e1）：任务已保存检查点，暂停为 waiting_for_selection；期间请求了取消、暂停的按请求收尾（finishRun）。
+        outcome = { kind: 'waiting-for-selection' };
       } else if (controller.signal.aborted || error instanceof JobInterruptedError) {
         outcome = { kind: 'interrupted' };
       } else if (error instanceof JobError) {

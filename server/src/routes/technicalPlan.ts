@@ -26,6 +26,8 @@
 // POST   /api/projects/:projectId/technical-plan/bid-analysis                       开始招标解析（入队 bid-analysis）
 // POST   /api/projects/:projectId/technical-plan/global-facts-generation            开始生成全局事实（入队 global-facts-generation，agent 队列，8.7c1）
 // POST   /api/projects/:projectId/technical-plan/global-facts-adjustment            AI 调整全局事实（入队 global-facts-adjustment，{ requirement }，8.7c2）
+// POST   /api/projects/:projectId/technical-plan/outline-generation                 开始生成目录（入队 outline-generation，{ noTechnicalScoreMode? }，8.7e1）
+// POST   /api/projects/:projectId/technical-plan/outline-selection                  确认一级目录（{ jobId, selectedIds, changes? }，目录生成随即继续，8.7e1）
 // POST   /api/projects/:projectId/technical-plan/outline-adjustment                 AI 调整目录（入队 outline-adjustment，{ requirement }，8.7d）
 // POST   /api/projects/:projectId/technical-plan/export                             整本导出 Word（入队 technical-plan-export，7.4h）
 // GET    /api/projects/:projectId/technical-plan/export/:requestId                  整本导出的状态（pending / ready / expired）、提示与消息
@@ -85,6 +87,7 @@ import {
   TECHNICAL_PLAN_OUTLINE_NODES_MAX,
   TECHNICAL_PLAN_OUTLINE_SAVE_REASONS,
 } from '../technicalPlan/outline.ts';
+import { OUTLINE_ATTRIBUTES, OUTLINE_CONTENT_MODES, OUTLINE_SELECTION_ITEMS_MAX } from '../technicalPlan/outlineAgent.ts';
 import {
   cancelTechnicalPlanJobs,
   discardTechnicalPlanSessions,
@@ -92,7 +95,9 @@ import {
   startBidSectionExtraction,
   startGlobalFactsAdjustment,
   startGlobalFactsGeneration,
+  confirmOutlineSelection,
   startOutlineAdjustment,
+  startOutlineGeneration,
 } from '../technicalPlan/jobs.ts';
 import {
   clearTechnicalPlan,
@@ -146,6 +151,37 @@ const GLOBAL_FACTS_ADJUSTMENT_SCHEMA = {
   type: 'object',
   properties: { requirement: { type: 'string', maxLength: GLOBAL_FACTS_ADJUSTMENT_REQUIREMENT_MAX } },
   required: ['requirement'],
+  additionalProperties: false,
+} as const;
+
+const OUTLINE_GENERATION_SCHEMA = {
+  type: 'object',
+  properties: { noTechnicalScoreMode: { type: 'boolean' } },
+  additionalProperties: false,
+} as const;
+
+/** 一级目录确认：选择与修改的条数不超过待确认的一级目录数（OUTLINE_SELECTION_ITEMS_MAX），取值由业务代码再按待确认的内容校验。 */
+const OUTLINE_SELECTION_SCHEMA = {
+  type: 'object',
+  properties: {
+    jobId: UUID,
+    selectedIds: { type: 'array', minItems: 1, maxItems: OUTLINE_SELECTION_ITEMS_MAX, items: UUID },
+    changes: {
+      type: 'array',
+      maxItems: OUTLINE_SELECTION_ITEMS_MAX,
+      items: {
+        type: 'object',
+        properties: {
+          id: UUID,
+          attr: { type: 'string', enum: [...OUTLINE_ATTRIBUTES] },
+          contentMode: { type: 'string', enum: [...OUTLINE_CONTENT_MODES] },
+        },
+        required: ['id'],
+        additionalProperties: false,
+      },
+    },
+  },
+  required: ['jobId', 'selectedIds'],
   additionalProperties: false,
 } as const;
 
@@ -551,6 +587,29 @@ export async function registerTechnicalPlanRoutes(app: FastifyInstance, deps: Te
     async (request, reply) => {
       const job = await startGlobalFactsAdjustment(deps.jobs, tenantOf(request), await project(request), request.body);
       return reply.code(202).send({ job: jobBody(job) });
+    },
+  );
+
+  app.post<ProjectParams & { Body: { noTechnicalScoreMode?: boolean } }>(
+    '/:projectId/technical-plan/outline-generation',
+    {
+      schema: { params: PROJECT_ID_PARAMS, body: OUTLINE_GENERATION_SCHEMA },
+      preValidation: async (request) => {
+        request.body ??= {};
+      },
+    },
+    async (request, reply) => {
+      const job = await startOutlineGeneration(deps.jobs, tenantOf(request), await project(request), request.body);
+      return reply.code(202).send({ job: jobBody(job) });
+    },
+  );
+
+  app.post<ProjectParams & { Body: { jobId: string; selectedIds: string[]; changes?: { id: string; attr?: string; contentMode?: string }[] } }>(
+    '/:projectId/technical-plan/outline-selection',
+    { schema: { params: PROJECT_ID_PARAMS, body: OUTLINE_SELECTION_SCHEMA } },
+    async (request) => {
+      const job = await confirmOutlineSelection(deps.jobs, tenantOf(request), await project(request), request.body);
+      return { job: jobBody(job) };
     },
   );
 

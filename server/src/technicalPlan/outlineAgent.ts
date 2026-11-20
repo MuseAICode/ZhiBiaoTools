@@ -1,7 +1,8 @@
-// 技术方案目录的 Agent 材料、提示词与提交校验（路线图第 8 步 8.7d 目录调整）：与桌面版 client/electron/services/outlineAdjustmentTask.cjs
+// 技术方案目录的 Agent 材料、提示词与提交校验（路线图第 8 步 8.7d 目录调整、8.7e1 目录生成的一级目录与确认）：与桌面版 client/electron/services/outlineAdjustmentTask.cjs
 // （buildAgentOutlineInput、createOutlineAdjustmentPrompt）、outlineGenerationTaskV2.cjs（OUTLINE_OUTPUT_FILE、OUTLINE_JSON_SCHEMA、
-// validateJsonOutput、validateOutlineOutput、buildFinalOutline）与 technicalPlanOutline.cjs（NODE_ID_PATTERN、collectOutlineIds、
-// acceptAgentOutline）相同（tests/technicalPlan/outlineAdjustmentJob.test.ts 加载桌面版逐项对照）。8.7e 的目录生成沿用本模块。
+// validateJsonOutput、validateOutlineOutput、buildFinalOutline、isMissingTechnicalScoreItems、createInitialPrompt、初始材料与默认选择）、
+// taskService.cjs（一级目录确认）与 technicalPlanOutline.cjs（NODE_ID_PATTERN、collectOutlineIds、acceptAgentOutline）相同
+// （tests/technicalPlan/outlineAdjustmentJob.test.ts、outlineGenerationJob.test.ts 加载桌面版逐项对照）。
 //
 // - 结果文件 outline.json 由沙箱中的 Agent 写出，按不可信数据处理。目录调整与桌面版相同不在提交校验中检查预置 Schema（checkSchema: false，
 //   Schema 只预置给 json-validation 供 Agent 自查）；检查 JSON、目录结构与节点 id（只能沿用当前目录的 id，新节点填 null），通过后为新节点
@@ -20,8 +21,8 @@ export const OUTLINE_OUTPUT_FILE = 'outline.json';
 
 /** 节点 id 的格式（与桌面版 NODE_ID_PATTERN 相同：小写的 UUID v4）。 */
 export const OUTLINE_NODE_ID_PATTERN = '^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$';
-const OUTLINE_ATTRIBUTES = ['通用', '商务/资信', '技术', '其他', '目录', '报价', '业绩'];
-const CONTENT_MODES = ['ai-generate', 'template-fill', 'directory-generate', 'manual-fill', 'other'];
+export const OUTLINE_ATTRIBUTES = ['通用', '商务/资信', '技术', '其他', '目录', '报价', '业绩'];
+export const OUTLINE_CONTENT_MODES = ['ai-generate', 'template-fill', 'directory-generate', 'manual-fill', 'other'];
 const ATTRIBUTE_CONTENT_MODE_RULES: Record<string, string> = {
   '商务/资信': 'template-fill',
   目录: 'directory-generate',
@@ -47,7 +48,7 @@ function createDirectoryNodeSchema(level: number, root = false): Record<string, 
     additionalProperties: false,
     properties: {
       ...baseProperties,
-      content_mode: { type: 'string', enum: CONTENT_MODES },
+      content_mode: { type: 'string', enum: OUTLINE_CONTENT_MODES },
       content_mode_note: { type: 'string' },
     },
     ...(root
@@ -267,4 +268,283 @@ export function validateOutlineOutput(content: string, knownIds: ReadonlySet<str
     throw error;
   }
   return { value: { outline: accepted }, issues: [] };
+}
+
+// ---- 目录生成：一级目录（8.7e1） ----
+
+/** 一级目录阶段（与桌面版 initial_stage 相同）。 */
+export const INITIAL_OUTLINE_STAGE = 'initial-outline';
+/** 各阶段的必需文件（与桌面版 STAGE_OUTPUT_FILES 相同；8.7e1 只有一级目录阶段，其余阶段随 8.7e2）。 */
+const STAGE_OUTPUT_FILES: Readonly<Record<string, readonly string[]>> = { [INITIAL_OUTLINE_STAGE]: [OUTLINE_OUTPUT_FILE] };
+/** 与桌面版 ORIGINAL_ONLY_DIRECTORY_RULE 相同。 */
+export const ORIGINAL_ONLY_DIRECTORY_RULE =
+  '目录来源仅限原方案.md：提取并补齐原方案中实际存在的目录，保留其顺序和层级；不得依据其他资料或专业经验新增原方案中不存在的章节，也不得为凑字数或小节数量新增、拆分章节。';
+
+/** 与桌面版 createOutputFileRequirements 相同。 */
+export function createOutputFileRequirements(stage: string): string {
+  const files = STAGE_OUTPUT_FILES[stage];
+  if (!files) throw new TypeError(`未知的目录生成阶段：${stage}`);
+  return `本阶段必需文件：${files.join('、')}。程序已在当前工作目录根目录准备好这些文件，你只负责填入或修改内容，不要自行创建其他位置的副本、改名或删除文件。已有目录必须保留用户确认的内容和节点 ID。所有必需文件都必须包含完整、有效且符合 Schema 的纯 JSON；空文件不算完成，只在回复中输出 JSON 不算写入。全部文件写入并通过校验后才能结束本阶段。`;
+}
+
+/** 与桌面版 createOutputRepairPrompt 的提交修复部分相同（执行失败时返回 null：不重试）。 */
+export function createOutputRepairPrompt(stage: string): string {
+  return `${createOutputFileRequirements(stage)}\n沿用已有材料和用户确认结果，只修复本次提交报告中的问题；已通过的文件保留，不要重复询问已确认事项。`;
+}
+
+/** 与桌面版 isMissingTechnicalScoreItems 相同：按解析协议识别整项缺失或仅技术评分项缺失。 */
+export function isMissingTechnicalScoreItems(content: string): boolean {
+  const text = String(content || '').trim();
+  if (text === '未提取到') return true;
+  const section = text.match(/^##[\t ]+技术评分项[\t ]*\r?\n([\s\S]*?)(?=^#{1,2}[\t ]|$(?![\s\S]))/m);
+  return section?.[1]?.trim() === '没有提及';
+}
+
+/** 目录的组织方式（与桌面版 outline_mode 相同）。 */
+export type OutlineGenerationMode = 'response-file' | 'standalone-technical' | 'standalone-business';
+
+/** 与桌面版 createInitialPrompt 相同。 */
+export function createInitialPrompt(taskInstruction: string, options: { standaloneTechnical?: boolean; noTechnicalScoreMode?: boolean } = {}): string {
+  const standaloneTechnical = options.standaloneTechnical ?? false;
+  const noTechnicalScoreMode = options.noTechnicalScoreMode ?? false;
+  const goal = standaloneTechnical
+    ? noTechnicalScoreMode
+      ? '我们的目标是为没有技术评分项的单独装订技术文件准备一级目录。'
+      : '我们的目标是为单独装订的技术文件准备一级目录。一级目录必须直接对应技术评分大项。'
+    : '我们的目标是为编写响应文件/投标文件准备一级目录。';
+  const modeRequirements = standaloneTechnical
+    ? noTechnicalScoreMode
+      ? `6. 本模式只生成技术文件独立分册：一级目录必须是适合展开技术正文的专业主题，attr 必须为“技术”，content_mode 必须为 ai-generate。
+7. 招标文件已确认没有可用的技术评分项。优先采用已有资料中的明确要求；资料没有给出目录结构时，根据项目类型和专业经验补充通用、合理的技术方案主题，但不得编造具体项目事实、参数、业绩或承诺。
+8. 不得创建“技术方案”“项目管理方案”“监理大纲”“监理大纲（暗标）”“施工组织设计”“技术标”等外层总目录，也不得加入商务/资信、投标函、授权委托书等非技术章节。`
+      : `6. 本模式只生成技术文件独立分册：只能保留适合展开技术正文的评分大项，attr 必须为“技术”，content_mode 必须为 ai-generate。
+7. 每个一级目录直接对应一个技术评分大项，并保持评分大项的原顺序和正式表述；不得创建“技术方案”“项目管理方案”“监理大纲”“监理大纲（暗标）”“施工组织设计”“技术标”等外层总目录，也不得加入商务/资信、投标函、授权委托书等非技术章节。
+8. 完整结构示例：{"outline":[{"id":null,"title":"评分大项一","description":"评分大项一的技术响应范围","attr":"技术","content_mode":"ai-generate"},{"id":null,"title":"评分大项二","description":"评分大项二的技术响应范围","attr":"技术","content_mode":"ai-generate"}]}。`
+    : `6. 每个一级目录当前都是叶子节点，必须根据属性和后续处理方式填写 content_mode：技术方案正文使用 ai-generate；attr=商务/资信或业绩时必须使用 template-fill；attr=目录时必须使用 directory-generate；attr=报价时必须使用 manual-fill；无法归类的特殊内容使用 other，并在 content_mode_note 说明原因。
+7. 完整结构示例：{"outline":[{"id":null,"title":"投标文件目录","description":"投标文件目录说明","attr":"目录","content_mode":"directory-generate"},{"id":null,"title":"技术方案","description":"技术方案目录说明","attr":"技术","content_mode":"ai-generate"},{"id":null,"title":"投标报价","description":"投标报价目录说明","attr":"报价","content_mode":"manual-fill"}]}。content_mode_note 只在 content_mode=other 且确有说明时填写。`;
+  return `请只在当前工作目录内工作。
+${createOutputFileRequirements(INITIAL_OUTLINE_STAGE)}
+
+任务：
+${goal}
+${taskInstruction}
+
+请生成一级目录 JSON，并将结果写入 ${OUTLINE_OUTPUT_FILE}。
+
+字段要求：
+1. 顶层必须是对象，唯一字段 outline 是一级目录数组；此阶段暂时不要生成 children。
+2. 所有新节点 id 填 null，程序接收后分配唯一 ID。数组顺序表示目录顺序；number 由程序计算，不要用编号充当 ID。
+3. title 必须是可直接用于投标文件目录的正式标题，不得包含“附件1”“附件一”“第一章”等编号或前缀。
+4. description 是目录说明。
+5. attr 必须从“通用”“商务/资信”“技术”“其他”“目录”“报价”“业绩”中选择。
+${modeRequirements}
+8. ${OUTLINE_OUTPUT_FILE} 必须是纯 JSON，不包含 Markdown 代码块或解释文字。
+9. 程序已为 ${OUTLINE_OUTPUT_FILE} 预置 Schema，可用 json-validation 自查，只传 file_path；本阶段结束后程序统一校验，不通过会退回问题清单继续修复。`;
+}
+
+/** 目录生成读取的输入（与桌面版 runOutlineGenerationTaskV2 开始时从 storedPlan 读取的相同）。 */
+export interface OutlineGenerationSource {
+  outlineMode: OutlineGenerationMode;
+  /** 是否有原方案（桌面版 Boolean(storedPlan.originalPlanFile)）。 */
+  hasOriginalPlan: boolean;
+  /** 原方案目录扩展方式：original-only 只按原方案。 */
+  outlineExpansionMode: string;
+  originalPlanMarkdown: string;
+  /** 招标解析项“响应文件要求”的内容（与桌面版相同，不看状态）。 */
+  responseFileRequirements: string;
+  projectOverview: string;
+  techRequirements: string;
+  /** 无技术评分项模式（技术评分项缺失时须由用户确认）。 */
+  noTechnicalScoreMode: boolean;
+  /** 引用的知识库文档的 Markdown（桌面版 buildKnowledgeFiles，按引用顺序；为空的不放入）。 */
+  knowledgeMarkdowns: readonly string[];
+}
+
+export interface AgentInputFile {
+  path: string;
+  content: string;
+}
+
+export interface InitialOutlineInput {
+  /** 工作区材料（受保护文件）。 */
+  files: AgentInputFile[];
+  prompt: string;
+  standaloneTechnical: boolean;
+  standaloneBusiness: boolean;
+  originalOnly: boolean;
+}
+
+/** 是否需要读取知识库文档（与桌面版 knowledgeFiles 相同：无技术评分项且只按原方案时不读；一级目录阶段只在无技术评分项模式放入）。 */
+export function initialOutlineNeedsKnowledge(source: Pick<OutlineGenerationSource, 'noTechnicalScoreMode' | 'hasOriginalPlan' | 'outlineExpansionMode'>): boolean {
+  const originalOnly = source.hasOriginalPlan && source.outlineExpansionMode === 'original-only';
+  return source.noTechnicalScoreMode && !originalOnly;
+}
+
+/** 一级目录阶段的材料与提示词（与桌面版 initialFiles、taskInstruction 与 createInitialPrompt 相同）。 */
+export function buildInitialOutlineInput(source: OutlineGenerationSource): InitialOutlineInput {
+  const standaloneTechnical = source.outlineMode === 'standalone-technical';
+  const standaloneBusiness = source.outlineMode === 'standalone-business';
+  const { hasOriginalPlan, noTechnicalScoreMode } = source;
+  const originalOnly = hasOriginalPlan && source.outlineExpansionMode === 'original-only';
+  const originalPlan = hasOriginalPlan ? source.originalPlanMarkdown : '';
+  const knowledgeFiles: AgentInputFile[] = noTechnicalScoreMode && originalOnly
+    ? []
+    : source.knowledgeMarkdowns
+        .map((markdown, index) => ({ path: `参考知识库/参考资料-${index + 1}.md`, content: String(markdown || '').trim() }))
+        .filter((file) => file.content);
+  let files: AgentInputFile[];
+  let taskInstruction: string;
+  if (originalOnly) {
+    files = [{ path: '原方案.md', content: originalPlan }];
+    taskInstruction = noTechnicalScoreMode ? ORIGINAL_ONLY_DIRECTORY_RULE : '只根据原方案材料提取一级目录。';
+  } else if (noTechnicalScoreMode) {
+    files = [
+      { path: '响应文件要求.md', content: source.responseFileRequirements },
+      { path: '项目概述.md', content: source.projectOverview || '' },
+      ...(hasOriginalPlan ? [{ path: '原方案.md', content: originalPlan }] : []),
+      ...knowledgeFiles,
+    ];
+    taskInstruction = standaloneTechnical
+      ? '招标文件已确认没有技术评分项。根据已有资料和专业经验生成技术文件一级目录，不得判断或补造评分项。'
+      : '招标文件已确认没有技术评分项。优先按响应文件要求生成一级目录，并根据已有资料和专业经验补充必要的技术方案入口，不得判断或补造评分项。';
+  } else {
+    files = [
+      { path: '响应文件要求.md', content: source.responseFileRequirements },
+      ...(standaloneTechnical ? [{ path: '技术评分信息.md', content: source.techRequirements || '' }] : []),
+      { path: '项目概述.md', content: source.projectOverview || '' },
+      ...(hasOriginalPlan ? [{ path: '原方案.md', content: originalPlan }] : []),
+    ];
+    taskInstruction = standaloneTechnical
+      ? '严格按照技术评分信息.md 中适合技术方案响应的评分大项组织一级目录，只生成技术方案独立分册。评分大项原文、顺序和数量是一级目录的权威依据；响应文件要求.md 只提供装订和响应约束，项目概述.md 仅用于理解背景和术语，原方案.md 仅用于参考下级标题表达。'
+      : hasOriginalPlan
+        ? '严格按照响应文件要求.md 组织一级目录，它是目录结构和标题来源的唯一依据。项目概述.md 仅用于理解背景和术语，不得据此新增一级目录；原方案.md 仅用于参考标题表达。'
+        : '严格按照响应文件要求.md 组织一级目录，它是目录结构和标题来源的唯一依据。项目概述.md 仅用于理解背景和术语，不得据此新增一级目录。';
+  }
+  return {
+    files,
+    prompt: createInitialPrompt(taskInstruction, { standaloneTechnical, noTechnicalScoreMode }),
+    standaloneTechnical,
+    standaloneBusiness,
+    originalOnly,
+  };
+}
+
+// ---- 一级目录确认（8.7e1） ----
+
+/** 待确认的一级目录至多这么多项（Web 版新增：待确认的内容写在任务 checkpoint 中，checkpoint 有大小上限）。 */
+export const OUTLINE_SELECTION_ITEMS_MAX = 100;
+/** 待确认内容（JSON）的最大字节数（Web 版新增，同上）。 */
+export const OUTLINE_SELECTION_MAX_BYTES = 256 * 1024;
+
+/** 一级目录阶段的提交校验：与桌面版 validateOutlineOutput(content) 相同（Schema、没有已知 id），另限制一级目录数与大小（Web 版新增）。 */
+export function validateInitialOutlineOutput(content: string): OutlineSubmission {
+  const report = validateOutlineOutput(content, new Set());
+  if (!report.value) return report;
+  if (report.value.outline.length > OUTLINE_SELECTION_ITEMS_MAX) {
+    return { value: null, issues: [blocking(`${OUTLINE_OUTPUT_FILE} 超出限制：一级目录最多 ${OUTLINE_SELECTION_ITEMS_MAX} 项`)] };
+  }
+  if (Buffer.byteLength(JSON.stringify(report.value), 'utf8') > OUTLINE_SELECTION_MAX_BYTES) {
+    return { value: null, issues: [blocking(`${OUTLINE_OUTPUT_FILE} 超出限制：一级目录内容过长，请精简标题与说明`)] };
+  }
+  return report;
+}
+
+/** 一级目录的默认选择（与桌面版 defaultSelectedIds 相同）。 */
+export function defaultOutlineSelection(items: readonly AcceptedOutlineItem[], mode: OutlineGenerationMode): string[] {
+  if (mode === 'standalone-business') {
+    return items.filter((item) => ['template-fill', 'directory-generate', 'manual-fill'].includes(String(item.content_mode))).map((item) => item.id);
+  }
+  if (mode === 'standalone-technical') return items.filter((item) => item.attr === '技术').map((item) => item.id);
+  return items.map((item) => item.id);
+}
+
+/** 用户对某个一级目录的修改（桌面版确认对话框只能改属性与内容处理模式）。 */
+export interface OutlineSelectionChange {
+  id: string;
+  attr?: string;
+  contentMode?: string;
+}
+
+export class OutlineSelectionInputError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'OutlineSelectionInputError';
+  }
+}
+
+/**
+ * 按用户的选择与修改得到确认后的一级目录（与桌面版确认对话框与 applyConfirmedSelection 相同）：选择须非空、不重复、都是待确认的
+ * 一级目录；修改只能改属性与内容处理模式（取值在列表中），改为 other 以外的处理模式时去掉说明；标题、说明与 id 以服务端保存的为准
+ * （桌面版取 Renderer 传回的整份目录）。不合法时抛 OutlineSelectionInputError。返回修改后的全部一级目录与按原顺序的选择。
+ */
+export function applyOutlineSelection(
+  items: readonly AcceptedOutlineItem[],
+  selectedIds: readonly unknown[],
+  changes: readonly OutlineSelectionChange[] = [],
+): { items: AcceptedOutlineItem[]; selectedIds: string[] } {
+  const known = new Map(items.map((item) => [item.id, item]));
+  if (selectedIds.length === 0) throw new OutlineSelectionInputError('请至少选择一个一级目录');
+  const selected = new Set<string>();
+  for (const id of selectedIds) {
+    if (typeof id !== 'string' || !known.has(id)) throw new OutlineSelectionInputError('选择的一级目录不存在，请重新打开后再选择');
+    if (selected.has(id)) throw new OutlineSelectionInputError('一级目录重复选择');
+    selected.add(id);
+  }
+  const changed = new Map<string, OutlineSelectionChange>();
+  for (const change of changes) {
+    if (!known.has(change.id) || changed.has(change.id)) throw new OutlineSelectionInputError('修改的一级目录不存在，请重新打开后再选择');
+    if (change.attr !== undefined && !OUTLINE_ATTRIBUTES.includes(change.attr)) throw new OutlineSelectionInputError('目录属性不合法');
+    if (change.contentMode !== undefined && !OUTLINE_CONTENT_MODES.includes(change.contentMode)) throw new OutlineSelectionInputError('内容处理模式不合法');
+    changed.set(change.id, change);
+  }
+  const next = items.map((item) => {
+    const change = changed.get(item.id);
+    if (!change) return item;
+    const node: AcceptedOutlineItem = { ...item };
+    if (change.attr !== undefined) node.attr = change.attr;
+    if (change.contentMode !== undefined) {
+      node.content_mode = change.contentMode;
+      if (change.contentMode !== 'other') delete node.content_mode_note;
+    }
+    return node;
+  });
+  return { items: next, selectedIds: next.filter((item) => selected.has(item.id)).map((item) => item.id) };
+}
+
+/** 与桌面版 applyConfirmedSelection 相同：按确认的选择保留一级目录（原顺序）并重新编号。 */
+export function lockedOutlineRoots(items: readonly AcceptedOutlineItem[], selectedIds: readonly string[]): AcceptedOutlineItem[] {
+  const selected = new Set(selectedIds);
+  return numberOutline(items.filter((item) => selected.has(item.id)));
+}
+
+/** 与桌面版 buildFinalOutline 相同（只用于 id 都已知的目录）：接受后的目录，attr 只在一级目录。 */
+export function finalOutlineOf(roots: readonly AcceptedOutlineItem[]): AcceptedOutlineItem[] {
+  return acceptAgentOutline(roots as unknown as Record<string, unknown>[]);
+}
+
+/** 写在目录生成任务 checkpoint 中的一级目录（待确认的与确认后的）。 */
+export interface OutlineSelectionRecord {
+  items: AcceptedOutlineItem[];
+  selectedIds: string[];
+}
+
+function parseSelectionRecord(value: unknown): OutlineSelectionRecord | null {
+  if (!isObject(value) || !Array.isArray(value.items) || !Array.isArray(value.selectedIds)) return null;
+  const items = value.items as unknown[];
+  if (items.length === 0 || items.length > OUTLINE_SELECTION_ITEMS_MAX) return null;
+  if (!items.every((item) => isObject(item) && typeof item.id === 'string' && typeof item.title === 'string' && typeof item.description === 'string' && typeof item.number === 'string')) {
+    return null;
+  }
+  const ids = new Set((items as AcceptedOutlineItem[]).map((item) => item.id));
+  if (ids.size !== items.length || !(value.selectedIds as unknown[]).every((id) => typeof id === 'string' && ids.has(id))) return null;
+  return { items: items as AcceptedOutlineItem[], selectedIds: [...(value.selectedIds as string[])] };
+}
+
+/**
+ * 读出目录生成任务 checkpoint 中任务自己的状态（task 部分）里的一级目录：selection 为待确认的（一级目录阶段完成时写入，selectedIds 为
+ * 默认选择），confirmed 为用户确认后的（确认接口写入）。形状不对的按没有处理。
+ */
+export function readOutlineSelectionState(task: unknown): { selection: OutlineSelectionRecord | null; confirmed: OutlineSelectionRecord | null } {
+  if (!isObject(task)) return { selection: null, confirmed: null };
+  return { selection: parseSelectionRecord(task.selection), confirmed: parseSelectionRecord(task.confirmed) };
 }
