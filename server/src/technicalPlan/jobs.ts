@@ -8,8 +8,8 @@
 //   （见 createGlobalFactsAdjustmentJob）。两者共用工作区快照类别 technical-plan-global-facts，成功后保留快照供下一次调整续用；
 //   导入、移除招标文件，切换单 / 多标段，选择投标范围，多标段识别开始，全部重新解析，目录被清空与清空技术方案时丢弃
 //   （discardTechnicalPlanSessions，桌面版 deleteGlobalFactsAgentTask）；
-// - 目录生成（第 8 步 8.7e1、8.7e2a）：agent 队列，一级目录、用户确认（暂停为 waiting_for_selection）与无技术评分项模式的后续阶段
-//   （见 createOutlineGenerationJob；评分模式的后续阶段随 8.7e2b）；
+// - 目录生成（第 8 步 8.7e1、8.7e2a、8.7e2b）：agent 队列，一级目录、用户确认（暂停为 waiting_for_selection）与确认之后的后续阶段
+//   （无技术评分项模式与评分模式，见 createOutlineGenerationJob）；
 // - 目录调整（第 8 步 8.7d）：agent 队列，接着目录生成或上一次调整的会话与工作区，按用户的要求改写 outline.json
 //   （见 createOutlineAdjustmentJob）。目录生成与调整共用工作区快照类别 technical-plan-outline-generation；与全局事实的会话在同样的入口
 //   一并丢弃（桌面版 deleteOutlineAgentTask 与 deleteGlobalFactsAgentTask 总是一起调用）。
@@ -59,22 +59,33 @@ import {
   applyOutlineSelection,
   buildInitialOutlineInput,
   buildOutlineReviewContext,
+  buildScorePlanningFiles,
   CHILDREN_GENERATION_STAGE,
   collectOutlineIds,
   countAiLeaves,
+  createChildrenPrompt,
   createLeafAdjustmentPrompt,
+  createLeafAllocationPrompt,
   createNoTechnicalScoreChildrenPrompt,
   createNoTechnicalScoreReviewPrompt,
   createOutlineAdjustmentPrompt,
+  createOutlineReviewPrompt,
   createOutputRepairPrompt,
+  createScorePlanningPrompt,
   defaultOutlineSelection,
   deriveTargetLeafCount,
+  enforceMinimumLeafTarget,
   finalOutlineOf,
   INITIAL_OUTLINE_STAGE,
   initialOutlineNeedsKnowledge,
+  isLeafAllocationList,
   isMissingTechnicalScoreItems,
+  isScoreDirectoryPlan,
   LEAF_ADJUSTMENT_ACCEPT_OPTION,
   LEAF_ADJUSTMENT_STAGE,
+  LEAF_ALLOCATION_CONTEXT_FILE,
+  LEAF_ALLOCATION_FILE,
+  LEAF_ALLOCATION_STAGE,
   lockedOutlineRoots,
   OUTLINE_JSON_SCHEMA,
   OUTLINE_OUTPUT_FILE,
@@ -84,17 +95,29 @@ import {
   outlineAdjustmentFile,
   outlineGenerationJsonSchemas,
   outlineReviewMessage,
+  OUTLINE_SELECTION_ITEMS_MAX,
   OutlineSelectionInputError,
+  parseOutlineRoots,
   readOutlineSelectionState,
+  SCORE_DIRECTORY_PLAN_FILE,
+  SCORE_PLANNING_STAGE,
+  synchronizeScoreDirectoryPlan,
+  TECHNICAL_SCORE_GROUPS_FILE,
+  TECHNICAL_SCORE_INFO_FILE,
   validateInitialOutlineOutput,
+  validateLeafAllocationOutput,
   validateOutlineOutput,
   validateOutlineReviewOutputs,
+  validateScorePlanningOutputs,
   type AcceptedOutlineItem,
   type AgentInputFile,
   type InitialOutlineInput,
+  type LeafAllocation,
   type OutlineGenerationMode,
+  type OutlineReview,
   type OutlineSelectionChange,
   type OutlineSelectionRecord,
+  type ScoreDirectoryPlan,
 } from './outlineAgent.ts';
 import { agentQuestionClock, findLatestConsumedAgentAnswer } from '../agent/questions.ts';
 import { TERMINATION_OPTIONS } from '../agent/requestTerminationTool.ts';
@@ -890,9 +913,6 @@ function outlineGenerationProblem(state: TechnicalPlanState, confirmedNoTechnica
 /** 目录生成放入的材料（受保护文件）与预置的 outline.json（交给 Agent 写入）。 */
 const OUTLINE_GENERATION_INPUT_GROUP = 'outline-generation-inputs';
 const OUTLINE_GENERATION_INPUT_CHANGED_MESSAGE = '招标文件、解析结果、原方案、目录配置、目录或全局事实已变化，本次结果已丢弃，请重新开始';
-/** 8.7e2b 之前：有技术评分项（评分模式）时选择了需要 AI 扩展的一级目录，任务失败（见 createOutlineGenerationJob）。 */
-export const OUTLINE_STAGE_UNAVAILABLE_CODE = 'TECHNICAL_PLAN_OUTLINE_STAGE_UNAVAILABLE';
-const OUTLINE_STAGE_UNAVAILABLE_MESSAGE = '所选一级目录需要 AI 按技术评分项继续生成子目录，该功能尚未开放；目前只能使用无需 AI 扩展的一级目录，或在没有技术评分项时生成目录';
 
 function outlineGenerationInputChanged(): JobError {
   return new JobError('TECHNICAL_PLAN_INPUT_CHANGED', OUTLINE_GENERATION_INPUT_CHANGED_MESSAGE);
@@ -930,7 +950,7 @@ async function readInitialOutlineMaterials(
 }
 
 /**
- * 目录生成（8.7e1 一级目录与确认、8.7e2a 无技术评分项模式的后续阶段，取代桌面版 outlineGenerationTaskV2.cjs 的 runOutlineGenerationTaskV2）：
+ * 目录生成（8.7e1 一级目录与确认、8.7e2a / 8.7e2b 确认之后的后续阶段，取代桌面版 outlineGenerationTaskV2.cjs 的 runOutlineGenerationTaskV2）：
  * - 输入在任务开始时从数据库读取：技术评分要求（须解析成功；技术评分项缺失时须确认无技术评分项模式，任务参数 noTechnicalScoreMode）、
  *   响应文件要求、项目概述、原方案（有时）、目录的组织方式 / 扩展方式 / 字数控制与引用的知识库文档（生成配置，由 PATCH .../generation-config
  *   先保存；桌面版随开始任务的参数传入），无技术评分项模式下另读知识库文档的 Markdown；
@@ -942,9 +962,8 @@ async function readInitialOutlineMaterials(
  *   用户经 POST .../outline-selection 确认（confirmOutlineSelection，写入 checkpoint 的 confirmed）后任务续跑。确认前被手动继续时再次暂停；
  * - 确认后：所选一级目录（按原顺序重新编号）都不需要 AI 扩展时（没有 ai-generate），与桌面版相同直接整理为最终目录（桌面版
  *   buildFinalOutline），经 saveOutlineGenerationResult 带输入签名整体替换目录、清空正文与全局事实、写入字数控制快照，再丢弃全局事实的
- *   会话（桌面版目录生成开始时删除）；这一路不再打开沙箱。需要 AI 扩展时：无技术评分项模式经 runNoTechnicalScoreDirectory 续接本任务的
- *   会话执行子目录生成、叶子调整与目录审查（8.7e2a）；评分模式的后续阶段（评分规划、叶子分配、子目录生成、叶子调整、目录审查）随 8.7e2b，
- *   在此之前以 TECHNICAL_PLAN_OUTLINE_STAGE_UNAVAILABLE 失败；
+ *   会话（桌面版目录生成开始时删除）；这一路不再打开沙箱。需要 AI 扩展时经 runDirectory 续接本任务的会话：无技术评分项模式执行子目录
+ *   生成、叶子调整与目录审查（8.7e2a），评分模式执行评分规划、叶子分配、子目录生成、叶子调整与目录审查（8.7e2b）；
  * - 桌面版有模板填写一级目录时并行执行投标模板提取（属 8.13）：按 8.7e1 开始前用户的决定先不接入，这类一级目录照常保留其处理方式；
  * - 可续跑：每条提示词之后保存检查点（工作区快照与 checkpoint，签名在其中），续跑时输入已变化即失败；成功后保留快照（keepAfterSuccess），
  *   目录调整接着这次的会话。
@@ -977,8 +996,7 @@ function createOutlineGenerationJob(): JobTypeDefinition<OutlineGenerationParams
           await finishOutlineSelection(context, projectId, state, lockedRoots, signature);
           return;
         }
-        if (!isMissingTechnicalScoreItems(state.techRequirements)) throw new JobError(OUTLINE_STAGE_UNAVAILABLE_CODE, OUTLINE_STAGE_UNAVAILABLE_MESSAGE);
-        await runNoTechnicalScoreDirectory(context, projectId, state, { signature, selection: selection ?? confirmed, confirmed }, lockedRoots);
+        await runDirectory(context, projectId, state, { signature, selection: selection ?? confirmed, confirmed }, lockedRoots);
         return;
       }
       // 已生成一级目录、尚未确认（确认前被手动继续）：再次等待确认。
@@ -1010,7 +1028,7 @@ function createOutlineGenerationJob(): JobTypeDefinition<OutlineGenerationParams
           stageIndex: 0,
           prompt: run.wasPrompted(INITIAL_OUTLINE_STAGE) ? CONTINUE_PROMPT : input.prompt,
           tools: GLOBAL_FACTS_TOOLS,
-          jsonSchemas: outlineGenerationJsonSchemas(),
+          jsonSchemas: outlineGenerationJsonSchemas({ noTechnicalScoreMode: isMissingTechnicalScoreItems(state.techRequirements), standaloneTechnical: input.standaloneTechnical }),
           outputFile: OUTLINE_OUTPUT_FILE,
           // 与桌面版 max_retries 1 + buildRetryPrompt 相同：执行失败时 createOutputRepairPrompt 返回 null，不重试。
           maxExecutionRetries: 1,
@@ -1083,16 +1101,37 @@ async function finishOutlineSelection(
   await context.log('所选一级目录整理完成');
 }
 
-// ---- 目录生成：确认之后的后续阶段（8.7e2a 无技术评分项模式） ----
+// ---- 目录生成：确认之后的后续阶段（8.7e2a 无技术评分项模式、8.7e2b 评分模式） ----
 
 /** 目录审查放入的程序计算结果（受保护文件）。 */
 const OUTLINE_REVIEW_CONTEXT_GROUP = 'outline-review-context';
+/** 评分模式放入的材料与程序整理后的文件（受保护文件）：技术评分信息与知识库、评分规划、叶子分配的材料、子目录生成用的叶子分配。 */
+const SCORE_INPUT_GROUP = 'outline-score-inputs';
+const SCORE_PLAN_GROUP = 'outline-score-plan';
+const LEAF_ALLOCATION_CONTEXT_GROUP = 'outline-leaf-allocation-context';
+const LEAF_ALLOCATION_GROUP = 'outline-leaf-allocation';
 /** 后续阶段的第一个序号（与桌面版 initial_stage_index 2 相同，之后每个阶段加 1）。 */
 const DIRECTORY_STAGE_INDEX = 2;
-const DIRECTORY_STAGES = [CHILDREN_GENERATION_STAGE, LEAF_ADJUSTMENT_STAGE, OUTLINE_REVIEW_STAGE] as const;
+const DIRECTORY_STAGES = [SCORE_PLANNING_STAGE, LEAF_ALLOCATION_STAGE, CHILDREN_GENERATION_STAGE, LEAF_ADJUSTMENT_STAGE, OUTLINE_REVIEW_STAGE] as const;
 type DirectoryStage = (typeof DIRECTORY_STAGES)[number];
 /** 终止确认的选项（桌面版不把终止确认记进 user_question_answers）。 */
 const TERMINATION_OPTION_LABELS = TERMINATION_OPTIONS.map((option) => option.label);
+
+/**
+ * 评分模式在评分规划之后的状态（随 directory 写进 checkpoint）：
+ * - plan：评分规划（root_id 已回填；每个阶段之后按目录同步一级目录标题，与桌面版 synchronizeScoreDirectoryPlan 相同）；
+ * - rootIds / newRoots：评分规划之后的一级目录（确认后的一级目录加上用户批准新增的，按顺序；新增的单独保存，确认后的取自 confirmed）；
+ * - targetLeafCount：“AI 生成”叶子的目标（单独技术分册按 enforceMinimumLeafTarget 调整后的）；fixedAiLeafCount：规划分支之外的 AI 生成
+ *   一级目录数；allocations：子目录生成用的叶子分配（叶子分配阶段之前为 null）。
+ */
+interface ScoringFlow {
+  plan: ScoreDirectoryPlan;
+  rootIds: string[];
+  newRoots: AcceptedOutlineItem[];
+  targetLeafCount: number | null;
+  fixedAiLeafCount: number;
+  allocations: LeafAllocation['allocations'] | null;
+}
 
 /**
  * 后续阶段的进度，随检查点写进 checkpoint 中任务自己的状态（directory）。每个阶段的要求发出前（交接时）先保存一次（prompted 为 false），
@@ -1103,7 +1142,7 @@ interface DirectoryFlow {
   stage: DirectoryStage;
   stageIndex: number;
   prompted: boolean;
-  /** 本阶段目录可以沿用的节点 id（上一阶段整理后的目录的；子目录生成时为一级目录的）。 */
+  /** 本阶段目录可以沿用的节点 id（上一阶段整理后的目录的；评分规划、子目录生成时为一级目录的）。 */
   knownIds: string[];
   /** 本阶段开始时的“AI 生成”叶子数（叶子调整、目录审查的提示词用）。 */
   actualLeafCount: number;
@@ -1111,9 +1150,40 @@ interface DirectoryFlow {
   leafWarning: string;
   /** 第一次叶子调整开始的时间（数据库时钟）：之后提出的问题才是叶子调整中的（桌面版按 workflow_stage 区分）。 */
   leafSince: string | null;
+  /** 评分模式在评分规划之后的状态（无技术评分项模式与评分规划阶段为 null；8.7e2a 的 checkpoint 没有这一项，按 null）。 */
+  scoring: ScoringFlow | null;
 }
 
 const isNonNegativeInteger = (value: unknown): value is number => Number.isSafeInteger(value) && (value as number) >= 0;
+
+function readScoringFlow(value: unknown): ScoringFlow | null {
+  if (value === undefined || value === null) return null;
+  if (!isPlainRecord(value)) throw new TypeError('目录生成的 checkpoint 不合法');
+  const newRoots = parseOutlineRoots(value.newRoots, { allowEmpty: true });
+  if (
+    !isScoreDirectoryPlan(value.plan) ||
+    !newRoots ||
+    !Array.isArray(value.rootIds) ||
+    value.rootIds.length === 0 ||
+    value.rootIds.length > OUTLINE_SELECTION_ITEMS_MAX ||
+    !value.rootIds.every((id) => typeof id === 'string') ||
+    new Set(value.rootIds).size !== value.rootIds.length ||
+    !newRoots.every((root) => (value.rootIds as string[]).includes(root.id)) ||
+    !(value.targetLeafCount === null || Number.isSafeInteger(value.targetLeafCount)) ||
+    !isNonNegativeInteger(value.fixedAiLeafCount) ||
+    !(value.allocations === null || isLeafAllocationList(value.allocations))
+  ) {
+    throw new TypeError('目录生成的 checkpoint 不合法');
+  }
+  return {
+    plan: value.plan,
+    rootIds: [...(value.rootIds as string[])],
+    newRoots,
+    targetLeafCount: value.targetLeafCount as number | null,
+    fixedAiLeafCount: value.fixedAiLeafCount,
+    allocations: value.allocations as LeafAllocation['allocations'] | null,
+  };
+}
 
 /** 读出 checkpoint 中的后续阶段进度：没有时 null；形状不对时抛 TypeError（checkpoint 由 worker 写入，仍逐项检查）。 */
 function readDirectoryFlow(task: Record<string, unknown> | null): DirectoryFlow | null {
@@ -1141,6 +1211,7 @@ function readDirectoryFlow(task: Record<string, unknown> | null): DirectoryFlow 
     actualLeafCount: value.actualLeafCount,
     leafWarning: value.leafWarning,
     leafSince: value.leafSince as string | null,
+    scoring: readScoringFlow(value.scoring),
   };
 }
 
@@ -1151,17 +1222,29 @@ interface DirectoryBase {
   confirmed: OutlineSelectionRecord;
 }
 
+/** 后续阶段的结果：目录（与目录审查的结果）、评分规划阶段的一级目录与规划、叶子分配阶段的分配。 */
+type DirectoryStageValue =
+  | { kind: 'outline'; outline: { outline: AcceptedOutlineItem[] }; review: OutlineReview | null }
+  | { kind: 'planning'; roots: AcceptedOutlineItem[]; newRoots: AcceptedOutlineItem[]; plan: ScoreDirectoryPlan }
+  | { kind: 'allocation'; allocation: LeafAllocation };
+
 /**
- * 无技术评分项模式的后续阶段（8.7e2a，桌面版 runOutlineGenerationTaskV2 中 noTechnicalScoreMode 的 directoryPromise）：
- * - 打开沙箱续接本任务的会话（一级目录阶段的快照，run.resumed）：材料（与一级目录阶段相同的一份）重新放入为受保护文件，outline.json 为
- *   确认后的一级目录（交给 Agent 修改）；
- * - 子目录生成（children-generation）→ 叶子数与目标不同时叶子调整（leaf-adjustment，可接连多次，与桌面版相同由用户的回答决定）→
- *   目录审查（outline-review，放入程序计算的 outline-review-context.json 与预置空的 outline-review.json）。提示词、阶段、工具、预置
- *   Schema、提交校验（经提交修复）、阶段之间放入的文件与日志、叶子调整的判断（用户最近一次回答是否“接受当前结果”）与桌面版相同；
+ * 确认之后的后续阶段（桌面版 runOutlineGenerationTaskV2 的 directoryPromise）：
+ * - 打开沙箱续接本任务的会话（一级目录阶段的快照，run.resumed）。阶段、提示词、工具、预置 Schema、提交校验（经提交修复）、阶段之间放入的
+ *   文件与日志、叶子调整的判断（用户最近一次回答是否“接受当前结果”）与桌面版相同；
+ * - 无技术评分项模式（8.7e2a）：材料（与一级目录阶段相同的一份）重新放入为受保护文件，outline.json 为确认后的一级目录（交给 Agent 修改）；
+ *   子目录生成（children-generation）→ 叶子数与目标不同时叶子调整（leaf-adjustment，可接连多次）→ 目录审查（outline-review，放入程序
+ *   计算的 outline-review-context.json 与预置空的 outline-review.json）；
+ * - 评分模式（8.7e2b）：评分规划（score-planning：放入技术评分信息.md 与知识库、预置空的 technical-score-groups.json 与
+ *   score-directory-plan.json；提交校验核对两份文件的 Schema 与 outline.json 中的一级目录，只接受用户批准新增的技术一级目录，新增的分配
+ *   id 后回填规划的 root_id）→ 有字数目标且有多个技术分支时叶子分配（leaf-allocation：放入 leaf-allocation-context.json，预置空的
+ *   leaf-allocation.json）→ 子目录生成（放入程序整理的 leaf-allocation.json）→ 叶子调整 → 目录审查（评分映射的机械检查一并放入
+ *   outline-review-context.json，评分规划与技术评分信息附在提示词后）。程序整理后的评分规划与叶子分配登记为受保护文件，权威副本在
+ *   checkpoint 中（审查的提示词与评分映射的检查只用它，不读回沙箱中的副本）；
  * - 目录审查通过后整理后的目录写回 outline.json，经 saveOutlineGenerationResult 带输入签名写入，再丢弃全局事实的会话（与一级目录无需
  *   AI 扩展时相同）。
  */
-async function runNoTechnicalScoreDirectory(
+async function runDirectory(
   context: JobContext<OutlineGenerationParams>,
   projectId: string,
   state: TechnicalPlanState,
@@ -1171,16 +1254,66 @@ async function runNoTechnicalScoreDirectory(
   const { db, tenant } = context;
   const { input } = await readInitialOutlineMaterials(context, projectId, state);
   const { standaloneTechnical, originalOnly } = input;
-  const targetLeafCount = deriveTargetLeafCount(state.outlineWordControlOptions);
-  const jsonSchemas = outlineGenerationJsonSchemas();
+  const scoringMode = !isMissingTechnicalScoreItems(state.techRequirements);
+  const hasOriginalPlan = state.originalPlanFile !== null;
+  const baseTarget = deriveTargetLeafCount(state.outlineWordControlOptions);
+  const scoreFiles = scoringMode
+    ? buildScorePlanningFiles(
+        state.techRequirements,
+        state.referenceKnowledgeDocumentIds.length > 0 ? await readForJob(() => readOutlineKnowledgeMarkdowns(db, tenant, projectId, context.objectStore)) : [],
+      )
+    : [];
+  const jsonSchemas = outlineGenerationJsonSchemas({ noTechnicalScoreMode: !scoringMode, standaloneTechnical });
   const taskState = (flow: DirectoryFlow): Record<string, unknown> => ({ ...base, directory: { ...flow } });
-  const writeInputs = (run: AgentRun) =>
+  const targetOf = (flow: DirectoryFlow): number | null => (flow.scoring ? flow.scoring.targetLeafCount : baseTarget);
+  const protectedWrite = (run: AgentRun, group: string, files: readonly AgentInputFile[]) =>
     run.baseline.write(
       run.sandbox,
-      OUTLINE_GENERATION_INPUT_GROUP,
-      input.files.map((file) => ({ path: file.path, data: Buffer.from(file.content, 'utf8') })),
+      group,
+      files.map((file) => ({ path: file.path, data: Buffer.from(file.content, 'utf8') })),
       { replace: true, signal: context.signal },
     );
+  const writeInputs = (run: AgentRun) => protectedWrite(run, OUTLINE_GENERATION_INPUT_GROUP, input.files);
+  /** 交给 Agent 写入的文件（预置为空，与桌面版 prepare_output_files 相同）：覆盖写入后解除登记。 */
+  const prepareOutputs = async (run: AgentRun, paths: readonly string[]) => {
+    await run.baseline.write(run.sandbox, OUTLINE_OUTPUT_GROUP, paths.map((path) => ({ path, data: Buffer.alloc(0) })), { replace: true, signal: context.signal });
+    run.baseline.release(OUTLINE_OUTPUT_GROUP, paths);
+  };
+  const planText = (scoring: ScoringFlow) => JSON.stringify(scoring.plan, null, 2);
+  const writePlan = (run: AgentRun, scoring: ScoringFlow) => protectedWrite(run, SCORE_PLAN_GROUP, [{ path: SCORE_DIRECTORY_PLAN_FILE, content: planText(scoring) }]);
+  /** 与桌面版 leaf-allocation-context.json 相同。 */
+  const leafContextText = (scoring: ScoringFlow) =>
+    JSON.stringify(
+      {
+        mode: 'allocated',
+        target_ai_leaf_count: scoring.targetLeafCount,
+        fixed_ai_leaf_count: scoring.fixedAiLeafCount,
+        allocatable_ai_leaf_count: scoring.targetLeafCount! - scoring.fixedAiLeafCount,
+        technical_branches: scoring.plan.branches.map((branch) => ({ root_id: branch.root_id, root_title: branch.root_title })),
+      },
+      null,
+      2,
+    );
+  /** 与桌面版 continueWithChildrenGeneration 放入的 leaf-allocation.json 相同。 */
+  const allocationText = (scoring: ScoringFlow) =>
+    JSON.stringify(
+      {
+        mode: scoring.targetLeafCount === null ? 'agent-decides' : 'allocated',
+        target_ai_leaf_count: scoring.targetLeafCount,
+        fixed_ai_leaf_count: scoring.fixedAiLeafCount,
+        allocatable_ai_leaf_count: scoring.targetLeafCount === null ? null : scoring.targetLeafCount - scoring.fixedAiLeafCount,
+        allocations: scoring.allocations,
+      },
+      null,
+      2,
+    );
+  /** 评分规划之后的一级目录（与桌面版 validateScorePlanningRoots 接受的相同：确认后的与新增的按顺序整理、编号）。 */
+  const rootsOf = (scoring: ScoringFlow): AcceptedOutlineItem[] => {
+    const byId = new Map([...lockedRoots, ...scoring.newRoots].map((root) => [root.id, root]));
+    const roots = scoring.rootIds.map((id) => byId.get(id));
+    if (roots.some((root) => root === undefined)) throw new TypeError('目录生成的 checkpoint 不合法');
+    return finalOutlineOf(roots as AcceptedOutlineItem[]);
+  };
   const readText = async (run: AgentRun, file: string): Promise<{ text: string } | { tooLarge: true }> => {
     const read = (await run.readFiles([file])).get(file);
     if (read && read.data === null) return { tooLarge: true };
@@ -1195,8 +1328,18 @@ async function runNoTechnicalScoreDirectory(
     await context.setProgress(progress);
   };
 
-  /** 目录审查的提示词：材料附在提示词后（与桌面版相同；原方案取放入的同一份）。 */
+  /** 目录审查的提示词：材料附在提示词后（与桌面版相同；原方案、技术评分信息取放入的同一份，评分规划取 checkpoint 中的）。 */
   const reviewPrompt = (flow: DirectoryFlow, outlineText: string, contextText: string): string => {
+    const targetLeafCount = targetOf(flow);
+    if (flow.scoring) {
+      const files: AgentInputFile[] = [
+        { path: OUTLINE_OUTPUT_FILE, content: outlineText },
+        { path: SCORE_DIRECTORY_PLAN_FILE, content: planText(flow.scoring) },
+        { path: OUTLINE_REVIEW_CONTEXT_FILE, content: contextText },
+        ...scoreFiles.filter((file) => file.path === TECHNICAL_SCORE_INFO_FILE),
+      ];
+      return createOutlineReviewPrompt({ targetLeafCount, actualLeafCount: flow.actualLeafCount, allowRootChanges: flow.scoring.plan.allow_root_changes === true, inputFiles: files });
+    }
     const files: AgentInputFile[] = [
       { path: OUTLINE_OUTPUT_FILE, content: outlineText },
       { path: OUTLINE_REVIEW_CONTEXT_FILE, content: contextText },
@@ -1205,40 +1348,107 @@ async function runNoTechnicalScoreDirectory(
     return createNoTechnicalScoreReviewPrompt({ targetLeafCount, actualLeafCount: flow.actualLeafCount, originalOnly, inputFiles: files });
   };
 
+  /** 续跑时原件不可用（快照中的副本被改动）：按同一输入与 checkpoint 重新放入（审查材料由程序算出，不重新放入：需要还原时任务失败）。 */
+  const rewriteProtected = async (run: AgentRun, flow: DirectoryFlow | null) => {
+    await writeInputs(run);
+    if (!scoringMode) return;
+    await protectedWrite(run, SCORE_INPUT_GROUP, scoreFiles);
+    if (!flow?.scoring) return;
+    await writePlan(run, flow.scoring);
+    if (flow.stage === LEAF_ALLOCATION_STAGE) await protectedWrite(run, LEAF_ALLOCATION_CONTEXT_GROUP, [{ path: LEAF_ALLOCATION_CONTEXT_FILE, content: leafContextText(flow.scoring) }]);
+    if (flow.scoring.allocations) await protectedWrite(run, LEAF_ALLOCATION_GROUP, [{ path: LEAF_ALLOCATION_FILE, content: allocationText(flow.scoring) }]);
+  };
+
   await withAgentRun(context.agent, async (run) => {
     let flow = readDirectoryFlow(run.taskCheckpoint);
+    // 进度须与模式相符：评分规划、叶子分配只在评分模式；评分规划之后（且只在那之后）有评分模式的状态。
+    if (
+      flow &&
+      ((!scoringMode && (flow.stage === SCORE_PLANNING_STAGE || flow.stage === LEAF_ALLOCATION_STAGE)) ||
+        (flow.scoring !== null) !== (scoringMode && flow.stage !== SCORE_PLANNING_STAGE))
+    ) {
+      throw new TypeError('目录生成的 checkpoint 不合法');
+    }
     /** 交接时算出的本阶段要求（续跑时 prompted 为 false 的按 flow 与工作区重新算出）。 */
     let pendingPrompt: string | null = null;
     if (!flow) {
-      await publish('一级目录已确认，开始按无技术评分项模式生成目录', 35);
-      // 与桌面版 files 相同：确认后的一级目录与一级目录阶段的材料。
-      await writeInputs(run);
-      await writeOutlineFile(context, run, JSON.stringify({ outline: lockedRoots }, null, 2));
+      const templateRoots = !standaloneTechnical && lockedRoots.some((item) => item.content_mode === 'template-fill');
+      // 与桌面版相同；桌面版有模板填写目录时写“目录生成与投标模版提取并行开始”，Web 版不提取投标模板（随 8.13）。
+      await publish(
+        !scoringMode
+          ? '一级目录已确认，开始按无技术评分项模式生成目录'
+          : standaloneTechnical
+            ? '一级目录已确认，已跳过投标模版提取，开始生成技术文件目录'
+            : templateRoots
+              ? '一级目录已确认，开始生成完整目录'
+              : '一级目录已确认，当前无模板填写目录，已跳过投标模版提取，开始生成完整目录',
+        35,
+      );
+      if (scoringMode) {
+        // 与桌面版 files 相同：确认后的一级目录、技术评分信息与知识库；预置空的评分清单与评分规划。一级目录阶段的材料仍在工作区中。
+        if (run.unavailableProtectedFiles.length > 0) await writeInputs(run);
+        await protectedWrite(run, SCORE_INPUT_GROUP, scoreFiles);
+        await writeOutlineFile(context, run, JSON.stringify({ outline: lockedRoots }, null, 2));
+        await prepareOutputs(run, [TECHNICAL_SCORE_GROUPS_FILE, SCORE_DIRECTORY_PLAN_FILE]);
+      } else {
+        // 与桌面版 files 相同：确认后的一级目录与一级目录阶段的材料。
+        await writeInputs(run);
+        await writeOutlineFile(context, run, JSON.stringify({ outline: lockedRoots }, null, 2));
+      }
       flow = {
-        stage: CHILDREN_GENERATION_STAGE,
+        stage: scoringMode ? SCORE_PLANNING_STAGE : CHILDREN_GENERATION_STAGE,
         stageIndex: DIRECTORY_STAGE_INDEX,
         prompted: false,
         knownIds: [...collectOutlineIds(lockedRoots)],
         actualLeafCount: 0,
         leafWarning: '',
         leafSince: null,
+        scoring: null,
       };
     } else if (run.unavailableProtectedFiles.length > 0) {
-      // 续跑时材料在快照中；原件不可用（快照中的副本被改动）时按同一输入重新放入（审查材料由程序算出，不重新放入：需要还原时任务失败）。
-      await writeInputs(run);
+      await rewriteProtected(run, flow);
     }
+
+    /** 交接到子目录生成（与桌面版 continueWithChildrenGeneration 相同）。 */
+    const toChildren = async (scoring: ScoringFlow, stageIndex: number): Promise<DirectoryFlow> => {
+      await publish('技术方案目录已确认，开始生成子目录', 55);
+      const roots = rootsOf(scoring);
+      await writeOutlineFile(context, run, JSON.stringify({ outline: roots }, null, 2));
+      await protectedWrite(run, LEAF_ALLOCATION_GROUP, [{ path: LEAF_ALLOCATION_FILE, content: allocationText(scoring) }]);
+      const next: DirectoryFlow = {
+        stage: CHILDREN_GENERATION_STAGE,
+        stageIndex,
+        prompted: false,
+        knownIds: [...collectOutlineIds(roots)],
+        actualLeafCount: 0,
+        leafWarning: '',
+        leafSince: null,
+        scoring,
+      };
+      await run.checkpoint(taskState(next), 55);
+      return next;
+    };
 
     for (;;) {
       const current: DirectoryFlow = flow;
+      const stage = current.stage;
+      const scoring = current.scoring;
+      const targetLeafCount = targetOf(current);
       let promptText: string;
       if (current.prompted) {
         promptText = CONTINUE_PROMPT;
       } else if (pendingPrompt !== null) {
         promptText = pendingPrompt;
-      } else if (current.stage === CHILDREN_GENERATION_STAGE) {
-        promptText = createNoTechnicalScoreChildrenPrompt({ targetLeafCount, standaloneTechnical, originalOnly });
-      } else if (current.stage === LEAF_ADJUSTMENT_STAGE) {
-        promptText = createLeafAdjustmentPrompt(targetLeafCount!, current.actualLeafCount, { noTechnicalScoreMode: true, originalOnly });
+      } else if (stage === SCORE_PLANNING_STAGE) {
+        promptText = createScorePlanningPrompt({ standaloneTechnical });
+      } else if (stage === LEAF_ALLOCATION_STAGE) {
+        promptText = createLeafAllocationPrompt({ standaloneTechnical });
+      } else if (stage === CHILDREN_GENERATION_STAGE) {
+        promptText = scoring
+          ? createChildrenPrompt({ hasOriginalPlan, originalOnly, targetLeafCount, allowRootChanges: scoring.plan.allow_root_changes === true, standaloneTechnical })
+          : createNoTechnicalScoreChildrenPrompt({ targetLeafCount, standaloneTechnical, originalOnly });
+      } else if (stage === LEAF_ADJUSTMENT_STAGE) {
+        promptText = createLeafAdjustmentPrompt(targetLeafCount!, current.actualLeafCount, { noTechnicalScoreMode: !scoringMode, originalOnly });
       } else {
         // 续跑时审查的要求尚未发出：交接时写入的 outline.json 与审查材料在快照中（之后没有执行过提示词）。
         const outlineText = await readText(run, OUTLINE_OUTPUT_FILE);
@@ -1248,8 +1458,7 @@ async function runNoTechnicalScoreDirectory(
       }
       pendingPrompt = null;
       const knownIds = new Set(current.knownIds);
-      const stage = current.stage;
-      const result = await run.runStage<{ outline: { outline: AcceptedOutlineItem[] }; review: { status: string } | null }>({
+      const result = await run.runStage<DirectoryStageValue>({
         stage,
         stageIndex: current.stageIndex,
         prompt: promptText,
@@ -1262,33 +1471,86 @@ async function runNoTechnicalScoreDirectory(
         repairPrompt: () => createOutputRepairPrompt(stage),
         checkpointAfterPrompt: () => taskState({ ...current, prompted: true }),
         validate: async () => {
+          if (stage === LEAF_ALLOCATION_STAGE) {
+            const allocationFile = await readText(run, LEAF_ALLOCATION_FILE);
+            if ('tooLarge' in allocationFile) return tooLarge(LEAF_ALLOCATION_FILE);
+            const report = validateLeafAllocationOutput(allocationFile.text, standaloneTechnical);
+            return { value: report.value ? { kind: 'allocation' as const, allocation: report.value } : null, issues: report.issues };
+          }
+          if (stage === SCORE_PLANNING_STAGE) {
+            const texts: string[] = [];
+            for (const file of [TECHNICAL_SCORE_GROUPS_FILE, SCORE_DIRECTORY_PLAN_FILE, OUTLINE_OUTPUT_FILE]) {
+              const read = await readText(run, file);
+              if ('tooLarge' in read) return tooLarge(file);
+              texts.push(read.text);
+            }
+            const report = validateScorePlanningOutputs(texts[0]!, texts[1]!, texts[2]!, lockedRoots);
+            return { value: report.value ? { kind: 'planning' as const, ...report.value } : null, issues: report.issues };
+          }
           const outlineText = await readText(run, OUTLINE_OUTPUT_FILE);
           if ('tooLarge' in outlineText) return tooLarge(OUTLINE_OUTPUT_FILE);
           if (stage !== OUTLINE_REVIEW_STAGE) {
             const report = validateOutlineOutput(outlineText.text, knownIds);
-            return { value: report.value ? { outline: report.value, review: null } : null, issues: report.issues };
+            return { value: report.value ? { kind: 'outline' as const, outline: report.value, review: null } : null, issues: report.issues };
           }
           const reviewText = await readText(run, OUTLINE_REVIEW_FILE);
           if ('tooLarge' in reviewText) return tooLarge(OUTLINE_REVIEW_FILE);
-          return validateOutlineReviewOutputs(outlineText.text, reviewText.text, knownIds);
+          const report = validateOutlineReviewOutputs(outlineText.text, reviewText.text, knownIds);
+          return { value: report.value ? { kind: 'outline' as const, ...report.value } : null, issues: report.issues };
         },
       });
       const accepted = result.value;
-      if (!accepted?.outline.outline.length) throw new JobError('TECHNICAL_PLAN_OUTLINE_INVALID', '目录生成结果不可用');
+      if (!accepted) throw new JobError('TECHNICAL_PLAN_OUTLINE_INVALID', '目录生成结果不可用');
       if (context.signal.aborted) throw new JobInterruptedError();
+
+      if (accepted.kind === 'planning') {
+        // 评分规划之后（与桌面版 continueTask 的 score-planning 相同）：用户批准新增的一级目录已分配正式 id，写回 outline.json 与评分规划。
+        const roots = accepted.roots;
+        const plan = synchronizeScoreDirectoryPlan(accepted.plan, roots);
+        const branchIds = new Set(plan.branches.map((branch) => branch.root_id));
+        const fixedAiLeafCount = roots.filter((root) => !branchIds.has(root.id) && root.content_mode === AI_CONTENT_MODE).length;
+        let target = baseTarget;
+        if (standaloneTechnical) {
+          target = enforceMinimumLeafTarget(baseTarget, fixedAiLeafCount, plan.branches.length);
+          if (baseTarget !== null && target !== baseTarget) await publish(`已按技术分支结构将 AI 生成叶子目标从 ${baseTarget} 调整为 ${target}`, 50);
+        }
+        const nextScoring: ScoringFlow = { plan, rootIds: roots.map((root) => root.id), newRoots: accepted.newRoots, targetLeafCount: target, fixedAiLeafCount, allocations: null };
+        await writeOutlineFile(context, run, JSON.stringify({ outline: roots }, null, 2));
+        await writePlan(run, nextScoring);
+        const allocatable = target === null ? null : target - fixedAiLeafCount;
+        if (allocatable !== null && plan.branches.length > 1) {
+          await publish('技术方案目录已确认，Agent 正在分配 AI 生成小节', 50);
+          await protectedWrite(run, LEAF_ALLOCATION_CONTEXT_GROUP, [{ path: LEAF_ALLOCATION_CONTEXT_FILE, content: leafContextText(nextScoring) }]);
+          await prepareOutputs(run, [LEAF_ALLOCATION_FILE]);
+          flow = { ...current, stage: LEAF_ALLOCATION_STAGE, stageIndex: current.stageIndex + 1, prompted: false, knownIds: nextScoring.rootIds, scoring: nextScoring };
+          await run.checkpoint(taskState(flow), 50);
+          continue;
+        }
+        nextScoring.allocations =
+          allocatable === null ? plan.branches.map((branch) => ({ root_id: branch.root_id })) : [{ root_id: plan.branches[0]!.root_id, leaf_count: allocatable }];
+        flow = await toChildren(nextScoring, current.stageIndex + 1);
+        continue;
+      }
+      if (accepted.kind === 'allocation') {
+        flow = await toChildren({ ...scoring!, allocations: accepted.allocation.allocations }, current.stageIndex + 1);
+        continue;
+      }
+
       const finalOutline = accepted.outline;
       const actualLeafCount = countAiLeaves(finalOutline.outline);
       const nextIds = [...collectOutlineIds(finalOutline.outline)];
+      const nextScoring: ScoringFlow | null = scoring ? { ...scoring, plan: synchronizeScoreDirectoryPlan(scoring.plan, finalOutline.outline) } : null;
 
       if (stage === OUTLINE_REVIEW_STAGE) {
-        // 与桌面版相同：整理后的目录写回 outline.json（之后目录调整接着的会话看到的是正式 id）。
+        // 与桌面版相同：整理后的目录（与评分规划）写回工作区（之后目录调整接着的会话看到的是正式 id）。
         await writeOutlineFile(context, run, JSON.stringify(finalOutline, null, 2));
+        if (nextScoring) await writePlan(run, nextScoring);
         let leafWarning = current.leafWarning;
         if (targetLeafCount !== null) {
           if (actualLeafCount === targetLeafCount) leafWarning = '';
           else if (leafWarning) leafWarning = `AI 生成小节目标为 ${targetLeafCount}，用户已确认最终保留当前 ${actualLeafCount} 个。`;
         }
-        await publish(outlineReviewMessage(accepted.review as Parameters<typeof outlineReviewMessage>[0]), 95);
+        await publish(outlineReviewMessage(accepted.review!), 95);
         await publish('目录生成完成', 98);
         await writeOutlineGenerationResult(context, projectId, state, finalOutline.outline, base.signature);
         // 桌面版无模板填写目录（或单独技术分册）时写“当前无模板填写目录”；Web 版不提取投标模板（随 8.13），有模板填写目录时不写这一句。
@@ -1317,18 +1579,20 @@ async function runNoTechnicalScoreDirectory(
         actualLeafCount,
         leafWarning,
         leafSince: current.leafSince,
+        scoring: nextScoring,
       };
       const outlineText = JSON.stringify(finalOutline, null, 2);
       await writeOutlineFile(context, run, outlineText);
+      // 与桌面版相同：叶子调整与目录审查一并放入同步后的评分规划。
+      if (nextScoring) await writePlan(run, nextScoring);
       if (toReview) {
-        const reviewContext = JSON.stringify(buildOutlineReviewContext({ outline: finalOutline, targetLeafCount }), null, 2);
+        const reviewContext = JSON.stringify(buildOutlineReviewContext({ outline: finalOutline, targetLeafCount, scoreDirectoryPlan: nextScoring?.plan ?? null }), null, 2);
         // 审查材料登记为受保护文件；outline-review.json 预置为空（与桌面版 prepare_output_files 相同），交给 Agent 写入。
         await run.baseline.write(run.sandbox, OUTLINE_REVIEW_CONTEXT_GROUP, [{ path: OUTLINE_REVIEW_CONTEXT_FILE, data: Buffer.from(reviewContext, 'utf8') }], {
           replace: true,
           signal: context.signal,
         });
-        await run.baseline.write(run.sandbox, OUTLINE_OUTPUT_GROUP, [{ path: OUTLINE_REVIEW_FILE, data: Buffer.alloc(0) }], { replace: true, signal: context.signal });
-        run.baseline.release(OUTLINE_OUTPUT_GROUP, [OUTLINE_REVIEW_FILE]);
+        await prepareOutputs(run, [OUTLINE_REVIEW_FILE]);
         await publish('子目录生成完成，正在准备最终审核', 88);
         pendingPrompt = reviewPrompt(next, outlineText, reviewContext);
         await run.checkpoint(taskState(next), 88);
