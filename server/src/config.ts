@@ -552,6 +552,15 @@ export function loadMigrationConfig(env: Env, options: LoadConfigOptions = {}): 
   return finish(readDatabase('MIGRATION_DATABASE_USER', 'bidtools_owner', 'MIGRATION_DATABASE_PASSWORD'));
 }
 
+/**
+ * 只读统计命令（src/cli/agent-task-usage.ts，8.7f1）的配置：用应用角色连接（与 api / worker 相同的 DATABASE_* 变量），
+ * 不读取 AI、存储、Redis 等其他配置；RLS 照常生效。
+ */
+export function loadAppDatabaseConfig(env: Env, options: LoadConfigOptions = {}): DatabaseConfig {
+  const { readDatabase, finish } = createReader(env, options);
+  return finish(readDatabase('DATABASE_USER', 'bidtools_app', 'DATABASE_PASSWORD'));
+}
+
 const IMAGE_REFERENCE = /^[a-z0-9][a-z0-9._/:@-]{0,254}$/;
 const PINNED_IMAGE_REFERENCE = /^[a-z0-9][a-z0-9._/:-]{0,254}@sha256:[a-f0-9]{64}$/;
 

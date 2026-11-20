@@ -18,7 +18,8 @@
     "test:sandbox": "vitest run --config vitest.sandbox.config.ts",
     "db:migrate": "node src/db/migrate.ts latest",
     "db:rollback": "node src/db/migrate.ts down",
-    "admin:create": "node src/cli/create-admin.ts"
+    "admin:create": "node src/cli/create-admin.ts",
+    "agent:usage": "node src/cli/agent-task-usage.ts"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "3.1145.0",
