@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { AGENT_GATEWAY_FORBIDDEN_ENV, ConfigError, loadAgentGatewayConfig, loadConfig, loadMigrationConfig, type LoadConfigOptions } from '../src/config.ts';
+import { AGENT_GATEWAY_FORBIDDEN_ENV, ConfigError, loadAgentGatewayConfig, loadAppDatabaseConfig, loadConfig, loadMigrationConfig, type LoadConfigOptions } from '../src/config.ts';
 
 /** 满足必需项的最小环境。 */
 const BASE_ENV = { NODE_ENV: 'test', DATABASE_PASSWORD: 'pw' } as const;
@@ -352,6 +352,16 @@ describe('loadMigrationConfig', () => {
 
   it('不接受应用角色的密码代替属主密码', () => {
     expect(() => loadMigrationConfig({ DATABASE_PASSWORD: 'app-pw' })).toThrow(ConfigError);
+  });
+});
+
+describe('loadAppDatabaseConfig', () => {
+  it('使用应用角色，只读取数据库变量', () => {
+    expect(loadAppDatabaseConfig({ DATABASE_HOST: 'postgres', DATABASE_PASSWORD: 'app-pw' })).toEqual({ host: 'postgres', port: 5432, name: 'bidtools', user: 'bidtools_app', password: 'app-pw' });
+  });
+
+  it('不接受属主密码代替应用密码', () => {
+    expect(() => loadAppDatabaseConfig({ MIGRATION_DATABASE_PASSWORD: 'owner-pw' })).toThrow(ConfigError);
   });
 });
 
