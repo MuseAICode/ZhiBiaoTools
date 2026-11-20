@@ -1,6 +1,9 @@
-// 技术方案目录的 Agent 材料、提示词与提交校验（路线图第 8 步 8.7d 目录调整、8.7e1 目录生成的一级目录与确认）：与桌面版 client/electron/services/outlineAdjustmentTask.cjs
+// 技术方案目录的 Agent 材料、提示词与提交校验（路线图第 8 步 8.7d 目录调整、8.7e1 目录生成的一级目录与确认、8.7e2a 无技术评分项模式的
+// 后续阶段）：与桌面版 client/electron/services/outlineAdjustmentTask.cjs
 // （buildAgentOutlineInput、createOutlineAdjustmentPrompt）、outlineGenerationTaskV2.cjs（OUTLINE_OUTPUT_FILE、OUTLINE_JSON_SCHEMA、
-// validateJsonOutput、validateOutlineOutput、buildFinalOutline、isMissingTechnicalScoreItems、createInitialPrompt、初始材料与默认选择）、
+// validateJsonOutput、validateOutlineOutput、buildFinalOutline、isMissingTechnicalScoreItems、createInitialPrompt、初始材料与默认选择；
+// OUTLINE_REVIEW_SCHEMA、deriveTargetLeafCount、countAiLeaves、countLeavesByMode、collectOutlineStructure、buildOutlineReviewContext、
+// createNoTechnicalScoreChildrenPrompt、createLeafAdjustmentPrompt、createNoTechnicalScoreReviewPrompt）、
 // taskService.cjs（一级目录确认）与 technicalPlanOutline.cjs（NODE_ID_PATTERN、collectOutlineIds、acceptAgentOutline）相同
 // （tests/technicalPlan/outlineAdjustmentJob.test.ts、outlineGenerationJob.test.ts 加载桌面版逐项对照）。
 //
@@ -186,8 +189,8 @@ function capped(issues: AgentSubmissionIssue[]): AgentSubmissionIssue[] {
   return [...kept, blocking(`${OUTLINE_OUTPUT_FILE} 另有 ${issues.length - kept.length} 个问题`)];
 }
 
-function schemaIssues(errors: readonly ErrorObject[]): AgentSubmissionIssue[] {
-  return errors.map((item) => blocking(`${OUTLINE_OUTPUT_FILE} 不符合结构要求：${item.instancePath || '/'} ${item.message}`));
+function schemaIssues(errors: readonly ErrorObject[], file = OUTLINE_OUTPUT_FILE): AgentSubmissionIssue[] {
+  return errors.map((item) => blocking(`${file} 不符合结构要求：${item.instancePath || '/'} ${item.message}`));
 }
 
 /** 与桌面版 acceptAgentOutline 相同（只用于已通过 id 检查的目录）：新节点分配 id，标题与说明去掉首尾空白，编号。 */
@@ -274,8 +277,23 @@ export function validateOutlineOutput(content: string, knownIds: ReadonlySet<str
 
 /** 一级目录阶段（与桌面版 initial_stage 相同）。 */
 export const INITIAL_OUTLINE_STAGE = 'initial-outline';
-/** 各阶段的必需文件（与桌面版 STAGE_OUTPUT_FILES 相同；8.7e1 只有一级目录阶段，其余阶段随 8.7e2）。 */
-const STAGE_OUTPUT_FILES: Readonly<Record<string, readonly string[]>> = { [INITIAL_OUTLINE_STAGE]: [OUTLINE_OUTPUT_FILE] };
+/**
+ * 后续阶段（8.7e2a）：桌面版的阶段名含下划线（children_generation、leaf_adjustment、outline_review），执行层的阶段名只允许小写字母、
+ * 数字与 -，换成连字符形式（#106 登记）。评分规划、叶子分配随 8.7e2b。
+ */
+export const CHILDREN_GENERATION_STAGE = 'children-generation';
+export const LEAF_ADJUSTMENT_STAGE = 'leaf-adjustment';
+export const OUTLINE_REVIEW_STAGE = 'outline-review';
+/** 目录审查的结果文件与程序计算的审查材料（与桌面版 OUTLINE_REVIEW_FILE、OUTLINE_REVIEW_CONTEXT_FILE 相同）。 */
+export const OUTLINE_REVIEW_FILE = 'outline-review.json';
+export const OUTLINE_REVIEW_CONTEXT_FILE = 'outline-review-context.json';
+/** 各阶段的必需文件（与桌面版 STAGE_OUTPUT_FILES 相同，阶段名为连字符形式；评分规划、叶子分配随 8.7e2b）。 */
+const STAGE_OUTPUT_FILES: Readonly<Record<string, readonly string[]>> = {
+  [INITIAL_OUTLINE_STAGE]: [OUTLINE_OUTPUT_FILE],
+  [CHILDREN_GENERATION_STAGE]: [OUTLINE_OUTPUT_FILE],
+  [LEAF_ADJUSTMENT_STAGE]: [OUTLINE_OUTPUT_FILE],
+  [OUTLINE_REVIEW_STAGE]: [OUTLINE_OUTPUT_FILE, OUTLINE_REVIEW_FILE],
+};
 /** 与桌面版 ORIGINAL_ONLY_DIRECTORY_RULE 相同。 */
 export const ORIGINAL_ONLY_DIRECTORY_RULE =
   '目录来源仅限原方案.md：提取并补齐原方案中实际存在的目录，保留其顺序和层级；不得依据其他资料或专业经验新增原方案中不存在的章节，也不得为凑字数或小节数量新增、拆分章节。';
@@ -547,4 +565,287 @@ function parseSelectionRecord(value: unknown): OutlineSelectionRecord | null {
 export function readOutlineSelectionState(task: unknown): { selection: OutlineSelectionRecord | null; confirmed: OutlineSelectionRecord | null } {
   if (!isObject(task)) return { selection: null, confirmed: null };
   return { selection: parseSelectionRecord(task.selection), confirmed: parseSelectionRecord(task.confirmed) };
+}
+
+// ---- 目录生成：确认之后的后续阶段（8.7e2a 无技术评分项模式；评分规划、叶子分配随 8.7e2b） ----
+
+/** 需要 AI 扩展的内容处理模式（与桌面版 AI_CONTENT_MODE 相同）。 */
+export const AI_CONTENT_MODE = 'ai-generate';
+/** 估算的每节字数（与桌面版 DEFAULT_ESTIMATED_SECTION_WORDS 相同）。 */
+const DEFAULT_ESTIMATED_SECTION_WORDS = 3000;
+/** 叶子调整的固定选项中“接受当前结果”（与桌面版相同）。 */
+export const LEAF_ADJUSTMENT_ACCEPT_OPTION = '接受当前结果';
+
+/** json-validation 为 outline-review.json 预置的 Schema（与桌面版 OUTLINE_REVIEW_SCHEMA 相同）。 */
+export const OUTLINE_REVIEW_SCHEMA: Readonly<Record<string, unknown>> = {
+  type: 'object',
+  required: ['status', 'issues', 'user_feedback', 'summary'],
+  additionalProperties: false,
+  properties: {
+    status: { type: 'string', enum: ['passed', 'simple_fix', 'user_feedback', 'user_refuse'] },
+    issues: {
+      type: 'array',
+      items: {
+        type: 'object',
+        required: ['category', 'problem', 'repair', 'confirmation_required'],
+        additionalProperties: false,
+        properties: {
+          category: {
+            type: 'string',
+            enum: ['leaf-count', 'score-coverage', 'duplicate-directory', 'professional-structure'],
+          },
+          problem: { type: 'string', minLength: 1 },
+          repair: { type: 'string', minLength: 1 },
+          confirmation_required: { type: 'boolean' },
+        },
+      },
+    },
+    user_feedback: { type: 'string' },
+    summary: { type: 'string', minLength: 1 },
+  },
+};
+
+const validateOutlineReviewSchema = new Ajv({ allErrors: true, strict: true }).compile(OUTLINE_REVIEW_SCHEMA);
+
+/**
+ * 目录生成各阶段预置给 json-validation 的 Schema（与桌面版 jsonValidationSchemas 相同，一次预置全部阶段的）。评分规划与叶子分配的
+ * 三份（technical-score-groups.json、score-directory-plan.json、leaf-allocation.json）随 8.7e2b 在评分模式下加入。
+ */
+export function outlineGenerationJsonSchemas(): Readonly<Record<string, unknown>> {
+  return { [OUTLINE_OUTPUT_FILE]: OUTLINE_JSON_SCHEMA, [OUTLINE_REVIEW_FILE]: OUTLINE_REVIEW_SCHEMA };
+}
+
+/** 字数控制（与桌面版 normalizeWordControlOptions 的结果相同；服务端保存时已规范化为非负整数）。 */
+export interface OutlineWordControl {
+  minimumWords: number;
+  maximumWords: number;
+  sectionWords: number;
+}
+
+/** 与桌面版 deriveTargetLeafCount 相同：“AI 生成”叶子的目标数，没有设置字数时为 null。 */
+export function deriveTargetLeafCount(options: OutlineWordControl): number | null {
+  const sectionWords = options.sectionWords > 0 ? options.sectionWords : DEFAULT_ESTIMATED_SECTION_WORDS;
+  if (options.minimumWords > 0 && options.maximumWords > 0) {
+    return Math.ceil((options.minimumWords + options.maximumWords) / 2 / sectionWords);
+  }
+  if (options.maximumWords > 0) return Math.floor(options.maximumWords / sectionWords) - 2;
+  if (options.minimumWords > 0) return Math.ceil(options.minimumWords / sectionWords) + 2;
+  return null;
+}
+
+interface OutlineNodeLike {
+  id?: unknown;
+  title?: unknown;
+  content_mode?: unknown;
+  children?: readonly OutlineNodeLike[];
+}
+
+/** 与桌面版 countAiLeaves 相同。 */
+export function countAiLeaves(items: readonly OutlineNodeLike[] | undefined): number {
+  return (items ?? []).reduce(
+    (total, item) => (Array.isArray(item?.children) && item.children.length ? total + countAiLeaves(item.children) : total + (item?.content_mode === AI_CONTENT_MODE ? 1 : 0)),
+    0,
+  );
+}
+
+/** 与桌面版 countLeavesByMode 相同。 */
+export function countLeavesByMode(items: readonly OutlineNodeLike[] | undefined, counts: Record<string, number> = Object.fromEntries(OUTLINE_CONTENT_MODES.map((mode) => [mode, 0]))): Record<string, number> {
+  for (const item of items ?? []) {
+    if (Array.isArray(item?.children) && item.children.length) {
+      countLeavesByMode(item.children, counts);
+    } else if (OUTLINE_CONTENT_MODES.includes(item?.content_mode as string)) {
+      counts[item.content_mode as string]! += 1;
+    }
+  }
+  return counts;
+}
+
+/** 与桌面版 collectOutlineStructure 相同：目录层级、父节点与内容处理模式等确定性结构信息。 */
+export function collectOutlineStructure(items: readonly OutlineNodeLike[] | undefined) {
+  const result = {
+    max_depth: 0,
+    parent_count: 0,
+    single_child_nodes: [] as { id: unknown; title: unknown; child_count: number }[],
+    invalid_leaf_content_modes: [] as { id: unknown; title: unknown; content_mode: unknown }[],
+  };
+  const visit = (nodes: readonly OutlineNodeLike[] | undefined, depth: number) => {
+    for (const item of nodes ?? []) {
+      result.max_depth = Math.max(result.max_depth, depth);
+      const children = Array.isArray(item?.children) ? item.children : [];
+      if (children.length) {
+        result.parent_count += 1;
+        if (children.length < 2) result.single_child_nodes.push({ id: item.id, title: item.title, child_count: children.length });
+        visit(children, depth + 1);
+      } else if (!OUTLINE_CONTENT_MODES.includes(item?.content_mode as string)) {
+        result.invalid_leaf_content_modes.push({ id: item.id, title: item.title, content_mode: item?.content_mode || '' });
+      }
+    }
+  };
+  visit(items, 1);
+  return result;
+}
+
+/**
+ * 与桌面版 buildOutlineReviewContext 相同：供目录审查直接采用的确定性检查结果（outline-review-context.json）。评分映射的检查
+ * （score_mapping，桌面版 collectScoreMappingCoverage）只在评分模式下给出，随 8.7e2b。
+ */
+export function buildOutlineReviewContext(input: { outline: { outline: readonly OutlineNodeLike[] }; targetLeafCount: number | null }) {
+  const items = input.outline?.outline || [];
+  const { targetLeafCount } = input;
+  const leafCounts = countLeavesByMode(items);
+  const structure = collectOutlineStructure(items);
+  const acceptableMin = targetLeafCount === null ? null : Math.max(1, targetLeafCount - 2);
+  const acceptableMax = targetLeafCount === null ? null : targetLeafCount + 2;
+  return {
+    leaf_count: {
+      target: targetLeafCount,
+      current_ai_generate: leafCounts[AI_CONTENT_MODE],
+      acceptable_min: acceptableMin,
+      acceptable_max: acceptableMax,
+      within_acceptable_range: targetLeafCount === null ? true : leafCounts[AI_CONTENT_MODE]! >= acceptableMin! && leafCounts[AI_CONTENT_MODE]! <= acceptableMax!,
+      by_content_mode: leafCounts,
+    },
+    structure: {
+      ...structure,
+      valid: structure.max_depth <= 6 && structure.single_child_nodes.length === 0 && structure.invalid_leaf_content_modes.length === 0,
+    },
+  };
+}
+
+/** 与桌面版 createNoTechnicalScoreChildrenPrompt 相同：无技术评分项模式的子目录生成。 */
+export function createNoTechnicalScoreChildrenPrompt(options: { targetLeafCount: number | null; standaloneTechnical: boolean; originalOnly?: boolean }): string {
+  const { targetLeafCount, standaloneTechnical } = options;
+  const originalOnly = options.originalOnly ?? false;
+  const leafInstruction = targetLeafCount === null
+    ? '本次未设置总字数目标，请根据项目复杂度自主确定合理的“AI生成”叶子节点数量。'
+    : `最终完整目录合计应有约 ${targetLeafCount} 个 content_mode=ai-generate 的叶子节点。`;
+  const scopeInstruction = standaloneTechnical
+    ? '所有一级目录均属于技术文件，只生成技术方案正文相关的二级及以下目录。'
+    : '只扩展 attr=技术 且 content_mode=ai-generate 的一级目录；其他一级目录保持原样，不得增加子目录。';
+  return `用户已确认招标文件没有技术评分项，请直接根据确定的无技术评分项规则生成完整目录，不要判断是否存在评分项，也不要创建评分清单或评分映射。
+${createOutputFileRequirements(CHILDREN_GENERATION_STAGE)}
+
+请阅读 ${OUTLINE_OUTPUT_FILE}、${originalOnly ? '原方案.md' : '响应文件要求.md、项目概述.md，以及存在的原方案.md 和参考知识库目录'}，然后覆盖写回 ${OUTLINE_OUTPUT_FILE}。
+
+要求：
+1. ${scopeInstruction}
+2. 一级目录的数量、顺序、id、title、description 和 attr 已由用户确认，必须保持不变；未扩展为父节点的一级目录还必须保留原 content_mode。
+3. ${originalOnly ? ORIGINAL_ONLY_DIRECTORY_RULE : '优先采用资料中的明确要求，并根据项目类型、实施内容和专业逻辑组织技术方案目录；资料不足时可以用专业经验补充通用、合理的章节，但不得编造具体项目事实、参数、业绩或承诺。'}
+4. ${leafInstruction}目录质量优先于机械凑数。
+5. 每个最终叶子节点必须填写 content_mode：技术方案正文为 ai-generate；商务/资信和业绩材料为 template-fill；投标文件目录为 directory-generate；报价为 manual-fill；其他特殊内容为 other，并用 content_mode_note 说明。父节点不得包含 content_mode 或 content_mode_note。
+6. 任意非叶子节点的 children 至少包含两个节点；目录最多六级，已有节点保留 id，新节点 id 填 null；number 是程序计算的显示编号。
+7. title 只写正式、专业的纯标题，不包含章节编号或 Markdown 标记；避免重复、近义和空泛目录。
+8. 程序已为 ${OUTLINE_OUTPUT_FILE} 预置 Schema，可用 json-validation 自查，只传 file_path；本阶段结束后程序统一校验，不通过会退回问题清单继续修复。`;
+}
+
+/** 评分规划文件（与桌面版 SCORE_DIRECTORY_PLAN_FILE 相同；评分模式的叶子调整提示词中引用，评分规划随 8.7e2b）。 */
+const SCORE_DIRECTORY_PLAN_FILE = 'score-directory-plan.json';
+
+/** 与桌面版 createLeafAdjustmentPrompt 相同：“AI 生成”叶子数与目标不同时请用户决定。 */
+export function createLeafAdjustmentPrompt(targetLeafCount: number, actualLeafCount: number, options: { noTechnicalScoreMode?: boolean; originalOnly?: boolean } = {}): string {
+  const noTechnicalScoreMode = options.noTechnicalScoreMode ?? false;
+  const originalOnly = options.originalOnly ?? false;
+  const adjustmentBoundary = noTechnicalScoreMode
+    ? `2. 用户已确认采用无技术评分项模式。选择调整时，只能根据现有资料和专业逻辑调整技术目录，不得编造具体项目事实、参数、业绩或承诺。
+3. 只通过合理调整 ai-generate 叶子的目录结构满足数量目标，不得为了凑数把 template-fill、directory-generate、manual-fill 或 other 改成 ai-generate，也不得改变非 AI 叶子的处理模式。
+4. 调整后仍须保持完整根结构 {"outline":[一级目录节点]}，已有节点必须保留 id，新节点 id 填 null，number 由程序计算；用户已确认的一级目录不得修改；父节点只含 children，不含 content_mode，叶子节点只含 content_mode，不含 children。`
+    : `2. 用户选择“允许 Agent 自行调整”或“自定义需求”时，必须继续遵循 ${SCORE_DIRECTORY_PLAN_FILE}：不得删除、移动或改变评分项对应节点的目标层级，不得新增未经批准的同层级大项；优先调整评分项节点下面的更深层目录。
+3. 只通过合理调整 ai-generate 叶子的目录结构满足数量目标，不得为了凑数把 template-fill、directory-generate、manual-fill 或 other 改成 ai-generate，也不得改变非 AI 叶子的处理模式。
+4. 调整后仍须保持完整根结构 {"outline":[一级目录节点]}，已有节点必须保留 id，新节点 id 填 null，number 由程序计算；技术一级目录的 id 必须与 ${SCORE_DIRECTORY_PLAN_FILE} 中对应的 root_id 一致，不能因增删、移动或重新编号而改变；父节点只含 children，不含 content_mode，叶子节点只含 content_mode，不含 children。`;
+  return `程序计算当前完整目录共有 ${actualLeafCount} 个“AI生成”叶子节点，目标是 ${targetLeafCount} 个。
+${createOutputFileRequirements(LEAF_ADJUSTMENT_STAGE)}
+
+请先调用一次 ask-user，说明目标数、当前数、差距及目录质量影响，只能按以下顺序提供三个固定选项，不得改名、增删或调整顺序：
+1. “接受当前结果”，custom=false：保持当前目录并进入最终审核。
+2. “允许 Agent 自行调整”，custom=false：由你在不破坏目录质量的前提下合理调整一次。
+3. “自定义需求”，custom=true：按用户填写的具体要求调整。
+
+根据本轮 ask-user 回答处理：
+1. 用户选择“接受当前结果”时，不要修改 ${OUTLINE_OUTPUT_FILE}。
+${adjustmentBoundary}
+${noTechnicalScoreMode && originalOnly ? ORIGINAL_ONLY_DIRECTORY_RULE : ''}
+5. 不要机械增加重复、空泛或近义目录。程序已为 ${OUTLINE_OUTPUT_FILE} 预置 Schema，可用 json-validation 自查，只传 file_path；本阶段结束后程序统一校验，不通过会退回问题清单继续修复。`;
+}
+
+/** 与桌面版 createNoTechnicalScoreReviewPrompt 相同：无技术评分项模式的目录审查（本阶段材料附在提示词后）。 */
+export function createNoTechnicalScoreReviewPrompt(options: { targetLeafCount: number | null; actualLeafCount: number; originalOnly?: boolean; inputFiles: readonly AgentInputFile[] }): string {
+  const { targetLeafCount, actualLeafCount, inputFiles } = options;
+  const originalOnly = options.originalOnly ?? false;
+  const leafCountReview = targetLeafCount === null
+    ? ''
+    : `\n- “AI生成”叶子数量：程序计算目标为 ${targetLeafCount} 个，当前为 ${actualLeafCount} 个，可接受范围为 ${Math.max(1, targetLeafCount - 2)} 至 ${targetLeafCount + 2} 个。`;
+  return `请对当前无技术评分项模式生成的完整技术方案目录执行最终审核，并在用户确认后完成必要修复。
+${createOutputFileRequirements(OUTLINE_REVIEW_STAGE)}
+
+以下已提供本阶段最新完整材料。${OUTLINE_REVIEW_CONTEXT_FILE} 是宿主程序计算的确定性审核结果，直接采用其中的叶子数量和结构检查。优先使用本次已提供的最新材料和程序计算结果，通常无需重复读取或重新统计。需要确认具体节点、补足上下文或排查结果异常时，可使用 grep、read 或 bash 定位相关部分；已有结果足以判断时直接继续审核。用户已确认招标文件没有技术评分项，不要判断、补造或检查评分项。
+
+审核维度：${leafCountReview}
+- 重复目录：检查子目录中是否存在重复、近义或含义重叠的节点。
+${originalOnly
+    ? `- 来源与完整性：根据下附原方案.md，核对目录是否忠实覆盖原方案中的章节。${ORIGINAL_ONLY_DIRECTORY_RULE}不得以缺少通用技术主题为由新增目录。`
+    : '- 专业合理性：检查目录是否覆盖项目实施所需的通用技术主题，层级、颗粒度、逻辑顺序、标题和内容处理模式是否适合正式投标文件。\n- 事实边界：专业经验只能补充通用目录结构，不得编造具体项目事实、参数、业绩或承诺。'}
+
+审核与修复流程：
+1. 必须先完整审核并形成问题清单，不得边审核边修改。
+2. 没有问题时不要修改 ${OUTLINE_OUTPUT_FILE}；写入 ${OUTLINE_REVIEW_FILE}，status=passed、issues=[]、user_feedback=""。
+3. 仅标题专业化和明显重复子目录合并可静默修复并设置 status=simple_fix；一级目录调整、增加或拆分目录、明显结构重排和叶子数量超出合理范围必须先集中调用一次 ask-user。
+4. 用户要求修改时设置 status=user_feedback；用户要求保留现状时不修改目录并设置 status=user_refuse。修改完成后不得再次询问。
+5. 用户已确认的一级目录数量、顺序、标题、描述和属性不得修改。所有叶子保留合法 content_mode，父节点至少有两个 children，目录最多六级，id 与实际父子位置一致。
+6. issues 的 category 只能使用 leaf-count、duplicate-directory 或 professional-structure。最终将完整问题清单和处理结果写入 ${OUTLINE_REVIEW_FILE}。
+7. 程序已为 ${OUTLINE_OUTPUT_FILE} 和 ${OUTLINE_REVIEW_FILE} 预置 Schema，可用 json-validation 自查，只传 file_path；本阶段结束后程序统一校验两份文件，不通过会退回问题清单继续修复。未修改 ${OUTLINE_OUTPUT_FILE} 时不要为了校验而重写目录。
+
+本阶段输入材料：
+${inputFiles.map((file) => `【文件开始：${file.path}】\n${file.content}\n【文件结束：${file.path}】`).join('\n\n')}`;
+}
+
+/** 目录审查的结果（outline-review.json，与桌面版 OUTLINE_REVIEW_SCHEMA 相同的形状）。内容是 AI 生成的，只用于选择任务日志。 */
+export interface OutlineReview {
+  status: 'passed' | 'simple_fix' | 'user_feedback' | 'user_refuse';
+  [key: string]: unknown;
+}
+
+/** 与桌面版 validateJsonOutput 相同（Web 版与 8.7a 相同不附解析器的错误信息）：空文件、不是合法 JSON、不符合 Schema 为阻塞问题。 */
+function validateJsonFile<V>(content: string, file: string, validate: { (value: unknown): boolean; errors?: ErrorObject[] | null }): { value: V | null; issues: AgentSubmissionIssue[] } {
+  const text = String(content || '').trim();
+  if (!text) return { value: null, issues: [blocking(`${file} 未写入或内容为空，请写入完整的 JSON`)] };
+  let generated: unknown;
+  try {
+    generated = JSON.parse(text);
+  } catch {
+    return { value: null, issues: [blocking(`${file}不是合法 JSON`)] };
+  }
+  if (!validate(generated)) {
+    const issues = schemaIssues(validate.errors ?? [], file);
+    const kept = issues.length > AGENT_SUBMISSION_MAX_ISSUES ? [...issues.slice(0, AGENT_SUBMISSION_MAX_ISSUES - 1), blocking(`${file} 另有 ${issues.length - AGENT_SUBMISSION_MAX_ISSUES + 1} 个问题`)] : issues;
+    return { value: null, issues: kept };
+  }
+  return { value: generated as V, issues: [] };
+}
+
+/**
+ * 目录审查阶段的提交校验（与桌面版 validateStageOutputs 的 outline_review 相同）：outline.json 按 validateOutlineOutput（Schema、
+ * 节点 id 只能沿用审查前目录的），outline-review.json 按 OUTLINE_REVIEW_SCHEMA；两份文件的问题合在一起（至多
+ * AGENT_SUBMISSION_MAX_ISSUES 条）。content 为文件内容（来自沙箱）。
+ */
+export function validateOutlineReviewOutputs(
+  outlineContent: string,
+  reviewContent: string,
+  knownIds: ReadonlySet<string>,
+): { value: { outline: { outline: AcceptedOutlineItem[] }; review: OutlineReview } | null; issues: AgentSubmissionIssue[] } {
+  const outline = validateOutlineOutput(outlineContent, knownIds);
+  const review = validateJsonFile<OutlineReview>(reviewContent, OUTLINE_REVIEW_FILE, validateOutlineReviewSchema);
+  const issues = [...outline.issues, ...review.issues];
+  if (issues.length) return { value: null, issues: issues.slice(0, AGENT_SUBMISSION_MAX_ISSUES) };
+  return { value: { outline: outline.value!, review: review.value! }, issues: [] };
+}
+
+/** 与桌面版目录审查完成后的日志相同（按 outline-review.json 的 status）。 */
+export function outlineReviewMessage(review: OutlineReview): string {
+  return review.status === 'passed'
+    ? '目录审核通过'
+    : review.status === 'simple_fix'
+      ? '目录审核完成，Agent 已自动微调简单问题'
+      : review.status === 'user_feedback'
+        ? '目录审核完成，已按用户反馈修复'
+        : '目录审核完成，用户选择保留当前目录';
 }

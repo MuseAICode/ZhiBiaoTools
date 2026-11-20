@@ -20,7 +20,23 @@ const fake = vi.hoisted(() => ({
   knowledge: [] as string[],
   knowledgeReads: 0,
   discarded: [] as unknown[],
+  /** 已交给 Agent 的回答（按时间），findLatestConsumedAgentAnswer 返回最后一个。 */
+  answers: [] as { selected_option: string }[],
+  answerQueries: [] as unknown[],
 }));
+
+vi.mock('../../src/agent/questions.ts', async (importOriginal) => {
+  const original = await importOriginal<typeof import('../../src/agent/questions.ts')>();
+  return {
+    ...original,
+    agentQuestionClock: async () => '2026-11-20T00:00:00.000Z',
+    findLatestConsumedAgentAnswer: async (_db: unknown, _tenant: unknown, jobId: string, since: string, options: unknown) => {
+      fake.answerQueries.push({ jobId, since, options });
+      const last = fake.answers.at(-1);
+      return last ? { answered: true, answer: last.selected_option, selected_option: last.selected_option, is_custom: false } : null;
+    },
+  };
+});
 
 vi.mock('../../src/technicalPlan/store.ts', async (importOriginal) => {
   const original = await importOriginal<typeof import('../../src/technicalPlan/store.ts')>();
@@ -155,7 +171,25 @@ function comparable(report: { value: unknown; issues: readonly { severity: strin
 
 // ---- 桌面版 ----
 
+/** 后续阶段的一步：Agent 按本阶段放入的 outline.json 写出的目录、（审查阶段）outline-review.json 与本阶段中用户对 ask-user 的回答。 */
+interface DirectoryStep {
+  outline: (current: any) => unknown;
+  review?: unknown;
+  answer?: string;
+}
+
+const textOf = (value: unknown) => (typeof value === 'string' ? value : JSON.stringify(value));
+
+interface DesktopStage {
+  stage: string;
+  index: number;
+  prompt: string;
+  files: { path: string; content: string }[];
+  prepare: string[];
+}
+
 interface DesktopRun {
+  stages: DesktopStage[];
   payloads: Record<string, any>[];
   reports: { value: unknown; issues: { severity: string; message: string }[] }[];
   writes: { path: string; content: string }[][];
@@ -171,14 +205,55 @@ interface DesktopRun {
 async function runDesktop(
   state: Record<string, any>,
   outputContent: string,
-  options: { confirm?: (selection: Record<string, any>) => { items: unknown[]; selectedIds: string[] }; payload?: Record<string, unknown>; knowledge?: string[] } = {},
+  options: {
+    confirm?: (selection: Record<string, any>) => { items: unknown[]; selectedIds: string[] };
+    payload?: Record<string, unknown>;
+    knowledge?: string[];
+    steps?: DirectoryStep[];
+  } = {},
 ): Promise<DesktopRun> {
-  const result: DesktopRun = { payloads: [], reports: [], writes: [], selection: null, finished: null, error: null };
+  const result: DesktopRun = { stages: [], payloads: [], reports: [], writes: [], selection: null, finished: null, error: null };
   const agentService = {
     updatePersistentTask() {},
     async runTask(payload: Record<string, any>) {
       result.payloads.push(payload);
-      if (payload.initial_stage !== 'initial-outline') throw new Error('desktop stage not scripted');
+      if (payload.initial_stage !== 'initial-outline') {
+        // 后续阶段：与 piRuntimeService.runTask 相同，按 continueTask 返回的阶段接着执行（阶段序号每次加 1）。
+        if (!options.steps) throw new Error('desktop stage not scripted');
+        let stage = payload.initial_stage as string;
+        let prompt = payload.prompt as string;
+        let files = (payload.files ?? []) as { path: string; content: string }[];
+        let prepare = (payload.prepare_output_files ?? []) as string[];
+        let index = payload.initial_stage_index as number;
+        const answers: Record<string, unknown>[] = [];
+        for (const step of options.steps) {
+          result.stages.push({ stage, index, prompt, files, prepare });
+          const current = JSON.parse(files.find((file) => file.path === 'outline.json')?.content ?? 'null');
+          if (step.answer) answers.push({ workflow_stage: stage, question: 'q', answer: step.answer, selected_option: step.answer, is_custom: false });
+          const output = textOf(step.outline(current));
+          const meta = {
+            workflow_stage: stage,
+            user_question_answers: answers,
+            readFile: async (file: string) => {
+              if (file === 'outline-review.json') return textOf(step.review ?? '');
+              if (file === '原方案.md') return fake.originalPlan;
+              throw new Error(`desktop read not scripted: ${file}`);
+            },
+            writeFiles: async (written: { path: string; content: string }[]) => result.writes.push(written),
+          };
+          const report = await payload.validateOutput({ output_content: output }, meta);
+          result.reports.push(report);
+          if (report.issues.length) throw Object.assign(new Error('submission blocked'), { report });
+          const next = await payload.continueTask({ output_content: output }, { ...meta, validation_result: report.value });
+          if (!next || next.complete === true || !next.prompt) return { output_content: output };
+          stage = next.stage;
+          prompt = next.prompt;
+          files = next.files ?? [];
+          prepare = next.prepare_output_files ?? [];
+          index = Number.isFinite(Number(next.stage_index)) ? Number(next.stage_index) : index + 1;
+        }
+        throw new Error('desktop steps exhausted');
+      }
       const report = payload.validateOutput({ output_content: outputContent });
       result.reports.push(report);
       if (report.issues.length) throw Object.assign(new Error('submission blocked'), { report });
@@ -354,6 +429,8 @@ beforeEach(() => {
   fake.knowledge = [];
   fake.knowledgeReads = 0;
   fake.discarded = [];
+  fake.answers = [];
+  fake.answerQueries = [];
 });
 
 describe('目录生成：一级目录阶段（与桌面版 runOutlineGenerationTaskV2 对照）', () => {
@@ -385,8 +462,9 @@ describe('目录生成：一级目录阶段（与桌面版 runOutlineGenerationT
     expect(await stage.repairPrompt!({ report: { value: null, issues: [] }, mode: 'normal', attempt: 1 })).toBe(
       await payload.buildRetryPrompt({ kind: 'submission' }, { workflow_stage: 'initial-outline' }),
     );
-    // 一级目录阶段只预置 outline.json 的 Schema（桌面版一次预置全部阶段的，其余随 8.7e2）。
-    expect(stage.jsonSchemas).toEqual({ 'outline.json': payload.json_validation_schemas['outline.json'] });
+    // 与桌面版相同一次预置全部阶段的 Schema；评分模式的评分规划与叶子分配三份随 8.7e2b。
+    expect(stage.jsonSchemas).toEqual({ 'outline.json': payload.json_validation_schemas['outline.json'], 'outline-review.json': payload.json_validation_schemas['outline-review.json'] });
+    expect(Object.keys(payload.json_validation_schemas)).toEqual(['outline.json', 'technical-score-groups.json', 'score-directory-plan.json', 'leaf-allocation.json', 'outline-review.json']);
     expect(OUTLINE_JSON_SCHEMA).toEqual(desktop.OUTLINE_JSON_SCHEMA);
     expect(stage.tools).toEqual(['read', 'write', 'edit', 'bash', 'grep', 'find', 'ls', 'json-validation', 'ask-user', 'request-termination']);
     expect(record.reports.map(comparable)).toEqual(desktopRun.reports.map(comparable));
@@ -583,10 +661,12 @@ describe('目录生成：一级目录确认之后', () => {
     expect([...generated, ...server.logs]).toEqual(desktopRun.finished!.task.logs);
   });
 
-  it('所选一级目录需要 AI 扩展时失败（后续阶段随 8.7e2），不写入', async () => {
+  it('有技术评分项时所选一级目录需要 AI 扩展：失败（评分模式的后续阶段随 8.7e2b），不打开沙箱、不写入', async () => {
     const { checkpoint } = await confirmedCheckpoint((items) => ({ selectedIds: [items[1].id] }));
-    const server = await runServer(fakeAgent().agent, { checkpoint });
+    const unavailable = fakeAgent();
+    const server = await runServer(unavailable.agent, { checkpoint });
     expect(server.error).toMatchObject({ code: OUTLINE_STAGE_UNAVAILABLE_CODE });
+    expect(unavailable.record.opened).toBe(0);
     expect(fake.saved).toEqual([]);
     // 把技术方案改为人工填写后不再需要 AI 扩展。
     const manual = await confirmedCheckpoint((items) => ({ selectedIds: [items[1].id], changes: [{ id: items[1].id, contentMode: 'manual-fill' }] }));
@@ -631,3 +711,401 @@ describe('目录生成：一级目录确认之后', () => {
     expect(result.items[1]).toBe(items[1]);
   });
 });
+
+// ---- 确认之后的后续阶段（8.7e2a，无技术评分项模式） ----
+
+interface DirectoryRecord {
+  opened: number;
+  /** 每个阶段的提示词发出之前放入工作区的文件（分组、路径、内容）。 */
+  stageWrites: { group: string; path: string; content: string }[][];
+  released: { group: string; paths: string[] }[];
+  stages: AgentStageOptions<unknown>[];
+  reports: { value: unknown; issues: readonly { severity: string; message: string }[] }[];
+  afterPrompt: (Record<string, unknown> | null)[];
+  explicit: { task: Record<string, any> | null; progress?: number }[];
+  workspace: Map<string, string>;
+  closed: boolean;
+}
+
+/** 假 AgentRun：工作区与受保护文件的原件在内存中；每个阶段按脚本写出 outline.json（与 outline-review.json）后校验一次。 */
+function directoryAgent(steps: DirectoryStep[], options: { taskCheckpoint: Record<string, unknown>; workspace?: Record<string, string>; originals?: Record<string, string>; unavailable?: string[] }) {
+  const record: DirectoryRecord = { opened: 0, stageWrites: [], released: [], stages: [], reports: [], afterPrompt: [], explicit: [], workspace: new Map(Object.entries(options.workspace ?? {})), closed: false };
+  const originals = new Map(Object.entries(options.originals ?? {}));
+  let pending: DirectoryRecord['stageWrites'][number] = [];
+  let index = 0;
+  const run = {
+    sandbox: { id: 'sandbox-1' },
+    resumed: true,
+    continued: false,
+    unavailableProtectedFiles: options.unavailable ?? [],
+    taskCheckpoint: options.taskCheckpoint,
+    wasPrompted: () => {
+      throw new Error('后续阶段不按执行者现场判断已发出的阶段');
+    },
+    baseline: {
+      async write(_sandbox: unknown, group: string, files: { path: string; data: Buffer }[]) {
+        for (const file of files) {
+          const content = file.data.toString('utf8');
+          pending.push({ group, path: file.path, content });
+          record.workspace.set(file.path, content);
+          originals.set(file.path, content);
+        }
+      },
+      release(group: string, paths: readonly string[]) {
+        record.released.push({ group, paths: [...paths] });
+        for (const path of paths) originals.delete(path);
+        return [...paths];
+      },
+      original(path: string) {
+        const content = originals.get(path);
+        return content === undefined ? null : Buffer.from(content, 'utf8');
+      },
+    },
+    async readFiles(paths: readonly string[]) {
+      const result = new Map<string, { size: number; data: Buffer | null }>();
+      for (const path of paths) {
+        const content = record.workspace.get(path);
+        if (content !== undefined) result.set(path, { size: Buffer.byteLength(content), data: Buffer.from(content, 'utf8') });
+      }
+      return result;
+    },
+    async runStage(stage: AgentStageOptions<unknown>) {
+      record.stages.push(stage);
+      record.stageWrites.push(pending);
+      pending = [];
+      const step = steps[index++];
+      if (!step) throw new Error('server steps exhausted');
+      if (step.answer) fake.answers.push({ selected_option: step.answer });
+      record.workspace.set('outline.json', textOf(step.outline(JSON.parse(record.workspace.get('outline.json') ?? 'null'))));
+      if (step.review !== undefined) record.workspace.set('outline-review.json', textOf(step.review));
+      record.afterPrompt.push(stage.checkpointAfterPrompt?.() ?? null);
+      const report = await stage.validate({ attempt: 1, restored: [] });
+      record.reports.push(report as DirectoryRecord['reports'][number]);
+      if (report.issues.some((issue) => issue.severity === 'blocking')) throw new JobError('AGENT_SUBMISSION_FAILED', 'blocked');
+      return { value: report.value, acceptedIssues: report.issues, repairs: 0, executionRetries: 0 };
+    },
+    async assistantText() {
+      return null;
+    },
+    async checkpoint(task: Record<string, unknown> | null, progress?: number) {
+      record.explicit.push({ task: structuredClone(task) as Record<string, any> | null, ...(progress !== undefined ? { progress } : {}) });
+    },
+    async close() {
+      record.closed = true;
+    },
+  };
+  const agent: JobAgent = {
+    template: 'agent',
+    resuming: true,
+    open: async () => {
+      record.opened += 1;
+      return run as unknown as AgentRun;
+    },
+  };
+  return { agent, record };
+}
+
+/** 文本中的 UUID 按出现顺序换成占位（两边各自为新节点随机分配 id）。 */
+function normalizeIds(text: string): string {
+  const ids = new Map<string, string>();
+  return text.replace(/[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}/g, (id) => {
+    if (!ids.has(id)) ids.set(id, `<id${ids.size + 1}>`);
+    return ids.get(id)!;
+  });
+}
+
+const sortedFiles = (files: { path: string; content: string }[]) =>
+  files.map((file) => ({ path: file.path, content: normalizeIds(file.content) })).sort((a, b) => a.path.localeCompare(b.path));
+
+/** 无技术评分项模式的状态。 */
+function noTechState(overrides: Record<string, unknown> = {}) {
+  return baseState({
+    techRequirements: NO_TECH_SCORE,
+    bidAnalysisTasks: { ...baseState().bidAnalysisTasks, techRequirements: { status: 'success', content: NO_TECH_SCORE } },
+    ...overrides,
+  });
+}
+
+/** 把“技术方案”展开为三个 AI 生成叶子（子目录生成）。 */
+function expandTechnical(current: any) {
+  return {
+    outline: current.outline.map((root: any) =>
+      root.title === '技术方案'
+        ? {
+            id: root.id,
+            title: root.title,
+            description: root.description,
+            attr: root.attr,
+            children: [
+              { id: null, title: '总体设计', description: '设计思路', content_mode: 'ai-generate' },
+              {
+                id: null,
+                title: '实施方案',
+                description: '实施安排',
+                children: [
+                  { id: null, title: '进度计划', description: '进度', content_mode: 'ai-generate' },
+                  { id: null, title: '质量保障', description: '质量', content_mode: 'ai-generate' },
+                ],
+              },
+            ],
+          }
+        : root,
+    ),
+  };
+}
+
+/** 在“技术方案”下追加一个 AI 生成叶子（叶子调整）。 */
+function addLeaf(current: any) {
+  return {
+    outline: current.outline.map((root: any) =>
+      root.title === '技术方案' ? { ...root, children: [...root.children, { id: null, title: '运维服务', description: '运维', content_mode: 'ai-generate' }] } : root,
+    ),
+  };
+}
+
+const keep = (current: any) => current;
+const REVIEW = { status: 'simple_fix', issues: [], user_feedback: '', summary: '标题已规范' };
+
+describe('目录生成：无技术评分项模式的后续阶段（与桌面版 runOutlineGenerationTaskV2 对照，8.7e2a）', () => {
+  /** 服务端生成一级目录（无技术评分项模式）并按默认选择确认，得到确认后的 checkpoint。 */
+  async function confirmedNoTech(pick?: (items: any[]) => string[]) {
+    const { task } = await generateServer(INITIAL, true);
+    const items = task!.selection.items as any[];
+    const confirmed = applyOutlineSelection(items, pick ? pick(items) : task!.selection.selectedIds);
+    const taskState = { ...task!, confirmed };
+    return { confirmed, checkpoint: { agent: AGENT_STATE, task: taskState }, taskState };
+  }
+
+  async function compareWithDesktop(steps: DirectoryStep[], pick?: (items: any[]) => string[]) {
+    const { confirmed, checkpoint, taskState } = await confirmedNoTech(pick);
+    const desktopRun = await runDesktop(fake.state, INITIAL, {
+      payload: { no_technical_score_mode: true },
+      confirm: () => ({ items: confirmed.items, selectedIds: confirmed.selectedIds }),
+      steps,
+    });
+    expect(desktopRun.error).toBeNull();
+    const desktopAnswers = fake.answers;
+    fake.answers = [];
+    void desktopAnswers;
+    const { agent, record } = directoryAgent(steps, { taskCheckpoint: taskState });
+    const server = await runServer(agent, { checkpoint, noTechnicalScoreMode: true });
+    return { desktopRun, record, server, checkpoint };
+  }
+
+  it('子目录生成 → 两次叶子调整（允许调整、接受当前结果）→ 目录审查：阶段、序号、提示词、放入的文件、预置 Schema、提交校验、写入的目录与日志和桌面版相同', async () => {
+    fake.state = noTechState();
+    const steps: DirectoryStep[] = [{ outline: expandTechnical }, { outline: addLeaf, answer: '允许 Agent 自行调整' }, { outline: keep, answer: '接受当前结果' }, { outline: keep, review: REVIEW }];
+    const { desktopRun, record, server } = await compareWithDesktop(steps);
+    expect(server.error).toBeNull();
+    expect(record.opened).toBe(1);
+    expect(record.closed).toBe(true);
+
+    // 阶段名为桌面版的连字符形式，序号相同。
+    expect(desktopRun.stages.map((stage) => stage.stage)).toEqual(['children_generation', 'leaf_adjustment', 'leaf_adjustment', 'outline_review']);
+    expect(record.stages.map((stage) => stage.stage)).toEqual(['children-generation', 'leaf-adjustment', 'leaf-adjustment', 'outline-review']);
+    expect(record.stages.map((stage) => stage.stageIndex)).toEqual(desktopRun.stages.map((stage) => stage.index));
+    const payload = desktopRun.payloads[1]!;
+    for (const [index, stage] of record.stages.entries()) {
+      const desktopStage = desktopRun.stages[index]!;
+      expect(normalizeIds(stage.prompt)).toBe(normalizeIds(desktopStage.prompt));
+      expect(stage.tools).toEqual(['read', 'write', 'edit', 'bash', 'grep', 'find', 'ls', 'json-validation', 'ask-user', 'request-termination']);
+      expect(stage.jsonSchemas).toEqual(payload.json_validation_schemas);
+      expect(stage.outputFile).toBe(payload.output_file);
+      expect(stage.maxExecutionRetries).toBe(payload.max_retries);
+      expect(await stage.retryPrompt!({ reason: 'x', attempt: 1, maxRetries: 1 })).toBeNull();
+      expect(await stage.repairPrompt!({ report: { value: null, issues: [] }, mode: 'normal', attempt: 1 })).toBe(
+        await payload.buildRetryPrompt({ kind: 'submission' }, { workflow_stage: desktopStage.stage }),
+      );
+      // 放入的文件：预置为空的结果文件对应桌面版的 prepare_output_files，其余与桌面版 files 相同。
+      const writes = record.stageWrites[index]!;
+      expect(sortedFiles(writes.filter((file) => !(file.content === '' && desktopStage.prepare.includes(file.path))))).toEqual(sortedFiles(desktopStage.files));
+      expect(writes.filter((file) => file.content === '').map((file) => file.path)).toEqual(desktopStage.prepare);
+    }
+    // 材料是受保护文件；outline.json 与 outline-review.json 交给 Agent（解除登记）；审查材料受保护。
+    expect(record.stageWrites[0]!.map((file) => file.group)).toEqual(['outline-generation-inputs', 'outline-generation-inputs', 'outline-output']);
+    expect(record.stageWrites[3]!.map((file) => [file.group, file.path])).toEqual([
+      ['outline-output', 'outline.json'],
+      ['outline-review-context', 'outline-review-context.json'],
+      ['outline-output', 'outline-review.json'],
+    ]);
+    expect(record.released.every((item) => item.group === 'outline-output')).toBe(true);
+    // 提交校验的问题清单（桌面版的第一份是一级目录阶段的）；通过时的目录与桌面版相同。
+    const issuesOf = (reports: DirectoryRecord['reports']) => reports.map((report) => comparable(report).issues);
+    expect(issuesOf(record.reports)).toEqual(issuesOf(desktopRun.reports.slice(1)));
+    expect(record.reports.map((report) => placeholders((report.value as any).outline))).toEqual(desktopRun.reports.slice(1).map((report: any) => placeholders(report.value['outline.json'])));
+
+    // 写入的目录、项目概述、字数控制与桌面版相同；整理后的目录写回 outline.json。
+    expect(fake.saved).toHaveLength(1);
+    const workspace = desktopRun.finished!.workspace;
+    expect(placeholders({ outline: fake.saved[0]!.input.outline, project_overview: fake.saved[0]!.input.projectOverview })).toEqual(placeholders(workspace.outlineData));
+    expect(fake.saved[0]!.input.wordControl).toEqual(workspace.outlineWordControlSnapshot);
+    expect(JSON.parse(record.workspace.get('outline.json')!).outline).toEqual(fake.saved[0]!.input.outline);
+    expect(countLeaves(fake.saved[0]!.input.outline)).toBe(4);
+    expect(fake.discarded).toEqual([{ projectId: 'project-1', kinds: ['technical-plan-global-facts'] }]);
+
+    // 两次执行的日志合起来与桌面版的相同（接连两次叶子调整只写一次，叶子数与目标不同、用户接受时的提示在最后）。
+    const generated = (await generateServer(INITIAL, true)).server.logs;
+    expect([...generated, ...server.logs]).toEqual(desktopRun.finished!.task.logs);
+    expect(server.logs.at(-1)).toBe('AI 生成小节目标为 14，用户已确认最终保留当前 4 个。');
+    expect(server.progress).toEqual([35, 75, 75, 88, 95, 98]);
+
+    // 叶子调整的回答：第一次叶子调整开始时记下起点，排除终止确认。
+    expect(fake.answerQueries).toHaveLength(2);
+    expect(fake.answerQueries[0]).toEqual({ jobId: 'job-1', since: '2026-11-20T00:00:00.000Z', options: { excludeOptionLabels: ['降低质量继续', '终止任务', '补充处理要求'] } });
+  });
+
+  it('检查点：每个阶段的要求发出前保存（prompted 为 false），发出后保存（prompted 为 true）；签名与一级目录一并保留', async () => {
+    fake.state = noTechState();
+    const steps: DirectoryStep[] = [{ outline: expandTechnical }, { outline: keep, answer: '接受当前结果' }, { outline: keep, review: REVIEW }];
+    const { record, checkpoint } = await compareWithDesktop(steps);
+    const base = checkpoint.task as Record<string, any>;
+    expect(record.afterPrompt.map((task) => (task as any).directory.stage)).toEqual(['children-generation', 'leaf-adjustment', 'outline-review']);
+    expect(record.afterPrompt.every((task) => (task as any).directory.prompted === true)).toBe(true);
+    for (const task of record.afterPrompt) expect(task).toMatchObject({ signature: base.signature, selection: base.selection, confirmed: base.confirmed });
+    expect(record.explicit.map((item) => [item.task!.directory.stage, item.task!.directory.prompted, item.progress])).toEqual([
+      ['leaf-adjustment', false, 75],
+      ['outline-review', false, 88],
+    ]);
+    const leaf = record.explicit[0]!.task!.directory;
+    expect(leaf).toMatchObject({ stageIndex: 3, actualLeafCount: 3, leafWarning: '', leafSince: '2026-11-20T00:00:00.000Z' });
+    expect(new Set(leaf.knownIds)).toEqual(collectIds(JSON.parse(record.stageWrites[1]![0]!.content).outline));
+    expect(record.explicit[1]!.task!.directory).toMatchObject({ actualLeafCount: 3, leafWarning: 'AI 生成小节目标为 14，用户已接受当前 3 个。' });
+  });
+
+  it('没有设置字数（目标为 null）：子目录生成后直接审查；只按原方案时审查附上原方案；单独技术分册的完成日志；与桌面版相同', async () => {
+    fake.state = noTechState({
+      outlineWordControlOptions: { minimumWords: 0, maximumWords: 0, sectionWords: 0 },
+      originalPlanFile: { status: 'success', markdownArtifactId: 'a1' },
+      outlineExpansionMode: 'original-only',
+      outlineMode: 'standalone-technical',
+    });
+    fake.originalPlan = ORIGINAL_PLAN;
+    const steps: DirectoryStep[] = [{ outline: expandTechnical }, { outline: keep, review: { ...REVIEW, status: 'passed' } }];
+    const { desktopRun, record, server } = await compareWithDesktop(steps);
+    expect(server.error).toBeNull();
+    expect(record.stages.map((stage) => stage.stage)).toEqual(['children-generation', 'outline-review']);
+    for (const [index, stage] of record.stages.entries()) expect(normalizeIds(stage.prompt)).toBe(normalizeIds(desktopRun.stages[index]!.prompt));
+    expect(record.stages[1]!.prompt).toContain('【文件开始：原方案.md】');
+    expect(record.stageWrites[0]!.filter((file) => file.group === 'outline-generation-inputs').map((file) => file.path)).toEqual(['原方案.md']);
+    expect(placeholders(fake.saved[0]!.input.outline)).toEqual(placeholders(desktopRun.finished!.workspace.outlineData.outline));
+    const generated = (await generateServer(INITIAL, true)).server.logs;
+    expect([...generated, ...server.logs]).toEqual(desktopRun.finished!.task.logs);
+    expect(server.logs.at(-1)).toBe('目录生成与审核完成');
+    expect(fake.answerQueries).toEqual([]);
+  });
+
+  it('目录审查结果不合法（outline-review.json 为空、不符合 Schema；目录出现未知 id）时的问题清单与桌面版相同', async () => {
+    fake.state = noTechState({ outlineWordControlOptions: { minimumWords: 0, maximumWords: 0, sectionWords: 0 } });
+    const unknown = (current: any) => ({ outline: [...current.outline, { id: '0b3c1f0e-1d1c-4c1a-9a51-0a6b0b9f3b11', title: '附加', description: '说明', attr: '技术', content_mode: 'ai-generate' }] });
+    for (const review of ['', { status: 'done', issues: [{ category: 'x' }], user_feedback: '' }, REVIEW]) {
+      for (const outline of review === REVIEW ? [unknown] : [keep]) {
+        fake.saved = [];
+        const steps: DirectoryStep[] = [{ outline: expandTechnical }, { outline, review }];
+        const { confirmed, checkpoint, taskState } = await confirmedNoTech();
+        const desktopRun = await runDesktop(fake.state, INITIAL, { payload: { no_technical_score_mode: true }, confirm: () => ({ items: confirmed.items, selectedIds: confirmed.selectedIds }), steps });
+        const { agent, record } = directoryAgent(steps, { taskCheckpoint: taskState });
+        const server = await runServer(agent, { checkpoint, noTechnicalScoreMode: true });
+        expect(server.error).toMatchObject({ code: 'AGENT_SUBMISSION_FAILED' });
+        expect(record.reports.map((report) => comparable(report).issues)).toEqual(desktopRun.reports.slice(1).map((report) => comparable(report).issues));
+        expect(record.reports.at(-1)!.issues.length).toBeGreaterThan(0);
+        expect(fake.saved).toEqual([]);
+      }
+    }
+  });
+
+  it('续跑：阶段要求已发出时只发“继续之前的任务”、不再放入文件；交接后尚未发出时按 checkpoint 与工作区重新发出同样的要求', async () => {
+    fake.state = noTechState();
+    const steps: DirectoryStep[] = [{ outline: expandTechnical }, { outline: keep, answer: '接受当前结果' }, { outline: keep, review: REVIEW }];
+    const first = await compareWithDesktop(steps);
+    expect(first.server.error).toBeNull();
+    const savedOutline = fake.saved[0]!.input.outline;
+
+    // 叶子调整的要求发出后中断：从发出后的检查点续跑。
+    fake.saved = [];
+    fake.answers = [{ selected_option: '接受当前结果' }];
+    const leafPrompted = first.record.afterPrompt[1]!;
+    const workspace = Object.fromEntries(first.record.workspace);
+    const resumedLeaf = directoryAgent([{ outline: keep }, { outline: keep, review: REVIEW }], { taskCheckpoint: leafPrompted, workspace: { ...workspace, 'outline.json': first.record.stageWrites[1]![0]!.content } });
+    const leafServer = await runServer(resumedLeaf.agent, { checkpoint: { agent: AGENT_STATE, task: leafPrompted }, noTechnicalScoreMode: true });
+    expect(leafServer.error).toBeNull();
+    expect(resumedLeaf.record.stages.map((stage) => [stage.stage, stage.prompt === '继续之前的任务'])).toEqual([
+      ['leaf-adjustment', true],
+      ['outline-review', false],
+    ]);
+    expect(resumedLeaf.record.stageWrites[0]).toEqual([]);
+    expect(normalizeIds(resumedLeaf.record.stages[1]!.prompt)).toBe(normalizeIds(first.record.stages[2]!.prompt));
+    expect(placeholders(fake.saved[0]!.input.outline)).toEqual(placeholders(savedOutline));
+
+    // 交接到目录审查后、要求发出前中断：按工作区中的 outline.json 与受保护的审查材料重新发出同样的要求。
+    fake.saved = [];
+    const reviewPending = first.record.explicit[1]!.task!;
+    const reviewWrites = first.record.stageWrites[2]!;
+    const reviewWorkspace = Object.fromEntries(reviewWrites.map((file) => [file.path, file.content]));
+    const resumedReview = directoryAgent([{ outline: keep, review: REVIEW }], {
+      taskCheckpoint: reviewPending,
+      workspace: reviewWorkspace,
+      originals: { 'outline-review-context.json': reviewWorkspace['outline-review-context.json']! },
+    });
+    const reviewServer = await runServer(resumedReview.agent, { checkpoint: { agent: AGENT_STATE, task: reviewPending }, noTechnicalScoreMode: true });
+    expect(reviewServer.error).toBeNull();
+    expect(resumedReview.record.stages[0]!.prompt).toBe(first.record.stages[2]!.prompt);
+    expect(resumedReview.record.stageWrites[0]).toEqual([]);
+    // 审查材料原件不可用：不能重新发出要求，任务失败、不写入。
+    fake.saved = [];
+    const noOriginal = directoryAgent([{ outline: keep, review: REVIEW }], { taskCheckpoint: reviewPending, workspace: reviewWorkspace });
+    expect((await runServer(noOriginal.agent, { checkpoint: { agent: AGENT_STATE, task: reviewPending }, noTechnicalScoreMode: true })).error).toMatchObject({ code: 'TECHNICAL_PLAN_OUTLINE_INVALID' });
+    expect(fake.saved).toEqual([]);
+
+    // 叶子调整交接后、要求发出前中断：按 checkpoint 中的叶子数重新发出同样的要求。
+    fake.saved = [];
+    const leafPending = first.record.explicit[0]!.task!;
+    const resumedLeafPending = directoryAgent([{ outline: keep }, { outline: keep, review: REVIEW }], { taskCheckpoint: leafPending, workspace: { 'outline.json': first.record.stageWrites[1]![0]!.content } });
+    expect((await runServer(resumedLeafPending.agent, { checkpoint: { agent: AGENT_STATE, task: leafPending }, noTechnicalScoreMode: true })).error).toBeNull();
+    expect(resumedLeafPending.record.stages[0]!.prompt).toBe(first.record.stages[1]!.prompt);
+
+    // 子目录生成的要求发出后中断：材料原件不可用时按同一输入重新放入。
+    fake.saved = [];
+    const childrenPrompted = first.record.afterPrompt[0]!;
+    const unavailable = directoryAgent([{ outline: expandTechnical }, { outline: keep, answer: '接受当前结果' }, { outline: keep, review: REVIEW }], {
+      taskCheckpoint: childrenPrompted,
+      workspace: { 'outline.json': first.record.stageWrites[0]!.find((file) => file.path === 'outline.json')!.content },
+      unavailable: ['项目概述.md'],
+    });
+    expect((await runServer(unavailable.agent, { checkpoint: { agent: AGENT_STATE, task: childrenPrompted }, noTechnicalScoreMode: true })).error).toBeNull();
+    expect(unavailable.record.stages[0]!.prompt).toBe('继续之前的任务');
+    expect(unavailable.record.stageWrites[0]!.map((file) => file.group)).toEqual(['outline-generation-inputs', 'outline-generation-inputs']);
+  });
+
+  it('没有选择“接受当前结果”且叶子数仍与目标不同：再次叶子调整（与桌面版相同，由用户的回答决定）；终止确认之外没有回答时同样再次调整', async () => {
+    fake.state = noTechState();
+    const steps: DirectoryStep[] = [{ outline: expandTechnical }, { outline: keep }, { outline: keep, answer: '自定义需求' }, { outline: keep, answer: '接受当前结果' }, { outline: keep, review: REVIEW }];
+    const { desktopRun, record, server } = await compareWithDesktop(steps);
+    expect(server.error).toBeNull();
+    expect(record.stages.map((stage) => stage.stage)).toEqual(desktopRun.stages.map((stage) => stage.stage.replaceAll('_', '-')));
+    expect(record.stages.map((stage) => stage.stage)).toEqual(['children-generation', 'leaf-adjustment', 'leaf-adjustment', 'leaf-adjustment', 'outline-review']);
+  });
+
+  it('checkpoint 中的后续阶段进度形状不对时失败（不打开后续阶段）', async () => {
+    fake.state = noTechState();
+    const { checkpoint, taskState } = await confirmedNoTech();
+    for (const directory of [{ stage: 'x' }, { stage: 'leaf-adjustment', stageIndex: -1, prompted: false, knownIds: [], actualLeafCount: 0, leafWarning: '', leafSince: null }, { stage: 'outline-review', stageIndex: 2, prompted: true, knownIds: [1], actualLeafCount: 0, leafWarning: '', leafSince: null }]) {
+      const task = { ...taskState, directory };
+      const { agent, record } = directoryAgent([], { taskCheckpoint: task });
+      const server = await runServer(agent, { checkpoint: { ...checkpoint, task } as never, noTechnicalScoreMode: true });
+      expect(server.error).toBeInstanceOf(TypeError);
+      expect(record.stages).toEqual([]);
+    }
+  });
+});
+
+function countLeaves(items: any[]): number {
+  return items.reduce((total, item) => total + (item.children?.length ? countLeaves(item.children) : item.content_mode === 'ai-generate' ? 1 : 0), 0);
+}
+
+function collectIds(items: any[], ids = new Set<string>()): Set<string> {
+  for (const item of items) {
+    ids.add(item.id);
+    if (item.children) collectIds(item.children, ids);
+  }
+  return ids;
+}
