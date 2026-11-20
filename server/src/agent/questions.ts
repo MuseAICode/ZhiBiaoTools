@@ -13,7 +13,7 @@
 //   （按问题与选项的 SHA-256 认出）即取回答案；续跑中提出了不同的问题时旧问题作废；
 // - 回答人限任务发起人或组织 owner / admin（数据库触发器再检查一次）。
 import { createHash } from 'node:crypto';
-import { sql, type Transaction } from 'kysely';
+import { sql, type Kysely, type Transaction } from 'kysely';
 import {
   AGENT_QUESTION_MAX_LENGTH,
   AGENT_QUESTION_MAX_OPTIONS,
@@ -21,7 +21,7 @@ import {
   AGENT_WAITING_FOR_USER_PAUSE_REASON,
 } from '../db/migrations/0039_agent_questions.ts';
 import type { AgentQuestionOption, AgentQuestionStatus, Database } from '../db/schema.ts';
-import type { TenantContext } from '../db/tenant.ts';
+import { withTenant, type TenantContext } from '../db/tenant.ts';
 import { AppError } from '../errors.ts';
 import { findAgentFailureReport, normalizeAgentPlainText } from './failureReport.ts';
 
@@ -232,4 +232,49 @@ export async function findPendingAgentQuestion(trx: Trx, jobId: string, runId?: 
 
 export function isWaitingForUserReason(reason: string | null): boolean {
   return reason === AGENT_WAITING_FOR_USER_PAUSE_REASON;
+}
+
+/** 一个任务的回答至多读这么多条（findLatestConsumedAgentAnswer；每个任务同时至多一个未关闭的问题，回答都由用户逐个给出）。 */
+const CONSUMED_ANSWERS_READ_MAX = 200;
+
+/**
+ * 数据库的当前时间（ISO 字符串）：任务据此记下“从这里开始提出的问题”的起点（findLatestConsumedAgentAnswer 的 since）。
+ * 与 asked_at 同一个时钟。
+ */
+export async function agentQuestionClock(db: Kysely<Database>, tenant: TenantContext): Promise<string> {
+  const row = await withTenant(db, tenant, (trx) => sql<{ now: Date }>`SELECT now() AS now`.execute(trx));
+  return new Date(row.rows[0]!.now).toISOString();
+}
+
+/**
+ * 任务在 since 之后（含）提出、答案已交给 Agent（consumed）的问题中最近的一个的回答（桌面版 user_question_answers 中最后一条，
+ * 8.7e2a 的叶子调整用）：选项名称依次与 excludeOptionLabels 相同的问题不算（桌面版不记下终止确认的回答，recordAnswer: false）。
+ * 没有时返回 null。
+ */
+export async function findLatestConsumedAgentAnswer(
+  db: Kysely<Database>,
+  tenant: TenantContext,
+  jobId: string,
+  since: string,
+  options: { excludeOptionLabels?: readonly string[] } = {},
+): Promise<AgentAnswer | null> {
+  const excluded = options.excludeOptionLabels;
+  const rows = (await withTenant(db, tenant, (trx) =>
+    trx
+      .selectFrom('agent_questions')
+      .select(['id', 'options', 'answer_option', 'answer_text'])
+      .where('job_id', '=', jobId)
+      .where('status', '=', 'consumed')
+      .where('asked_at', '>=', new Date(since))
+      .orderBy('asked_at', 'desc')
+      .orderBy('consumed_at', 'desc')
+      .limit(CONSUMED_ANSWERS_READ_MAX)
+      .execute(),
+  )) as Pick<QuestionRow, 'id' | 'options' | 'answer_option' | 'answer_text'>[];
+  for (const row of rows) {
+    const labels = row.options.map((option) => option.label);
+    if (excluded && labels.length === excluded.length && labels.every((label, index) => label === excluded[index])) continue;
+    return answerOf(row as QuestionRow);
+  }
+  return null;
 }

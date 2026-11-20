@@ -6,16 +6,19 @@
 // - 暂停与确认：一级目录阶段之后暂停为 waiting_for_selection（事件与原因），已请求暂停时按手动暂停收尾；等待中普通继续 409、其他技术方案任务
 //   互斥；状态中的 outlineGenerationTask 与 outlineSelection；确认的权限（发起人与 owner / admin，普通成员 403）、其他项目 / 其他组织 404、
 //   选择不合法 400、不在等待 409、余额不足 402（都不改）；确认后回到 queued、checkpoint 中写下确认的选择，再次确认 409；
-// - 确认后续跑（假 Agent、真实数据库）：写入所选一级目录、清空全局事实与正文、写入字数控制、丢弃全局事实的会话、保留目录的会话；需要 AI 扩展
-//   时失败（8.7e2 之前）；
+// - 确认后续跑（假 Agent、真实数据库）：写入所选一级目录、清空全局事实与正文、写入字数控制、丢弃全局事实的会话、保留目录的会话；有技术评分项
+//   时需要 AI 扩展失败（8.7e2b 之前）；无技术评分项模式经子目录生成、叶子调整（按 agent_questions 中用户的回答）与目录审查写入目录（8.7e2a）；
+// - findLatestConsumedAgentAnswer / agentQuestionClock（8.7e2a）：只取起点之后、已交给 Agent 的回答，排除终止确认，按组织隔离；
 // - 接口：POST .../outline-generation 的前置检查（文案与桌面版相同）、202 与 Agent 任务上限、无技术评分项模式的确认、请求体字段；清空时取消。
 // 与桌面版逐项对照见 tests/technicalPlan/outlineGenerationJob.test.ts。
-import { createHash, randomUUID } from 'node:crypto';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { Readable } from 'node:stream';
 import type { FastifyInstance } from 'fastify';
-import type { Kysely } from 'kysely';
+import { sql, type Kysely } from 'kysely';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { AgentRun, AgentStageOptions, JobAgent } from '../../src/agent/execution.ts';
+import { agentQuestionClock, findLatestConsumedAgentAnswer } from '../../src/agent/questions.ts';
+import { TERMINATION_OPTIONS } from '../../src/agent/requestTerminationTool.ts';
 import { findWorkspaceSnapshot, writeWorkspaceSnapshot } from '../../src/agent/workspaceSnapshots.ts';
 import { buildApp } from '../../src/app.ts';
 import { writeArtifact } from '../../src/artifacts/store.ts';
@@ -250,6 +253,71 @@ function scriptedAgent(output: string, save: (checkpoint: Record<string, unknown
   return { agent, record };
 }
 
+/** 后续阶段的一步（8.7e2a）：Agent 按当前 outline.json 写出的目录、（审查阶段）outline-review.json，以及本阶段中写入的问题与回答。 */
+interface StagedStep {
+  outline: (current: any) => unknown;
+  review?: unknown;
+  onStage?: (member: Member, run: RunRef) => Promise<void>;
+}
+
+/** 按阶段脚本化的假 Agent（续跑：taskCheckpoint 为 checkpoint 中任务自己的状态）；工作区在内存中。 */
+function stagedAgent(steps: StagedStep[], save: (checkpoint: Record<string, unknown>) => Promise<void>, taskCheckpoint: Record<string, unknown> | null, onStage: (step: StagedStep) => Promise<void>) {
+  const record = { files: new Map<string, string>(), opened: 0, stages: [] as string[] };
+  let index = 0;
+  const run = {
+    sandbox: { id: 'sandbox-1' },
+    resumed: true,
+    unavailableProtectedFiles: [],
+    taskCheckpoint,
+    baseline: {
+      async write(_sandbox: unknown, _group: string, files: { path: string; data: Buffer }[]) {
+        for (const file of files) record.files.set(file.path, file.data.toString('utf8'));
+      },
+      release: (_group: string, paths: readonly string[]) => [...paths],
+      original: (path: string) => (record.files.has(path) ? Buffer.from(record.files.get(path)!, 'utf8') : null),
+    },
+    async readFiles(paths: readonly string[]) {
+      return new Map(paths.filter((path) => record.files.has(path)).map((path) => [path, { size: 1, data: Buffer.from(record.files.get(path)!, 'utf8') }]));
+    },
+    async runStage(stage: AgentStageOptions<unknown>) {
+      record.stages.push(stage.stage);
+      const step = steps[index++]!;
+      await onStage(step);
+      record.files.set('outline.json', JSON.stringify(step.outline(JSON.parse(record.files.get('outline.json')!))));
+      if (step.review !== undefined) record.files.set('outline-review.json', JSON.stringify(step.review));
+      if (stage.checkpointAfterPrompt) await save({ agent: AGENT_STATE, task: stage.checkpointAfterPrompt() });
+      const report = await stage.validate({ attempt: 1, restored: [] });
+      expect(report.issues).toEqual([]);
+      return { value: report.value, acceptedIssues: [], repairs: 0, executionRetries: 0 };
+    },
+    async checkpoint(task: Record<string, unknown> | null) {
+      await save({ agent: AGENT_STATE, task });
+    },
+    async close() {},
+  };
+  const agent: JobAgent = {
+    template: 'agent',
+    resuming: true,
+    open: async () => {
+      record.opened += 1;
+      return run as unknown as AgentRun;
+    },
+  };
+  return { agent, record };
+}
+
+const LEAF_OPTIONS = [
+  { label: '接受当前结果', description: '', custom: false },
+  { label: '允许 Agent 自行调整', description: '', custom: false },
+  { label: '自定义需求', description: '', custom: true },
+];
+
+/** 写入一个已交给 Agent 的回答（agent_questions，status consumed）。 */
+async function consumedQuestion(member: Member, run: RunRef, options: { label: string; description: string; custom: boolean }[], answer: number, askedAt?: string) {
+  await sql`INSERT INTO agent_questions (org_id, job_id, run_id, content_hash, question, options, status, asked_at, answer_option, answered_by, answered_at, consumed_run_id, consumed_at)
+    VALUES (${member.orgId}, ${run.jobId}, ${run.runId}, ${randomBytes(32)}, '问题', ${JSON.stringify(options)}::jsonb, 'consumed', ${askedAt ?? sql`now()`}, ${answer}, ${member.userId}, now(), ${run.runId}, now())`.execute(superuser);
+}
+
 const definition = createTechnicalPlanJobs().find((job) => job.type === OUTLINE_GENERATION_JOB_TYPE)!;
 
 async function claim(member: Member, jobId: string): Promise<RunRef> {
@@ -264,13 +332,13 @@ async function jobRow(jobId: string) {
 }
 
 /** 认领并执行一次（假 Agent），按结果结束本次执行（与执行者相同的判断）。返回结束后的状态与任务抛出的错误。 */
-async function execute(member: Member, projectId: string, jobId: string, output = INITIAL) {
+async function execute(member: Member, projectId: string, jobId: string, output = INITIAL, staged?: StagedStep[]) {
   const run = await claim(member, jobId);
   const row = await jobRow(jobId);
   const saveCheckpoint = async (checkpoint: Record<string, unknown>) => {
     expect(await renewRun(appDb, run, LEASE_MS, { checkpoint })).not.toBeNull();
   };
-  const { agent, record } = scriptedAgent(output, saveCheckpoint);
+  const { agent, record } = staged ? stagedAgent(staged, saveCheckpoint, row.checkpoint?.task ?? null, async (step) => step.onStage?.(member, run)) : scriptedAgent(output, saveCheckpoint);
   const context: JobContext<any> = {
     jobId,
     projectId,
@@ -318,8 +386,8 @@ function call(member: Member, method: 'GET' | 'POST' | 'PUT' | 'DELETE', url: st
 const planUrl = (projectId: string, path = '') => `/api/projects/${projectId}/technical-plan${path}`;
 
 /** 开始目录生成并执行到等待确认。 */
-async function waitingJob(member: Member, projectId: string): Promise<{ jobId: string; items: { id: string; title: string }[] }> {
-  const started = await call(member, 'POST', planUrl(projectId, '/outline-generation'));
+async function waitingJob(member: Member, projectId: string, body?: Record<string, unknown>): Promise<{ jobId: string; items: { id: string; title: string }[] }> {
+  const started = await call(member, 'POST', planUrl(projectId, '/outline-generation'), body);
   expect(started.statusCode, started.body).toBe(202);
   const jobId = started.json().job.id as string;
   const { status } = await execute(member, projectId, jobId);
@@ -593,7 +661,54 @@ describe('确认后续跑', () => {
     expect(state.outlineSelection).toMatchObject({ confirmed: true });
   });
 
-  it('所选一级目录需要 AI 扩展时失败（8.7e2 之前），不写入目录', async () => {
+  it('无技术评分项模式（8.7e2a）：子目录生成、叶子调整（起点之前的回答与终止确认不算）、目录审查后写入目录与字数控制，任务成功', async () => {
+    const owner = await newOrg();
+    const projectId = await fixture(owner, { techRequirements: NO_TECH_SCORE });
+    await saveGlobalFacts(appDb, owner.context, projectId, [{ id: 'g1', title: '工期', content: '180 天' }]);
+    const { jobId, items } = await waitingJob(owner, projectId, { noTechnicalScoreMode: true });
+    expect((await call(owner, 'POST', planUrl(projectId, '/outline-selection'), { jobId, selectedIds: items.map((item) => item.id) })).statusCode).toBe(200);
+    const expand = (current: any) => ({
+      outline: current.outline.map((root: any) =>
+        root.title === '技术方案'
+          ? { id: root.id, title: root.title, description: root.description, attr: root.attr, children: [0, 1].map((index) => ({ id: null, title: `方案${index}`, description: '说明', content_mode: 'ai-generate' })) }
+          : root,
+      ),
+    });
+    const keep = (current: any) => current;
+    const steps: StagedStep[] = [
+      // 子目录生成中（叶子调整开始之前）用户回答过“接受当前结果”：不算。
+      { outline: expand, onStage: (member, run) => consumedQuestion(member, run, LEAF_OPTIONS, 0) },
+      // 第一次叶子调整没有回答：再次叶子调整。
+      { outline: keep },
+      // 第二次：回答“接受当前结果”，之后的终止确认（选择继续）不算。
+      {
+        outline: keep,
+        onStage: async (member, run) => {
+          await consumedQuestion(member, run, LEAF_OPTIONS, 0);
+          await consumedQuestion(member, run, [...TERMINATION_OPTIONS], 0);
+        },
+      },
+      { outline: keep, review: { status: 'passed', issues: [], user_feedback: '', summary: '通过' } },
+    ];
+    const { status, record, error } = await execute(owner, projectId, jobId, INITIAL, steps);
+    expect(error).toBeNull();
+    expect(status).toBe('succeeded');
+    expect((record as { stages?: string[] }).stages).toEqual(['children-generation', 'leaf-adjustment', 'leaf-adjustment', 'outline-review']);
+    const state = await loadTechnicalPlan(appDb, owner.context, projectId);
+    expect(state.outlineData!.outline.map((item) => [item.number, item.title, item.children?.map((child) => child.title) ?? null])).toEqual([
+      ['1', '投标文件目录', null],
+      ['2', '技术方案', ['方案0', '方案1']],
+      ['3', '投标报价', null],
+    ]);
+    expect(state.outlineData!.outline[1]!.id).toBe(items[1]!.id);
+    expect(state.globalFacts).toEqual([]);
+    expect(state.outlineWordControlSnapshot).toEqual({ minimumWords: 30000, maximumWords: 50000, sectionWords: 3000 });
+    expect(state.outlineSelection).toMatchObject({ confirmed: true });
+    const checkpoint = (await jobRow(jobId)).checkpoint.task;
+    expect(checkpoint.directory).toMatchObject({ stage: 'outline-review', prompted: true, leafWarning: 'AI 生成小节目标为 14，用户已接受当前 2 个。' });
+  });
+
+  it('有技术评分项时所选一级目录需要 AI 扩展：失败（8.7e2b 之前），不写入目录', async () => {
     const owner = await newOrg();
     const projectId = await fixture(owner);
     const { jobId, items } = await waitingJob(owner, projectId);
@@ -613,6 +728,36 @@ describe('确认后续跑', () => {
     const { status } = await execute(owner, projectId, jobId);
     expect(status).toBe('failed');
     expect(await jobRow(jobId)).toMatchObject({ error_code: 'TECHNICAL_PLAN_INPUT_CHANGED' });
+  });
+});
+
+describe('findLatestConsumedAgentAnswer / agentQuestionClock（8.7e2a）', () => {
+  it('只取起点之后、已交给 Agent 的最近一个回答；排除选项与给出的相同的问题；其他任务与其他组织的不算', async () => {
+    const owner = await newOrg();
+    const other = await newOrg();
+    const projectId = await fixture(owner);
+    const otherProject = await fixture(other);
+    const { jobId } = await waitingJob(owner, projectId);
+    const { jobId: otherJob } = await waitingJob(other, otherProject);
+    const run = { orgId: owner.orgId, jobId, runId: randomUUID() };
+    await consumedQuestion(owner, run, LEAF_OPTIONS, 1, '2000-01-01T00:00:00Z');
+    const since = await agentQuestionClock(appDb, owner.context);
+    expect(Date.parse(since)).toBeGreaterThan(Date.parse('2026-01-01T00:00:00Z'));
+    expect(await findLatestConsumedAgentAnswer(appDb, owner.context, jobId, since)).toBeNull();
+    // 只有回答、尚未交给 Agent 的不算。
+    await sql`INSERT INTO agent_questions (org_id, job_id, run_id, content_hash, question, options, status, answer_option, answered_by, answered_at)
+      VALUES (${owner.orgId}, ${jobId}, ${run.runId}, ${randomBytes(32)}, '问题', ${JSON.stringify(LEAF_OPTIONS)}::jsonb, 'answered', 0, ${owner.userId}, now())`.execute(superuser);
+    expect(await findLatestConsumedAgentAnswer(appDb, owner.context, jobId, since)).toBeNull();
+    await superuser.deleteFrom('agent_questions').where('job_id', '=', jobId).where('status', '=', 'answered').execute();
+    await consumedQuestion(owner, run, LEAF_OPTIONS, 2);
+    await consumedQuestion(owner, run, [...TERMINATION_OPTIONS], 1);
+    const exclude = { excludeOptionLabels: TERMINATION_OPTIONS.map((option) => option.label) };
+    expect(await findLatestConsumedAgentAnswer(appDb, owner.context, jobId, since)).toMatchObject({ selected_option: '终止任务' });
+    expect(await findLatestConsumedAgentAnswer(appDb, owner.context, jobId, since, exclude)).toEqual({ answered: true, answer: '', selected_option: '自定义需求', is_custom: true });
+    // 其他任务、其他组织的回答不算（RLS 与 job_id）。
+    await consumedQuestion(other, { orgId: other.orgId, jobId: otherJob, runId: randomUUID() }, LEAF_OPTIONS, 0);
+    expect(await findLatestConsumedAgentAnswer(appDb, owner.context, otherJob, since)).toBeNull();
+    expect(await findLatestConsumedAgentAnswer(appDb, other.context, otherJob, since)).toMatchObject({ selected_option: '接受当前结果' });
   });
 });
 
