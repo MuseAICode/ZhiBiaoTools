@@ -6,8 +6,9 @@
 // - 暂停与确认：一级目录阶段之后暂停为 waiting_for_selection（事件与原因），已请求暂停时按手动暂停收尾；等待中普通继续 409、其他技术方案任务
 //   互斥；状态中的 outlineGenerationTask 与 outlineSelection；确认的权限（发起人与 owner / admin，普通成员 403）、其他项目 / 其他组织 404、
 //   选择不合法 400、不在等待 409、余额不足 402（都不改）；确认后回到 queued、checkpoint 中写下确认的选择，再次确认 409；
-// - 确认后续跑（假 Agent、真实数据库）：写入所选一级目录、清空全局事实与正文、写入字数控制、丢弃全局事实的会话、保留目录的会话；有技术评分项
-//   时需要 AI 扩展失败（8.7e2b 之前）；无技术评分项模式经子目录生成、叶子调整（按 agent_questions 中用户的回答）与目录审查写入目录（8.7e2a）；
+// - 确认后续跑（假 Agent、真实数据库）：写入所选一级目录、清空全局事实与正文、写入字数控制、丢弃全局事实的会话、保留目录的会话；无技术评分项
+//   模式经子目录生成、叶子调整（按 agent_questions 中用户的回答）与目录审查写入目录（8.7e2a）；评分模式经评分规划、子目录生成、叶子调整与
+//   目录审查写入目录，评分规划写进 checkpoint（8.7e2b）；
 // - findLatestConsumedAgentAnswer / agentQuestionClock（8.7e2a）：只取起点之后、已交给 Agent 的回答，排除终止确认，按组织隔离；
 // - 接口：POST .../outline-generation 的前置检查（文案与桌面版相同）、202 与 Agent 任务上限、无技术评分项模式的确认、请求体字段；清空时取消。
 // 与桌面版逐项对照见 tests/technicalPlan/outlineGenerationJob.test.ts。
@@ -31,7 +32,7 @@ import type { TenantContext } from '../../src/db/tenant.ts';
 import type { ObjectStore } from '../../src/files/objectStore.ts';
 import { JobSelectionRequiredError, type JobContext } from '../../src/jobs/definitions.ts';
 import { claimJob, finishRun, renewRun, requestPause, requestResume, type RunRef } from '../../src/jobs/store.ts';
-import { createTechnicalPlanJobs, OUTLINE_GENERATION_JOB_TYPE, OUTLINE_STAGE_UNAVAILABLE_CODE } from '../../src/technicalPlan/jobs.ts';
+import { createTechnicalPlanJobs, OUTLINE_GENERATION_JOB_TYPE } from '../../src/technicalPlan/jobs.ts';
 import {
   importTenderFiles,
   loadTechnicalPlan,
@@ -253,10 +254,11 @@ function scriptedAgent(output: string, save: (checkpoint: Record<string, unknown
   return { agent, record };
 }
 
-/** 后续阶段的一步（8.7e2a）：Agent 按当前 outline.json 写出的目录、（审查阶段）outline-review.json，以及本阶段中写入的问题与回答。 */
+/** 后续阶段的一步（8.7e2a、8.7e2b）：Agent 按当前 outline.json 写出的目录、（审查阶段）outline-review.json、（评分规划）其他文件，以及本阶段中写入的问题与回答。 */
 interface StagedStep {
   outline: (current: any) => unknown;
   review?: unknown;
+  files?: (current: any) => Record<string, unknown>;
   onStage?: (member: Member, run: RunRef) => Promise<void>;
 }
 
@@ -283,7 +285,9 @@ function stagedAgent(steps: StagedStep[], save: (checkpoint: Record<string, unkn
       record.stages.push(stage.stage);
       const step = steps[index++]!;
       await onStage(step);
-      record.files.set('outline.json', JSON.stringify(step.outline(JSON.parse(record.files.get('outline.json')!))));
+      const current = JSON.parse(record.files.get('outline.json')!);
+      for (const [path, content] of Object.entries(step.files?.(current) ?? {})) record.files.set(path, JSON.stringify(content));
+      record.files.set('outline.json', JSON.stringify(step.outline(current)));
       if (step.review !== undefined) record.files.set('outline-review.json', JSON.stringify(step.review));
       if (stage.checkpointAfterPrompt) await save({ agent: AGENT_STATE, task: stage.checkpointAfterPrompt() });
       const report = await stage.validate({ attempt: 1, restored: [] });
@@ -708,15 +712,58 @@ describe('确认后续跑', () => {
     expect(checkpoint.directory).toMatchObject({ stage: 'outline-review', prompted: true, leafWarning: 'AI 生成小节目标为 14，用户已接受当前 2 个。' });
   });
 
-  it('有技术评分项时所选一级目录需要 AI 扩展：失败（8.7e2b 之前），不写入目录', async () => {
+  it('评分模式（8.7e2b）：评分规划、子目录生成、叶子调整（接受当前结果）、目录审查后写入目录；评分规划写进 checkpoint，任务成功', async () => {
     const owner = await newOrg();
     const projectId = await fixture(owner);
     const { jobId, items } = await waitingJob(owner, projectId);
-    expect((await call(owner, 'POST', planUrl(projectId, '/outline-selection'), { jobId, selectedIds: [items[1]!.id] })).statusCode).toBe(200);
-    const { status } = await execute(owner, projectId, jobId);
-    expect(status).toBe('failed');
-    expect(await jobRow(jobId)).toMatchObject({ error_code: OUTLINE_STAGE_UNAVAILABLE_CODE });
-    expect((await loadTechnicalPlan(appDb, owner.context, projectId)).outlineData).toBeNull();
+    expect((await call(owner, 'POST', planUrl(projectId, '/outline-selection'), { jobId, selectedIds: items.map((item) => item.id) })).statusCode).toBe(200);
+    const technicalId = items[1]!.id;
+    const expand = (current: any) => ({
+      outline: current.outline.map((root: any) =>
+        root.id === technicalId
+          ? { id: root.id, title: root.title, description: root.description, attr: root.attr, children: ['总体设计', '实施计划'].map((title) => ({ id: null, title, description: '说明', content_mode: 'ai-generate' })) }
+          : root,
+      ),
+    });
+    const keep = (current: any) => current;
+    const steps: StagedStep[] = [
+      {
+        outline: keep,
+        files: () => ({
+          'technical-score-groups.json': { groups: [{ requirement_id: 'R1', title: '总体设计', description: '设计', detail_points: ['架构'] }] },
+          'score-directory-plan.json': {
+            allow_root_changes: false,
+            branches: [{ root_id: technicalId, root_title: '技术方案', score_item_level: 2, mappings: [{ requirement_id: 'R1', target_title: '总体设计' }] }],
+            extra_titles: [],
+          },
+        }),
+      },
+      { outline: expand },
+      { outline: keep, onStage: (member, run) => consumedQuestion(member, run, LEAF_OPTIONS, 0) },
+      { outline: keep, review: { status: 'passed', issues: [], user_feedback: '', summary: '通过' } },
+    ];
+    const { status, record, error } = await execute(owner, projectId, jobId, INITIAL, steps);
+    expect(error).toBeNull();
+    expect(status).toBe('succeeded');
+    expect((record as { stages?: string[] }).stages).toEqual(['score-planning', 'children-generation', 'leaf-adjustment', 'outline-review']);
+    const state = await loadTechnicalPlan(appDb, owner.context, projectId);
+    expect(state.outlineData!.outline.map((item) => [item.number, item.title, item.children?.map((child) => child.title) ?? null])).toEqual([
+      ['1', '投标文件目录', null],
+      ['2', '技术方案', ['总体设计', '实施计划']],
+      ['3', '投标报价', null],
+    ]);
+    expect(state.outlineData!.outline[1]!.id).toBe(technicalId);
+    const checkpoint = (await jobRow(jobId)).checkpoint.task;
+    expect(checkpoint.directory).toMatchObject({
+      stage: 'outline-review',
+      prompted: true,
+      leafWarning: 'AI 生成小节目标为 14，用户已接受当前 2 个。',
+      scoring: { targetLeafCount: 14, fixedAiLeafCount: 0, newRoots: [], allocations: [{ root_id: technicalId, leaf_count: 14 }] },
+    });
+    expect(checkpoint.directory.scoring.plan.branches[0]).toMatchObject({ root_id: technicalId, root_title: '技术方案' });
+    const reviewContext = JSON.parse((record as { files: Map<string, string> }).files.get('outline-review-context.json')!);
+    // 评分映射的机械检查：“实施计划”不在评分规划中（交给审查判断）。
+    expect(reviewContext.score_mapping).toMatchObject({ valid: false, branches: [{ root_id: technicalId, actual_titles: ['总体设计', '实施计划'], missing_titles: [], unexpected_titles: ['实施计划'] }] });
   });
 
   it('等待确认期间输入变化：续跑时失败，不写入', async () => {
