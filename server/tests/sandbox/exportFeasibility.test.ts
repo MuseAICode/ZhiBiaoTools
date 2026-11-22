@@ -203,8 +203,11 @@ describe('warnings written to result.json', () => {
 describe('image and entry conventions', () => {
   it('the image copies exactly the repository modules the desktop feasibility export loads', () => {
     // 与在 client/ 中加载 exportService.cjs 并生成一份可研 Word 时实际加载的本仓库模块相同（7.5b 实测），另加装饰生成器。
-    const copied = [...dockerfile.matchAll(/^COPY --chmod=0644 --from=desktop (.+) \/opt\/export\/desktop\/electron\/[a-z/]+\/$/gm)]
+    const all = [...dockerfile.matchAll(/^COPY --chmod=0644 --from=desktop (.+) \/opt\/export\/desktop\/electron\/[a-z/]+\/$/gm)]
       .flatMap((match) => match[1]!.split(' '));
+    // HTML 配图的画布模块属于 render-html 模板（8.8a1，tests/sandbox/renderHtmlEntry.test.ts），可研导出不加载它。
+    expect(all).toContain('shared/htmlImageLayout.cjs');
+    const copied = all.filter((name) => name !== 'shared/htmlImageLayout.cjs');
     expect(copied.sort()).toEqual([
       'services/chromeAssetService.cjs', 'services/exportService.cjs', 'shared/chrome/*.mjs',
       'utils/developerLog.cjs', 'utils/paths.cjs', 'utils/renderMarkdownHtml.cjs', 'utils/silentFileLog.cjs',
@@ -222,7 +225,7 @@ describe('image and entry conventions', () => {
       }
     }
     expect(dockerfile).toContain('--build-context desktop=client/electron');
-    expect(dockerfile).toMatch(/COPY --chmod=0644 package\.json entry\.mjs render\.mjs webp\.mjs feasibility\.mjs \/opt\/export\//);
+    expect(dockerfile).toMatch(/COPY --chmod=0644 package\.json entry\.mjs render\.mjs webp\.mjs feasibility\.mjs( [A-Za-z-]+\.mjs)* \/opt\/export\//);
   });
 
   it('desktop/package-lock.json has exactly the entries of client/package-lock.json it needs', () => {

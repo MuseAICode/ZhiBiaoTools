@@ -137,6 +137,51 @@ describe('export templates', () => {
   });
 });
 
+describe('render-html template (8.8a1)', () => {
+  const MIB = 1024 ** 2;
+  const GIB = 1024 ** 3;
+  const template = SANDBOX_TEMPLATES['render-html'];
+  const image = 'zhibiao-export@sha256:' + 'c'.repeat(64);
+
+  it('reuses the export image and the isolation of the parse template', () => {
+    expect(template.image).toBe('export');
+    expect(template.network).toBe('none');
+    const host = buildContainerSpec(template, { image, runtime: 'runsc', jobId: JOB_ID, expiresAt: new Date(1_000) }).HostConfig;
+    const parseHost = buildContainerSpec(parse, { image, runtime: 'runsc', jobId: JOB_ID, expiresAt: new Date(1_000) }).HostConfig;
+    for (const key of ['NetworkMode', 'ReadonlyRootfs', 'Privileged', 'CapDrop', 'SecurityOpt', 'Init', 'IpcMode', 'Runtime', 'Binds', 'Mounts', 'Devices', 'Dns', 'ExtraHosts', 'LogConfig', 'RestartPolicy']) {
+      expect(host[key], key).toEqual(parseHost[key]);
+    }
+    expect(Object.keys(host.Tmpfs as object).sort()).toEqual(['/output', '/tmp', '/work']);
+    for (const options of Object.values(host.Tmpfs as Record<string, string>)) expect(options).toMatch(/^rw,noexec,nosuid,nodev,size=\d+,/);
+    expect(host.MemorySwap).toBe(host.Memory);
+  });
+
+  it('applies the starting limits of the step 8 notes, item 3 (1 GiB memory, 1 CPU, 5 minutes per batch)', () => {
+    expect(template.memoryBytes).toBe(1 * GIB);
+    expect(template.nanoCpus).toBe(1e9);
+    expect(template.commands.render!.timeoutMs).toBe(5 * 60_000);
+    expect(template.lifetimeMs).toBeGreaterThan(template.commands.render!.timeoutMs + 2 * template.transferTimeoutMs);
+  });
+
+  it('accepts only request.json and returns only PNGs (at most 50, 10 MiB each) and result.json', () => {
+    expect(template.input).toMatchObject({ directory: '/work', maxDepth: 1, maxFiles: 1 });
+    expect([...template.input.extensions!]).toEqual(['json']);
+    // HTML 合计 16 MiB，JSON 转义后至多约 6 倍。
+    expect(template.input.maxFileBytes).toBeGreaterThanOrEqual(6 * 16 * MIB + 64 * 1024);
+    expect(template.tmpfs['/work']!.bytes).toBeGreaterThan(template.input.maxTotalBytes);
+    expect(template.output).toMatchObject({ directory: '/output', maxDepth: 1, maxFiles: 51, maxFileBytes: 10 * MIB, maxTotalBytes: 256 * MIB });
+    expect([...template.output.extensions!].sort()).toEqual(['json', 'png']);
+    expect(template.tmpfs['/output']!.bytes).toBeGreaterThanOrEqual(template.output.maxTotalBytes);
+  });
+
+  it('only runs the render entry without arguments', () => {
+    expect(resolveCommand(template, 'render', [])).toEqual({ argv: ['node', '/opt/export/render-html.mjs'], timeoutMs: 300_000, maxInputBytes: 0 });
+    expect(resolveCommand(template, 'render', ['x'])).toBeNull();
+    expect(resolveCommand(template, 'export', [])).toBeNull();
+    expect(resolveCommand(SANDBOX_TEMPLATES['export-preview'], 'render', [])).toBeNull();
+  });
+});
+
 describe('agent templates (8.1)', () => {
   const MIB = 1024 ** 2;
   const GIB = 1024 ** 3;
