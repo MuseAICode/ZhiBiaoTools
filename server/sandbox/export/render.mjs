@@ -18,7 +18,7 @@ export const CAPTURE_SCALE = 3;
 /** 启动浏览器、加载页面、截图各自的时限。 */
 const STEP_TIMEOUT_MS = 20_000;
 
-const LAUNCH_ARGS = Object.freeze([
+export const LAUNCH_ARGS = Object.freeze([
   '--no-sandbox',
   // /dev/shm 只有 64 MiB，共享内存改用 /tmp（tmpfs，计入沙箱的内存上限）。
   '--disable-dev-shm-usage',

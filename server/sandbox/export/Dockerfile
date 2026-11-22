@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
 # export 沙箱镜像（docs/SERVER_DESIGN.md 第 7.9 节；路线图第 7 步 7.1）：Node 24（入口与装饰生成器）+ Playwright 的
 # chromium-headless-shell（装饰 SVG 转 PNG）+ OpenXmlHelper（linux-x64 自包含发布）+ 开源中文字体与 fontconfig 映射。
-# 只由 sandbox-runner 按 export-preview / export-document 模板启动：断网、只读根文件系统、非 root、无任何能力，
+# 只由 sandbox-runner 按 export-preview / export-document / export-feasibility 与 render-html（8.8a1，HTML 配图转 PNG）模板启动：断网、只读根文件系统、非 root、无任何能力，
 # 输入输出经 exec 中的 tar 传送。镜像中没有凭据、编译器、.NET SDK、网络工具和包管理器（npm、corepack、yarn 已删除），
 # 也没有 setuid / setgid 程序。与 parse 镜像、第 8 步的 Agent 镜像分开，各自只装自己需要的东西。
 #
@@ -90,7 +90,9 @@ COPY --from=desktop-deps /opt/export/desktop/node_modules /opt/export/desktop/no
 COPY --chmod=0644 --from=desktop services/exportService.cjs services/chromeAssetService.cjs /opt/export/desktop/electron/services/
 COPY --chmod=0644 --from=desktop utils/developerLog.cjs utils/paths.cjs utils/silentFileLog.cjs utils/renderMarkdownHtml.cjs /opt/export/desktop/electron/utils/
 COPY --chmod=0644 --from=desktop shared/chrome/*.mjs /opt/export/desktop/electron/shared/chrome/
-COPY --chmod=0644 package.json entry.mjs render.mjs webp.mjs feasibility.mjs /opt/export/
+# HTML 配图转 PNG（8.8a1，render-html 模板）：画布、页面与布局测量脚本与桌面版 localImageRenderService 同一份。
+COPY --chmod=0644 --from=desktop shared/htmlImageLayout.cjs /opt/export/desktop/electron/shared/
+COPY --chmod=0644 package.json entry.mjs render.mjs webp.mjs feasibility.mjs render-html.mjs htmlImage.mjs /opt/export/
 
 ENV HOME=/tmp LANG=C.UTF-8 TMPDIR=/tmp
 USER 10001:10001

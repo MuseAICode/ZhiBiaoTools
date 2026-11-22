@@ -880,6 +880,16 @@ worker 经 sandbox-runner 执行 agent 模板登记的唯一命令 `run`（`node
   - **检查点**：评分规划之后的状态写在 `directory.scoring`：评分规划（`root_id` 已回填）、一级目录的顺序与新增的一级目录、调整后的叶子目标、固定叶子数与子目录生成用的分配。评分规划与叶子分配的权威副本是它（审查的提示词与评分映射的检查只用它，不读回沙箱中的副本）；续跑时受保护文件的原件不可用，按它与同一输入重新放入（审查材料仍按上面的规则）。进度与模式不符（无技术评分项模式出现评分规划 / 叶子分配，评分模式在评分规划之后缺少 `scoring`）时按 checkpoint 不合法失败。
   - **与桌面版的差异**：有模板填写一级目录时桌面版的开始日志是“目录生成与投标模版提取并行开始”，Web 版不提取投标模板（随 8.13），写“一级目录已确认，开始生成完整目录”；`technical-score-groups.json` 与桌面版相同不登记为受保护文件（之后的阶段只由 Agent 读取）。
 
+### 7.36 实现（路线图 8.8a1）：HTML 配图转 PNG（render-html 沙箱）
+
+AI 写的 HTML 配图在专用的 `render-html` 沙箱中转成 PNG（“第 8 步说明”第 3 项，#70 决定事项第 4 项：**不执行页面脚本**）。8.10 的业务工具 `render-html-image` 经 worker 一侧的 `renderHtmlImages`（`src/render/htmlImages.ts`）调用；本步不接任何任务。
+
+- **模板**（`src/sandbox/templates.ts` 的 `render-html`）：复用 export 镜像中的 Chromium（chromium-headless-shell），隔离参数与 parse 相同（`--network none`、gVisor、只读根文件系统、非 root、无能力）；内存 1 GiB（无 swap）、CPU 1 核、每批 5 分钟（命令墙钟）、沙箱最长 8 分钟。输入只有 `request.json`（`json`，至多 97 MiB：HTML 合计 16 MiB，JSON 转义后至多约 6 倍）；取回只有 `<id>.png`（至多 50 张、每张 10 MiB）与 `result.json`，合计至多 256 MiB。一次工具调用（一批配图）一个沙箱，用完即毁。
+- **入口**（`server/sandbox/export/render-html.mjs`，命令 `render`，不接受参数）：`request.json` 为 `{ version: 1, items: [{ id, html, frame_size, check_layout }] }`（每批 1～50 张、每张 HTML ≤ 1 MiB、合计 ≤ 16 MiB，字段不多不少）。每张图一个新的浏览器上下文：**`javaScriptEnabled: false`**、离线、中止一切请求（远程图片、样式表、`@import`、CSS `url()`、字体、iframe 都不被请求，断网之外的第二层）、不允许 Service Worker 与下载；按桌面版 `renderHtmlToPng`：页面由 `buildHtmlDocument` 包成 body 为固定画布（1240 × 画框高，画框 `square` 1240 / `wide` 827 / `tall` 1653 / `panorama` 698，含 40px 内边距），等资源与布局稳定（`buildLayoutMetricsScript`，尺寸连续 120 ms 不变），`check_layout` 时用 `buildHtmlLayoutProbeScript` 检查布局，按 2 倍像素截取整个画布（2480 × 画框高 × 2）。每张 30 秒；单张失败（`render_timeout` / `render_failed` / `output_too_large`）不影响其他图，整批的时限到后剩下的记为超时。结果 `{ version: 1, items: [{ id, status: 'rendered', width, height, layout_issues } | { id, status: 'failed', error }] }`；请求不合法、浏览器启动失败时 `/output` 为空，只给错误代码（`request_invalid` / `browser_failed`）。
+- **与桌面版同一份代码**：画布常量、页面包装与两段测量脚本从 `localImageRenderService.cjs` 移到 `client/electron/shared/htmlImageLayout.cjs`，桌面版改为引用（行为不变，移动前后生成的脚本与页面逐字相同），export 镜像构建时复制同一个文件（沙箱测试逐字节核对）。测量脚本是平台的代码，桌面版经 `executeJavaScript`、Web 版经 Playwright 求值；Web 版页面自身的脚本从未运行，求值环境不会被页面篡改。与桌面版的差异：页面脚本不执行（AI 写的脚本不再生效，生成规范本来不需要脚本）；布局在 2 倍设备像素下测量（桌面版先 1 倍测量、再改 2 倍截图，CSS 布局相同）；每张时限 30 秒（桌面版 120 秒）。
+- **worker 一侧**（`renderHtmlImages`）：校验输入并分配标识 `h001`～`h050` → `createSandboxWithRetry`（`RENDER_HTML_SANDBOX_BUSY` / `RENDER_HTML_UNAVAILABLE`）→ copyIn 只放 `request.json` → `exec render` → copyOut → 按不可信输入校验：`result.json` 的结构与字段不多不少、标识与顺序与请求一致、失败代码在白名单内；每张成功的图正好有一个 `<id>.png`，PNG 签名与 IHDR 的宽高等于画框的 2 倍，没有多余文件；布局问题至多 12 条、每条至多 300 个字符（含 AI 写的类名，按不可信纯文本交回 Agent）。整批错误按入口代码映射为 `RENDER_HTML_REQUEST_INVALID` / `RENDER_HTML_FAILED` / `RENDER_HTML_TIMEOUT` / `RENDER_HTML_OUTPUT_REJECTED`，不采用沙箱输出的文字；沙箱在 finally 中销毁。
+- **8.8a2**：同一模板把 AI 生图返回的 SVG / WebP 等转成 PNG。
+
 ## 8. 部署架构
 
 ### 8.0 部署位置（已决定，第 9 节第 13、14 项）

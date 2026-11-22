@@ -1,0 +1,184 @@
+// render-html 沙箱（路线图第 8 步 8.8a1）：按 render-html 模板创建真实的沙箱（CI 中为 gVisor），经 worker 一侧的
+// renderHtmlImages（src/render/htmlImages.ts）与模板写死的生产命令转图，结果按不可信输入校验。
+// - 镜像：画布、页面与布局测量脚本是桌面版同一份文件（client/electron/shared/htmlImageLayout.cjs，逐字节核对）；
+// - 端到端：四种画框都输出 2480 × 画框高 × 2 的 PNG；布局检查与桌面版的脚本给出同样的问题（字号过小、超出画布），
+//   check_layout 为 false 时不检查；单张失败不影响其他图（实测耗时写进 CI 日志）；
+// - 页面脚本不执行：7 种脚本执行方式（<script>、img / object / body 的事件属性、SVG 中的脚本与 onload、javascript: 框架）都会把正文换成
+//   5px 的字，生产命令下没有一种生效（没有“字号过小”）；对照组（同一镜像、同一渲染代码，只把浏览器上下文改为允许 JavaScript）
+//   中每一种都生效了；
+// - 外部引用：远程图片、样式表、@import、CSS url()、字体、iframe 在沙箱中不被请求；去掉 --network none 的对照组中同样不被
+//   请求（浏览器上下文离线并中止一切请求，第二层防护），而对照组的连通性另由沙箱内的 Node 直接请求证明；
+// - 错误：请求不合法时只给错误代码，输出目录为空。
+import { createHash } from 'node:crypto';
+import { readFileSync } from 'node:fs';
+import { createServer, type Server } from 'node:http';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { renderHtmlImages, type HtmlImageInput, type RenderHtmlContext } from '../../../src/render/htmlImages.ts';
+import type { SandboxRef } from '../../../src/sandbox/driver.ts';
+import { sandboxEnv } from './env.ts';
+import { bridgeGateway, createIsolationHarness } from './isolationSuite.ts';
+
+const exportImage = sandboxEnv.exportImage ?? '';
+const harness = createIsolationHarness('render-html', exportImage);
+const sharedLayout = new URL('../../../../client/electron/shared/htmlImageLayout.cjs', import.meta.url);
+const JOB_ID = '3f0c8a8e-6d1b-4e55-9a5e-2b9f0e1c7d42';
+
+function contextOf(driver = harness.driver): RenderHtmlContext {
+  return { jobId: JOB_ID, signal: new AbortController().signal, log: async () => {}, sandbox: driver };
+}
+
+const OK_HTML = '<div style="display:flex;gap:24px;font-size:32px"><div style="background:#1f6f5c;color:#fff;padding:24px">需求调研</div><div style="padding:24px">方案设计</div></div>';
+/**
+ * 脚本生效时把正文换成 5px 的字（布局检查报告字号过小）。脚本中不含 `<`：否则 SVG 中的 <script> 文本会被 HTML 解析器当作标签，
+ * 不执行脚本也会生成 5px 的元素，样本失效。
+ */
+const PWNED = "var p=document.createElement('p');p.style.fontSize='5px';p.textContent='pwned';document.body.replaceChildren(p)";
+const SCRIPT_SAMPLES: Record<string, string> = {
+  'script tag': `<p style="font-size:30px">原文</p><script>${PWNED}</script>`,
+  'img onerror': `<p style="font-size:30px">原文</p><img src="x" onerror="${PWNED}">`,
+  'body onload': `<html><body onload="${PWNED}"><p style="font-size:30px">原文</p></body></html>`,
+  'svg onload': `<p style="font-size:30px">原文</p><svg width="10" height="10" onload="${PWNED}"></svg>`,
+  'svg script': `<p style="font-size:30px">原文</p><svg width="10" height="10"><script>${PWNED}</script></svg>`,
+  'javascript: iframe': `<p style="font-size:30px">原文</p><iframe src="javascript:with(parent){${PWNED}}"></iframe>`,
+  'object onerror': `<p style="font-size:30px">原文</p><object data="missing.bin" onerror="${PWNED}"></object>`,
+};
+const SMALL_FONT = /^文字字号过小：p 为 5px/;
+
+describe.runIf(sandboxEnv.exportImage)('render-html sandbox', () => {
+  it('carries the desktop canvas and layout probe unchanged', async () => {
+    const ref = await harness.createSandbox();
+    const digest = await harness.probe<string>(
+      ref,
+      "console.log(JSON.stringify(require('crypto').createHash('sha256').update(require('fs').readFileSync('/opt/export/desktop/electron/shared/htmlImageLayout.cjs')).digest('hex')))",
+    );
+    expect(digest).toBe(createHash('sha256').update(readFileSync(sharedLayout)).digest('hex'));
+  });
+
+  it('renders every frame at twice the design size and reports the desktop layout issues', async () => {
+    const items: HtmlImageInput[] = [
+      { html: OK_HTML, frameSize: 'square', checkLayout: true },
+      { html: OK_HTML, frameSize: 'wide', checkLayout: true },
+      { html: OK_HTML, frameSize: 'tall', checkLayout: true },
+      { html: OK_HTML, frameSize: 'panorama', checkLayout: true },
+      { html: '<div style="font-size:12px">字太小</div>', frameSize: 'wide', checkLayout: true },
+      { html: '<div style="font-size:12px">字太小</div>', frameSize: 'wide', checkLayout: false },
+      { html: `<div style="font-size:30px;width:3000px;white-space:nowrap">${'很长的一行文字'.repeat(40)}</div>`, frameSize: 'wide', checkLayout: true },
+    ];
+    const started = Date.now();
+    const results = await renderHtmlImages(contextOf(), items, { createRetryDelaysMs: [] });
+    console.info(JSON.stringify({ renderHtmlBatch: { images: items.length, ms: Date.now() - started } }));
+    expect(results.map((result) => (result.status === 'rendered' ? [result.width, result.height] : result.error))).toEqual([
+      [2480, 2480],
+      [2480, 1654],
+      [2480, 3306],
+      [2480, 1396],
+      [2480, 1654],
+      [2480, 1654],
+      [2480, 1654],
+    ]);
+    const issues = results.map((result) => (result.status === 'rendered' ? result.layoutIssues : null));
+    expect(issues.slice(0, 4)).toEqual([[], [], [], []]);
+    expect(issues[4]).toEqual(['文字字号过小：div 为 12px，至少需要 24px']);
+    expect(issues[5]).toEqual([]);
+    expect(issues[6]).toEqual(['文字超出截图画布：div', '元素超出画布内容区域：div']);
+  });
+
+  it('never runs page scripts in production, while the JavaScript-enabled control runs every sample', async () => {
+    const names = Object.keys(SCRIPT_SAMPLES);
+    const results = await renderHtmlImages(
+      contextOf(),
+      names.map((name) => ({ html: SCRIPT_SAMPLES[name]!, frameSize: 'wide', checkLayout: true })),
+      { createRetryDelaysMs: [] },
+    );
+    for (const [index, name] of names.entries()) {
+      const result = results[index]!;
+      expect(result.status, name).toBe('rendered');
+      if (result.status === 'rendered') expect(result.layoutIssues.filter((issue) => SMALL_FONT.test(issue)), name).toEqual([]);
+    }
+
+    // 对照组：同一镜像中的同一渲染代码，只把浏览器上下文改为允许 JavaScript（生产入口不能这样调用）。
+    const ref = await harness.createSandbox();
+    const control = await harness.probe<Record<string, string[] | string>>(ref, controlScript(SCRIPT_SAMPLES, true));
+    for (const name of names) {
+      const issues = control[name];
+      expect(Array.isArray(issues) && issues.some((issue) => SMALL_FONT.test(issue)), `${name}: ${JSON.stringify(issues)}`).toBe(true);
+    }
+  });
+
+  describe('external references', () => {
+    let server: Server;
+    let base = '';
+    const requests: string[] = [];
+
+    beforeAll(async () => {
+      server = createServer((request, response) => {
+        requests.push(request.url ?? '');
+        response.end('x');
+      });
+      await new Promise<void>((resolve) => server.listen(0, '0.0.0.0', resolve));
+      base = `http://${await bridgeGateway()}:${(server.address() as { port: number }).port}`;
+    });
+    afterAll(() => new Promise<void>((resolve) => server.close(() => resolve())));
+
+    const externalHtml = () =>
+      `<link rel="stylesheet" href="${base}/link.css"><style>@import "${base}/import.css";@font-face{font-family:x;src:url(${base}/font.woff)}div{font-family:x}</style>` +
+      `<div style="font-size:30px;background:url(${base}/bg.png)">外部引用</div><img src="${base}/img.png"><iframe src="${base}/frame.html"></iframe>`;
+
+    it('requests nothing inside the sandbox', async () => {
+      requests.length = 0;
+      const results = await renderHtmlImages(contextOf(), [{ html: externalHtml(), frameSize: 'square', checkLayout: true }], { createRetryDelaysMs: [] });
+      expect(results[0]!.status).toBe('rendered');
+      expect(requests).toEqual([]);
+    });
+
+    it('still requests nothing with the network attached (offline context and aborted requests), although the sandbox can reach the host', async () => {
+      const weakened = harness.weakenedDriver((spec) => {
+        spec.HostConfig.NetworkMode = 'bridge';
+      });
+      requests.length = 0;
+      const results = await renderHtmlImages(contextOf(weakened), [{ html: externalHtml(), frameSize: 'square', checkLayout: true }], { createRetryDelaysMs: [] });
+      expect(results[0]!.status).toBe('rendered');
+      expect(requests).toEqual([]);
+      // 对照：同样去掉断网的沙箱中，Node 能直接连到测试服务器。
+      const ref: SandboxRef = await weakened.create('render-html', { jobId: JOB_ID });
+      harness.track(ref, weakened);
+      const reached = await harness.run(ref, ['node', '-e', `fetch(${JSON.stringify(`${base}/reachable`)}).then((r) => console.log(r.status))`], 30_000, weakened);
+      expect(reached.stdout.trim()).toBe('200');
+      expect(requests).toEqual(['/reachable']);
+    });
+  });
+
+  it('rejects an invalid request with an error code only and leaves no output', async () => {
+    const ref = await harness.createSandbox();
+    await harness.driver.copyIn(ref, [{ path: 'request.json', data: Buffer.from(JSON.stringify({ version: 1, items: [{ id: 'h001', html: 'x', frame_size: 'huge', check_layout: true }] })) }]);
+    const result = await harness.driver.exec(ref, 'render', []);
+    expect(result.exitCode).toBe(65);
+    expect(result.stdout.trim().split('\n').at(-1)).toBe('{"error":"request_invalid"}');
+    expect(await harness.driver.copyOut(ref)).toEqual([]);
+  });
+});
+
+/** 在沙箱内用镜像中的渲染代码转图并返回每张的布局问题（失败时为错误代码）；javaScriptEnabled 只有测试能打开。 */
+function controlScript(samples: Record<string, string>, javaScriptEnabled: boolean): string {
+  return `
+    (async () => {
+      const { createRequire } = require('module');
+      const req = createRequire('/opt/export/package.json');
+      const { chromium } = req('playwright-core');
+      const layout = req('/opt/export/desktop/electron/shared/htmlImageLayout.cjs');
+      const { CHROMIUM_EXECUTABLE, LAUNCH_ARGS } = await import('/opt/export/render.mjs');
+      const { renderHtmlImage } = await import('/opt/export/htmlImage.mjs');
+      const browser = await chromium.launch({ executablePath: CHROMIUM_EXECUTABLE, headless: true, args: [...LAUNCH_ARGS], env: { HOME: '/tmp', TMPDIR: '/tmp', LANG: 'C.UTF-8' } });
+      const samples = ${JSON.stringify(samples)};
+      const out = {};
+      for (const [name, html] of Object.entries(samples)) {
+        try {
+          out[name] = (await renderHtmlImage(browser, layout, { id: 'c', html, frameSize: 'wide', checkLayout: true }, { javaScriptEnabled: ${javaScriptEnabled} })).layoutIssues;
+        } catch (error) {
+          out[name] = String(error && error.code);
+        }
+      }
+      await browser.close();
+      process.stdout.write(JSON.stringify(out));
+    })().catch((error) => { console.error(error); process.exit(1); });`;
+}

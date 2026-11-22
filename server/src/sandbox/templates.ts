@@ -7,10 +7,13 @@
 const MIB = 1024 * 1024;
 const GIB = 1024 * MIB;
 
-export const SANDBOX_TEMPLATE_NAMES = ['parse', 'export-preview', 'export-document', 'export-feasibility', 'agent', 'agent-content'] as const;
+export const SANDBOX_TEMPLATE_NAMES = ['parse', 'export-preview', 'export-document', 'export-feasibility', 'agent', 'agent-content', 'render-html'] as const;
 export type SandboxTemplateName = (typeof SANDBOX_TEMPLATE_NAMES)[number];
 
-/** 镜像：export 模板用同一个 export 镜像（第 7 步决定事项第 2 项），两个 agent 模板用同一个 agent 镜像，只是资源上限不同。 */
+/**
+ * 镜像：export 模板用同一个 export 镜像（第 7 步决定事项第 2 项），两个 agent 模板用同一个 agent 镜像，只是资源上限不同；
+ * render-html（8.8a1）复用 export 镜像中的 Chromium（第 8 步说明第 3 项），只是入口与模板不同。
+ */
 export const SANDBOX_IMAGE_NAMES = ['parse', 'export', 'agent'] as const;
 export type SandboxImageName = (typeof SANDBOX_IMAGE_NAMES)[number];
 
@@ -325,6 +328,60 @@ const AGENT_CONTENT_TEMPLATE: SandboxTemplate = Object.freeze({
   commands: Object.freeze({ [AGENT_ENTRY_COMMAND]: agentEntryCommand(120 * 60_000) }),
 });
 
+/** render-html 的批量上限（第 8 步说明第 3 项的起步值）：每批至多 50 张，每张 PNG 至多 10 MiB（与上传图片上限一致）。 */
+export const RENDER_HTML_MAX_ITEMS = 50;
+export const RENDER_HTML_MAX_PNG_BYTES = 10 * MIB;
+
+/**
+ * render-html：HTML 配图转 PNG（路线图第 8 步 8.8a1，#70 决定事项第 4 项）。复用 export 镜像中的 Chromium，**禁用页面脚本**
+ * （server/sandbox/export/render-html.mjs、htmlImage.mjs）。隔离参数与 parse 相同（断网、gVisor、只读根文件系统、非 root、无能力），
+ * 资源为第 8 步说明第 3 项的起步值：内存 1 GiB（无 swap）、CPU 1 核，每张 30 秒（入口执行）、每批 5 分钟（命令墙钟）。
+ * 每次工具调用（一批配图）一个沙箱、用完即毁，只属于一个任务。
+ * 输入只有 request.json（HTML 每张 ≤ 1 MiB、合计 ≤ 16 MiB，JSON 转义后至多约 6 倍）；取回只有 <id>.png（≤ 50 张、每张 ≤ 10 MiB）
+ * 与 result.json，合计 ≤ 256 MiB（tmpfs 计入内存上限，实际 PNG 远小于上限）。
+ */
+const RENDER_HTML_TEMPLATE: SandboxTemplate = Object.freeze({
+  name: 'render-html',
+  image: 'export' as const,
+  network: 'none' as const,
+  lifetimeMs: 8 * 60_000,
+  memoryBytes: 1 * GIB,
+  nanoCpus: 1_000_000_000,
+  pidsLimit: 256,
+  openFilesLimit: 1024,
+  tmpfs: Object.freeze({
+    '/tmp': { bytes: 256 * MIB, owner: 'root' as const },
+    '/work': { bytes: 112 * MIB, owner: 'sandbox' as const },
+    '/output': { bytes: 256 * MIB, owner: 'sandbox' as const },
+  }),
+  input: Object.freeze({
+    directory: '/work',
+    maxDepth: 1,
+    maxFiles: 1,
+    maxFileBytes: 97 * MIB,
+    maxTotalBytes: 97 * MIB,
+    extensions: new Set(['json']),
+  }),
+  output: Object.freeze({
+    directory: '/output',
+    maxDepth: 1,
+    maxFiles: RENDER_HTML_MAX_ITEMS + 1,
+    maxFileBytes: RENDER_HTML_MAX_PNG_BYTES,
+    maxTotalBytes: 256 * MIB,
+    extensions: new Set(['png', 'json']),
+  }),
+  commands: Object.freeze({
+    // 入口不接受参数：输入固定在 /work/request.json，输出固定在 /output。
+    render: Object.freeze({
+      argv: Object.freeze(['node', '/opt/export/render-html.mjs']),
+      maxArgs: 0,
+      argPattern: /^$/,
+      timeoutMs: 5 * 60_000,
+    }),
+  }),
+  transferTimeoutMs: 60_000,
+});
+
 export const SANDBOX_TEMPLATES: Readonly<Record<SandboxTemplateName, SandboxTemplate>> = Object.freeze({
   parse: PARSE_TEMPLATE,
   'export-preview': EXPORT_PREVIEW_TEMPLATE,
@@ -332,6 +389,7 @@ export const SANDBOX_TEMPLATES: Readonly<Record<SandboxTemplateName, SandboxTemp
   'export-feasibility': EXPORT_FEASIBILITY_TEMPLATE,
   agent: AGENT_TEMPLATE,
   'agent-content': AGENT_CONTENT_TEMPLATE,
+  'render-html': RENDER_HTML_TEMPLATE,
 });
 
 export function isSandboxTemplateName(value: unknown): value is SandboxTemplateName {
