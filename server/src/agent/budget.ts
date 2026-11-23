@@ -29,7 +29,8 @@ export interface AgentTaskLimits {
 const yuan = (value: number) => BigInt(value) * UNITS_PER_YUAN;
 
 /**
- * 各类 Agent 任务的上限起步值（#70 决定事项第 8 项，“第 8 步说明”第 4 项的表）；8.7 按真实任务 P95 的 2 倍重定。
+ * 各类 Agent 任务的上限起步值（#70 决定事项第 8 项，“第 8 步说明”第 4 项的表）；按真实任务 P95 的 2 倍重定（8.7f2）
+ * 推迟到第 9 步测试环境搭好后执行（#112），此前沿用这里的起步值。
  * 任务类型在 8.7 起登记时按类别取用。
  */
 export const AGENT_TASK_LIMITS = Object.freeze({
