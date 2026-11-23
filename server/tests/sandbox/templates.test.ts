@@ -163,11 +163,12 @@ describe('render-html template (8.8a1)', () => {
     expect(template.lifetimeMs).toBeGreaterThan(template.commands.render!.timeoutMs + 2 * template.transferTimeoutMs);
   });
 
-  it('accepts only request.json and returns only PNGs (at most 50, 10 MiB each) and result.json', () => {
-    expect(template.input).toMatchObject({ directory: '/work', maxDepth: 1, maxFiles: 1 });
-    expect([...template.input.extensions!]).toEqual(['json']);
-    // HTML 合计 16 MiB，JSON 转义后至多约 6 倍。
+  it('accepts only request.json and the SVG / WebP images to convert (8.8a2), and returns only PNGs (at most 50, 10 MiB each) and result.json', () => {
+    expect(template.input).toMatchObject({ directory: '/work', maxDepth: 1, maxFiles: 51 });
+    expect([...template.input.extensions!].sort()).toEqual(['json', 'svg', 'webp']);
+    // HTML 合计 16 MiB，JSON 转义后至多约 6 倍；图片合计 64 MiB。
     expect(template.input.maxFileBytes).toBeGreaterThanOrEqual(6 * 16 * MIB + 64 * 1024);
+    expect(template.input.maxTotalBytes).toBeGreaterThanOrEqual(template.input.maxFileBytes + 64 * MIB);
     expect(template.tmpfs['/work']!.bytes).toBeGreaterThan(template.input.maxTotalBytes);
     expect(template.output).toMatchObject({ directory: '/output', maxDepth: 1, maxFiles: 51, maxFileBytes: 10 * MIB, maxTotalBytes: 256 * MIB });
     expect([...template.output.extensions!].sort()).toEqual(['json', 'png']);
