@@ -88,7 +88,7 @@ describe('buildRenderHtmlRequest', () => {
   });
 
   it.each([
-    ['an unknown format', [{ ...svg, format: 'png' }]],
+    ['an unknown format', [{ ...svg, format: 'gif' }]],
     ['an inherited format name', [{ ...svg, format: 'toString' }]],
     ['data that is not a buffer', [{ ...svg, data: '<svg/>' }]],
     ['an empty image', [{ ...svg, data: Buffer.alloc(0) }]],

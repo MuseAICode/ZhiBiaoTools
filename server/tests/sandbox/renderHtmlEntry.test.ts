@@ -45,7 +45,7 @@ describe('parseRenderHtmlRequest', () => {
     ['an item without check_layout', { version: 1, items: [{ id: 'h001', kind: 'html', html: 'x', frame_size: 'wide' }] }],
     ['an html item without kind (8.8a1 form)', { version: 1, items: [{ id: 'h001', html: 'x', frame_size: 'wide', check_layout: true }] }],
     ['an unknown kind', { version: 1, items: [{ ...item, kind: 'pdf' }] }],
-    ['an image of an unknown format', { version: 1, items: [{ ...image, format: 'png' }] }],
+    ['an image of an unknown format', { version: 1, items: [{ ...image, format: 'gif' }] }],
     ['an image with an extra field', { version: 1, items: [{ ...image, data: 'x' }] }],
     ['an image with html fields', { version: 1, items: [{ ...image, html: 'x', frame_size: 'wide', check_layout: true }] }],
     ['an image id shared with an html item', { version: 1, items: [item, { ...image, id: 'h001' }] }],
@@ -116,5 +116,53 @@ describe('outputScale (8.8a2)', () => {
     ['a huge vector shrinks to fit', [100_000, 10, true], { width: 1920, height: 1 }],
   ])('%s', (_name, [width, height, vector], expected) => {
     expect(convert.outputScale(width, height, vector)).toMatchObject(expected);
+  });
+});
+
+describe('raster headers (8.9)', () => {
+  const png = (width: number, height: number) => {
+    const data = Buffer.alloc(33);
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]).copy(data);
+    data.writeUInt32BE(13, 8);
+    data.write('IHDR', 12, 'latin1');
+    data.writeUInt32BE(width, 16);
+    data.writeUInt32BE(height, 20);
+    return data;
+  };
+  const jpeg = (width: number, height: number, before: Buffer[] = []) =>
+    Buffer.concat([
+      Buffer.from([0xff, 0xd8]),
+      ...before,
+      Buffer.from([0xff, 0xc0, 0x00, 0x11, 0x08, height >> 8, height & 0xff, width >> 8, width & 0xff, 0x03]),
+      Buffer.alloc(9),
+    ]);
+  const app0 = Buffer.from([0xff, 0xe0, 0x00, 0x04, 0x00, 0x00]);
+
+  it('read the PNG IHDR size and reject other data', () => {
+    expect(convert.pngDimensions(png(640, 480))).toEqual({ width: 640, height: 480 });
+    expect(convert.pngDimensions(png(640, 480).subarray(0, 20))).toBeNull();
+    const notIhdr = png(1, 1);
+    notIhdr.write('IDAT', 12, 'latin1');
+    expect(convert.pngDimensions(notIhdr)).toBeNull();
+    expect(convert.pngDimensions(jpeg(1, 1))).toBeNull();
+  });
+
+  it('read the JPEG frame size after other segments, and reject truncated or headless data', () => {
+    expect(convert.jpegDimensions(jpeg(1024, 768))).toEqual({ width: 1024, height: 768 });
+    expect(convert.jpegDimensions(jpeg(300, 200, [app0, Buffer.from([0xff, 0xff])]))).toEqual({ width: 300, height: 200 });
+    // DHT（C4）不是帧头。
+    expect(convert.jpegDimensions(Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xc4, 0x00, 0x04, 0, 0]), jpeg(5, 6).subarray(2)]))).toEqual({ width: 5, height: 6 });
+    expect(convert.jpegDimensions(Buffer.from([0xff, 0xd8, 0xff, 0xda, 0x00, 0x02]))).toBeNull();
+    expect(convert.jpegDimensions(Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x10, 0x00]))).toBeNull();
+    expect(convert.jpegDimensions(png(1, 1))).toBeNull();
+  });
+
+  it('refuse to hand an oversized raster to the browser (decompression bomb)', async () => {
+    const browser = { newContext: () => Promise.reject(new Error('must not decode')) };
+    const options = { timeoutMs: 1000, maxPngBytes: 1024, pngSize: () => null };
+    await expect(convert.convertImage(browser, { id: 'i001', format: 'png' }, png(20_000, 10), options)).rejects.toMatchObject({ code: 'image_invalid' });
+    await expect(convert.convertImage(browser, { id: 'i001', format: 'png' }, png(8000, 8000), options)).rejects.toMatchObject({ code: 'image_invalid' });
+    await expect(convert.convertImage(browser, { id: 'i001', format: 'jpeg' }, jpeg(16_000, 16_000), options)).rejects.toMatchObject({ code: 'image_invalid' });
+    await expect(convert.convertImage(browser, { id: 'i001', format: 'jpeg' }, png(10, 10), options)).rejects.toMatchObject({ code: 'image_invalid' });
   });
 });

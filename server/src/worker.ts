@@ -15,7 +15,7 @@ import { DEFAULT_AGENT_CONTEXT_WINDOW, DEFAULT_AGENT_MAX_OUTPUT_TOKENS } from '.
 import { agentToolRegistry } from './agent/toolRegistry.ts';
 import { assertAgentToolsRegistered } from './agent/tools.ts';
 import { createAiConcurrencyLimiter } from './ai/concurrency.ts';
-import { createAiGateway } from './ai/gateway.ts';
+import { createAiGateway, createAiImageGateway } from './ai/gateway.ts';
 import { KeyringError, loadFileKeyWrapper, type KeyWrapper } from './ai/keyring.ts';
 import { createCleaner, startCleanupSchedule, type CleanupSchedule } from './cleanup/cleanup.ts';
 import { ConfigError, loadConfig, type AppConfig } from './config.ts';
@@ -75,10 +75,13 @@ await app.register(registerHealthRoutes, { pingDatabase: () => database.ping(), 
 
 const dispatcher = createJobDispatcher({ connection: bullmqConnection(redisConfig, 'producer', 'bidtools-worker-dispatch') });
 const publisher = createEventPublisher(redisConfig, { log: app.log, connectionName: 'bidtools-worker-publisher' });
-const aiLimiter = createAiConcurrencyLimiter(redisConfig, { leaseMs: config.ai.holdTtlSeconds * 1000, log: app.log });
+// 并发名额的租期覆盖最长的一次调用：文本按冻结时长，生图按生图的冻结时长（8.9，含下载与转 PNG）。
+const aiLimiter = createAiConcurrencyLimiter(redisConfig, { leaseMs: Math.max(config.ai.holdTtlSeconds, config.ai.imageHoldTtlSeconds) * 1000, log: app.log });
 // 未配置主密钥时任务调用模型一律失败（AI_UNAVAILABLE）；不调用模型的任务照常执行。
 const gateway = keyWrapper ? createAiGateway({ db: database.db, keyWrapper, settings: config.ai, log: app.log, limiter: aiLimiter }) : null;
 if (!gateway) app.log.warn('AI_KEK_FILE is not set, model calls in jobs will fail');
+// 生图（8.9）：与文本调用共用主密钥与并发名额；结果经 render-html 沙箱转 PNG 后入库，另需对象存储与 sandbox-runner。
+const imageGateway = keyWrapper ? createAiImageGateway({ db: database.db, keyWrapper, settings: config.ai, log: app.log, limiter: aiLimiter }) : null;
 // 未配置对象存储或 sandbox-runner 时解析任务失败（PARSE_UNAVAILABLE），其他任务照常执行。
 const objectStore = config.storage ? createS3ObjectStore(config.storage) : null;
 if (!objectStore) app.log.warn('S3_BUCKET is not set, document parse jobs will fail and expired files will not be cleaned up');
@@ -93,6 +96,7 @@ const runner = createJobRunner({
   log: app.log,
   notifier: jobNotifier,
   gateway,
+  imageGateway,
   objectStore,
   sandbox,
   // Agent 沙箱中 Pi 会话的模型上限（8.6d1）：输出上限不超过平台的 AI_MAX_OUTPUT_TOKENS。

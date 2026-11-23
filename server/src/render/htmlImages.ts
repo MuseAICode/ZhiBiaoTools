@@ -37,8 +37,8 @@ export interface HtmlImageInput {
   checkLayout: boolean;
 }
 
-/** 待转成 PNG 的图片格式（8.8a2）。 */
-export const RENDER_IMAGE_FORMATS = ['svg', 'webp'] as const;
+/** 待转成 PNG 的图片格式（8.8a2；8.9 起 PNG / JPEG 同样重新编码，生图结果一律经沙箱）。 */
+export const RENDER_IMAGE_FORMATS = ['svg', 'webp', 'png', 'jpeg'] as const;
 export type RenderImageFormat = (typeof RENDER_IMAGE_FORMATS)[number];
 /** 图片每张至多 10 MiB、每批合计至多 64 MiB（“第 8 步说明”第 3 项的起步值）。 */
 export const RENDER_IMAGE_MAX_BYTES = 10 * 1024 * 1024;

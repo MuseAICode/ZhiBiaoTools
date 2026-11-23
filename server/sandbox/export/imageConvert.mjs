@@ -1,20 +1,23 @@
 // render-html 沙箱中的图片转 PNG（路线图第 8 步 8.8a2；“第 8 步说明”第 3 项：同一模板顺带把 AI 生图返回的 SVG / WebP 等转成 PNG）。
-// 8.9 的生图调用在服务商返回 SVG 或 WebP 时经这里转成 PNG 再入库；本步不接任何任务。
+// 8.9 的生图调用把服务商返回的每一张图（PNG / JPEG / WebP / SVG，一律按不可信内容）经这里重新编码成 PNG 再入库。
 //
 // 做法：每张图一个新的浏览器上下文，页面只有一个 <img>，图片以 http://render.invalid/image 的地址由 Playwright 的路由直接给出
 // （不落盘、不经网络），其余请求一律中止。先读出浏览器解码后的固有尺寸，再按下面的规则缩放、截图（背景透明）：
 // - WebP（位图）：只缩小不放大，长宽不超过 1920 × 2880（与桌面版 compressGeneratedImage 的上限相同）。动图取第一帧，放在画布中
 //   原来的位置，其余透明（与整本导出的 WebP 转 PNG 相同，见 webp.mjs，7.4i）；
-// - SVG（矢量）：按固有尺寸等比缩放到正好放进 1920 × 2880（可放大）。没有写宽高时用浏览器给出的固有尺寸（只有 viewBox 时按其比例）。
+// - SVG（矢量）：按固有尺寸等比缩放到正好放进 1920 × 2880（可放大）。没有写宽高时用浏览器给出的固有尺寸（只有 viewBox 时按其比例）；
+// - PNG / JPEG（位图，8.9）：与 WebP 相同，只缩小不放大。解码前先从文件头读出宽高（PNG 的 IHDR、JPEG 的 SOF），
+//   边长或像素数超过 WebP 的同一上限（16384、5000 万像素）时不交给浏览器解码（image_invalid），防止解压炸弹；
+//   浏览器解码出的尺寸必须与文件头一致。重新截图得到的 PNG 不带原图的元数据与附加数据。
 //
 // 安全约定（与 HTML 配图相同，见 htmlImage.mjs）：
 // - 浏览器上下文禁用 JavaScript、离线、中止除这两个地址外的一切请求；
 // - SVG 只作为 <img> 的图片解码：浏览器对图片中的 SVG 不执行脚本、不加载任何外部资源（再加上前两层与沙箱断网）；
 // - 解码失败、格式不符一律为 image_invalid；错误只给代码。
-import { parseWebp } from './webp.mjs';
+import { MAX_WEBP_PIXELS, MAX_WEBP_SIDE, parseWebp } from './webp.mjs';
 
 /** 待转格式（入口按扩展名读 /work/<id>.<format>）。 */
-export const IMAGE_FORMATS = Object.freeze(['svg', 'webp']);
+export const IMAGE_FORMATS = Object.freeze(['svg', 'webp', 'png', 'jpeg']);
 /** 每张至多 10 MiB、每批合计至多 64 MiB（“第 8 步说明”第 3 项的起步值）。 */
 export const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
 export const MAX_TOTAL_IMAGE_BYTES = 64 * 1024 * 1024;
@@ -25,7 +28,7 @@ export const MAX_OUTPUT_HEIGHT = 2880;
 const ORIGIN = 'http://render.invalid';
 const PAGE_URL = `${ORIGIN}/`;
 const IMAGE_URL = `${ORIGIN}/image`;
-const CONTENT_TYPES = Object.freeze({ svg: 'image/svg+xml', webp: 'image/webp' });
+const CONTENT_TYPES = Object.freeze({ svg: 'image/svg+xml', webp: 'image/webp', png: 'image/png', jpeg: 'image/jpeg' });
 
 export class ImageConvertError extends Error {
   constructor(code) {
@@ -40,7 +43,7 @@ const PAGE_HTML = `<!DOCTYPE html>
   <meta charset="utf-8" />
   <style>
     html, body { margin: 0; padding: 0; overflow: hidden; background: transparent; }
-    img { position: absolute; left: 0; top: 0; display: block; }
+    img { position: absolute; left: 0; top: 0; display: block; image-orientation: none; }
   </style>
 </head>
 <body><img id="source" src="${IMAGE_URL}" alt=""></body>
@@ -57,6 +60,51 @@ function isSvgText(bytes) {
   return !text.includes('\0') && text.includes('<svg');
 }
 
+const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+
+/** PNG 的宽高：签名之后第一个块必须是 IHDR（13 字节）。不合法时返回 null。 */
+export function pngDimensions(bytes) {
+  if (bytes.length < 33 || !bytes.subarray(0, 8).equals(PNG_SIGNATURE)) return null;
+  if (bytes.readUInt32BE(8) !== 13 || bytes.toString('latin1', 12, 16) !== 'IHDR') return null;
+  return { width: bytes.readUInt32BE(16), height: bytes.readUInt32BE(20) };
+}
+
+/** JPEG 的宽高：按标记段扫描到第一个帧头（SOF0～SOF15，不含 DHT / JPG / DAC）。不合法时返回 null。 */
+export function jpegDimensions(bytes) {
+  if (bytes.length < 4 || bytes[0] !== 0xff || bytes[1] !== 0xd8) return null;
+  let offset = 2;
+  while (offset + 4 <= bytes.length) {
+    if (bytes[offset] !== 0xff) return null;
+    const marker = bytes[offset + 1];
+    // 填充字节。
+    if (marker === 0xff) {
+      offset += 1;
+      continue;
+    }
+    // 没有长度的标记（RSTn、TEM）；SOI / EOI 出现在这里都不合法。
+    if ((marker >= 0xd0 && marker <= 0xd7) || marker === 0x01) {
+      offset += 2;
+      continue;
+    }
+    if (marker === 0xd8 || marker === 0xd9 || marker === 0xda) return null;
+    const length = bytes.readUInt16BE(offset + 2);
+    if (length < 2 || offset + 2 + length > bytes.length) return null;
+    if (marker >= 0xc0 && marker <= 0xcf && marker !== 0xc4 && marker !== 0xc8 && marker !== 0xcc) {
+      if (length < 7) return null;
+      return { width: bytes.readUInt16BE(offset + 7), height: bytes.readUInt16BE(offset + 5) };
+    }
+    offset += 2 + length;
+  }
+  return null;
+}
+
+function rasterCanvas(format, bytes) {
+  const size = format === 'png' ? pngDimensions(bytes) : jpegDimensions(bytes);
+  if (!size || size.width < 1 || size.height < 1) throw new ImageConvertError('image_invalid');
+  if (size.width > MAX_WEBP_SIDE || size.height > MAX_WEBP_SIDE || size.width * size.height > MAX_WEBP_PIXELS) throw new ImageConvertError('image_invalid');
+  return size;
+}
+
 /**
  * 按格式确定要解码的数据与画布：WebP 在这里解析容器（不合法、超出像素上限时抛错），动图换成第一帧的静态 WebP；
  * SVG 的画布由浏览器给出的固有尺寸决定（canvas 为 null）。
@@ -70,6 +118,10 @@ function prepareSource(format, bytes) {
       throw new ImageConvertError('image_invalid');
     }
     return { data: image.animated ? image.frame.data : bytes, canvas: { width: image.width, height: image.height }, frame: image.frame, vector: false };
+  }
+  if (format === 'png' || format === 'jpeg') {
+    const canvas = rasterCanvas(format, bytes);
+    return { data: bytes, canvas, frame: null, vector: false };
   }
   if (!isSvgText(bytes)) throw new ImageConvertError('image_invalid');
   return { data: bytes, canvas: null, frame: null, vector: true };
@@ -136,8 +188,8 @@ export async function convertImage(browser, item, bytes, { timeoutMs, maxPngByte
       });
       if (!natural || !(natural.width > 0) || !(natural.height > 0)) throw new ImageConvertError('image_invalid');
       const canvas = source.canvas ?? natural;
-      const frame = source.frame ?? { x: 0, y: 0, width: natural.width, height: natural.height };
-      // WebP 的位流尺寸已在容器中核对；浏览器解码出的尺寸与之不同时不采用。
+      const frame = source.frame ?? (source.vector ? { x: 0, y: 0, width: natural.width, height: natural.height } : { x: 0, y: 0, ...canvas });
+      // 位图（WebP / PNG / JPEG）的尺寸已从文件头读出；浏览器解码出的尺寸与之不同时不采用（页面设 image-orientation: none，JPEG 的 EXIF 方向不生效，尺寸与文件头一致）。
       if (!source.vector && (natural.width !== frame.width || natural.height !== frame.height)) throw new ImageConvertError('image_invalid');
       const output = outputScale(canvas.width, canvas.height, source.vector);
       await page.setViewportSize({ width: output.width, height: output.height });

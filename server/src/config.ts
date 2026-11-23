@@ -2,6 +2,7 @@
 // 校验失败时报告变量名和期望格式，不回显变量值（数据库密码等密钥也走这里）。
 import { readFileSync } from 'node:fs';
 import { isIP } from 'node:net';
+import { MAX_IMAGES_PER_CALL } from './db/migrations/0045_ai_image_generation.ts';
 
 export const NODE_ENVS = ['development', 'test', 'production'] as const;
 export type NodeEnv = (typeof NODE_ENVS)[number];
@@ -44,6 +45,15 @@ export interface AiGatewayConfig {
   concurrencyMax: number;
   /** 交互式调用等待并发名额的最长时间（毫秒），超过返回 429；任务中的调用一直等到被取消。 */
   concurrencyWaitMs: number;
+  /** 生图（8.9）：单次生图请求的时长上限（毫秒，不含下载图片）。 */
+  imageUpstreamTimeoutMs: number;
+  /** 生图：服务商以网址返回图片时，下载一张的时长上限（毫秒）。 */
+  imageDownloadTimeoutMs: number;
+  /**
+   * 生图的冻结时长（秒）：须覆盖请求、逐张下载（至多 4 张）与转 PNG、入库（render-html 一批至多 5 分钟），
+   * 不短于 AI_IMAGE_UPSTREAM_TIMEOUT_MS + 4 × AI_IMAGE_DOWNLOAD_TIMEOUT_MS + 6 分钟。冻结到期后才结算的一律不收费。
+   */
+  imageHoldTtlSeconds: number;
 }
 
 /** 对象存储（docs/SERVER_DESIGN.md 第 6.3 节），S3 兼容接口。 */
@@ -329,6 +339,8 @@ function parseHostList(raw: string): readonly string[] | undefined {
 
 /** 冻结时长至少比上游超时长这么多，留给结算。 */
 export const HOLD_SETTLE_MARGIN_MS = 30_000;
+/** 生图冻结须为转 PNG 与入库预留的时长：render-html 一批的命令墙钟 5 分钟，另加沙箱创建、取回与结算的余量。 */
+export const IMAGE_STORE_BUDGET_MS = 6 * 60_000;
 
 const DEV_PUBLIC_ORIGIN = 'http://localhost:3000';
 
@@ -404,6 +416,20 @@ function createReader(env: Env, options: LoadConfigOptions) {
     if (upstreamTimeoutMs !== undefined && holdTtlSeconds !== undefined && holdTtlSeconds * 1000 < upstreamTimeoutMs + HOLD_SETTLE_MARGIN_MS) {
       issues.push({ name: 'AI_HOLD_TTL_SECONDS', reason: `不合法（必须比 AI_UPSTREAM_TIMEOUT_MS 至少长 ${HOLD_SETTLE_MARGIN_MS / 1000} 秒）` });
     }
+    const imageUpstreamTimeoutMs = read('AI_IMAGE_UPSTREAM_TIMEOUT_MS', intSpec(180_000, 1_000, 1_200_000));
+    const imageDownloadTimeoutMs = read('AI_IMAGE_DOWNLOAD_TIMEOUT_MS', intSpec(30_000, 1_000, 300_000));
+    const imageHoldTtlSeconds = read('AI_IMAGE_HOLD_TTL_SECONDS', intSpec(1_200, 60, 3600));
+    if (
+      imageUpstreamTimeoutMs !== undefined &&
+      imageDownloadTimeoutMs !== undefined &&
+      imageHoldTtlSeconds !== undefined &&
+      imageHoldTtlSeconds * 1000 < imageUpstreamTimeoutMs + MAX_IMAGES_PER_CALL * imageDownloadTimeoutMs + IMAGE_STORE_BUDGET_MS
+    ) {
+      issues.push({
+        name: 'AI_IMAGE_HOLD_TTL_SECONDS',
+        reason: `不合法（必须不短于 AI_IMAGE_UPSTREAM_TIMEOUT_MS + ${MAX_IMAGES_PER_CALL} × AI_IMAGE_DOWNLOAD_TIMEOUT_MS + ${IMAGE_STORE_BUDGET_MS / 60_000} 分钟）`,
+      });
+    }
     return Object.freeze({
       kekFile: kekFile ? kekFile : null,
       kekVersion: read('AI_KEK_VERSION', intSpec(1, 1, 1_000_000)),
@@ -417,6 +443,9 @@ function createReader(env: Env, options: LoadConfigOptions) {
       }),
       concurrencyMax: read('AI_CONCURRENCY_MAX', intSpec(10, 1, 1000)),
       concurrencyWaitMs: read('AI_CONCURRENCY_WAIT_MS', intSpec(30_000, 0, 600_000)),
+      imageUpstreamTimeoutMs,
+      imageDownloadTimeoutMs,
+      imageHoldTtlSeconds,
     });
   }
 

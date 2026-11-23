@@ -4,7 +4,8 @@
 // 0. 检查平台模型白名单（src/ai/models.ts）：未登记、已停用、未定价（含未标记免费的零价格）、免费标记与价格矛盾的
 //    服务商 + 模型一律拒绝，不解密 Key、不冻结、不调用服务商；冻结时（ai_usage_begin）在同一事务中再检查一次；
 //    随后按“组织 + 服务商”的并发上限排队取得名额（src/ai/concurrency.ts，配置了 Redis 时），调用结束后释放；
-// 1. 读取并解密该服务商的平台凭据（明文只存在于本次调用的局部变量里，不缓存、不写日志、不进错误信息）；
+// 1. 读取并解密该服务商的平台凭据（明文只存在于本次调用的局部变量里，不缓存、不写日志、不进错误信息）；生图调用（8.9，
+//    createAiImageGateway）的凭据同样在本模块中解密；
 // 2. 按“输入 token 上界 + 最大输出 token”冻结最高费用（src/billing/usage.ts），余额不足时拒绝、不调用服务商；
 // 3. 以流式请求调用服务商，输出上限 max_tokens 就是冻结时的最大输出 token；
 // 4. 成功：按服务商返回的用量结算（缺失时本地估算），多余冻结释放；
@@ -36,7 +37,7 @@ import {
   type SettleUsageInput,
   type SettlementResult,
 } from '../billing/usage.ts';
-import { BILLING_PROVIDERS, type BillingProvider, type Database, type UsageSource } from '../db/schema.ts';
+import { BILLING_PROVIDERS, type BillingProvider, type CredentialKind, type Database, type UsageSource } from '../db/schema.ts';
 import { withTenant, type TenantContext } from '../db/tenant.ts';
 import { AppError } from '../errors.ts';
 import { DEFAULT_CONCURRENCY_LIMIT } from '../db/migrations/0009_settings.ts';
@@ -45,6 +46,7 @@ import type { AiConcurrencyLimiter } from './concurrency.ts';
 import { credentialAad } from './credentials.ts';
 import { estimateInputTokens, estimateOutputTokens, inputTokenUpperBound } from './estimate.ts';
 import type { KeyWrapper } from './keyring.ts';
+import { createImageGatewayCore, type AiImageGateway, type CreateAiImageGatewayOptions } from './images.ts';
 import { assertModelCallable } from './models.ts';
 import { PROVIDER_ADAPTERS, type ChatMessage, type ChatTool, type ChatToolCall, type ChatToolChoice, type ProviderUsage } from './providers.ts';
 import { assertToolRequest, canonicalTools, ToolCallAccumulator, ToolRequestError, type ToolCallDelta } from './tools.ts';
@@ -138,7 +140,7 @@ export const DEFAULT_AI_CONCURRENCY_WAIT_MS = 30_000;
 
 interface CredentialRow {
   id: string;
-  kind: 'text_model';
+  kind: CredentialKind;
   provider: BillingProvider;
   base_url: string;
   ciphertext: Buffer;
@@ -159,6 +161,36 @@ function openCredential(wrapper: KeyWrapper, row: CredentialRow): string {
     return Buffer.concat([decipher.update(row.ciphertext), decipher.final()]).toString('utf8');
   } finally {
     dek.fill(0);
+  }
+}
+
+/**
+ * 读取并解密某个服务商某一种类的平台凭据。只在本模块内使用（文本调用与生图调用，见 createAiImageGateway）：
+ * 没有配置时 503 AI_PROVIDER_NOT_CONFIGURED，解密失败（主密钥不对、密文或 Base URL 被改动、种类被换）时 503。
+ */
+async function loadPlatformCredential(
+  db: Kysely<Database>,
+  keyWrapper: KeyWrapper,
+  context: TenantContext,
+  kind: CredentialKind,
+  provider: BillingProvider,
+  log: FastifyBaseLogger,
+): Promise<{ apiKey: string; baseUrl: string }> {
+  const row = await withTenant(db, context, (trx) =>
+    trx
+      .selectFrom('provider_credentials')
+      .select(['id', 'kind', 'provider', 'base_url', 'ciphertext', 'iv', 'auth_tag', 'wrapped_dek', 'kek_version'])
+      .where('kind', '=', kind)
+      .where('provider', '=', provider)
+      .executeTakeFirst(),
+  );
+  if (!row) throw new AppError(503, 'AI_PROVIDER_NOT_CONFIGURED', kind === 'image_model' ? '该生图服务尚未配置，暂时无法使用' : '该模型服务尚未配置，暂时无法使用');
+  try {
+    return { apiKey: openCredential(keyWrapper, row), baseUrl: row.base_url };
+  } catch {
+    // 主密钥不对、密文或 Base URL 被改动。不记录原始错误，避免带出任何密钥材料。
+    log.error({ ai: { provider, kind, credentialId: row.id, kekVersion: row.kek_version } }, 'ai credential decrypt failed');
+    throw new AppError(503, 'AI_PROVIDER_UNAVAILABLE', '模型服务暂不可用，请稍后再试');
   }
 }
 
@@ -245,24 +277,8 @@ export function createAiGateway(options: CreateAiGatewayOptions): AiGateway {
     return Math.min(row?.concurrency_limit ?? DEFAULT_CONCURRENCY_LIMIT, concurrencyMax);
   }
 
-  async function loadApiKey(context: TenantContext, provider: BillingProvider, log: FastifyBaseLogger): Promise<{ apiKey: string; baseUrl: string }> {
-    const row = await withTenant(db, context, (trx) =>
-      trx
-        .selectFrom('provider_credentials')
-        .select(['id', 'kind', 'provider', 'base_url', 'ciphertext', 'iv', 'auth_tag', 'wrapped_dek', 'kek_version'])
-        .where('kind', '=', 'text_model')
-        .where('provider', '=', provider)
-        .executeTakeFirst(),
-    );
-    if (!row) throw new AppError(503, 'AI_PROVIDER_NOT_CONFIGURED', '该模型服务尚未配置，暂时无法使用');
-    try {
-      return { apiKey: openCredential(keyWrapper, row), baseUrl: row.base_url };
-    } catch {
-      // 主密钥不对、密文或 Base URL 被改动。不记录原始错误，避免带出任何密钥材料。
-      log.error({ ai: { provider, credentialId: row.id, kekVersion: row.kek_version } }, 'ai credential decrypt failed');
-      throw new AppError(503, 'AI_PROVIDER_UNAVAILABLE', '模型服务暂不可用，请稍后再试');
-    }
-  }
+  const loadApiKey = (context: TenantContext, provider: BillingProvider, log: FastifyBaseLogger) =>
+    loadPlatformCredential(db, keyWrapper, context, 'text_model', provider, log);
 
   /** 取得并发名额之后的部分：解密 Key、冻结、调用服务商、结算或释放。 */
   async function callWithSlot(
@@ -489,4 +505,18 @@ export function createAiGateway(options: CreateAiGatewayOptions): AiGateway {
       }
     },
   };
+}
+
+/**
+ * AI 网关的生图调用（路线图 8.9，流程见 src/ai/images.ts）。在本模块中创建，生图凭据（kind = image_model）的解密
+ * 与文本调用一样只在本模块中进行，交给生图流程的只是一个读取凭据的函数。
+ */
+export function createAiImageGateway(options: CreateAiImageGatewayOptions): AiImageGateway {
+  const { db, keyWrapper } = options;
+  return createImageGatewayCore({
+    ...options,
+    concurrencyMax: options.settings.concurrencyMax ?? DEFAULT_AI_CONCURRENCY_MAX,
+    concurrencyWaitMs: options.settings.concurrencyWaitMs ?? DEFAULT_AI_CONCURRENCY_WAIT_MS,
+    loadCredential: (context, provider, log) => loadPlatformCredential(db, keyWrapper, context, 'image_model', provider, log),
+  });
 }

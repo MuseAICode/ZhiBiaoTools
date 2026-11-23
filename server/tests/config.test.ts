@@ -33,6 +33,9 @@ describe('loadConfig', () => {
         upstreamPrivateHosts: [],
         concurrencyMax: 10,
         concurrencyWaitMs: 30_000,
+        imageUpstreamTimeoutMs: 180_000,
+        imageDownloadTimeoutMs: 30_000,
+        imageHoldTtlSeconds: 1_200,
       },
       storage: null,
       redis: null,
@@ -82,6 +85,9 @@ describe('loadConfig', () => {
         upstreamPrivateHosts: ['127.0.0.1', 'llm.internal'],
         concurrencyMax: 4,
         concurrencyWaitMs: 0,
+        imageUpstreamTimeoutMs: 180_000,
+        imageDownloadTimeoutMs: 30_000,
+        imageHoldTtlSeconds: 1_200,
       },
       storage: null,
       redis: null,
@@ -131,6 +137,9 @@ describe('loadConfig', () => {
     ['AI_CONCURRENCY_MAX', '1001'],
     ['AI_CONCURRENCY_WAIT_MS', '-1'],
     ['AI_CONCURRENCY_WAIT_MS', '600001'],
+    ['AI_IMAGE_UPSTREAM_TIMEOUT_MS', '999'],
+    ['AI_IMAGE_DOWNLOAD_TIMEOUT_MS', '300001'],
+    ['AI_IMAGE_HOLD_TTL_SECONDS', '3601'],
   ])('%s=%s 不合法时失败', (name, value) => {
     const error = expectConfigError({ ...BASE_ENV, [name]: value });
     expect(error.issues).toEqual([{ name, reason: expect.stringContaining('不合法') }]);
@@ -140,6 +149,13 @@ describe('loadConfig', () => {
     const error = expectConfigError({ ...BASE_ENV, AI_UPSTREAM_TIMEOUT_MS: '300000', AI_HOLD_TTL_SECONDS: '300' });
     expect(error.issues).toEqual([{ name: 'AI_HOLD_TTL_SECONDS', reason: expect.stringContaining('至少长 30 秒') }]);
     expect(loadConfig({ ...BASE_ENV, AI_UPSTREAM_TIMEOUT_MS: '270000', AI_HOLD_TTL_SECONDS: '300' }).ai.holdTtlSeconds).toBe(300);
+  });
+
+  it('生图的冻结时长须覆盖请求、4 张的下载与 6 分钟的转图入库（8.9）', () => {
+    const error = expectConfigError({ ...BASE_ENV, AI_IMAGE_UPSTREAM_TIMEOUT_MS: '180000', AI_IMAGE_DOWNLOAD_TIMEOUT_MS: '30000', AI_IMAGE_HOLD_TTL_SECONDS: '659' });
+    expect(error.issues).toEqual([{ name: 'AI_IMAGE_HOLD_TTL_SECONDS', reason: expect.stringContaining('不短于') }]);
+    const config = loadConfig({ ...BASE_ENV, AI_IMAGE_UPSTREAM_TIMEOUT_MS: '180000', AI_IMAGE_DOWNLOAD_TIMEOUT_MS: '30000', AI_IMAGE_HOLD_TTL_SECONDS: '660' });
+    expect(config.ai).toMatchObject({ imageUpstreamTimeoutMs: 180_000, imageDownloadTimeoutMs: 30_000, imageHoldTtlSeconds: 660 });
   });
 
   it('一次报告全部问题', () => {

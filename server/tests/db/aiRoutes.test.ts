@@ -571,3 +571,55 @@ describe('定价接口的上游成本单价', () => {
     expect(numeric.json().error.code).toBe('INVALID_AMOUNT');
   });
 });
+
+describe('生图的管理接口（8.9）', () => {
+  it('登记生图模型（kind = image）、录入按张的价格、写入生图凭据；列表展示类别与单价；普通用户不能操作', async () => {
+    const model = `img-route-${randomUUID().slice(0, 8)}`;
+    const registered = await send(app, 'POST', '/api/admin/ai/models', adminCookie, { provider: 'qwen', model, kind: 'image', isFree: false, password: ADMIN_PASSWORD });
+    expect(registered.statusCode, registered.body).toBe(201);
+    expect(registered.json().model).toMatchObject({ model, kind: 'image', enabled: false });
+    const { id } = registered.json().model;
+    await send(app, 'POST', `/api/admin/ai/models/${id}/enable`, adminCookie, { password: ADMIN_PASSWORD });
+
+    const price = await send(app, 'POST', '/api/admin/billing/image-prices', adminCookie, { provider: 'qwen', model, imagePrice: '2000', upstreamImagePrice: '1000', password: ADMIN_PASSWORD });
+    expect(price.statusCode, price.body).toBe(201);
+    const row = await superuser.selectFrom('model_prices').selectAll().where('id', '=', price.json().price.id).executeTakeFirstOrThrow();
+    expect(row).toMatchObject({ image_price: '2000', upstream_image_price: '1000', input_price_per_mtok: '0', output_price_per_mtok: '0' });
+    const list = await send(app, 'GET', '/api/admin/ai/models', adminCookie);
+    expect(list.json().models).toContainEqual(expect.objectContaining({ id, kind: 'image', imagePrice: '2000', status: 'available' }));
+    // 生图模型不能经文本调用使用。
+    const chat = await send(app, 'POST', '/api/ai/chat', userCookie, chatBody({ provider: 'qwen', model }));
+    expect(chat.json().error.code).toBe('AI_MODEL_NOT_REGISTERED');
+
+    const credential = await send(app, 'PUT', '/api/admin/ai/credentials/qwen', adminCookie, { kind: 'image_model', baseUrl: provider.baseUrl, apiKey: API_KEY, password: ADMIN_PASSWORD });
+    expect(credential.statusCode, credential.body).toBe(200);
+    expect(credential.json().credential).toMatchObject({ provider: 'qwen', kind: 'image_model', last4: API_KEY.slice(-4) });
+    expect(credential.body).not.toContain(API_KEY.slice(0, -4));
+
+    for (const [method, url, body] of [
+      ['POST', '/api/admin/billing/image-prices', { provider: 'qwen', model, imagePrice: '1', password: USER_PASSWORD }],
+      ['PUT', '/api/admin/ai/credentials/qwen', { kind: 'image_model', baseUrl: provider.baseUrl, apiKey: API_KEY, password: USER_PASSWORD }],
+      ['POST', '/api/admin/ai/models', { provider: 'qwen', model: `${model}-x`, kind: 'image', isFree: false, password: USER_PASSWORD }],
+    ] as const) {
+      expect((await send(app, method, url, userCookie, body)).statusCode).toBe(403);
+    }
+  });
+
+  it.each([
+    ['JSON 数字的单价', { imagePrice: 2000 }, 'INVALID_AMOUNT'],
+    ['负数', { imagePrice: '-1' }, 'FST_ERR_VALIDATION'],
+    ['密码错误', { password: 'wrong-password-123' }, 'INVALID_PASSWORD'],
+    ['未知的字段', { inputPricePerMtok: '1' }, 'FST_ERR_VALIDATION'],
+  ])('按张的价格：%s 时 400，不写入', async (_name, overrides, code) => {
+    const model = `img-bad-${randomUUID().slice(0, 8)}`;
+    const response = await send(app, 'POST', '/api/admin/billing/image-prices', adminCookie, { provider: 'qwen', model, imagePrice: '2000', password: ADMIN_PASSWORD, ...overrides });
+    expect(response.statusCode, response.body).toBe(400);
+    if (code !== 'FST_ERR_VALIDATION') expect(response.json().error.code).toBe(code);
+    expect(await superuser.selectFrom('model_prices').select('id').where('model', '=', model).execute()).toEqual([]);
+  });
+
+  it('凭据与模型的类别只接受白名单中的取值', async () => {
+    expect((await send(app, 'PUT', '/api/admin/ai/credentials/qwen', adminCookie, { kind: 'video_model', baseUrl: provider.baseUrl, apiKey: API_KEY, password: ADMIN_PASSWORD })).statusCode).toBe(400);
+    expect((await send(app, 'POST', '/api/admin/ai/models', adminCookie, { provider: 'qwen', model: 'x-video', kind: 'video', isFree: false, password: ADMIN_PASSWORD })).statusCode).toBe(400);
+  });
+});

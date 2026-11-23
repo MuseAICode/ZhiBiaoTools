@@ -107,10 +107,14 @@ const APP_FUNCTIONS = [
   'agent_tool_calls_guard',
   'agent_workspace_snapshots_guard',
   'ai_admin_put_credential',
+  'ai_admin_register_image_model',
   'ai_admin_register_model',
   'ai_admin_set_model_enabled',
+  'ai_image_model_check',
+  'ai_image_usage_begin',
   'ai_model_check',
   'ai_model_price',
+  'ai_model_price_for',
   'ai_platform_model_guard_update',
   'ai_usage_begin',
   'ai_usage_expire_holds',
@@ -129,6 +133,7 @@ const APP_FUNCTIONS = [
   'auth_session_lookup',
   'billing_active_holds',
   // 0003 的 7 参数版本和 0004 带上游成本单价的 9 参数版本。
+  'billing_admin_add_image_price',
   'billing_admin_add_price',
   'billing_admin_add_price',
   'billing_admin_credit',
@@ -257,6 +262,7 @@ describe('迁移升级与回滚', () => {
       (await sql<{ prosrc: string }>`SELECT prosrc FROM pg_proc WHERE proname = 'ai_usage_begin'`.execute(testDb.admin)).rows.map((row) => row.prosrc);
     expectSuccess(await migrateToLatest(owner));
     expect((await source())[0]).toContain('ai_model_price');
+    expect(expectSuccess(await migrateDown(owner))).toEqual(['Down:0045_ai_image_generation']);
     expect(expectSuccess(await migrateDown(owner))).toEqual(['Down:0044_job_pause_selection']);
     expect(expectSuccess(await migrateDown(owner))).toEqual(['Down:0043_agent_model_rejections']);
     expect(expectSuccess(await migrateDown(owner))).toEqual(['Down:0042_agent_tool_scopes']);

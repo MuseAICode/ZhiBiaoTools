@@ -197,6 +197,8 @@ export interface ModelPricesTable {
   model: ColumnType<string, never, never>;
   input_price_per_mtok: Int8;
   output_price_per_mtok: Int8;
+  /** 按张计价的单价（计费单位 / 张，迁移 0045）；按 token 计价的版本为 NULL，按张的版本两个 token 单价为 0。 */
+  image_price: ColumnType<string | null, never, never>;
   effective_from: ColumnType<Date, never, never>;
   created_by: ColumnType<string, never, never>;
   note: ColumnType<string | null, never, never>;
@@ -205,6 +207,9 @@ export interface ModelPricesTable {
 
 export const USAGE_SOURCES = ['interactive', 'job'] as const;
 export type UsageSource = (typeof USAGE_SOURCES)[number];
+
+export const USAGE_UNITS = ['token', 'image'] as const;
+export type UsageUnit = (typeof USAGE_UNITS)[number];
 
 export const USAGE_STATUSES = ['pending', 'billed', 'unbilled'] as const;
 export type UsageStatus = (typeof USAGE_STATUSES)[number];
@@ -224,6 +229,11 @@ export interface UsageRecordsTable {
   provider: ColumnType<BillingProvider, never, never>;
   model: ColumnType<string, never, never>;
   price_id: ColumnType<string, never, never>;
+  /**
+   * 计价单位（迁移 0045）：token，或 image（生图按张）。image 时 max_output_tokens 是请求的张数、output_tokens 是结算的张数、
+   * 输入 token 为 0。
+   */
+  unit: ColumnType<UsageUnit, never, never>;
   estimated_input_tokens: Int8;
   max_output_tokens: Int8;
   hold_amount: Int8;
@@ -240,7 +250,8 @@ export interface UsageRecordsTable {
   finished_at: ColumnType<Date | null, never, never>;
 }
 
-export const CREDENTIAL_KINDS = ['text_model'] as const;
+/** 平台凭据的种类：文本模型与生图（迁移 0045）各自保存 Base URL 与 Key。 */
+export const CREDENTIAL_KINDS = ['text_model', 'image_model'] as const;
 export type CredentialKind = (typeof CREDENTIAL_KINDS)[number];
 
 /** 只读：平台凭据的密文（迁移 0004_ai_gateway），写入经 ai_admin_put_credential，解密只在 src/ai/gateway.ts。 */
@@ -259,6 +270,9 @@ export interface ProviderCredentialsTable {
   created_at: ColumnType<Date, never, never>;
 }
 
+export const PLATFORM_MODEL_KINDS = ['text', 'image'] as const;
+export type PlatformModelKind = (typeof PLATFORM_MODEL_KINDS)[number];
+
 /**
  * 只读：平台模型白名单（迁移 0005_platform_models）。只有登记且启用、并有生效价格的服务商 + 模型才能调用；
  * is_free 为 true 的模型生效价格必须为 0 / 0，为 false 时零价格视为未定价。写入经 ai_admin_register_model /
@@ -268,6 +282,8 @@ export interface PlatformModelsTable {
   id: ColumnType<string, never, never>;
   provider: ColumnType<BillingProvider, never, never>;
   model: ColumnType<string, never, never>;
+  /** 模型类别（迁移 0045）：text 文本模型，image 生图模型；登记后不能改。 */
+  kind: ColumnType<PlatformModelKind, never, never>;
   is_free: ColumnType<boolean, never, never>;
   enabled: ColumnType<boolean, never, never>;
   note: ColumnType<string | null, never, never>;
