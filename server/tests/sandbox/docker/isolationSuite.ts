@@ -29,6 +29,13 @@ export interface IsolationTarget {
   validOutput: readonly string[];
   /** 取回规则不允许的一个文件名（默认 page.html；agent 的工作区允许 html）。 */
   disallowedOutput?: string;
+  /** 往返与隔离用例中放入的文件名（默认 original.bin / secret.bin）；render-mermaid 只收 request.json。 */
+  inputName?: string;
+  /**
+   * 是否运行放入大文件与多个文件的流式用例（默认运行）。render-mermaid 的输入只有一个至多 7 MiB 的 request.json，这些用例不适用；
+   * 流式放入是驱动的机制，与模板无关，已由其他模板覆盖，render-mermaid 另有只收 request.json 的用例。
+   */
+  streamingInput?: boolean;
 }
 
 export interface IsolationHarness {
@@ -494,10 +501,11 @@ export function defineIsolationSuite(target: IsolationTarget, harness: Isolation
     it(`round-trips files through ${inputDirectory} and ${outputDirectory}`, async () => {
       const ref = await createSandbox();
       const original = Buffer.from('原件内容\u0000binary', 'utf8');
-      await driver.copyIn(ref, [{ path: 'original.bin', data: original }]);
+      const inputName = target.inputName ?? 'original.bin';
+      await driver.copyIn(ref, [{ path: inputName, data: original }]);
       const [first, ...rest] = target.validOutput;
       // agent 的输入与输出是同一个目录（/workspace）：移走放入的文件，取回的只有合法输出。
-      const script = [`${inputDirectory === outputDirectory ? 'mv' : 'cp'} ${inputDirectory}/original.bin ${outputDirectory}/${first}`];
+      const script = [`${inputDirectory === outputDirectory ? 'mv' : 'cp'} ${inputDirectory}/${inputName} ${outputDirectory}/${first}`];
       for (const path of rest) {
         if (path.includes('/')) script.push(`mkdir -p ${outputDirectory}/${path.slice(0, path.lastIndexOf('/'))}`);
         script.push(`printf x > ${outputDirectory}/${path}`);
@@ -565,7 +573,7 @@ export function defineIsolationSuite(target: IsolationTarget, harness: Isolation
       return { source, sha256: () => hash.digest('hex') };
     }
 
-    it(`streams a large input archive into ${inputDirectory} intact`, async () => {
+    it.runIf(target.streamingInput !== false)(`streams a large input archive into ${inputDirectory} intact`, async () => {
       const ref = await createSandbox();
       // 不超过模板的单个文件与总大小上限（export-preview 为 32 MiB / 64 MiB）。
       const archive = streamedArchive('large.bin', Math.min(96 * MIB, template.input.maxFileBytes, template.input.maxTotalBytes) - 4096 + 123);
@@ -574,7 +582,7 @@ export function defineIsolationSuite(target: IsolationTarget, harness: Isolation
       expect(result.stdout.split(' ')[0]).toBe(archive.sha256());
     });
 
-    it('terminates the sandbox when the input archive turns invalid midway', async () => {
+    it.runIf(target.streamingInput !== false)('terminates the sandbox when the input archive turns invalid midway', async () => {
       const ref = await createSandbox();
       // 第一个文件合规（已交给沙箱内的 tar），之后是一个符号链接：校验在转出它的头部之前拒绝，整个沙箱被终止。
       const link = Buffer.alloc(512);
@@ -616,7 +624,7 @@ export function defineIsolationSuite(target: IsolationTarget, harness: Isolation
       };
     }
 
-    it(`copyIn streams files read on demand into ${inputDirectory} intact`, async () => {
+    it.runIf(target.streamingInput !== false)(`copyIn streams files read on demand into ${inputDirectory} intact`, async () => {
       const ref = await createSandbox();
       const first = onDemandFile('first.bin', 8 * MIB + 123, 1);
       const second = onDemandFile('second.bin', 3 * MIB, 2);
@@ -626,7 +634,7 @@ export function defineIsolationSuite(target: IsolationTarget, harness: Isolation
       expect(result.stdout.trim().split('\n').map((line) => line.split(' ')[0])).toEqual([createHash('sha256').update(small).digest('hex'), first.sha256(), second.sha256()]);
     });
 
-    it('copyIn terminates the sandbox with SANDBOX_INPUT_FAILED when a source fails midway', async () => {
+    it.runIf(target.streamingInput !== false)('copyIn terminates the sandbox with SANDBOX_INPUT_FAILED when a source fails midway', async () => {
       const ref = await createSandbox();
       // 第一个文件已交给沙箱内的 tar，第二个读到一半时源出错：归档被截断，整个沙箱被终止。
       const files = [onDemandFile('first.bin', 2 * MIB, 1), onDemandFile('second.bin', 4 * MIB, 2, 2 * MIB)];
@@ -636,7 +644,7 @@ export function defineIsolationSuite(target: IsolationTarget, harness: Isolation
 
     it('does not share anything between sandboxes', async () => {
       const first = await createSandbox();
-      await driver.copyIn(first, [{ path: 'secret.bin', data: Buffer.from('secret') }]);
+      await driver.copyIn(first, [{ path: target.inputName ?? 'secret.bin', data: Buffer.from('secret') }]);
       await sh(first, `printf secret > /tmp/secret && printf secret > ${outputDirectory}/secret.${ext}`);
       const second = await createSandbox();
       const result = await run(second, ['sh', '-c', `ls -A ${Object.keys(template.tmpfs).join(' ')}; test ! -e /tmp/secret && echo isolated`]);

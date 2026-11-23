@@ -1,0 +1,15 @@
+{
+  "name": "zhibiao-render-mermaid-sandbox",
+  "version": "0.1.0",
+  "private": true,
+  "description": "render-mermaid 沙箱镜像中的 Mermaid 转图入口（路线图第 8 步 8.8b），只在断网沙箱中运行；mermaid 版本与 client/package-lock.json 相同，playwright-core 与 export 沙箱相同",
+  "license": "UNLICENSED",
+  "type": "module",
+  "engines": {
+    "node": ">=24.21.0 <25"
+  },
+  "dependencies": {
+    "mermaid": "11.17.2",
+    "playwright-core": "1.63.0"
+  }
+}

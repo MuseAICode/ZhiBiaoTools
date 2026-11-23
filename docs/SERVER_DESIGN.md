@@ -890,6 +890,21 @@ AI 写的 HTML 配图在专用的 `render-html` 沙箱中转成 PNG（“第 8 �
 - **worker 一侧**（`renderHtmlImages`）：校验输入并分配标识 `h001`～`h050` → `createSandboxWithRetry`（`RENDER_HTML_SANDBOX_BUSY` / `RENDER_HTML_UNAVAILABLE`）→ copyIn 只放 `request.json` → `exec render` → copyOut → 按不可信输入校验：`result.json` 的结构与字段不多不少、标识与顺序与请求一致、失败代码在白名单内；每张成功的图正好有一个 `<id>.png`，PNG 签名与 IHDR 的宽高等于画框的 2 倍，没有多余文件；布局问题至多 12 条、每条至多 300 个字符（含 AI 写的类名，按不可信纯文本交回 Agent）。整批错误按入口代码映射为 `RENDER_HTML_REQUEST_INVALID` / `RENDER_HTML_FAILED` / `RENDER_HTML_TIMEOUT` / `RENDER_HTML_OUTPUT_REJECTED`，不采用沙箱输出的文字；沙箱在 finally 中销毁。
 - **SVG / WebP 转 PNG（8.8a2）**：请求的每项带 `kind`（`html` 为上面的 HTML 配图；`image` 为 `{ id, kind: 'image', format: 'svg' | 'webp' }`），图片内容以 `<id>.<format>` 与 `request.json` 一起放入（每张 ≤ 10 MiB、每批合计 ≤ 64 MiB；`/work` 中多出或缺少文件、非普通文件、超限时整批 `request_invalid`）。模板输入改为至多 51 个文件、扩展名 `json` / `svg` / `webp`、合计 161 MiB（`/work` 176 MiB），取回规则不变。入口 `imageConvert.mjs`：每张一个新的浏览器上下文（禁用 JavaScript、离线、中止一切请求），页面只有一个 `<img>`，图片由 Playwright 路由在固定地址给出；按解码出的固有尺寸缩放后透明背景截图——WebP 只缩小、长宽 ≤ 1920 × 2880（桌面版生图压缩的上限），容器先由 `parseWebp`（7.4i）解析、动图取第一帧；SVG 等比放进 1920 × 2880（可放大）。SVG 按图片解码，浏览器不执行其中的脚本、不加载外部资源。内容与格式不符或解码失败时该项失败 `image_invalid`。worker 一侧 `renderHtmlImages` 的输入可混合 `{ kind: 'image', format, data }`；图片结果为 `{ id, status, width, height }`，宽高在 1～1920 × 1～2880 且与 IHDR 一致，`image_invalid` 只允许出现在图片项。8.9 的生图调用经它转图。
 
+### 7.37 实现（路线图 8.8b）：Mermaid 转 PNG（render-mermaid 沙箱）
+
+Agent 生成的 Mermaid 源码在专用的 `render-mermaid` 沙箱中转成 PNG（“第 8 步说明”第 3 项，#61 决定事项第 4 项）。Mermaid 只能由 `mermaid.js` 在浏览器中排版，**必须执行脚本**，所以与禁用 JavaScript 的 `render-html` / `export` 分开：执行的只有镜像中按版本固定的 `mermaid.min.js` 与平台的入口页面脚本，AI 写的源码一律按不可信输入、只作为数据传入。8.10 的正文生成经 worker 一侧的 `renderMermaidImages`（`src/render/mermaidImages.ts`）调用；本步不接任何任务。
+
+- **镜像**（`server/sandbox/render-mermaid/Dockerfile`，`SANDBOX_MERMAID_IMAGE`，正文生成接入之前可以不配置）：Node 24 + Playwright 的 chromium-headless-shell（`playwright-core` 1.63.0，与 export 镜像相同）+ `mermaid` 11.17.2 的浏览器包 `dist/mermaid.min.js`（与 `client/package-lock.json` 同一版本，lockfile 条目逐项相同，测试核对）+ Noto CJK 字体。依赖在构建阶段按 lockfile 安装、不执行安装脚本，最终镜像只取 `playwright-core` 与 `mermaid.min.js`；没有 OpenXmlHelper、桌面版代码、凭据、编译器、网络工具与包管理器，没有 setuid / setgid 程序。
+- **模板**（`src/sandbox/templates.ts` 的 `render-mermaid`）：专用镜像 `mermaid`，隔离参数与 parse 相同（`--network none`、gVisor、只读根文件系统、非 root、无能力、不挂载宿主目录）；内存 1 GiB（无 swap）、CPU 1 核、pids 256、每批 5 分钟（命令墙钟）、沙箱最长 8 分钟。输入只有一个 `request.json`（`json`，至多 7 MiB：源码合计 1 MiB，JSON 转义后至多约 6 倍）；取回只有 `<id>.png`（至多 50 张、每张 10 MiB）与 `result.json`，**Mermaid 生成的 SVG 不出沙箱**。一次工具调用（一批图）一个沙箱，用完即毁。
+- **入口**（`entry.mjs`、`mermaidImage.mjs`，命令 `render`，不接受参数）：`request.json` 为 `{ version: 1, items: [{ id, code }] }`（每批 1～50 段、每段 ≤ 64 KiB、合计 ≤ 1 MiB，字段不多不少）。每段一个新的浏览器上下文（离线、不允许 Service Worker 与下载），页面、`mermaid.min.js` 与 `page.js` 由 Playwright 的路由在固定地址 `http://mermaid.invalid/` 给出，其余请求一律中止。
+  - **页面 CSP**（响应头与 meta 各一份）：`script-src` 只写这两个脚本的地址（不允许内联脚本、事件属性、`javascript:` 与 eval），`default-src` / `img-src` / `font-src` / `connect-src` / `frame-src` / `object-src` / `worker-src` 等一律 `'none'`，只允许内联样式（Mermaid 把样式写在 SVG 的 `<style>` 中）。
+  - **Mermaid 设置**（`page.js`）：`securityLevel: 'strict'`（click 回调不绑定，链接地址经清理）、`htmlLabels: false`（标签用 SVG 的 text 排版，不生成 HTML 元素）；`secure` 在 Mermaid 默认锁定的 `securityLevel` 等之外另锁定 `htmlLabels`、`dompurifyConfig`、`themeCSS`、`fontFamily`、`altFontFamily`：图表内的 `init` / `initialize` 指令与 frontmatter 的 `config` 不能改变这些设置（实测 Mermaid 默认锁定下，指令能打开 HTML 标签，`themeCSS` 与 `fontFamily` 能写入 `@import` / `url()` 发出请求）。页面脚本不调用 `bindFunctions`。
+  - **源码只作为数据**：入口经 `page.evaluate` 把源码作为字符串参数交给 `window.__zhibiaoMermaid.render`（不可改写的只读属性），不拼进页面；页面返回的尺寸与说明同样按不可信处理。
+  - **排版**：与桌面版 `buildMermaidDocument` 相同（参考宽度 680、四周 8 像素、SVG 按固有尺寸、过宽时等比缩到 664 像素宽、3 倍像素截图、内容小于 24 像素视为未正确渲染），另把过高的图按 1086 像素高等比缩小，PNG 不超过 2040 × 3306（render-html 的像素上限）。`maxTextSize` 设为 65536（不小于每段的字节上限，Mermaid 不会把源码换成“超出大小”的提示图）。
+  - **时限与失败**：每段 30 秒；单段失败（`render_timeout` / `render_failed` / `output_too_large` / `diagram_invalid`）不影响其他段，`diagram_invalid`（Mermaid 的语法或渲染错误）另带说明（去掉控制与双向控制字符、至多 1000 个字符），交给 Agent 修改源码；整批的时限（4 分 30 秒）到后剩下的记为超时；浏览器进程退出（例如被内存上限结束）或上下文关不掉时下一段换一个浏览器。请求不合法、浏览器启动失败时 `/output` 为空，只给错误代码（`request_invalid` / `browser_failed`）。
+- **worker 一侧**（`renderMermaidImages`）：校验输入（1～50 段、每段 ≤ 64 KiB、合计 ≤ 1 MiB、合法 UTF-16、非空）并分配标识 `m001`～`m050` → `createSandboxWithRetry`（`RENDER_MERMAID_SANDBOX_BUSY` / `RENDER_MERMAID_UNAVAILABLE`）→ copyIn 只放 `request.json` → `exec render` → copyOut → 按不可信输入校验：`result.json` 的结构与字段不多不少、标识与顺序与请求一致、失败代码在白名单内、`message` 只出现在 `diagram_invalid` 上且符合上面的规则；每张成功的图正好有一个 `<id>.png`，PNG 签名与 IHDR 的宽高与结果项一致、在 3～2040 × 3～3306 之内且是 3 的倍数；没有多余文件（SVG 等）。整批错误映射为 `RENDER_MERMAID_REQUEST_INVALID` / `RENDER_MERMAID_FAILED` / `RENDER_MERMAID_TIMEOUT` / `RENDER_MERMAID_OUTPUT_REJECTED`，不采用沙箱输出的文字；沙箱在 finally 中销毁。
+- **注入样本与对照组**（`tests/sandbox/docker/renderMermaid.test.ts`，gVisor）：init 指令改安全级别、click 指向 `javascript:` / `call eval`、标签中嵌入 HTML / 脚本、外部图片与样式引用、超大与深度嵌套的图，每类都有对照组证明样本有效（对照组只在测试中按 `page.js` 改写出放宽的页面，生产入口没有放宽的选项），见路线图 8.8b。
+
 ## 8. 部署架构
 
 ### 8.0 部署位置（已决定，第 9 节第 13、14 项）
@@ -911,7 +926,7 @@ AI 写的 HTML 配图在专用的 `render-html` 沙箱中转成 PNG（“第 8 �
 | `postgres` | PostgreSQL 17，数据卷 | `backend` |
 | `redis` | Valkey 8（第 6 步决定替代 Redis 7，协议兼容），开启密码和 ACL，不持久化；启动脚本 `server/redis/start-valkey.sh`（6.1） | `backend` |
 | （云对象存储） | 生产环境用云厂商对象存储，不在本机；开发环境才在 Compose 中起本地 S3 兼容存储 | 经 `egress`，用实例角色访问 |
-| 沙箱容器 | 由 sandbox-runner 动态创建：parse（文档解析）、export（OpenXmlHelper 与 Chromium，一次导出一个，用完即毁）、agent（8.1，见第 7.10 节） | parse / export 为 `none`；agent 为每个沙箱一个的专用 internal 网络，只有该沙箱与 `agent-gw`（取代原设计的共用网络 `sandbox-gw`） |
+| 沙箱容器 | 由 sandbox-runner 动态创建：parse（文档解析）、export（OpenXmlHelper 与 Chromium，一次导出一个，用完即毁）、agent（8.1，见第 7.10 节）、render-html（8.8a，禁用页面脚本，见第 7.36 节）、render-mermaid（8.8b，专用镜像，只执行固定的 mermaid.js，见第 7.37 节） | parse / export / render-html / render-mermaid 为 `none`；agent 为每个沙箱一个的专用 internal 网络，只有该沙箱与 `agent-gw`（取代原设计的共用网络 `sandbox-gw`） |
 
 - `backend` 为 `internal: true`，数据库、Redis、对象存储不暴露端口到宿主；
 - 只有 `worker` 在 `egress` 网络上能访问外网（调用模型服务商、MinerU、KMS、对象存储），并经第 4.4 节的出站校验；api 发邮件和签发预签名 URL 所需的出站访问只放行到发信服务和云厂商接口；
