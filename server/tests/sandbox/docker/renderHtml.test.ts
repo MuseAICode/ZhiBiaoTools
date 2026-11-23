@@ -10,7 +10,8 @@
 //   请求（浏览器上下文离线并中止一切请求，第二层防护），而对照组的连通性另由沙箱内的 Node 直接请求证明；
 // - 错误：请求不合法时只给错误代码，输出目录为空。
 // - 图片转 PNG（8.8a2）：SVG 等比放进 1920 × 2880，WebP 只缩小、透明保留、动图取第一帧，坏图只让该项失败（image_invalid）；
-//   SVG 中的脚本、事件属性与外部引用（image、use、样式表、CSS url()）不执行、不被请求（去掉断网的对照组中同样不被请求）。
+//   SVG 中的 5 种脚本执行方式与外部引用（image、use、样式表、CSS url()）不执行、不被请求（去掉断网的对照组中同样不被请求）；
+//   样本有效性的对照组：同一份 SVG 作为文档、在测试专用的允许 JavaScript 的浏览器上下文中打开时，5 种方式都生效。
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { createServer, type Server } from 'node:http';
@@ -48,16 +49,23 @@ const SCRIPT_SAMPLES: Record<string, string> = {
 const SMALL_FONT = /^文字字号过小：p 为 5px/;
 const webpSample = (name: string) => readFileSync(new URL(`../samples/webp/${name}.webp`, import.meta.url));
 const svgOf = (body: string, attributes = 'width="64" height="32"') => Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" ${attributes}>${body}</svg>`);
-/** 左半红色、右半透明的 SVG；脚本或事件属性生效时左半变成蓝色、或宽度变成 1。 */
+/**
+ * SVG 中的脚本执行方式（8.8a2；样本有效性见下面的对照组）。每一种生效时都在根元素上留下 data-<名称> 标记并把左半的红色
+ * 矩形改成蓝色，根元素的 onload 另把宽度改成 1。脚本中不含 `<`，否则 SVG 不是合法的 XML，样本会因解码失败而无效。
+ */
+const SVG_SCRIPT_VECTORS = ['root-onload', 'script', 'animate-onbegin', 'image-onerror', 'foreign-onerror'] as const;
+const svgAction = (name: (typeof SVG_SCRIPT_VECTORS)[number]) =>
+  `document.documentElement.setAttribute('data-${name}','ran');document.querySelector('rect').setAttribute('fill','#0000ff')`;
+/** 左半红色、右半透明的 SVG，带全部脚本执行方式与外部引用（image、use、样式表、CSS url()）。 */
 const svgWithScripts = (base: string) =>
   svgOf(
     `<rect width="32" height="32" fill="#ff0000"/>` +
-      // 脚本中不含 `<`，否则 SVG 不是合法的 XML，样本会因解码失败而无效。
-      `<script>document.querySelector('rect').setAttribute('fill','#0000ff')</script>` +
-      `<rect width="1" height="1" fill-opacity="0" onload="document.querySelector('rect').setAttribute('fill','#0000ff')"/>` +
-      `<image href="${base}/svg-image.png" x="40" width="8" height="8"/><image xlink:href="${base}/svg-xlink.png" x="48" width="8" height="8"/>` +
+      `<script>${svgAction('script')}</script>` +
+      `<rect x="60" width="1" height="1" fill-opacity="0"><animate attributeName="x" from="60" to="61" dur="1s" onbegin="${svgAction('animate-onbegin')}"/></rect>` +
+      `<image href="${base}/svg-image.png" x="40" width="8" height="8" onerror="${svgAction('image-onerror')}"/><image xlink:href="${base}/svg-xlink.png" x="48" width="8" height="8"/>` +
+      `<foreignObject width="1" height="1"><div xmlns="http://www.w3.org/1999/xhtml"><img src="missing.png" onerror="${svgAction('foreign-onerror')}"/></div></foreignObject>` +
       `<use href="${base}/svg-use.svg#x"/><rect class="x" x="56" y="24" width="8" height="8"/><style>@import url(${base}/svg-import.css);.x{fill:url(${base}/svg-fill.svg#p)}</style>`,
-    'width="64" height="32" onload="document.documentElement.setAttribute(\'width\',\'1\')"',
+    `width="64" height="32" onload="${svgAction('root-onload')};document.documentElement.setAttribute('width','1')"`,
   );
 
 describe.runIf(sandboxEnv.exportImage)('render-html sandbox', () => {
@@ -162,6 +170,18 @@ describe.runIf(sandboxEnv.exportImage)('render-html sandbox', () => {
       expect(requests).toEqual([]);
     });
 
+    it('every SVG script sample takes effect when the same bytes are opened as an SVG document with scripts allowed (sample-validity control)', async () => {
+      // 对照组只在测试中：在同一镜像中用测试自己的浏览器上下文（允许 JavaScript）把同一份 SVG 作为文档打开，
+      // 生产入口与 imageConvert.mjs 没有打开脚本的选项（tests/sandbox/renderHtmlEntry.test.ts 核对）。
+      requests.length = 0;
+      const ref = await harness.createSandbox();
+      const control = await harness.probe<{ allowed: string[]; blocked: string[] }>(ref, svgControlScript(svgWithScripts(base).toString('utf8')));
+      expect(control.allowed).toEqual([...SVG_SCRIPT_VECTORS].sort());
+      // 同一上下文只改为禁用 JavaScript 时一种也不生效（对照组本身的开关有效）。
+      expect(control.blocked).toEqual([]);
+      expect(requests).toEqual([]);
+    });
+
     it('still requests nothing with the network attached (offline context and aborted requests), although the sandbox can reach the host', async () => {
       const weakened = harness.weakenedDriver((spec) => {
         spec.HostConfig.NetworkMode = 'bridge';
@@ -226,6 +246,38 @@ describe.runIf(sandboxEnv.exportImage)('render-html sandbox', () => {
     expect(await harness.driver.copyOut(ref)).toEqual([]);
   });
 });
+
+/**
+ * SVG 样本的对照组（测试专用）：在沙箱内用镜像中的 Chromium 把 SVG 作为文档（image/svg+xml）打开，分别在允许与禁用 JavaScript 的
+ * 浏览器上下文中读出根元素上的 data-* 标记（生效的脚本执行方式）。上下文离线并中止其他一切请求。
+ */
+function svgControlScript(svg: string): string {
+  return `
+    (async () => {
+      const { createRequire } = require('module');
+      const req = createRequire('/opt/export/package.json');
+      const { chromium } = req('playwright-core');
+      const { CHROMIUM_EXECUTABLE, LAUNCH_ARGS } = await import('/opt/export/render.mjs');
+      const browser = await chromium.launch({ executablePath: CHROMIUM_EXECUTABLE, headless: true, args: [...LAUNCH_ARGS], env: { HOME: '/tmp', TMPDIR: '/tmp', LANG: 'C.UTF-8' } });
+      const svg = ${JSON.stringify(svg)};
+      const markers = async (javaScriptEnabled) => {
+        const context = await browser.newContext({ javaScriptEnabled, offline: true });
+        await context.route('**/*', (route) => route.request().url() === 'http://render.invalid/'
+          ? route.fulfill({ status: 200, contentType: 'image/svg+xml', body: svg })
+          : route.abort('blockedbyclient'));
+        const page = await context.newPage();
+        await page.goto('http://render.invalid/', { waitUntil: 'load' });
+        // 等动画开始与加载失败的事件。
+        await page.waitForTimeout(500);
+        const names = await page.evaluate(() => [...document.documentElement.attributes].map((item) => item.name).filter((name) => name.startsWith('data-')).map((name) => name.slice(5)).sort());
+        await context.close();
+        return names;
+      };
+      const out = { allowed: await markers(true), blocked: await markers(false) };
+      await browser.close();
+      process.stdout.write(JSON.stringify(out));
+    })().catch((error) => { console.error(error); process.exit(1); });`;
+}
 
 /** 在沙箱内用镜像中的渲染代码转图并返回每张的布局问题（失败时为错误代码）；javaScriptEnabled 只有测试能打开。 */
 function controlScript(samples: Record<string, string>, javaScriptEnabled: boolean): string {
