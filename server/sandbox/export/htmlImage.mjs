@@ -11,6 +11,8 @@
 //   AI 写的外部引用只会加载失败；
 // - 每张图一个新的浏览器上下文（没有任何存储），之间不共享状态；
 // - 返回给 worker 的布局问题是桌面版脚本生成的中文短句（含 AI 写的类名），worker 按不可信纯文本处理。
+// 同一请求中还可以有图片转 PNG 的项（8.8a2，kind: 'image'，见 imageConvert.mjs）。
+import { IMAGE_FORMATS } from './imageConvert.mjs';
 
 /** 画框名（与桌面版 HTML_FRAME_HEIGHTS 的键相同）。 */
 export const FRAME_SIZES = Object.freeze(['square', 'wide', 'tall', 'panorama']);
@@ -40,8 +42,11 @@ function isPlainObject(value) {
 }
 
 /**
- * 校验 request.json：{ version: 1, items: [{ id, html, frame_size, check_layout }] }，字段不多不少。
- * check_layout 对应桌面版的 checkLayout（正文关闭“HTML 配图二次优化”时为 false，不检查布局）。不合法时抛 request_invalid。
+ * 校验 request.json：{ version: 1, items: [...] }，每项字段不多不少，按 kind 分两种（8.8a2 新增 kind）：
+ * - { id, kind: 'html', html, frame_size, check_layout }：HTML 配图。check_layout 对应桌面版的 checkLayout（正文关闭“HTML 配图二次优化”
+ *   时为 false，不检查布局）；HTML 每张至多 1 MiB、合计至多 16 MiB；
+ * - { id, kind: 'image', format }：图片转 PNG（imageConvert.mjs），内容在 /work/<id>.<format>，大小由入口读文件时检查。
+ * 不合法时抛 request_invalid。
  */
 export function parseRenderHtmlRequest(raw) {
   const invalid = () => new RenderHtmlError('request_invalid');
@@ -52,15 +57,21 @@ export function parseRenderHtmlRequest(raw) {
   const ids = new Set();
   let total = 0;
   return raw.items.map((item) => {
-    if (!isPlainObject(item) || Object.keys(item).sort().join(',') !== 'check_layout,frame_size,html,id') throw invalid();
-    const { id, html, frame_size: frameSize, check_layout: checkLayout } = item;
+    if (!isPlainObject(item)) throw invalid();
+    const { id, kind } = item;
     if (typeof id !== 'string' || !ITEM_ID.test(id) || ids.has(id)) throw invalid();
+    ids.add(id);
+    if (kind === 'image') {
+      if (Object.keys(item).sort().join(',') !== 'format,id,kind' || !IMAGE_FORMATS.includes(item.format)) throw invalid();
+      return { id, kind, format: item.format };
+    }
+    if (kind !== 'html' || Object.keys(item).sort().join(',') !== 'check_layout,frame_size,html,id,kind') throw invalid();
+    const { html, frame_size: frameSize, check_layout: checkLayout } = item;
     if (typeof html !== 'string' || !FRAME_SIZES.includes(frameSize) || typeof checkLayout !== 'boolean') throw invalid();
     const bytes = Buffer.byteLength(html, 'utf8');
     total += bytes;
     if (bytes > MAX_HTML_BYTES || total > MAX_TOTAL_HTML_BYTES) throw invalid();
-    ids.add(id);
-    return { id, html, frameSize, checkLayout };
+    return { id, kind, html, frameSize, checkLayout };
   });
 }
 

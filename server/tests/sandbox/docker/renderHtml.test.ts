@@ -9,13 +9,16 @@
 // - 外部引用：远程图片、样式表、@import、CSS url()、字体、iframe 在沙箱中不被请求；去掉 --network none 的对照组中同样不被
 //   请求（浏览器上下文离线并中止一切请求，第二层防护），而对照组的连通性另由沙箱内的 Node 直接请求证明；
 // - 错误：请求不合法时只给错误代码，输出目录为空。
+// - 图片转 PNG（8.8a2）：SVG 等比放进 1920 × 2880，WebP 只缩小、透明保留、动图取第一帧，坏图只让该项失败（image_invalid）；
+//   SVG 中的脚本、事件属性与外部引用（image、use、样式表、CSS url()）不执行、不被请求（去掉断网的对照组中同样不被请求）。
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { createServer, type Server } from 'node:http';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { renderHtmlImages, type HtmlImageInput, type RenderHtmlContext } from '../../../src/render/htmlImages.ts';
+import { renderHtmlImages, type HtmlImageInput, type RenderHtmlContext, type RenderImageInput } from '../../../src/render/htmlImages.ts';
 import type { SandboxRef } from '../../../src/sandbox/driver.ts';
 import { sandboxEnv } from './env.ts';
+import { decodePng } from './exportFixtures.ts';
 import { bridgeGateway, createIsolationHarness } from './isolationSuite.ts';
 
 const exportImage = sandboxEnv.exportImage ?? '';
@@ -43,6 +46,19 @@ const SCRIPT_SAMPLES: Record<string, string> = {
   'object onerror': `<p style="font-size:30px">原文</p><object data="missing.bin" onerror="${PWNED}"></object>`,
 };
 const SMALL_FONT = /^文字字号过小：p 为 5px/;
+const webpSample = (name: string) => readFileSync(new URL(`../samples/webp/${name}.webp`, import.meta.url));
+const svgOf = (body: string, attributes = 'width="64" height="32"') => Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" ${attributes}>${body}</svg>`);
+/** 左半红色、右半透明的 SVG；脚本或事件属性生效时左半变成蓝色、或宽度变成 1。 */
+const svgWithScripts = (base: string) =>
+  svgOf(
+    `<rect width="32" height="32" fill="#ff0000"/>` +
+      // 脚本中不含 `<`，否则 SVG 不是合法的 XML，样本会因解码失败而无效。
+      `<script>document.querySelector('rect').setAttribute('fill','#0000ff')</script>` +
+      `<rect width="1" height="1" fill-opacity="0" onload="document.querySelector('rect').setAttribute('fill','#0000ff')"/>` +
+      `<image href="${base}/svg-image.png" x="40" width="8" height="8"/><image xlink:href="${base}/svg-xlink.png" x="48" width="8" height="8"/>` +
+      `<use href="${base}/svg-use.svg#x"/><rect class="x" x="56" y="24" width="8" height="8"/><style>@import url(${base}/svg-import.css);.x{fill:url(${base}/svg-fill.svg#p)}</style>`,
+    'width="64" height="32" onload="document.documentElement.setAttribute(\'width\',\'1\')"',
+  );
 
 describe.runIf(sandboxEnv.exportImage)('render-html sandbox', () => {
   it('carries the desktop canvas and layout probe unchanged', async () => {
@@ -124,10 +140,25 @@ describe.runIf(sandboxEnv.exportImage)('render-html sandbox', () => {
       `<link rel="stylesheet" href="${base}/link.css"><style>@import "${base}/import.css";@font-face{font-family:x;src:url(${base}/font.woff)}div{font-family:x}</style>` +
       `<div style="font-size:30px;background:url(${base}/bg.png)">外部引用</div><img src="${base}/img.png"><iframe src="${base}/frame.html"></iframe>`;
 
+    const externalItems = (): RenderImageInput[] => [
+      { html: externalHtml(), frameSize: 'square', checkLayout: true },
+      { kind: 'image', format: 'svg', data: svgWithScripts(base) },
+    ];
+    /** SVG 中的脚本与事件属性都不执行：仍是左半红色、右半透明，宽高不变。 */
+    const expectSvgUntouched = (result: Awaited<ReturnType<typeof renderHtmlImages>>[number]) => {
+      expect(result.status).toBe('rendered');
+      if (result.status !== 'rendered') return;
+      expect([result.width, result.height]).toEqual([1920, 960]);
+      const png = decodePng(result.png);
+      expect(png.pixel(100, 100)).toEqual([255, 0, 0]);
+      expect(png.alpha(1800, 100)).toBe(0);
+    };
+
     it('requests nothing inside the sandbox', async () => {
       requests.length = 0;
-      const results = await renderHtmlImages(contextOf(), [{ html: externalHtml(), frameSize: 'square', checkLayout: true }], { createRetryDelaysMs: [] });
+      const results = await renderHtmlImages(contextOf(), externalItems(), { createRetryDelaysMs: [] });
       expect(results[0]!.status).toBe('rendered');
+      expectSvgUntouched(results[1]!);
       expect(requests).toEqual([]);
     });
 
@@ -136,8 +167,9 @@ describe.runIf(sandboxEnv.exportImage)('render-html sandbox', () => {
         spec.HostConfig.NetworkMode = 'bridge';
       });
       requests.length = 0;
-      const results = await renderHtmlImages(contextOf(weakened), [{ html: externalHtml(), frameSize: 'square', checkLayout: true }], { createRetryDelaysMs: [] });
+      const results = await renderHtmlImages(contextOf(weakened), externalItems(), { createRetryDelaysMs: [] });
       expect(results[0]!.status).toBe('rendered');
+      expectSvgUntouched(results[1]!);
       expect(requests).toEqual([]);
       // 对照：同样去掉断网的沙箱中，Node 能直接连到测试服务器。
       const ref: SandboxRef = await weakened.create('render-html', { jobId: JOB_ID });
@@ -146,6 +178,43 @@ describe.runIf(sandboxEnv.exportImage)('render-html sandbox', () => {
       expect(reached.stdout.trim()).toBe('200');
       expect(requests).toEqual(['/reachable']);
     });
+  });
+
+  it('converts SVG and WebP images to PNG next to HTML items; a broken image only fails its own item (8.8a2)', async () => {
+    const items: RenderImageInput[] = [
+      { kind: 'image', format: 'svg', data: svgOf('<rect width="32" height="32" fill="#ff0000"/>') },
+      { kind: 'image', format: 'svg', data: svgOf('<rect width="100" height="200" fill="#00a000"/>', 'viewBox="0 0 100 200"') },
+      { kind: 'image', format: 'webp', data: webpSample('animated') },
+      { kind: 'image', format: 'webp', data: webpSample('lossy-alpha') },
+      { html: OK_HTML, frameSize: 'wide', checkLayout: true },
+      { kind: 'image', format: 'svg', data: Buffer.from('不是 SVG') },
+      { kind: 'image', format: 'webp', data: svgOf('') },
+    ];
+    const results = await renderHtmlImages(contextOf(), items, { createRetryDelaysMs: [] });
+    expect(results.map((result) => (result.status === 'rendered' ? [result.width, result.height] : result.error))).toEqual([
+      [1920, 960],
+      [1440, 2880],
+      [64, 48],
+      [64, 48],
+      [2480, 1654],
+      'image_invalid',
+      'image_invalid',
+    ]);
+    const png = (index: number) => {
+      const result = results[index]!;
+      if (result.status !== 'rendered') throw new Error('not rendered');
+      return decodePng(result.png);
+    };
+    // SVG 等比放大：左半红色、右半透明。
+    expect(png(0).pixel(100, 100)).toEqual([255, 0, 0]);
+    expect(png(0).alpha(100, 100)).toBe(255);
+    expect(png(0).alpha(1800, 900)).toBe(0);
+    expect(png(1).pixel(720, 1440)).toEqual([0, 160, 0]);
+    // 动图只取第一帧（左半红色、右半透明，不是后续帧的蓝色或绿色）；有损带透明的透明部分仍然透明。
+    expect(png(2).pixel(8, 24)).toEqual([255, 0, 0]);
+    expect(png(2).alpha(56, 24)).toBe(0);
+    expect(png(3).alpha(8, 24)).toBe(255);
+    expect(png(3).alpha(56, 24)).toBe(0);
   });
 
   it('rejects an invalid request with an error code only and leaves no output', async () => {

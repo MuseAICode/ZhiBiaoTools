@@ -1,4 +1,4 @@
-// HTML 配图转 PNG 的 worker 一侧（src/render/htmlImages.ts，8.8a1）：请求的组装与校验、沙箱输出按不可信输入的校验、
+// HTML 配图转 PNG 的 worker 一侧（src/render/htmlImages.ts，8.8a1；8.8a2 加图片转 PNG）：请求的组装与校验、沙箱输出按不可信输入的校验、
 // 经沙箱驱动的流程（创建、放入、执行、取回、总是销毁）与错误代码。真实沙箱中的转图见 tests/sandbox/docker/renderHtml.test.ts。
 import { createRequire } from 'node:module';
 import { describe, expect, it } from 'vitest';
@@ -10,11 +10,15 @@ import {
   HTML_FRAME_HEIGHTS,
   htmlImageId,
   renderHtmlImages,
+  RENDER_IMAGE_MAX_BYTES,
   RenderHtmlOutputError,
+  renderOutputSlots,
   validateRenderHtmlOutput,
   type HtmlFrameSize,
   type HtmlImageInput,
   type RenderHtmlContext,
+  type RenderImageInput,
+  type RenderOutputSlot,
 } from '../../src/render/htmlImages.ts';
 import type { SandboxFile } from '../../src/sandbox/archive.ts';
 import { SandboxError, type SandboxDriver, type SandboxExecResult, type SandboxRef } from '../../src/sandbox/driver.ts';
@@ -54,16 +58,52 @@ describe('constants', () => {
 describe('buildRenderHtmlRequest', () => {
   const item: HtmlImageInput = { html: '<div>图</div>', frameSize: 'wide', checkLayout: true };
 
+  const svg: RenderImageInput = { kind: 'image', format: 'svg', data: Buffer.from('<svg xmlns="http://www.w3.org/2000/svg"/>') };
+  const webp: RenderImageInput = { kind: 'image', format: 'webp', data: Buffer.from('RIFF') };
+  const requestOf = (files: { path: string; data: Buffer }[]) => JSON.parse(files[0]!.data.toString('utf8'));
+
   it('assigns ids in order and sends only the fields of the entry', () => {
-    const body = JSON.parse(buildRenderHtmlRequest([item, { ...item, frameSize: 'tall', checkLayout: false }]).toString('utf8'));
-    expect(body).toEqual({
+    const files = buildRenderHtmlRequest([item, { ...item, frameSize: 'tall', checkLayout: false }]);
+    expect(files.map((file) => file.path)).toEqual(['request.json']);
+    expect(requestOf(files)).toEqual({
       version: 1,
       items: [
-        { id: 'h001', html: '<div>图</div>', frame_size: 'wide', check_layout: true },
-        { id: 'h002', html: '<div>图</div>', frame_size: 'tall', check_layout: false },
+        { id: 'h001', kind: 'html', html: '<div>图</div>', frame_size: 'wide', check_layout: true },
+        { id: 'h002', kind: 'html', html: '<div>图</div>', frame_size: 'tall', check_layout: false },
       ],
     });
     expect(htmlImageId(49)).toBe('h050');
+  });
+
+  it('sends each image as <id>.<format> next to request.json (8.8a2)', () => {
+    const files = buildRenderHtmlRequest([svg, { ...item, kind: 'html' }, webp]);
+    expect(files.map((file) => file.path)).toEqual(['request.json', 'h001.svg', 'h003.webp']);
+    expect(files[1]!.data).toBe((svg as { data: Buffer }).data);
+    expect(requestOf(files).items).toEqual([
+      { id: 'h001', kind: 'image', format: 'svg' },
+      { id: 'h002', kind: 'html', html: '<div>图</div>', frame_size: 'wide', check_layout: true },
+      { id: 'h003', kind: 'image', format: 'webp' },
+    ]);
+    expect(renderOutputSlots([svg, item, webp])).toEqual(['image', 'wide', 'image']);
+  });
+
+  it.each([
+    ['an unknown format', [{ ...svg, format: 'png' }]],
+    ['an inherited format name', [{ ...svg, format: 'toString' }]],
+    ['data that is not a buffer', [{ ...svg, data: '<svg/>' }]],
+    ['an empty image', [{ ...svg, data: Buffer.alloc(0) }]],
+    ['an image over 10 MiB', [{ ...svg, data: Buffer.alloc(RENDER_IMAGE_MAX_BYTES + 1) }]],
+    ['images over 64 MiB in total', Array.from({ length: 7 }, () => ({ ...webp, data: Buffer.alloc(RENDER_IMAGE_MAX_BYTES) }))],
+    ['an unknown kind', [{ ...item, kind: 'pdf' }]],
+  ])('rejects %s', (_name, items) => {
+    expect(() => buildRenderHtmlRequest(items as RenderImageInput[])).toThrow(expect.objectContaining({ code: 'RENDER_HTML_REQUEST_INVALID' }));
+  });
+
+  it('accepts exactly 10 MiB per image and 64 MiB of images next to 16 MiB of HTML', () => {
+    const images = Array.from({ length: 6 }, () => ({ ...webp, data: Buffer.alloc(RENDER_IMAGE_MAX_BYTES) }));
+    const rest = { ...webp, data: Buffer.alloc(4 * 1024 * 1024) };
+    const html = Array.from({ length: 16 }, () => ({ ...item, html: 'x'.repeat(1024 * 1024) }));
+    expect(() => buildRenderHtmlRequest([...images, rest, ...html])).not.toThrow();
   });
 
   it.each([
@@ -127,9 +167,44 @@ describe('validateRenderHtmlOutput', () => {
     ['an image that is not a png', () => [good()[0]!, { path: 'h001.png', data: Buffer.from('GIF89a'.padEnd(40, '\0')) }, good()[2]!]],
     ['a png of another size', () => [good()[0]!, { path: 'h001.png', data: fakePng(2480, 1653) }, good()[2]!]],
     ['frames that do not match', () => good(), ['tall', 'panorama', 'tall']],
+    ['image_invalid for an html item', () => replaceResult([rendered('h001', 'wide'), { id: 'h002', status: 'failed', error: 'image_invalid' }, rendered('h003', 'tall')])],
+    ['an image result for an html item', () => replaceResult([{ id: 'h001', status: 'rendered', width: 2480, height: 1654 }, { id: 'h002', status: 'failed', error: 'render_timeout' }, rendered('h003', 'tall')])],
   ];
   it.each(cases)('rejects %s', (_name, files, frameSizes = frames) => {
     expect(() => validateRenderHtmlOutput(files(), frameSizes)).toThrow(RenderHtmlOutputError);
+  });
+
+  describe('image items (8.8a2)', () => {
+    const slots: RenderOutputSlot[] = ['image', 'image', 'wide'];
+    const image = (id: string, width: number, height: number) => ({ id, status: 'rendered', width, height });
+    const imageFiles = (items: unknown[], pngs: SandboxFile[] = [{ path: 'h001.png', data: fakePng(1920, 960) }, { path: 'h003.png', data: pngOf('wide') }]): SandboxFile[] => [
+      json({ version: 1, items }),
+      ...pngs,
+    ];
+    const goodItems = () => [image('h001', 1920, 960), { id: 'h002', status: 'failed', error: 'image_invalid' }, rendered('h003', 'wide')];
+
+    it('accepts any size within 1920 × 2880 whose PNG matches, and image_invalid', () => {
+      const results = validateRenderHtmlOutput(imageFiles(goodItems()), slots);
+      expect(results.map((result) => (result.status === 'rendered' ? [result.width, result.height, result.layoutIssues] : result.error))).toEqual([
+        [1920, 960, []],
+        'image_invalid',
+        [2480, 1654, []],
+      ]);
+      expect(() => validateRenderHtmlOutput(imageFiles([image('h001', 1, 2880), ...goodItems().slice(1)], [{ path: 'h001.png', data: fakePng(1, 2880) }, { path: 'h003.png', data: pngOf('wide') }]), slots)).not.toThrow();
+    });
+
+    it.each([
+      ['a width over 1920', [image('h001', 1921, 960)], fakePng(1921, 960)],
+      ['a height over 2880', [image('h001', 1920, 2881)], fakePng(1920, 2881)],
+      ['a zero size', [image('h001', 0, 960)], fakePng(0, 960)],
+      ['a fractional size', [image('h001', 19.5, 960)], fakePng(19, 960)],
+      ['a png that differs from the reported size', [image('h001', 1920, 960)], fakePng(1920, 961)],
+      ['layout issues on an image', [{ ...image('h001', 1920, 960), layout_issues: [] }], fakePng(1920, 960)],
+      ['an image that is not a png', [image('h001', 1920, 960)], Buffer.from('RIFF'.padEnd(40, '\0'))],
+    ])('rejects %s', (_name, first, png) => {
+      const files = imageFiles([...first, ...goodItems().slice(1)], [{ path: 'h001.png', data: png }, { path: 'h003.png', data: pngOf('wide') }]);
+      expect(() => validateRenderHtmlOutput(files, slots)).toThrow(RenderHtmlOutputError);
+    });
   });
 });
 
@@ -172,6 +247,14 @@ const context = (driver: SandboxDriver | null): RenderHtmlContext => ({ jobId: '
 const items: HtmlImageInput[] = [{ html: '<p>a</p>', frameSize: 'square', checkLayout: true }];
 
 describe('renderHtmlImages', () => {
+  it('sends the images next to request.json and returns the converted PNGs (8.8a2)', async () => {
+    const { driver, calls } = fakeDriver({ output: [json({ version: 1, items: [{ id: 'h001', status: 'rendered', width: 640, height: 480 }] }), { path: 'h001.png', data: fakePng(640, 480) }] });
+    const results = await renderHtmlImages(context(driver), [{ kind: 'image', format: 'webp', data: Buffer.from('RIFF....WEBP') }], { createRetryDelaysMs: [] });
+    expect(results).toMatchObject([{ status: 'rendered', width: 640, height: 480, layoutIssues: [] }]);
+    expect(calls.copied.map((files) => files.map((file) => file.path))).toEqual([['request.json', 'h001.webp']]);
+    expect(calls.destroyed).toBe(1);
+  });
+
   it('creates a render-html sandbox, sends only request.json, runs the render command and always destroys the sandbox', async () => {
     const { driver, calls } = fakeDriver({ output: [json({ version: 1, items: [rendered('h001', 'square')] }), { path: 'h001.png', data: pngOf('square') }] });
     const results = await renderHtmlImages(context(driver), items, { createRetryDelaysMs: [] });
