@@ -2,19 +2,21 @@
 // 模板写死在代码中：镜像（由 sandbox-runner 的配置给出摘要固定的引用）、网络、只读根文件系统、用户、资源上限、
 // 可写目录、可执行的命令和取回规则。调用方（worker）只能选模板名，不能传镜像、挂载、网络或任意 Docker 参数。
 // 第 6 步建了 parse 模板（断网解析）；第 7 步加 export 模板（断网导出 Word，路线图 7.1），分样张与整本导出两档资源上限；
-// 第 8 步在同一套机制上加 agent 模板（8.1：镜像、资源与每个沙箱一个内部网络；任务令牌、业务工具 RPC 随 8.2、8.4）。
+// 第 8 步在同一套机制上加 agent 模板（8.1：镜像、资源与每个沙箱一个内部网络；任务令牌、业务工具 RPC 随 8.2、8.4），
+// 以及渲染模板 render-html（8.8a1，禁用页面脚本）与 render-mermaid（8.8b，专用镜像，只执行固定的 mermaid.js）。
 
 const MIB = 1024 * 1024;
 const GIB = 1024 * MIB;
 
-export const SANDBOX_TEMPLATE_NAMES = ['parse', 'export-preview', 'export-document', 'export-feasibility', 'agent', 'agent-content', 'render-html'] as const;
+export const SANDBOX_TEMPLATE_NAMES = ['parse', 'export-preview', 'export-document', 'export-feasibility', 'agent', 'agent-content', 'render-html', 'render-mermaid'] as const;
 export type SandboxTemplateName = (typeof SANDBOX_TEMPLATE_NAMES)[number];
 
 /**
  * 镜像：export 模板用同一个 export 镜像（第 7 步决定事项第 2 项），两个 agent 模板用同一个 agent 镜像，只是资源上限不同；
- * render-html（8.8a1）复用 export 镜像中的 Chromium（第 8 步说明第 3 项），只是入口与模板不同。
+ * render-html（8.8a1）复用 export 镜像中的 Chromium（第 8 步说明第 3 项），只是入口与模板不同；
+ * render-mermaid（8.8b）必须执行脚本（mermaid.js），用专用的 mermaid 镜像，与禁用 JavaScript 的 export 镜像分开。
  */
-export const SANDBOX_IMAGE_NAMES = ['parse', 'export', 'agent'] as const;
+export const SANDBOX_IMAGE_NAMES = ['parse', 'export', 'agent', 'mermaid'] as const;
 export type SandboxImageName = (typeof SANDBOX_IMAGE_NAMES)[number];
 
 /** 沙箱内进程的用户与组（镜像中的 sandbox 用户），非 root。 */
@@ -383,6 +385,68 @@ const RENDER_HTML_TEMPLATE: SandboxTemplate = Object.freeze({
   transferTimeoutMs: 60_000,
 });
 
+/**
+ * render-mermaid 的批量上限（第 8 步说明第 3 项的起步值）：每批至多 50 段，每段源码至多 64 KiB、合计至多 1 MiB，每张 PNG 至多 10 MiB；
+ * PNG 至多 2040 × 3306（桌面版的 680 参考宽度 × 3 倍，高度与 render-html 的像素上限相同）。
+ */
+export const RENDER_MERMAID_MAX_ITEMS = 50;
+export const RENDER_MERMAID_MAX_CODE_BYTES = 64 * 1024;
+export const RENDER_MERMAID_MAX_TOTAL_CODE_BYTES = 1024 * 1024;
+export const RENDER_MERMAID_MAX_PNG_BYTES = 10 * MIB;
+export const RENDER_MERMAID_MAX_WIDTH = 2040;
+export const RENDER_MERMAID_MAX_HEIGHT = 3306;
+
+/**
+ * render-mermaid：Mermaid 转 PNG（路线图第 8 步 8.8b，#61 决定事项第 4 项、#70 第 8 步说明第 3 项）。Mermaid 只能由 mermaid.js 排版，
+ * **必须执行脚本**，因此是独立的专用沙箱：专用的 mermaid 镜像（只有 Chromium、按版本固定的 mermaid.min.js 与入口），与 render-html、
+ * export、agent 模板分开。执行的只有 mermaid.min.js 与平台的入口页面脚本（页面 CSP 只允许这两个脚本、不允许任何加载），
+ * AI 写的源码只作为数据传入（server/sandbox/render-mermaid/）。隔离参数与 parse 相同（断网、gVisor、只读根文件系统、非 root、
+ * 无能力），资源为起步值：内存 1 GiB（无 swap）、CPU 1 核，每段 30 秒（入口执行）、每批 5 分钟（命令墙钟）。
+ * 每次工具调用（一批图）一个沙箱、用完即毁，只属于一个任务。输入只有 request.json（源码合计 ≤ 1 MiB，JSON 转义后至多约 6 倍）；
+ * 取回只有 <id>.png（≤ 50 张、每张 ≤ 10 MiB）与 result.json，Mermaid 生成的 SVG 不交出沙箱。
+ */
+const RENDER_MERMAID_TEMPLATE: SandboxTemplate = Object.freeze({
+  name: 'render-mermaid',
+  image: 'mermaid' as const,
+  network: 'none' as const,
+  lifetimeMs: 8 * 60_000,
+  memoryBytes: 1 * GIB,
+  nanoCpus: 1_000_000_000,
+  pidsLimit: 256,
+  openFilesLimit: 1024,
+  tmpfs: Object.freeze({
+    '/tmp': { bytes: 256 * MIB, owner: 'root' as const },
+    '/work': { bytes: 8 * MIB, owner: 'sandbox' as const },
+    '/output': { bytes: 256 * MIB, owner: 'sandbox' as const },
+  }),
+  input: Object.freeze({
+    directory: '/work',
+    maxDepth: 1,
+    maxFiles: 1,
+    maxFileBytes: 7 * MIB,
+    maxTotalBytes: 7 * MIB,
+    extensions: new Set(['json']),
+  }),
+  output: Object.freeze({
+    directory: '/output',
+    maxDepth: 1,
+    maxFiles: RENDER_MERMAID_MAX_ITEMS + 1,
+    maxFileBytes: RENDER_MERMAID_MAX_PNG_BYTES,
+    maxTotalBytes: 256 * MIB,
+    extensions: new Set(['png', 'json']),
+  }),
+  commands: Object.freeze({
+    // 入口不接受参数：输入固定在 /work/request.json，输出固定在 /output。
+    render: Object.freeze({
+      argv: Object.freeze(['node', '/opt/render-mermaid/entry.mjs']),
+      maxArgs: 0,
+      argPattern: /^$/,
+      timeoutMs: 5 * 60_000,
+    }),
+  }),
+  transferTimeoutMs: 60_000,
+});
+
 export const SANDBOX_TEMPLATES: Readonly<Record<SandboxTemplateName, SandboxTemplate>> = Object.freeze({
   parse: PARSE_TEMPLATE,
   'export-preview': EXPORT_PREVIEW_TEMPLATE,
@@ -391,6 +455,7 @@ export const SANDBOX_TEMPLATES: Readonly<Record<SandboxTemplateName, SandboxTemp
   agent: AGENT_TEMPLATE,
   'agent-content': AGENT_CONTENT_TEMPLATE,
   'render-html': RENDER_HTML_TEMPLATE,
+  'render-mermaid': RENDER_MERMAID_TEMPLATE,
 });
 
 export function isSandboxTemplateName(value: unknown): value is SandboxTemplateName {

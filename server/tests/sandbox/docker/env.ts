@@ -6,6 +6,7 @@
 //   TEST_SANDBOX_CONTROL_IMAGE  对照镜像：同一 parse 镜像去掉 zhibiao-security.xcd（CI 中由完整镜像派生），宏安全测试的对照组用
 //   TEST_SANDBOX_EXPORT_IMAGE  export 镜像（server/sandbox/export/Dockerfile 构建的），未设置时跳过 export 的用例（路线图 7.1）
 //   TEST_SANDBOX_AGENT_IMAGE  agent 镜像（server/sandbox/agent/Dockerfile 构建的），未设置时跳过 agent 的用例（路线图 8.1）
+//   TEST_SANDBOX_MERMAID_IMAGE  render-mermaid 镜像（server/sandbox/render-mermaid/Dockerfile 构建的），未设置时跳过 render-mermaid 的用例（路线图 8.8b）
 //   TEST_DATABASE_ADMIN_URL  解析卡住时的任务测试（parseJob.test.ts）用的数据库，未设置时跳过，见 tests/db/harness.ts
 // 测试进程需要能在宿主网络上监听端口（控制组的沙箱经 Docker 网桥网关连接它），在容器中运行时用 --network host。
 import { request } from 'node:http';
@@ -22,6 +23,7 @@ export const sandboxEnv = Object.freeze({
   controlImage: process.env.TEST_SANDBOX_CONTROL_IMAGE ?? null,
   exportImage: process.env.TEST_SANDBOX_EXPORT_IMAGE ?? null,
   agentImage: process.env.TEST_SANDBOX_AGENT_IMAGE ?? null,
+  mermaidImage: process.env.TEST_SANDBOX_MERMAID_IMAGE ?? null,
 });
 
 export const docker = createDockerApi(sandboxEnv.socketPath);
