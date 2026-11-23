@@ -27,6 +27,10 @@
 # 8.8b 起 sandbox-runner 可以创建 render-mermaid 沙箱（Mermaid 转 PNG，专用镜像，docs/SERVER_DESIGN.md 第 7.37 节）。
 #   正文生成（8.10）接入之前不需要：SANDBOX_MERMAID_IMAGE 未配置时只是不能创建 render-mermaid 沙箱；
 #   镜像：docker build -t zhibiao-render-mermaid:dev server/sandbox/render-mermaid。
+# 8.8c 起 sandbox-runner 可以创建 render-layout 沙箱（docx-editor 分页测量，专用镜像，docs/SERVER_DESIGN.md 第 7.38 节）。
+#   正文生成的格式自检（8.10）接入之前不需要：SANDBOX_LAYOUT_IMAGE 未配置时只是不能创建 render-layout 沙箱；
+#   镜像：docker build -t zhibiao-render-layout:dev --build-context patches=client/patches \
+#           --build-context fonts=server/sandbox/export/fonts server/sandbox/render-layout。
 # 8.2b 起新增 agent-gw 服务（agent 沙箱访问平台的唯一入口，docs/SERVER_DESIGN.md 第 7.12 节）：不需要新的 secret 或角色，
 #   worker 加入 internal 网络 agent-relay 并在 3200 端口开 Agent 内部入口；sandbox-runner 的 SANDBOX_AGENT_GATEWAY 指向它的容器名。
 #   重新运行 init-dev-secrets.sh 生成 agent_relay_key（agent-gw → worker 这一跳的共享密钥，只有这两个服务拿到）。
@@ -279,7 +283,7 @@ services:
       SANDBOX_RUNTIME: ${SANDBOX_RUNTIME:-runc}
       SANDBOX_PARSE_IMAGE: zhibiao-parse:dev
       SANDBOX_EXPORT_IMAGE: zhibiao-export:dev
-      # render-mermaid（8.8b）的镜像 SANDBOX_MERMAID_IMAGE 随正文生成（8.10）配置。
+      # render-mermaid（8.8b）的镜像 SANDBOX_MERMAID_IMAGE、render-layout（8.8c）的镜像 SANDBOX_LAYOUT_IMAGE 随正文生成（8.10）配置。
       # agent 沙箱的专用网络只接入这个容器（8.1）；SANDBOX_AGENT_IMAGE 随 Agent 任务上线（8.6）配置。
       SANDBOX_AGENT_GATEWAY: bidtools-dev-agent-gw
       SANDBOX_RUNNER_TOKEN_FILE: /run/secrets/sandbox_runner_token

@@ -3,20 +3,22 @@
 // 可写目录、可执行的命令和取回规则。调用方（worker）只能选模板名，不能传镜像、挂载、网络或任意 Docker 参数。
 // 第 6 步建了 parse 模板（断网解析）；第 7 步加 export 模板（断网导出 Word，路线图 7.1），分样张与整本导出两档资源上限；
 // 第 8 步在同一套机制上加 agent 模板（8.1：镜像、资源与每个沙箱一个内部网络；任务令牌、业务工具 RPC 随 8.2、8.4），
-// 以及渲染模板 render-html（8.8a1，禁用页面脚本）与 render-mermaid（8.8b，专用镜像，只执行固定的 mermaid.js）。
+// 以及渲染模板 render-html（8.8a1，禁用页面脚本）、render-mermaid（8.8b，专用镜像，只执行固定的 mermaid.js）与
+// render-layout（8.8c，专用镜像，只执行固定的 docx-editor 分页测量）。
 
 const MIB = 1024 * 1024;
 const GIB = 1024 * MIB;
 
-export const SANDBOX_TEMPLATE_NAMES = ['parse', 'export-preview', 'export-document', 'export-feasibility', 'agent', 'agent-content', 'render-html', 'render-mermaid'] as const;
+export const SANDBOX_TEMPLATE_NAMES = ['parse', 'export-preview', 'export-document', 'export-feasibility', 'agent', 'agent-content', 'render-html', 'render-mermaid', 'render-layout'] as const;
 export type SandboxTemplateName = (typeof SANDBOX_TEMPLATE_NAMES)[number];
 
 /**
  * 镜像：export 模板用同一个 export 镜像（第 7 步决定事项第 2 项），两个 agent 模板用同一个 agent 镜像，只是资源上限不同；
  * render-html（8.8a1）复用 export 镜像中的 Chromium（第 8 步说明第 3 项），只是入口与模板不同；
- * render-mermaid（8.8b）必须执行脚本（mermaid.js），用专用的 mermaid 镜像，与禁用 JavaScript 的 export 镜像分开。
+ * render-mermaid（8.8b）必须执行脚本（mermaid.js），用专用的 mermaid 镜像，与禁用 JavaScript 的 export 镜像分开；
+ * render-layout（8.8c）必须执行脚本（docx-editor），同样用专用的 layout 镜像。
  */
-export const SANDBOX_IMAGE_NAMES = ['parse', 'export', 'agent', 'mermaid'] as const;
+export const SANDBOX_IMAGE_NAMES = ['parse', 'export', 'agent', 'mermaid', 'layout'] as const;
 export type SandboxImageName = (typeof SANDBOX_IMAGE_NAMES)[number];
 
 /** 沙箱内进程的用户与组（镜像中的 sandbox 用户），非 root。 */
@@ -447,6 +449,63 @@ const RENDER_MERMAID_TEMPLATE: SandboxTemplate = Object.freeze({
   transferTimeoutMs: 60_000,
 });
 
+/** render-layout 的上限（第 8 步说明第 3 项的起步值）：一个 docx 至多 100 MiB（与整本导出的输出上限一致），版式 JSON 至多 16 MiB。 */
+export const RENDER_LAYOUT_MAX_DOCX_BYTES = 100 * MIB;
+export const RENDER_LAYOUT_MAX_LAYOUT_BYTES = 16 * MIB;
+
+/**
+ * render-layout：docx-editor 分页测量（路线图第 8 步 8.8c，#61 决定事项第 4 项、#70 第 8 步说明第 3 项与决定事项第 6 项）。
+ * 格式自检要与用户在 docx-editor 中看到的分页一致，只能在浏览器中运行同一版本的 docx-editor（Canvas 字体测量），**必须执行脚本**，
+ * 因此是独立的专用沙箱：专用的 layout 镜像（只有 Chromium、字体与构建时打成一个文件的页面脚本——平台的入口页面 + 按版本固定、
+ * 打上 client/patches 补丁的 @docx-editor.dev/core），与 render-html、render-mermaid、export、agent 模板分开。页面 CSP 只允许这一个脚本、
+ * 只允许读取 docx 的固定地址，docx 只作为数据传入（server/sandbox/render-layout/）。隔离参数与 parse 相同（断网、gVisor、只读根文件系统、
+ * 非 root、无能力），资源为起步值：内存 2 GiB（无 swap）、CPU 1 核，命令墙钟 3 分钟。每次测量一个沙箱、用完即毁，只属于一个任务。
+ * 输入只有 document.docx（≤ 100 MiB）；取回只有 layout.json（版式 JSON，≤ 16 MiB），docx 的其余内容不交出沙箱。
+ */
+const RENDER_LAYOUT_TEMPLATE: SandboxTemplate = Object.freeze({
+  name: 'render-layout',
+  image: 'layout' as const,
+  network: 'none' as const,
+  // 命令墙钟 3 分钟 + 放入与取回各至多 2 分钟，再留出余量。
+  lifetimeMs: 10 * 60_000,
+  memoryBytes: 2 * GIB,
+  nanoCpus: 1_000_000_000,
+  pidsLimit: 256,
+  openFilesLimit: 1024,
+  tmpfs: Object.freeze({
+    '/tmp': { bytes: 256 * MIB, owner: 'root' as const },
+    // docx 100 MiB，留出余量；计入内存上限。
+    '/work': { bytes: 112 * MIB, owner: 'sandbox' as const },
+    '/output': { bytes: 24 * MIB, owner: 'sandbox' as const },
+  }),
+  input: Object.freeze({
+    directory: '/work',
+    maxDepth: 1,
+    maxFiles: 1,
+    maxFileBytes: RENDER_LAYOUT_MAX_DOCX_BYTES,
+    maxTotalBytes: RENDER_LAYOUT_MAX_DOCX_BYTES,
+    extensions: new Set(['docx']),
+  }),
+  output: Object.freeze({
+    directory: '/output',
+    maxDepth: 1,
+    maxFiles: 1,
+    maxFileBytes: RENDER_LAYOUT_MAX_LAYOUT_BYTES,
+    maxTotalBytes: RENDER_LAYOUT_MAX_LAYOUT_BYTES,
+    extensions: new Set(['json']),
+  }),
+  commands: Object.freeze({
+    // 入口不接受参数：输入固定在 /work/document.docx，输出固定在 /output/layout.json。
+    measure: Object.freeze({
+      argv: Object.freeze(['node', '/opt/render-layout/entry.mjs']),
+      maxArgs: 0,
+      argPattern: /^$/,
+      timeoutMs: 3 * 60_000,
+    }),
+  }),
+  transferTimeoutMs: 2 * 60_000,
+});
+
 export const SANDBOX_TEMPLATES: Readonly<Record<SandboxTemplateName, SandboxTemplate>> = Object.freeze({
   parse: PARSE_TEMPLATE,
   'export-preview': EXPORT_PREVIEW_TEMPLATE,
@@ -456,6 +515,7 @@ export const SANDBOX_TEMPLATES: Readonly<Record<SandboxTemplateName, SandboxTemp
   'agent-content': AGENT_CONTENT_TEMPLATE,
   'render-html': RENDER_HTML_TEMPLATE,
   'render-mermaid': RENDER_MERMAID_TEMPLATE,
+  'render-layout': RENDER_LAYOUT_TEMPLATE,
 });
 
 export function isSandboxTemplateName(value: unknown): value is SandboxTemplateName {

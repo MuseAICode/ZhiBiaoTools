@@ -164,9 +164,9 @@ export interface SandboxRunnerConfig {
   /**
    * 各镜像的引用；生产必须按摘要固定（name@sha256:...）。parse、export 必须配置（export 随样张接口上线，7.3e）；
    * agent（路线图 8.1）在 Agent 任务上线（8.6）之前可以不配置，未配置时为 null，不能创建 agent 模板的沙箱；
-   * mermaid（render-mermaid 模板，8.8b）在正文生成（8.10）接入之前同样可以不配置。
+   * mermaid（render-mermaid 模板，8.8b）与 layout（render-layout 模板，8.8c）在正文生成（8.10）接入之前同样可以不配置。
    */
-  images: { parse: string; export: string; agent: string | null; mermaid: string | null };
+  images: { parse: string; export: string; agent: string | null; mermaid: string | null; layout: string | null };
   /** agent-gw 的容器名（8.1，8.2 起部署）：每个 agent 沙箱的专用网络只接入它。未配置时为 null，不能创建 agent 模板的沙箱。 */
   agentGateway: string | null;
   /** 同时存在的沙箱数上限。 */
@@ -603,6 +603,7 @@ export function loadSandboxRunnerConfig(env: Env, options: LoadConfigOptions = {
       export: read('SANDBOX_EXPORT_IMAGE', imageSpec),
       agent: read('SANDBOX_AGENT_IMAGE', { ...imageSpec, default: null } as VarSpec<string | null>),
       mermaid: read('SANDBOX_MERMAID_IMAGE', { ...imageSpec, default: null } as VarSpec<string | null>),
+      layout: read('SANDBOX_LAYOUT_IMAGE', { ...imageSpec, default: null } as VarSpec<string | null>),
     }),
     agentGateway: read('SANDBOX_AGENT_GATEWAY', {
       default: null,
