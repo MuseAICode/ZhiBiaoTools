@@ -15,14 +15,15 @@
 //      去掉断网的沙箱中都不发出任何请求；对照组（去掉断网、去掉追加的锁定与 CSP、上下文不离线并放行外部请求，另关闭 Chromium 的本地网络
 //      访问检查）中测试服务器收到每一个样本的请求；只去掉 CSP 时 img 形状的请求会发出（CSP 是这一项的防线）；
 //   E. 超大与深度嵌套的图（64 KiB 的类图、3000 层嵌套的子图）：生产中止于每段 30 秒的时限，后面的段照常转图，宿主不受影响；对照组：不限时长时
-//      35 秒后仍未完成。内存：64 KiB 以内实测峰值约 0.9 GiB，1 GiB 的模板中先到时限；把内存上限降到 512 MiB 的变体中同一样本止于内存上限
-//      （render_failed，后面的段照常），对照组不限内存时峰值超过 512 MiB。超过 64 KiB 的源码在 worker 与入口都被拒绝。
+//      35 秒后仍未完成。内存：对照组不限内存时峰值约 0.9 GiB（runc）～1.2 GiB（gVisor），1 GiB 的模板中先到时限，运行期间宿主可用内存的下降
+//      不超过模板上限加开销；内存上限的强制执行由隔离套件证明。超过 64 KiB 的源码在 worker 与入口都被拒绝。
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { createServer, type Server } from 'node:http';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { renderMermaidImages, type MermaidImageResult, type RenderMermaidContext } from '../../../src/render/mermaidImages.ts';
 import type { SandboxRef } from '../../../src/sandbox/driver.ts';
+import { SANDBOX_TEMPLATES } from '../../../src/sandbox/templates.ts';
 import { sandboxEnv } from './env.ts';
 import { decodePng } from './exportFixtures.ts';
 import { bridgeGateway, createIsolationHarness } from './isolationSuite.ts';
@@ -291,8 +292,15 @@ describe.runIf(sandboxEnv.mermaidImage)('render-mermaid sandbox', () => {
 
     it('stop at the per-item time limit or the memory limit, and the next item still renders', { timeout: 300_000 }, async () => {
       const started = Date.now();
-      const results = await render([HUGE_CLASS, DEEP_SUBGRAPHS, FLOW]);
+      const before = hostMemAvailable();
+      let lowest = before;
+      const sampler = setInterval(() => {
+        lowest = Math.min(lowest, hostMemAvailable());
+      }, 200);
+      const results = await render([HUGE_CLASS, DEEP_SUBGRAPHS, FLOW]).finally(() => clearInterval(sampler));
       const elapsed = Date.now() - started;
+      // 宿主可用内存的下降不超过沙箱的内存上限加运行时开销（与隔离套件相同的口径）。
+      expect(before - lowest).toBeLessThan(SANDBOX_TEMPLATES['render-mermaid'].memoryBytes + 768 * MIB);
       console.info(JSON.stringify({ renderMermaidExhaustion: { results: results.map(sizeOf), ms: elapsed } }));
       for (const result of results.slice(0, 2)) expect(['render_timeout', 'render_failed']).toContain(result.status === 'failed' && result.error);
       expect(results[2]!.status).toBe('rendered');
@@ -310,26 +318,11 @@ describe.runIf(sandboxEnv.mermaidImage)('render-mermaid sandbox', () => {
       }
     });
 
-    // 64 KiB 以内的源码实测峰值约 0.9 GiB（不限内存时，按 cgroup 计数），在 1 GiB 的模板中先到的是 30 秒时限（上一个用例）。
-    // 内存上限这一道由下面两个用例证明：内存上限降到 512 MiB 的变体中，同一样本止于内存上限（远早于 30 秒）、沙箱与后面的段不受影响；
-    // 不限内存的对照组中，同一样本的峰值确实超过 512 MiB。
-    const REDUCED_MEMORY = 512 * MIB;
-
-    it('stop at the memory limit when the sample needs more memory than the sandbox has, and the next item still renders', { timeout: 300_000 }, async () => {
-      const reduced = harness.weakenedDriver((spec) => {
-        spec.HostConfig.Memory = REDUCED_MEMORY;
-        spec.HostConfig.MemorySwap = REDUCED_MEMORY;
-      });
-      const started = Date.now();
-      const results = await render([HUGE_CLASS, FLOW], reduced);
-      const elapsed = Date.now() - started;
-      console.info(JSON.stringify({ renderMermaidMemoryLimit: { results: results.map(sizeOf), ms: elapsed } }));
-      expect(results[0]).toEqual({ status: 'failed', error: 'render_failed' });
-      expect(results[1]!.status).toBe('rendered');
-      await harness.expectHostHealthy();
-    });
-
-    it('control: without the memory limit the huge class diagram uses more than the reduced limit', { timeout: 300_000 }, async () => {
+    // 内存：不限内存时同一样本的峰值 runc 下约 0.9 GiB、gVisor 下约 1.2 GiB（按 cgroup 计数，CI 实测，超过模板的 1 GiB），但在 1 GiB 的模板中
+    // 先到的是 30 秒时限（上一个用例同时断言宿主可用内存的下降不超过模板上限加运行时开销）。把内存上限降到 512 MiB 试过：渲染进程在内存紧张时
+    // 靠频繁回收撑着、越来越慢，仍是时限先到，“止于内存上限”不能稳定复现，所以不作为用例。内存上限本身的强制执行由 renderMermaidIsolation.test.ts
+    // 的隔离套件证明（超限的进程被结束、宿主内存不受影响，并有去掉上限的对照组）。
+    it('control: without the memory limit the huge class diagram uses most of the template memory or more', { timeout: 300_000 }, async () => {
       const weakened = harness.weakenedDriver((spec) => {
         spec.HostConfig.Memory = 0;
         spec.HostConfig.MemorySwap = 0;
@@ -338,10 +331,15 @@ describe.runIf(sandboxEnv.mermaidImage)('render-mermaid sandbox', () => {
       harness.track(ref, weakened);
       const control = await probeIn(ref, { samples: { 'huge-class': HUGE_CLASS }, timeoutMs: 150_000, measureMemory: true }, weakened);
       console.info(JSON.stringify({ renderMermaidMemoryControl: { peakMiB: Math.round(control['huge-class']!.peakBytes / MIB), timedOut: control['huge-class']!.timedOut } }));
-      expect(control['huge-class']!.peakBytes).toBeGreaterThan(REDUCED_MEMORY + 128 * MIB);
+      expect(control['huge-class']!.peakBytes).toBeGreaterThan(768 * MIB);
     });
   });
 });
+
+/** 宿主的可用内存（字节）：测试进程在宿主上，/proc/meminfo 是宿主的。 */
+function hostMemAvailable(): number {
+  return Number(/^MemAvailable:\s+(\d+) kB$/m.exec(readFileSync('/proc/meminfo', 'utf8'))![1]) * 1024;
+}
 
 function camel(name: string): string {
   return name.replace(/-([a-z])/g, (_match, letter: string) => letter.toUpperCase());
@@ -350,6 +348,8 @@ function camel(name: string): string {
 interface ProbeResult {
   ok: boolean;
   timedOut: boolean;
+  /** 渲染进程崩溃（例如被内存上限结束）。 */
+  crashed: boolean;
   message?: string;
   markers: string[];
   blocked: string[];
@@ -459,8 +459,14 @@ function probeScript(options: ProbeOptions): string {
         const rendered = await Promise.race([run.catch((error) => ({ ok: false, message: String(error && error.message) })), new Promise((resolve) => setTimeout(() => resolve('timeout'), timeoutMs))]);
         if (timer) clearInterval(timer);
         if (rendered === 'timeout') {
-          out[name] = { ok: false, timedOut: true, markers: [], blocked, cspViolations: [], fill: '', peakBytes, dom: {} };
+          out[name] = { ok: false, timedOut: true, crashed: false, markers: [], blocked, cspViolations: [], fill: '', peakBytes, dom: {} };
           await context.close();
+          continue;
+        }
+        // 渲染进程已崩溃（例如被内存上限结束）：记下崩溃，不再读页面。
+        if (rendered.ok !== true && (page.isClosed() || /crash|closed|Target/i.test(String(rendered.message)))) {
+          out[name] = { ok: false, timedOut: false, crashed: true, message: String(rendered.message).slice(0, 200), markers: [], blocked, cspViolations: [], fill: '', peakBytes, dom: {} };
+          await context.close().catch(() => {});
           continue;
         }
         // 先读渲染结果，再点击：生产中被清理成 about:blank 的链接（target 为 _self 时）会让页面离开，之后读不到这一页。
@@ -489,7 +495,7 @@ function probeScript(options: ProbeOptions): string {
         // 标记只能由执行了的脚本写在这一页的 body 上；页面已经离开（导航到了别的地址）时没有标记。
         const after = await page.evaluate(() => ({ markers: Object.keys(document.body?.dataset ?? {}).sort(), cspViolations: [...new Set(window.__violations ?? [])].sort() })).catch(() => ({ markers: [], cspViolations: [] }));
         const { violationsBefore, ...rest } = facts;
-        out[name] = { ok: rendered.ok === true, timedOut: false, message: rendered.message, blocked, peakBytes, ...rest, markers: after.markers, cspViolations: [...new Set([...violationsBefore, ...after.cspViolations])].sort(), url: page.url() };
+        out[name] = { ok: rendered.ok === true, timedOut: false, crashed: false, message: rendered.message, blocked, peakBytes, ...rest, markers: after.markers, cspViolations: [...new Set([...violationsBefore, ...after.cspViolations])].sort(), url: page.url() };
         await context.close();
       }
       await browser.close();

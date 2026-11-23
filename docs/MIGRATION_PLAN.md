@@ -3375,8 +3375,8 @@ CI 中用**脚本化的假模型**模拟“完全听从注入”的 Agent：读�
   | click 指向 `javascript:`（两种写法）、`call eval`、`call setTimeout` | 都不执行、没有 `javascript:` 地址 | loose 时 4 个都执行 |
   | 标签中的 `<img onerror>`、`<svg><animate onbegin>`、`<details ontoggle>`、`javascript:` 链接；打开 HTML 标签的指令 | 没有 foreignObject、HTML 元素、事件属性与脚本，都不执行，不发出请求 | 同样的 HTML 直接放进页面时 4 个都执行；只保留 Mermaid 默认锁定时，HTML 标签指令生效（生成 foreignObject 并请求其中的图片） |
   | 外部引用：`themeCSS` 的 `@import` / `url()`、`fontFamily` 中的 `url()`、HTML 标签中的 `<img>`、`img` 形状 | 生产入口在断网沙箱与去掉断网的沙箱中，测试服务器都收不到请求；生产页面中连路由都收不到请求，`img` 形状被 CSP 的 `img-src` 拦下 | 去掉断网、追加的锁定、CSP 与离线并放行外部请求（另关闭 Chromium 的本地网络访问检查）时，测试服务器收到 4 个样本的请求；只去掉 CSP 时 `img` 形状发出请求 |
-  | 64 KiB 的类图（约 7,000 个类）、3000 层嵌套的子图；超过 64 KiB 的源码 | 止于每段 30 秒（`render_timeout` / `render_failed`），后面的段照常转图，宿主正常；超限源码在 worker 与入口都被拒绝、输出为空 | 不限时长时 35 秒后两者都未完成 |
-  | 内存：同一类图 | 内存上限降到 512 MiB 的变体中止于内存上限（`render_failed`），后面的段照常 | 不限内存时峰值超过 512 MiB |
+  | 64 KiB 的类图（约 7,000 个类）、3000 层嵌套的子图；超过 64 KiB 的源码 | 止于每段 30 秒（`render_timeout` / `render_failed`），后面的段照常转图，运行期间宿主可用内存的下降不超过模板上限加开销，宿主正常；超限源码在 worker 与入口都被拒绝、输出为空 | 不限时长时 35 秒后两者都未完成 |
+  | 内存：同一类图 | 1 GiB 的模板中先到 30 秒时限（同上）；内存上限的强制执行由隔离套件证明（超限进程被结束、宿主内存不受影响） | 不限内存时峰值超过 768 MiB（runc 下约 0.9 GiB，gVisor 下 CI 实测 1235 MiB，超过 1 GiB 的模板上限） |
 
   另有：正常图表（流程图、时序图、甘特图、类图、状态图、饼图、思维导图、ER 图）都输出 PNG，过宽的图为 2040 像素宽、过高的图不超过 3306 像素高；语法错误只让该段失败（`diagram_invalid`，带 Mermaid 的说明）；取回的文件只有 PNG 与 `result.json`，其中没有 SVG 与图中的文字标记；镜像中的 `page.js` 与仓库逐字节相同、`mermaid.min.js` 是前端同一版本。`renderMermaidIsolation.test.ts` 对新模板跑与 parse / export 相同的隔离套件（断网、只读、非 root、资源上限、取回校验、沙箱间隔离，各有对照组），输入只收 `request.json`（套件新增 `inputName` / `streamingInput` 两个可选参数，其他模板不变）。单元测试：`tests/render/mermaidImages.test.ts`（请求校验、30 种不合法输出被拒绝、经假驱动的流程与错误代码、总是销毁沙箱）、`tests/sandbox/renderMermaidEntry.test.ts`（请求校验、说明的清理、CSP、锁定的设置、源码只作为参数、入口 / 镜像 / worker 的上限一致、启动参数与 export 镜像相同、lockfile 条目与前端 / export 镜像相同）、`tests/sandbox/templates.test.ts`。
 - **本地验证**：本机代理不允许访问 Debian 源与 Playwright 的下载地址，正式镜像只在 CI 中构建；本地用布局相同、基础镜像换成 Playwright 官方镜像（同一版本的 chromium-headless-shell）的测试镜像在 runc 下跑通了 `renderMermaid.test.ts` 的全部用例（gVisor 与隔离套件在 CI 中运行）。
@@ -3387,7 +3387,7 @@ CI 中用**脚本化的假模型**模拟“完全听从注入”的 Agent：读�
 2. Mermaid 默认锁定下，`%%{init: {"htmlLabels": true}}%%` 能打开 HTML 标签并加载其中的 `<img>`，`themeCSS` 与 `fontFamily` 指令能发出外部请求——本 PR 追加锁定后都不生效；
 3. `img` 形状（`A@{ img: "..." }`）在任何 Mermaid 设置下都会请求图片，只有 CSP（以及离线、路由中止、断网）能挡住；
 4. 标签中的 `<img onerror>` 在 strict 下会触发一次 CSP 报告：来自 DOMPurify 在惰性文档中的解析，去掉 CSP 时也不执行，不是可利用的漏洞；
-5. 64 KiB 以内找到的最重样本不限内存时峰值约 0.9 GiB（cgroup 计数），1 GiB 的模板中先到的是 30 秒时限；内存上限这一道用降到 512 MiB 的变体证明。
+5. 64 KiB 以内找到的最重样本不限内存时峰值 runc 下约 0.9 GiB、gVisor 下 1235 MiB（cgroup 计数，CI 实测），1 GiB 的模板中先到的是 30 秒时限。把内存上限降到 512 MiB 试过：渲染进程在内存紧张时靠频繁回收撑着、越来越慢，150 秒内仍未被结束，“止于内存上限”不能用 Mermaid 样本稳定复现，所以不作为用例；内存上限的强制执行由 render-mermaid 的隔离套件证明（#115 第一次 CI 中降内存的用例因此失败，已改）。
 
 **与桌面版 / 拆分计划的差异**（#115 说明）：
 
