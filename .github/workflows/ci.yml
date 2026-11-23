@@ -114,8 +114,9 @@ jobs:
     runs-on: ubuntu-latest
     # 6.5 起含 parse 沙箱镜像（LibreOffice）的构建和 gVisor 下的隔离测试；7.1 起另含 export 沙箱镜像（.NET 助手 + Chromium）
     # 的构建和两个 export 模板的同一套隔离测试；8.8b 起另含 render-mermaid 镜像的构建、同一套隔离测试与 Mermaid 注入样本
-    # （#114 时约 24 分钟，8.8b 预计增加 10～15 分钟，时限由 50 分钟改为 60 分钟）。
-    timeout-minutes: 60
+    # （#114 时约 24 分钟，8.8b 预计增加 10～15 分钟，时限由 50 分钟改为 60 分钟）；8.8c 起另含 render-layout 镜像的构建、同一套隔离测试与
+    # docx 样本（#115 时约 35 分钟，8.8c 预计增加约 10 分钟，时限由 60 分钟改为 75 分钟；沙箱测试拆成单独任务见路线图 8.8b 的登记）。
+    timeout-minutes: 75
 
     # 数据库集成测试（npm run test:db）用的 PostgreSQL，与 docker-compose.yml 使用同一镜像 digest。
     # 只在 CI 的一次性容器中使用，超级用户密码不是密钥。
@@ -277,6 +278,16 @@ jobs:
       - name: Build render-mermaid sandbox image
         run: docker build -t zhibiao-render-mermaid:ci sandbox/render-mermaid
 
+      # 8.8c：render-layout 沙箱镜像（Node 24 + chromium-headless-shell + 字体 + 构建时打成一个文件的 docx-editor 页面脚本 + 入口）。
+      # docx-editor 分页测量必须执行脚本，用专用镜像；依赖按 sandbox/render-layout/package-lock.json 在构建阶段安装（不执行安装脚本），
+      # 打上 client/patches 中的同一份补丁后由 esbuild 打出页面脚本，最终镜像只取 playwright-core、页面脚本与浏览器。
+      - name: Build render-layout sandbox image
+        run: |
+          docker build -t zhibiao-render-layout:ci \
+            --build-context patches=../client/patches \
+            --build-context fonts=sandbox/export/fonts \
+            sandbox/render-layout
+
       - name: Sandbox isolation, parse, export, agent and render tests (gVisor)
         run: npm run test:sandbox
         env:
@@ -287,6 +298,7 @@ jobs:
           TEST_SANDBOX_EXPORT_IMAGE: zhibiao-export:ci
           TEST_SANDBOX_AGENT_IMAGE: zhibiao-agent:ci
           TEST_SANDBOX_MERMAID_IMAGE: zhibiao-render-mermaid:ci
+          TEST_SANDBOX_LAYOUT_IMAGE: zhibiao-render-layout:ci
           # 解析卡住时的解析任务测试（tests/sandbox/docker/parseJob.test.ts）与假模型端到端（agentEndToEnd.test.ts，8.6e1）
           # 在真实沙箱和数据库上执行任务；端到端另经真实队列（与前面步骤同一个 Valkey）驱动执行者。
           TEST_DATABASE_ADMIN_URL: postgres://postgres:postgres@127.0.0.1:5432/postgres
@@ -321,6 +333,11 @@ jobs:
       # render-mermaid 沙箱镜像中的依赖（mermaid 与 playwright-core，8.8b），版本分别取自 client/package-lock.json 与 export 沙箱。
       - name: npm audit render-mermaid sandbox dependencies (fail on high)
         working-directory: server/sandbox/render-mermaid
+        run: npm audit --audit-level=high
+
+      # render-layout 沙箱镜像构建阶段的依赖（@docx-editor.dev/core 与 esbuild，8.8c，版本取自 client/package-lock.json）与 playwright-core（与 export 沙箱相同）。
+      - name: npm audit render-layout sandbox dependencies (fail on high)
+        working-directory: server/sandbox/render-layout
         run: npm audit --audit-level=high
 
       # export 沙箱镜像中可研导出的依赖（docx、cheerio、markdown-it 等，7.5b），版本取自 client/package-lock.json。

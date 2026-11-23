@@ -238,6 +238,60 @@ describe('render-mermaid template (8.8b)', () => {
   });
 });
 
+describe('render-layout template (8.8c)', () => {
+  const MIB = 1024 ** 2;
+  const GIB = 1024 ** 3;
+  const template = SANDBOX_TEMPLATES['render-layout'];
+  const image = 'zhibiao-render-layout@sha256:' + 'b'.repeat(64);
+
+  it('uses its own image, separate from every other template, with the isolation of the parse template', () => {
+    // 必须执行脚本（docx-editor）：专用镜像，不与禁用 JavaScript 的 export 镜像或 render-mermaid 的镜像共用。
+    expect(template.image).toBe('layout');
+    for (const other of ['render-html', 'render-mermaid', 'export-preview', 'export-document', 'export-feasibility', 'agent', 'agent-content', 'parse'] as const) {
+      expect(SANDBOX_TEMPLATES[other].image, other).not.toBe('layout');
+    }
+    expect(template.network).toBe('none');
+    const spec = buildContainerSpec(template, { image, runtime: 'runsc', jobId: JOB_ID, expiresAt: new Date(1_000) });
+    const host = spec.HostConfig;
+    const parseHost = buildContainerSpec(parse, { image, runtime: 'runsc', jobId: JOB_ID, expiresAt: new Date(1_000) }).HostConfig;
+    for (const key of ['NetworkMode', 'ReadonlyRootfs', 'Privileged', 'CapDrop', 'SecurityOpt', 'Init', 'IpcMode', 'Runtime', 'Binds', 'Mounts', 'Devices', 'Dns', 'ExtraHosts', 'LogConfig', 'RestartPolicy']) {
+      expect(host[key], key).toEqual(parseHost[key]);
+    }
+    expect(host.NetworkMode).toBe('none');
+    expect(host.CapDrop).toEqual(['ALL']);
+    expect(spec.User).toBe('10001:10001');
+    expect(spec.Env).toEqual(['HOME=/tmp', 'LANG=C.UTF-8', 'TMPDIR=/tmp']);
+    expect(Object.keys(host.Tmpfs as object).sort()).toEqual(['/output', '/tmp', '/work']);
+    for (const options of Object.values(host.Tmpfs as Record<string, string>)) expect(options).toMatch(/^rw,noexec,nosuid,nodev,size=\d+,/);
+    expect(host.MemorySwap).toBe(host.Memory);
+  });
+
+  it('applies the starting limits of the step 8 notes, item 3 (2 GiB memory, 1 CPU, 3 minutes)', () => {
+    expect(template.memoryBytes).toBe(2 * GIB);
+    expect(template.nanoCpus).toBe(1e9);
+    expect(template.pidsLimit).toBe(256);
+    expect(template.commands.measure!.timeoutMs).toBe(3 * 60_000);
+    expect(template.lifetimeMs).toBeGreaterThan(template.commands.measure!.timeoutMs + 2 * template.transferTimeoutMs);
+  });
+
+  it('accepts only one docx of at most 100 MiB, and returns only one layout JSON of at most 16 MiB', () => {
+    expect(template.input).toMatchObject({ directory: '/work', maxDepth: 1, maxFiles: 1, maxFileBytes: 100 * MIB, maxTotalBytes: 100 * MIB });
+    expect([...template.input.extensions!]).toEqual(['docx']);
+    expect(template.tmpfs['/work']!.bytes).toBeGreaterThan(template.input.maxTotalBytes);
+    expect(template.output).toMatchObject({ directory: '/output', maxDepth: 1, maxFiles: 1, maxFileBytes: 16 * MIB, maxTotalBytes: 16 * MIB });
+    expect([...template.output.extensions!]).toEqual(['json']);
+    expect(template.tmpfs['/output']!.bytes).toBeGreaterThanOrEqual(template.output.maxTotalBytes);
+    // /work 与 /output 计入内存上限，留给浏览器的至少 1.5 GiB。
+    expect(template.memoryBytes - template.tmpfs['/work']!.bytes - template.tmpfs['/output']!.bytes).toBeGreaterThan(1.5 * GIB);
+  });
+
+  it('only runs the measure entry without arguments', () => {
+    expect(resolveCommand(template, 'measure', [])).toEqual({ argv: ['node', '/opt/render-layout/entry.mjs'], timeoutMs: 180_000, maxInputBytes: 0 });
+    expect(resolveCommand(template, 'measure', ['x'])).toBeNull();
+    expect(resolveCommand(template, 'render', [])).toBeNull();
+  });
+});
+
 describe('agent templates (8.1)', () => {
   const MIB = 1024 ** 2;
   const GIB = 1024 ** 3;
@@ -352,7 +406,7 @@ describe('loadSandboxRunnerConfig', () => {
   });
 
   it('requires the export image since the preview endpoint ships (7.3e), and pins it in production', () => {
-    expect(loadSandboxRunnerConfig(base).images).toEqual({ parse: 'zhibiao-parse:dev', export: 'zhibiao-export:dev', agent: null, mermaid: null });
+    expect(loadSandboxRunnerConfig(base).images).toEqual({ parse: 'zhibiao-parse:dev', export: 'zhibiao-export:dev', agent: null, mermaid: null, layout: null });
     expect(() => loadSandboxRunnerConfig({ ...base, SANDBOX_EXPORT_IMAGE: undefined })).toThrow(/SANDBOX_EXPORT_IMAGE/);
     expect(() => loadSandboxRunnerConfig({ ...base, SANDBOX_EXPORT_IMAGE: '' })).toThrow(/SANDBOX_EXPORT_IMAGE/);
     const production = { ...base, NODE_ENV: 'production', SANDBOX_RUNTIME: 'runsc', SANDBOX_PARSE_IMAGE: pinned };
@@ -382,6 +436,16 @@ describe('loadSandboxRunnerConfig', () => {
     const mermaidPinned = `registry.example.com/zhibiao-render-mermaid@sha256:${'9'.repeat(64)}`;
     expect(loadSandboxRunnerConfig({ ...production, SANDBOX_MERMAID_IMAGE: mermaidPinned }).images.mermaid).toBe(mermaidPinned);
     expect(() => loadSandboxRunnerConfig({ ...production, SANDBOX_RUNTIME: 'runc', SANDBOX_MERMAID_IMAGE: mermaidPinned })).toThrow(/SANDBOX_RUNTIME/);
+  });
+
+  it('makes the render-layout image optional until content generation uses it (8.8c), and pins it in production', () => {
+    expect(loadSandboxRunnerConfig({ ...base, SANDBOX_LAYOUT_IMAGE: 'zhibiao-render-layout:dev' }).images.layout).toBe('zhibiao-render-layout:dev');
+    const production = { ...base, NODE_ENV: 'production', SANDBOX_RUNTIME: 'runsc', SANDBOX_PARSE_IMAGE: pinned, SANDBOX_EXPORT_IMAGE: exportPinned };
+    expect(loadSandboxRunnerConfig(production).images.layout).toBeNull();
+    expect(() => loadSandboxRunnerConfig({ ...production, SANDBOX_LAYOUT_IMAGE: 'zhibiao-render-layout:latest' })).toThrow(/SANDBOX_LAYOUT_IMAGE/);
+    const layoutPinned = `registry.example.com/zhibiao-render-layout@sha256:${'8'.repeat(64)}`;
+    expect(loadSandboxRunnerConfig({ ...production, SANDBOX_LAYOUT_IMAGE: layoutPinned }).images.layout).toBe(layoutPinned);
+    expect(() => loadSandboxRunnerConfig({ ...production, SANDBOX_RUNTIME: 'runc', SANDBOX_LAYOUT_IMAGE: layoutPinned })).toThrow(/SANDBOX_RUNTIME/);
   });
 
   it('rejects runc in production also when the agent image and gateway are configured (8.1)', () => {
