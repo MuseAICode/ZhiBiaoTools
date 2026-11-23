@@ -120,8 +120,10 @@ describe.runIf(sandboxEnv.layoutImage)('render-layout sandbox', () => {
     expect(exec.stdout.trim()).toBe('{"ok":true}');
     expect(files.map((file) => file.path)).toEqual(['layout.json']);
     const text = files[0]!.data.toString('utf8');
-    for (const dropped of ['rFonts', 'fontFamily', '宋体', 'Times New Roman', 'attributes', 'unrelated_bookmark', '其他书签"']) expect(text, dropped).not.toContain(dropped);
+    // 书签名不交出（只有 app_layout_<n>）；书签所在段落的正文（“其他书签”）照常作为文字保留。
+    for (const dropped of ['rFonts', 'fontFamily', '宋体', 'Times New Roman', 'attributes', 'unrelated_bookmark']) expect(text, dropped).not.toContain(dropped);
     expect(text).toContain('第一章 总体方案');
+    expect(text).toContain('{"text":"其他书签"}');
   });
 
   describe('A. documents docx-editor refuses to open', () => {

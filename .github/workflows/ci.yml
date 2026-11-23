@@ -115,8 +115,8 @@ jobs:
     # 6.5 起含 parse 沙箱镜像（LibreOffice）的构建和 gVisor 下的隔离测试；7.1 起另含 export 沙箱镜像（.NET 助手 + Chromium）
     # 的构建和两个 export 模板的同一套隔离测试；8.8b 起另含 render-mermaid 镜像的构建、同一套隔离测试与 Mermaid 注入样本
     # （#114 时约 24 分钟，8.8b 预计增加 10～15 分钟，时限由 50 分钟改为 60 分钟）；8.8c 起另含 render-layout 镜像的构建、同一套隔离测试与
-    # docx 样本（#115 时约 35 分钟，8.8c 预计增加约 10 分钟，时限由 60 分钟改为 75 分钟；沙箱测试拆成单独任务见路线图 8.8b 的登记）。
-    timeout-minutes: 75
+    # docx 样本（#116 实测整个任务约 37 分钟，其中沙箱测试约 27 分钟，时限仍为 60 分钟；沙箱测试拆成单独任务见路线图 8.8b 的登记）。
+    timeout-minutes: 60
 
     # 数据库集成测试（npm run test:db）用的 PostgreSQL，与 docker-compose.yml 使用同一镜像 digest。
     # 只在 CI 的一次性容器中使用，超级用户密码不是密钥。
