@@ -3403,7 +3403,10 @@ CI 中用**脚本化的假模型**模拟“完全听从注入”的 Agent：读�
 
 - **8.10**：业务工具 `render-mermaid-image` 与配图生成中的 Mermaid 项经 `renderMermaidImages` 转图；`diagram_invalid` 的说明按不可信纯文本交给 Agent 修改源码，其余失败代码按桌面版的 `needs_repair` / 失败处理；PNG 存为产物前照常按上传图片的规则校验；部署时配置 `SANDBOX_MERMAID_IMAGE`（生产按摘要固定）；用真实任务核对每段 30 秒、每批 5 分钟与 1 GiB 是否够用，以及关闭 HTML 标签后的排版效果；
 - **8.14**：Mermaid 的注入样本并入样本集收尾；
-- **桌面版**是否同样关闭 HTML 标签、追加锁定的设置（本 PR 不改桌面版，按 CLAUDE.md 一个 PR 只做一件事），由用户决定。
+- **桌面版**不改（用户 #115 决定）：桌面版保持默认的 HTML 标签与 Mermaid 默认锁定，是否同样关闭 HTML 标签、追加锁定的设置保持登记，以后需要时单独提出；
+- **CI 耗时**（用户 #115 登记）：#115 起 server 任务约 35 分钟（其中 gVisor 下的沙箱测试约 26 分钟，render-mermaid 的两个测试文件约 11 分钟），时限 60 分钟；后续考虑把沙箱测试（镜像构建与 `npm run test:sandbox`）拆成单独的、与单元 / 数据库测试并行的 CI 任务。拆分时同步 CLAUDE.md 中自动合并要求的检查项名称与第 9 步的分支保护设置。
+
+**用户决定**（#115 合并时）：上面“与桌面版 / 拆分计划的差异”第 1～7 项全部接受；内存类样本的证明方式接受（render-mermaid 在 1 GiB 的模板中先到 30 秒时限，内存上限的强制执行由共享隔离套件 `renderMermaidIsolation.test.ts` 的 “kills a process that exceeds the memory limit without exhausting host memory” 及其对照组 “control: without the memory limit the same allocation succeeds” 证明，#115 的 CI 中均在 gVisor 下通过）；桌面版不改。
 
 #### 8.7f2 与真实模型红队测试推迟到第 9 步（#112）
 
