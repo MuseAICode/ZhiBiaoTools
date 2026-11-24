@@ -8,7 +8,8 @@
 // - img 的 data-app-asset-ref 必须是本项目已完成、未被替换的图片产物 id（小写 uuid，与整本导出的配图引用相同）；没有引用的
 //   img（配图尚未生成）照常保存，是否完整由调用方的提交校验决定。
 //
-// 不再被任何小节引用的配图产物标为已被替换（迁移 0023），由清理任务删除，不留在组织存储配额中。
+// 不再被任何小节引用的配图产物标为已被替换（迁移 0023），由清理任务删除，不留在组织存储配额中。正文本身按 UTF-8 字节计入组织
+// 存储配额（迁移 0046 的触发器，写入或改大时超出配额 413 STORAGE_QUOTA_EXCEEDED）；单节至多 2 MiB。
 import { sql, type Kysely, type Transaction } from 'kysely';
 import { TECHNICAL_PLAN_SECTION_HTML_MAX_BYTES, TECHNICAL_PLAN_SECTION_IMAGES_MAX } from '../db/migrations/0046_technical_plan_section_bodies.ts';
 import type { Database } from '../db/schema.ts';
@@ -152,12 +153,29 @@ export async function writeSectionBody(
   const previous = (
     await trx.selectFrom('technical_plan_section_images').select('artifact_id').where('project_id', '=', projectId).where('node_id', '=', nodeId).execute()
   ).map((row) => row.artifact_id);
-  const body = await trx
-    .insertInto('technical_plan_section_bodies')
-    .values({ org_id: orgId, project_id: projectId, node_id: nodeId, html: prepared.html })
-    .onConflict((oc) => oc.columns(['project_id', 'node_id']).doUpdateSet({ html: prepared.html }))
-    .returning(['updated_at'])
-    .executeTakeFirstOrThrow();
+  // 先改后插（不用 ON CONFLICT）：INSERT ... ON CONFLICT 在冲突前就按新写入触发配额检查，改写已有正文时会按全部大小而不是增量比较。
+  const quotaExceeded = (error: unknown): never => {
+    // 正文计入组织存储配额（迁移 0046 的触发器）：写入或改大时超出配额。
+    if ((error as { code?: unknown } | null)?.code === 'TP047') {
+      throw new AppError(413, 'STORAGE_QUOTA_EXCEEDED', '组织存储空间已满，请删除不需要的文件后再试', { cause: error });
+    }
+    throw error;
+  };
+  const body =
+    (await trx
+      .updateTable('technical_plan_section_bodies')
+      .set({ html: prepared.html })
+      .where('project_id', '=', projectId)
+      .where('node_id', '=', nodeId)
+      .returning(['updated_at'])
+      .executeTakeFirst()
+      .catch(quotaExceeded)) ??
+    (await trx
+      .insertInto('technical_plan_section_bodies')
+      .values({ org_id: orgId, project_id: projectId, node_id: nodeId, html: prepared.html })
+      .returning(['updated_at'])
+      .executeTakeFirstOrThrow()
+      .catch(quotaExceeded));
   const next = new Set(prepared.imageArtifactIds);
   const removed = previous.filter((id) => !next.has(id));
   const added = prepared.imageArtifactIds.filter((id) => !previous.includes(id));

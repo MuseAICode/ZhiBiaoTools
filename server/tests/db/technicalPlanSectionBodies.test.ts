@@ -11,9 +11,11 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { buildApp } from '../../src/app.ts';
 import { DEFAULT_AUTH_RATE_LIMITS, type AuthRateLimitSettings } from '../../src/auth/rateLimit.ts';
 import { createDatabase, type DatabaseHandle } from '../../src/db/database.ts';
-import { TECHNICAL_PLAN_SECTION_BODY_TABLES } from '../../src/db/migrations/0046_technical_plan_section_bodies.ts';
+import { ORG_STORAGE_QUOTA_BYTES } from '../../src/db/migrations/0006_files.ts';
+import { MAX_ARTIFACT_BYTES } from '../../src/db/migrations/0008_artifacts.ts';
+import { TECHNICAL_PLAN_SECTION_BODY_TABLES, TECHNICAL_PLAN_SECTION_HTML_MAX_BYTES } from '../../src/db/migrations/0046_technical_plan_section_bodies.ts';
 import { migrateToLatest } from '../../src/db/migrator.ts';
-import { APP_ROLE } from '../../src/db/roles.ts';
+import { APP_ROLE, STORAGE_ROLE } from '../../src/db/roles.ts';
 import type { Database } from '../../src/db/schema.ts';
 import { withTenant, type TenantContext } from '../../src/db/tenant.ts';
 import type { ObjectStore } from '../../src/files/objectStore.ts';
@@ -197,6 +199,8 @@ describe('隔离模板', () => {
       insert: bodyIn,
       update: { html: bodyOf('改过的正文') },
       onProjectDelete: 'cascade',
+      // 配额函数的属主（迁移 0046：正文计入组织存储配额），只有只读策略。
+      definerRoles: [STORAGE_ROLE],
     },
     env,
   );
@@ -373,6 +377,145 @@ describe('saveSectionBody / getSectionBody', () => {
     });
     await superuser.updateTable('projects').set({ deleted_at: null, deleted_by: null }).where('id', '=', projectId).execute();
     expect(await visible()).toEqual({ bodies: 1, images: 1 });
+  });
+});
+
+// ---- 组织存储配额与大小上限 ----
+
+describe('组织存储配额与大小上限', () => {
+  const usage = async (member: Member) =>
+    BigInt((await withTenant(appDb, member.context, (trx) => sql<{ n: string }>`SELECT files_org_usage_bytes(${member.orgId}::uuid) AS n`.execute(trx))).rows[0]!.n);
+  const htmlBytes = (html: string) => BigInt(Buffer.byteLength(html, 'utf8'));
+
+  /** 用超级用户登记若干 100 MiB 的产物，把组织用量填到只剩 free 字节。 */
+  async function fillQuota(member: Member, projectId: string, free: bigint) {
+    let remaining = ORG_STORAGE_QUOTA_BYTES - (await usage(member)) - free;
+    const rows = [];
+    while (remaining > 0n) {
+      const size = remaining > BigInt(MAX_ARTIFACT_BYTES) ? BigInt(MAX_ARTIFACT_BYTES) : remaining;
+      rows.push({
+        org_id: member.orgId, project_id: projectId, kind: 'image', name: 'image-001.png', mime: 'image/png', status: 'ready',
+        size_bytes: size.toString(), sha256: Buffer.alloc(32), completed_at: new Date(), created_by: member.userId,
+      });
+      remaining -= size;
+    }
+    await superuser.insertInto('artifacts').values(rows).execute();
+    expect(await usage(member)).toBe(ORG_STORAGE_QUOTA_BYTES - free);
+  }
+
+  it('正文按 UTF-8 字节计入组织配额：替换按新大小，清空后不再计入；项目软删除后恢复期内照常计入，超过恢复期不再计入', async () => {
+    const { member, projectId, nodes } = await newPlan();
+    const before = await usage(member);
+    const first = await saveSectionBody(appDb, member.context, projectId, nodes[1]!, bodyOf('正文'.repeat(100)));
+    expect(await usage(member)).toBe(before + htmlBytes(first.html));
+    const second = await saveSectionBody(appDb, member.context, projectId, nodes[2]!, bodyOf('第二节'));
+    const replaced = await saveSectionBody(appDb, member.context, projectId, nodes[1]!, bodyOf('短'));
+    expect(await usage(member)).toBe(before + htmlBytes(replaced.html) + htmlBytes(second.html));
+    // 其他组织的正文不计入本组织。
+    const other = await newPlan();
+    await saveSectionBody(appDb, other.member.context, other.projectId, other.nodes[1]!, bodyOf('其他组织'));
+    expect(await usage(member)).toBe(before + htmlBytes(replaced.html) + htmlBytes(second.html));
+
+    await superuser.updateTable('projects').set({ deleted_at: new Date(Date.now() - 6 * 24 * 3600_000), deleted_by: member.userId }).where('id', '=', projectId).execute();
+    expect(await usage(member)).toBe(before + htmlBytes(replaced.html) + htmlBytes(second.html));
+    await superuser.updateTable('projects').set({ deleted_at: null, deleted_by: null }).where('id', '=', projectId).execute();
+    await resetContentGeneration(appDb, member.context, projectId);
+    expect(await usage(member)).toBe(before);
+
+    const expired = await newPlan(member);
+    const body = await saveSectionBody(appDb, member.context, expired.projectId, expired.nodes[1]!, bodyOf('过期项目'));
+    expect(await usage(member)).toBe(before + htmlBytes(body.html));
+    await superuser.updateTable('projects').set({ deleted_at: new Date(Date.now() - 8 * 24 * 3600_000), deleted_by: member.userId }).where('id', '=', expired.projectId).execute();
+    expect(await usage(member)).toBe(before);
+  });
+
+  it('超出配额时写入或改大被拒绝（413 STORAGE_QUOTA_EXCEEDED），原正文不变；不变或改小照常写入', async () => {
+    const { member, projectId, nodes } = await newPlan();
+    const original = await saveSectionBody(appDb, member.context, projectId, nodes[1]!, bodyOf('字'.repeat(100)));
+    await fillQuota(member, await newProject(member), 200n);
+    const grow = (extra: number) => bodyOf('字'.repeat(100) + 'x'.repeat(extra));
+    // 改大 300 字节（超过剩余的 200 字节）与新写一节都被拒绝。
+    await expect(saveSectionBody(appDb, member.context, projectId, nodes[1]!, grow(300))).rejects.toMatchObject({ statusCode: 413, code: 'STORAGE_QUOTA_EXCEEDED' });
+    await expect(saveSectionBody(appDb, member.context, projectId, nodes[2]!, bodyOf('字'.repeat(100)))).rejects.toMatchObject({ statusCode: 413 });
+    expect((await getSectionBody(appDb, member.context, projectId, nodes[1]!))?.html).toBe(original.html);
+    // 绕过 Store 直接写库同样被触发器拒绝（TP047）。
+    await expect(
+      withTenant(appDb, member.context, (trx) => trx.updateTable('technical_plan_section_bodies').set({ html: grow(300) }).where('node_id', '=', nodes[1]!).execute()),
+    ).rejects.toMatchObject({ code: 'TP047' });
+    // 改大 100 字节（在剩余额度内）、不变、改小都可以。
+    const grown = await saveSectionBody(appDb, member.context, projectId, nodes[1]!, grow(100));
+    expect(await usage(member)).toBe(ORG_STORAGE_QUOTA_BYTES - 200n + htmlBytes(grown.html) - htmlBytes(original.html));
+    await saveSectionBody(appDb, member.context, projectId, nodes[1]!, grow(100));
+    await saveSectionBody(appDb, member.context, projectId, nodes[1]!, bodyOf('短'));
+  });
+
+  it('单节至多 2 MiB：Store 拒绝（422），绕过 Store 直接写库被 CHECK 拒绝；恰好 2 MiB 的正文可以写入', async () => {
+    const { member, projectId, nodes } = await newPlan();
+    const paragraph = (index: number, chars: number) => block(`<p id="p${index}">${'x'.repeat(chars)}</p>`);
+    const big = Array.from({ length: 2200 }, (_, index) => paragraph(index, 1000)).join('\n');
+    await expect(saveSectionBody(appDb, member.context, projectId, nodes[1]!, big)).rejects.toMatchObject({ statusCode: 422, issues: ['正文超过 2 MiB'] });
+    await expect(
+      withTenant(appDb, member.context, (trx) =>
+        trx.insertInto('technical_plan_section_bodies').values({ org_id: member.orgId, project_id: projectId, node_id: nodes[1]!, html: 'x'.repeat(TECHNICAL_PLAN_SECTION_HTML_MAX_BYTES + 1) }).execute(),
+      ),
+    ).rejects.toThrow(/check constraint/);
+    // 规范化后恰好 2 MiB。
+    const head = bodyOf('开头');
+    const fill = TECHNICAL_PLAN_SECTION_HTML_MAX_BYTES - Buffer.byteLength(head, 'utf8') - Buffer.byteLength(`\n\n${block('<p id="tail"></p>')}`, 'utf8');
+    const exact = `${head}\n\n${block(`<p id="tail">${'y'.repeat(fill)}</p>`)}`;
+    const saved = await saveSectionBody(appDb, member.context, projectId, nodes[1]!, exact);
+    expect(Buffer.byteLength(saved.html, 'utf8')).toBe(TECHNICAL_PLAN_SECTION_HTML_MAX_BYTES);
+  });
+
+  it('bidtools_storage 对正文表只有配额要用的 3 列 SELECT，对配图表没有任何权限；配额函数的属主仍是它', async () => {
+    const columns = await sql<{ column_name: string; privilege_type: string }>`
+      SELECT column_name, privilege_type FROM information_schema.column_privileges
+      WHERE table_name = 'technical_plan_section_bodies' AND grantee = ${STORAGE_ROLE} ORDER BY column_name`.execute(superuser);
+    expect(columns.rows).toEqual([
+      { column_name: 'html', privilege_type: 'SELECT' },
+      { column_name: 'org_id', privilege_type: 'SELECT' },
+      { column_name: 'project_id', privilege_type: 'SELECT' },
+    ]);
+    for (const table of ['technical_plan_section_bodies', 'technical_plan_section_images']) {
+      for (const privilege of ['SELECT', 'INSERT', 'UPDATE', 'DELETE']) {
+        const { rows } = await sql<{ ok: boolean }>`SELECT has_table_privilege(${STORAGE_ROLE}, ${`public.${table}`}, ${privilege}) AS ok`.execute(superuser);
+        expect(rows[0]!.ok, `${table} ${privilege}`).toBe(false);
+      }
+    }
+    const owner = await sql<{ owner: string; secdef: boolean }>`
+      SELECT pg_get_userbyid(proowner) AS owner, prosecdef AS secdef FROM pg_proc WHERE proname = 'files_org_usage_bytes'`.execute(superuser);
+    expect(owner.rows).toEqual([{ owner: STORAGE_ROLE, secdef: true }]);
+  });
+});
+
+// ---- 项目删除 ----
+
+describe('项目删除', () => {
+  it('超过恢复期：清理任务先删配图产物（配图行随之删除），再物理删除项目，正文随项目删除；恢复期内的项目不动', async () => {
+    const { member, projectId, nodes } = await newPlan();
+    const image = await newImage(member, projectId);
+    await saveSectionBody(appDb, member.context, projectId, nodes[1]!, bodyOf('过期', [image]));
+    const kept = await newPlan(member);
+    const keptImage = await newImage(member, kept.projectId);
+    await saveSectionBody(appDb, member.context, kept.projectId, kept.nodes[1]!, bodyOf('恢复期内', [keptImage]));
+    await superuser.updateTable('projects').set({ deleted_at: new Date(Date.now() - 8 * 24 * 3600_000), deleted_by: member.userId }).where('id', '=', projectId).execute();
+    await superuser.updateTable('projects').set({ deleted_at: new Date(Date.now() - 6 * 24 * 3600_000), deleted_by: member.userId }).where('id', '=', kept.projectId).execute();
+
+    // 配图引用的产物挡住项目的物理删除：先删产物（清理任务删完对象后调用）。
+    const purge = async () => (await sql<{ n: number }>`SELECT cleanup_delete_projects(1000) AS n`.execute(appDb)).rows[0]!.n;
+    await purge();
+    expect(await counts(projectId)).toEqual({ bodies: 1, images: 1 });
+    const candidates = (await sql<{ id: string }>`SELECT id FROM cleanup_artifact_candidates(1000)`.execute(appDb)).rows.map((row) => row.id);
+    expect(candidates).toContain(image);
+    expect(candidates).not.toContain(keptImage);
+    expect((await sql<{ ok: boolean }>`SELECT cleanup_delete_artifact(${image}::uuid) AS ok`.execute(appDb)).rows[0]!.ok).toBe(true);
+    expect(await counts(projectId)).toEqual({ bodies: 1, images: 0 });
+    expect(await purge()).toBeGreaterThanOrEqual(1);
+    expect(await superuser.selectFrom('projects').select('id').where('id', '=', projectId).executeTakeFirst()).toBeUndefined();
+    expect(await counts(projectId)).toEqual({ bodies: 0, images: 0 });
+    // 恢复期内的项目、正文与配图都在。
+    expect(await counts(kept.projectId)).toEqual({ bodies: 1, images: 1 });
+    expect((await sql<{ ok: boolean }>`SELECT cleanup_delete_artifact(${keptImage}::uuid) AS ok`.execute(appDb)).rows[0]!.ok).toBe(false);
   });
 });
 

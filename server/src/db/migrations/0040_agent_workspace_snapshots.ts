@@ -84,8 +84,9 @@ const OBJECT_TABLES = [...OBJECT_TABLES_0024, { segment: 'agent-workspaces', tab
 /**
  * 配额函数（属主 bidtools_storage）。withSnapshots 为 false 时与 0008 的定义相同（回滚时恢复）。
  * 只统计当前上下文的组织（AR004）；文件、产物与快照合计，所属项目或来源文件超过恢复期的不再计入。
+ * extra 是之后的迁移追加的计入项（0046 的 AI 小节正文），以 `+ (...)::bigint` 的形式接在最后；本迁移不传。
  */
-function usageFunction(withSnapshots: boolean): RawBuilder<unknown> {
+export function usageFunction(withSnapshots: boolean, extra: RawBuilder<unknown> = sql``): RawBuilder<unknown> {
   const snapshots = withSnapshots
     ? sql`
               + (SELECT coalesce(sum(s.size_bytes), 0) FROM public.agent_workspace_snapshots s
@@ -115,7 +116,7 @@ function usageFunction(withSnapshots: boolean): RawBuilder<unknown> {
                  LEFT JOIN public.projects p ON p.id = a.project_id
                  WHERE a.org_id = p_org_id AND a.status = 'ready'
                    AND (p.deleted_at IS NULL OR p.deleted_at > now() - ${PROJECT_WINDOW})
-                   AND (a.source_file_id IS NULL OR a.source_file_id IN (SELECT id FROM counted_files)))::bigint${snapshots}
+                   AND (a.source_file_id IS NULL OR a.source_file_id IN (SELECT id FROM counted_files)))::bigint${snapshots}${extra}
             INTO v_used;
             RETURN v_used;
           END

@@ -169,6 +169,7 @@ const APP_FUNCTIONS = [
   'org_settings_guard',
   'projects_guard',
   'technical_plan_export_requests_guard',
+  'technical_plan_section_bodies_quota',
   'technical_plan_section_images_guard',
   'template_preview_requests_guard',
 ];

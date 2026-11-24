@@ -13,15 +13,35 @@
 // - 正文只能挂在同一项目的目录节点上（复合外键 → technical_plan_outline_nodes，节点删除时随之删除）；配图行挂在同一节的
 //   正文上（复合外键 → technical_plan_section_bodies，正文删除时随之删除）；
 // - 配图只能引用同一组织、同一项目中已完成、未被替换的 image 产物（触发器在写入时检查，TP046；产物删除时配图行随之删除）。
-//   不再被引用的配图由 Store 标为已被替换（迁移 0023），再由清理任务删除。
+//   不再被引用的配图由 Store 标为已被替换（迁移 0023），再由清理任务删除；
+// - 配额：正文按 UTF-8 字节计入组织存储配额——0040 的配额函数 files_org_usage_bytes 加上本表（所属项目在恢复期内的照常计入，
+//   超过恢复期的不再计入），函数的属主 bidtools_storage 多了本表 3 列的列级 SELECT 与一条只读策略；写入或改大正文时由触发器
+//   检查配额（TP047，与文件、产物、快照共用同一个 advisory lock），改小或不变的照常写入；
+// - 项目删除：软删除后两张表的行不可见（RLS）；超过恢复期由清理任务物理删除项目时，正文随项目级联删除，配图行随产物删除
+//   （清理任务先删产物，配图引用的产物挡住项目的物理删除）。
+//
+// 修改了已有的定义者角色 bidtools_storage 的配额函数与授权；已有表的 RLS 策略不改。
 import { sql, type Kysely, type RawBuilder } from 'kysely';
-import { APP_ROLE } from '../roles.ts';
+import { APP_ROLE, STORAGE_ROLE } from '../roles.ts';
+import { ORG_STORAGE_QUOTA_BYTES } from './0006_files.ts';
+import { PROJECT_RESTORE_DAYS } from './0007_projects.ts';
+import { usageFunction } from './0040_agent_workspace_snapshots.ts';
 
 async function run(db: Kysely<unknown>, statements: readonly RawBuilder<unknown>[]): Promise<void> {
   for (const statement of statements) await statement.execute(db);
 }
 
 const app = sql.id(APP_ROLE);
+const storage = sql.id(STORAGE_ROLE);
+const QUOTA = sql.lit(ORG_STORAGE_QUOTA_BYTES.toString());
+const PROJECT_WINDOW = sql.raw(`interval '${PROJECT_RESTORE_DAYS} days'`);
+
+/** 配额函数追加的计入项：本组织各 AI 小节正文的 UTF-8 字节数，所属项目超过恢复期的不再计入（与产物、快照相同）。 */
+const SECTION_BODIES_USAGE = sql`
+              + (SELECT coalesce(sum(octet_length(b.html)), 0) FROM public.technical_plan_section_bodies b
+                 JOIN public.projects p ON p.id = b.project_id
+                 WHERE b.org_id = p_org_id
+                   AND (p.deleted_at IS NULL OR p.deleted_at > now() - ${PROJECT_WINDOW}))::bigint`;
 
 /** 一节正文（规范化后的受限 HTML，UTF-8 字节）的大小上限。 */
 export const TECHNICAL_PLAN_SECTION_HTML_MAX_BYTES = 2 * 1024 * 1024;
@@ -77,6 +97,38 @@ export async function up(db: Kysely<unknown>): Promise<void> {
     sql`GRANT INSERT (org_id, project_id, node_id, html) ON technical_plan_section_bodies TO ${app}`,
     sql`GRANT UPDATE (html) ON technical_plan_section_bodies TO ${app}`,
 
+    // 配额：写入或改大正文时检查（普通函数，配额统计经属主为 bidtools_storage 的配额函数，只统计当前组织）。
+    // BEFORE 触发器求值时旧行仍在统计中，所以按“用量 − 旧大小 + 新大小”比较。
+    sql`CREATE FUNCTION technical_plan_section_bodies_quota() RETURNS trigger
+          LANGUAGE plpgsql
+          AS $$
+          DECLARE
+            v_old bigint := CASE WHEN TG_OP = 'UPDATE' THEN octet_length(OLD.html) ELSE 0 END;
+            v_new bigint := octet_length(NEW.html);
+          BEGIN
+            IF v_new > v_old THEN
+              -- 与 files_guard、artifacts_guard、agent_workspace_snapshots_guard 同一个锁，持锁到事务结束。
+              PERFORM pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtextextended('files_quota:' || NEW.org_id::text, 0));
+              IF public.files_org_usage_bytes(NEW.org_id) - v_old + v_new > ${QUOTA}::bigint THEN
+                RAISE EXCEPTION 'storage quota exceeded' USING ERRCODE = 'TP047';
+              END IF;
+            END IF;
+            RETURN NEW;
+          END
+          $$`,
+    sql`REVOKE ALL ON FUNCTION technical_plan_section_bodies_quota() FROM PUBLIC`,
+    sql`CREATE TRIGGER technical_plan_section_bodies_quota BEFORE INSERT OR UPDATE OF html ON technical_plan_section_bodies
+          FOR EACH ROW EXECUTE FUNCTION technical_plan_section_bodies_quota()`,
+
+    // 配额函数：bidtools_storage 只读本表配额要用的列；以它的身份重建（CREATE OR REPLACE 需要 schema 的 CREATE 权限，用完收回）。
+    sql`GRANT SELECT (org_id, project_id, html) ON technical_plan_section_bodies TO ${storage}`,
+    sql`CREATE POLICY technical_plan_section_bodies_storage_usage ON technical_plan_section_bodies FOR SELECT TO ${storage} USING (true)`,
+    sql`GRANT CREATE ON SCHEMA public TO ${storage}`,
+    sql`SET ROLE ${storage}`,
+    usageFunction(true, SECTION_BODIES_USAGE),
+    sql`RESET ROLE`,
+    sql`REVOKE CREATE ON SCHEMA public FROM ${storage}`,
+
     // ---- 正文引用的配图 ----
 
     sql`CREATE TABLE technical_plan_section_images (
@@ -119,7 +171,14 @@ export async function up(db: Kysely<unknown>): Promise<void> {
 
 export async function down(db: Kysely<unknown>): Promise<void> {
   await run(db, [
+    // 先恢复 0040 的配额函数（不再引用本表），再删表与函数。表上的策略与列级授权随表删除。
+    sql`GRANT CREATE ON SCHEMA public TO ${storage}`,
+    sql`SET ROLE ${storage}`,
+    usageFunction(true),
+    sql`RESET ROLE`,
+    sql`REVOKE CREATE ON SCHEMA public FROM ${storage}`,
     ...[...TECHNICAL_PLAN_SECTION_BODY_TABLES].reverse().map((table) => sql`DROP TABLE ${sql.id(table)}`),
     sql`DROP FUNCTION technical_plan_section_images_guard()`,
+    sql`DROP FUNCTION technical_plan_section_bodies_quota()`,
   ]);
 }
