@@ -76,6 +76,7 @@ import { isFinalStatus, latestProjectJobs, type JobRecord } from '../jobs/store.
 import { jobBody, type JobBody } from '../jobs/view.ts';
 import { storageDisabled } from '../knowledgeBase/content.ts';
 import { findContinuableAgentSessionIn, type AgentSessionTarget } from '../agent/continuation.ts';
+import { discardSectionBodies, prepareSectionBody, readSectionBody, writeSectionBody, type SectionBody } from './sectionBodies.ts';
 import {
   combineBidSectionDetections,
   parseBidSectionDetectionSummary,
@@ -891,6 +892,7 @@ const RESET_OUTLINE_META: MetaPatch = {
  */
 async function clearContentGeneration(trx: Trx, context: TenantContext, projectId: string): Promise<void> {
   await trx.updateTable('technical_plan_outline_nodes').set({ content: '' }).where('project_id', '=', projectId).where('content', '<>', '').execute();
+  await discardSectionBodies(trx, projectId, null);
   await trx.deleteFrom('technical_plan_content_sections').where('project_id', '=', projectId).execute();
   await trx.deleteFrom('technical_plan_content_plans').where('project_id', '=', projectId).execute();
   await writeMeta(trx, context, projectId, { content_generation_runtime: null });
@@ -898,6 +900,7 @@ async function clearContentGeneration(trx: Trx, context: TenantContext, projectI
 
 /** 删除目录（含各节正文；正文生成状态与编排随节点级联删除）和全局事实。 */
 async function deleteOutlineAndFacts(trx: Trx, projectId: string): Promise<void> {
+  await discardSectionBodies(trx, projectId, null);
   await trx.deleteFrom('technical_plan_outline_nodes').where('project_id', '=', projectId).execute();
   await trx.deleteFrom('technical_plan_global_fact_groups').where('project_id', '=', projectId).execute();
 }
@@ -1401,6 +1404,11 @@ function parseOutline(outlineData: unknown): { rows: ReturnType<typeof flattenOu
  * 新目录中的节点删除（子节点随之级联删除；仍在新目录中的子节点已先移到新的父节点下）。content 是每个节点最终的正文。
  */
 async function writeOutlineNodes(trx: Trx, context: TenantContext, projectId: string, rows: (OutlineNodeRow & { branch?: boolean })[]): Promise<void> {
+  // 写入后不再是 ai-generate 叶子（含不在新目录中）的节点，AI 正文先删除并替换不再引用的配图，再由节点的级联删除其余行。
+  const parents = new Set(rows.map((row) => row.parent_node_id));
+  const aiLeaves = new Set(rows.filter((row) => row.content_mode === 'ai-generate' && !parents.has(row.node_id)).map((row) => row.node_id));
+  const bodies = await trx.selectFrom('technical_plan_section_bodies').select('node_id').where('project_id', '=', projectId).execute();
+  await discardSectionBodies(trx, projectId, bodies.map((row) => row.node_id).filter((id) => !aiLeaves.has(id)));
   const values = rows.map(({ branch: _branch, ...row }) => ({
     org_id: context.orgId,
     project_id: projectId,
@@ -1503,6 +1511,7 @@ export async function saveOutline(db: Kysely<Database>, context: TenantContext, 
       }),
     );
     const invalidated = [...affected].filter((id) => UUID.test(id));
+    await discardSectionBodies(trx, projectId, clearAll ? null : invalidated);
     for (const table of ['technical_plan_content_sections', 'technical_plan_content_plans'] as const) {
       if (!clearAll && invalidated.length === 0) continue;
       let removal = trx.deleteFrom(table).where('project_id', '=', projectId);
@@ -1552,6 +1561,7 @@ export async function saveGeneratedOutline(db: Kysely<Database>, context: Tenant
       projectId,
       rows.map((row) => ({ ...row, content: '' })),
     );
+    await discardSectionBodies(trx, projectId, null);
     await trx.deleteFrom('technical_plan_content_sections').where('project_id', '=', projectId).execute();
     await trx.deleteFrom('technical_plan_content_plans').where('project_id', '=', projectId).execute();
     await writeMeta(trx, context, projectId, {
@@ -2073,6 +2083,27 @@ export async function saveContentGenerationItem(
 }
 
 /**
+ * 写入一节 AI 正文（给第 8 步的正文生成任务用，取代桌面版工作区中的 正文/<节点 id>.html，8.10a）：经服务端受限 HTML
+ * 白名单规范化后整体替换（sectionBodies.ts）。不符合规范时抛 SectionBodyRejectedError（422，带问题清单），节点不在目录中
+ * 时 404，不是 ai-generate 叶子时 409；节点 id 不是 uuid 是调用方的程序错误，抛 TypeError。
+ */
+export async function saveSectionBody(db: Kysely<Database>, context: TenantContext, projectId: string, nodeId: string, html: string): Promise<SectionBody> {
+  const id = uuid(nodeId, '节点 id');
+  const prepared = prepareSectionBody(html);
+  return withTenant(db, context, async (trx) => {
+    await lockProject(trx, projectId);
+    return writeSectionBody(trx, context.orgId, projectId, id, prepared);
+  });
+}
+
+/** 读取一节 AI 正文；节点 id 不合法或没有正文时返回 null。 */
+export async function getSectionBody(db: Kysely<Database>, context: TenantContext, projectId: string, nodeId: string): Promise<SectionBody | null> {
+  const id = nodeId.trim().toLowerCase();
+  if (!UUID.test(id)) return null;
+  return withTenant(db, context, (trx) => readSectionBody(trx, projectId, id));
+}
+
+/**
  * 整体写入正文生成的运行进度（给第 8 步的正文生成任务用，取代桌面版 updateTechnicalPlan 的 contentGenerationRuntime），
  * null 清除。不是对象或过大是调用方的程序错误，抛 TypeError。
  */
@@ -2254,6 +2285,7 @@ export async function saveOutlineAdjustmentResult(
       projectId,
       rows.map((row) => ({ ...row, content: '' })),
     );
+    await discardSectionBodies(trx, projectId, null);
     await trx.deleteFrom('technical_plan_content_sections').where('project_id', '=', projectId).execute();
     await trx.deleteFrom('technical_plan_content_plans').where('project_id', '=', projectId).execute();
     await writeMeta(trx, context, projectId, {
@@ -2348,6 +2380,7 @@ export async function saveOutlineGenerationResult(
       projectId,
       rows.map((row) => ({ ...row, content: '' })),
     );
+    await discardSectionBodies(trx, projectId, null);
     await trx.deleteFrom('technical_plan_content_sections').where('project_id', '=', projectId).execute();
     await trx.deleteFrom('technical_plan_content_plans').where('project_id', '=', projectId).execute();
     await trx.deleteFrom('technical_plan_global_fact_groups').where('project_id', '=', projectId).execute();

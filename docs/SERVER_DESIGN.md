@@ -919,6 +919,16 @@ Agent 生成的 Mermaid 源码在专用的 `render-mermaid` 沙箱中转成 PNG�
 - **worker 一侧**（`renderWordLayout`）：校验输入（ZIP 签名、≤ 100 MiB）→ `createSandboxWithRetry`（`RENDER_LAYOUT_SANDBOX_BUSY` / `RENDER_LAYOUT_UNAVAILABLE`）→ copyIn 只放 `document.docx` → `exec measure` → copyOut → 按不可信输入校验（`parseWordLayout`）：只有 `layout.json`、UTF-8 的 JSON；每一层的字段不多不少，坐标为有限数且绝对值 ≤ 10⁶、宽高非负，页序号连续、正文区非空，标识与样式名非空、≤ 512 个字符、合法 UTF-16、无控制字符，行文字 ≤ 4,096 个字符、合法 UTF-16，大纲级别 0～9，绘图只能是空对象（每行 ≤ 1,000 个），书签名只能是 `app_layout_<n>`，页数 ≤ 10,000、每页块数 ≤ 10,000、节点总数 ≤ 2,000,000、表格嵌套 < 16 层。错误映射为 `RENDER_LAYOUT_REQUEST_INVALID` / `RENDER_LAYOUT_DOCUMENT_INVALID` / `RENDER_LAYOUT_TIMEOUT` / `RENDER_LAYOUT_OUTPUT_REJECTED` / `RENDER_LAYOUT_FAILED`，不采用沙箱输出的文字；沙箱在 finally 中销毁。版式 JSON 中的文字是 docx 的正文，只作为数据返回（8.10 用来计字数与截取前文，按不可信纯文本处理）。
 - **样本**（`tests/sandbox/docker/renderLayout.test.ts`，gVisor）：docx-editor 拒绝打开的文档、版式超过 16 MiB 的文档、外部引用（外部图片、超链接、`INCLUDEPICTURE` 域、altChunk 中的 HTML 与脚本、正文中的 HTML 文字，对照组证明网络路径可用而 docx-editor 不加载）、时限，见路线图 8.8c。
 
+### 7.39 实现（路线图 8.10a）：AI 小节正文的存储
+
+桌面版的 AI 小节正文在正文 Agent 工作区中（`正文/<节点 id>.html`，引用工作区中的配图文件），整本导出与小节预览直接读工作区。Web 版按 #70 决定事项第 5 项的 C（业务结果写数据库与产物）与 #61 决定事项第 6 项（#118 合并时按此更新），正文写数据库、配图是图片产物，按产物 id 引用，两者都计入组织存储配额；工作区快照只用于续跑。
+
+- **表**（迁移 0046，两张项目级表，照 `exampleProjectTable` 模板）：`technical_plan_section_bodies`（每个 AI 小节一行，规范化后的受限 HTML，UTF-8 至多 2 MiB；挂在同一项目的目录节点上，节点删除时随之删除）与 `technical_plan_section_images`（正文引用的配图产物，挂在同一节的正文上；没有 UPDATE 授权）。RLS 与 0020 相同：只看得到本组织、所属项目未删除且是技术方案项目的行。配图行写入时由触发器核对产物是同一组织、同一项目中已完成、未被替换的 `image` 产物（TP046，SECURITY INVOKER，产物在应用角色的 RLS 下查找）；产物删除时配图行随之删除，所以配图引用的产物挡住项目的物理删除（与文档引用原件相同，清理任务先删产物）。
+- **入库**（`src/technicalPlan/sectionBodies.ts`，Store 的 `saveSectionBody`）：正文一律经服务端受限 HTML 白名单 `parseRestrictedHtml`（与前端同一套规则）。有 error 级问题时整节拒绝（422 `TECHNICAL_PLAN_SECTION_BODY_INVALID`，带逐条问题清单、不含正文原文，由正文生成任务交回 Agent 修改），不保存任何部分；warning 级的清洗（不在白名单中的行内标签只保留文字，如 `<a>`、`<span>`；不在白名单中的属性删除，如 `href`、`src`、`style`、事件属性）照常进行；**只保存规范化的结果**（由解析树重新序列化），调用方的原文不保存。`img` 的 `data-app-asset-ref` 必须是产物 id（小写 uuid，与整本导出的配图引用相同），且在数据库中核对是本项目已完成、未被替换的图片产物；没有引用的 `img`（配图尚未生成）照常保存。一节至多引用 200 张配图。节点必须是本项目目录中的 `ai-generate` 叶子（否则 404 / 409）。
+- **配额、大小与项目删除**：单节规范化后至多 2 MiB。正文按 UTF-8 字节计入组织存储配额：配额函数 `files_org_usage_bytes`（属主 `bidtools_storage`，多了本表 `org_id` / `project_id` / `html` 的列级 SELECT 与只读策略）加上本表，所属项目在恢复期内照常计入、超过恢复期不再计入；写入或改大时触发器按“用量 − 旧大小 + 新大小”检查（与文件、产物、快照共用同一个 advisory lock），超出时 413 `STORAGE_QUOTA_EXCEEDED`（TP047），改小或不变照常写入。项目软删除后两张表的行不可见；超过恢复期由清理任务先删配图产物（配图行随之删除），再物理删除项目，正文随项目级联删除。
+- **配图的回收**：整体替换时本节不再引用、本项目其他小节也没有引用的配图标为已被替换（迁移 0023），由清理任务删除，不长期占用组织存储配额。正文的所有清空入口——重置正文阶段、保存全局事实、目录 `replace` / `delete` / `add-*`（受影响的节点、不在新目录中的节点、不再是 `ai-generate` 叶子的节点）、目录生成与调整的结果、下游清空与清空技术方案——都先删除正文并回收配图，再删除目录节点（节点的级联删除不会替换产物）。
+- **读取**：`GET /api/projects/:projectId/technical-plan/chapters/:nodeId/body` 以 JSON 返回规范化的正文与配图产物 id（配图经 `GET /api/artifacts/:id/content` 按附件读取）；没有正文时 404。正文只由正文生成任务写入（8.10c 起），没有写接口。
+
 ## 8. 部署架构
 
 ### 8.0 部署位置（已决定，第 9 节第 13、14 项）

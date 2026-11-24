@@ -666,7 +666,7 @@ describe('数据库的守卫', () => {
       .values({ org_id: ctx.orgId, project_id: projectId, task_kind: KIND, created_by: member.userId }).execute())).rejects.toThrow(/row-level security/);
   });
 
-  it('bidtools_storage 对计费账本、余额、价格表、用量记录、平台凭据、平台模型没有任何权限与策略；全部授权只有 4 张表的列级 SELECT', async () => {
+  it('bidtools_storage 对计费账本、余额、价格表、用量记录、平台凭据、平台模型没有任何权限与策略；全部授权只有 5 张表的列级 SELECT（0046 加上 AI 小节正文）', async () => {
     const billing = ['billing_ledger', 'org_balances', 'model_prices', 'usage_records', 'provider_credentials', 'platform_models'];
     for (const table of billing) {
       for (const privilege of ['SELECT', 'INSERT', 'UPDATE', 'DELETE', 'TRUNCATE', 'REFERENCES', 'TRIGGER']) {
@@ -683,6 +683,7 @@ describe('数据库的守卫', () => {
     expect(policies.rows).toEqual([
       { tablename: 'agent_workspace_snapshots', cmd: 'SELECT' }, { tablename: 'artifacts', cmd: 'SELECT' },
       { tablename: 'files', cmd: 'SELECT' }, { tablename: 'projects', cmd: 'SELECT' },
+      { tablename: 'technical_plan_section_bodies', cmd: 'SELECT' },
     ]);
     const { rows: tables } = await sql<{ relname: string; privileges: string[] }>`
       SELECT c.relname,
@@ -691,7 +692,7 @@ describe('数据库的守卫', () => {
       FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
       WHERE n.nspname = 'public' AND c.relkind IN ('r', 'p', 'v', 'm', 'S') ORDER BY c.relname`.execute(superuser);
     const granted = tables.filter((row) => row.privileges.length > 0);
-    expect(granted.map((row) => row.relname)).toEqual(['agent_workspace_snapshots', 'artifacts', 'files', 'projects']);
+    expect(granted.map((row) => row.relname)).toEqual(['agent_workspace_snapshots', 'artifacts', 'files', 'projects', 'technical_plan_section_bodies']);
     for (const row of granted) expect(row.privileges, row.relname).toEqual(['column SELECT']);
   });
 

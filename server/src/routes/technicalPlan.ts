@@ -20,6 +20,7 @@
 // PUT    /api/projects/:projectId/technical-plan/outline                            保存目录（reason 协议，见 Store）
 // PUT    /api/projects/:projectId/technical-plan/global-facts                       保存全局事实（同时清空正文阶段）
 // PUT    /api/projects/:projectId/technical-plan/chapters/:nodeId                   手工保存一节正文
+// GET    /api/projects/:projectId/technical-plan/chapters/:nodeId/body              读取一节 AI 正文（规范化的受限 HTML 与配图产物 id，8.10a）
 // DELETE /api/projects/:projectId/technical-plan/content-generation                 重置正文阶段（保留目录、全局事实和生成配置）
 // DELETE /api/projects/:projectId/technical-plan                                    清空（招标文件与原方案进回收站）
 // POST   /api/projects/:projectId/technical-plan/bid-section-extraction             开始多标段识别（入队 bid-section-extraction）
@@ -109,6 +110,7 @@ import {
   removeTenderFile,
   resetContentGeneration,
   saveBidAnalysisConfigReporting,
+  getSectionBody,
   saveChapterContent,
   saveContentGenerationOptions,
   saveGenerationConfigReporting,
@@ -545,6 +547,13 @@ export async function registerTechnicalPlanRoutes(app: FastifyInstance, deps: Te
     { schema: { params: CHAPTER_PARAMS, body: CHAPTER_SCHEMA }, bodyLimit: CHAPTER_BODY_LIMIT },
     async (request) => saveChapterContent(db, tenantOf(request), await project(request), request.params.nodeId, request.body.content),
   );
+
+  // AI 正文只经正文生成任务写入（8.10c 起），这里只读；配图经 GET /api/artifacts/:id/content 按附件读取。以 JSON 返回，不作为页面渲染。
+  app.get<ChapterParams>('/:projectId/technical-plan/chapters/:nodeId/body', { schema: { params: CHAPTER_PARAMS } }, async (request) => {
+    const body = await getSectionBody(db, tenantOf(request), await project(request), request.params.nodeId);
+    if (!body) throw new AppError(404, 'TECHNICAL_PLAN_SECTION_BODY_NOT_FOUND', '该小节还没有 AI 正文');
+    return { nodeId: body.nodeId, html: body.html, imageArtifactIds: body.imageArtifactIds, updatedAt: body.updatedAt.toISOString() };
+  });
 
   app.delete<ProjectParams>('/:projectId/technical-plan/content-generation', { schema: { params: PROJECT_ID_PARAMS } }, async (request) =>
     resetContentGeneration(db, tenantOf(request), await project(request)),
