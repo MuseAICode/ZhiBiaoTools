@@ -64,16 +64,22 @@ const { createTechnicalPlanJobs, CONTENT_GENERATION_JOB_TYPE } = await import('.
 const { CONTENT_PLANNING_JSON_SCHEMA, validateContentPlanningOutput } = await import('../../src/technicalPlan/contentPlanning.ts');
 
 // 桌面版依赖 client/ 的 ajv、cheerio 等（CI 的 server 任务不安装 client/ 的依赖）：ajv 换成 server/ 中同一版本（8.20.0）的，只在基础编排之后
-// 的阶段用到的 cheerio、electron、image-size、mime-types 换成空模块，其余模块用桌面版原文件。
+// 的阶段用到的 cheerio、docx、electron、image-size、mime-types 换成桩（任意属性与调用都返回桩本身，模块加载时读取的常量不报错），
+// 其余模块用桌面版原文件。
 const require = createRequire(import.meta.url);
-const STUBBED = new Set(['cheerio', 'electron', 'image-size', 'mime-types']);
+const STUBBED = new Set(['cheerio', 'docx', 'electron', 'image-size', 'mime-types']);
+const stub: unknown = new Proxy(function stubbed() {}, {
+  get: (_target, key) => (key === Symbol.toPrimitive ? () => '' : stub),
+  apply: () => stub,
+  construct: () => stub as object,
+});
 function loadDesktop(path: string): any {
   const Module = require('node:module') as { _load: (request: string, parent: unknown, isMain: boolean) => unknown };
   const original = Module._load;
   const ajv = require('ajv') as unknown;
   Module._load = function load(request: string, parent: unknown, isMain: boolean) {
     if (request === 'ajv') return ajv;
-    if (STUBBED.has(request)) return {};
+    if (STUBBED.has(request)) return stub;
     return original.call(this, request, parent, isMain);
   };
   try {
