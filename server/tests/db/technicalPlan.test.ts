@@ -918,6 +918,7 @@ describe('Store', () => {
       contentGenerationPlans: {},
       contentGenerationRuntime: null,
       contentGenerationTask: null,
+      contentGenerationRetryable: false,
     });
     expect(await adminCounts(projectId)).toEqual(zeroCounts());
   });

@@ -49,7 +49,7 @@ import type { Database } from '../../src/db/schema.ts';
 import type { TenantContext } from '../../src/db/tenant.ts';
 import type { ObjectStore } from '../../src/files/objectStore.ts';
 import { DOCUMENT_MAX_BYTES, ORG_STORAGE_QUOTA_BYTES } from '../../src/files/policy.ts';
-import { createJobTypeRegistry, type JobContext, type JobTypeDefinition } from '../../src/jobs/definitions.ts';
+import { createJobTypeRegistry, JobError, type JobContext, type JobTypeDefinition } from '../../src/jobs/definitions.ts';
 import { createJobDispatcher, type JobDispatcher } from '../../src/jobs/queue.ts';
 import { createJobRunner, type JobRunner } from '../../src/jobs/runner.ts';
 import { enqueueJob } from '../../src/jobs/service.ts';
@@ -289,6 +289,8 @@ let steps: Step[] = [];
 /** 续用类测试任务（test-agent-continue）首次执行时接着的现场：按 continuation 查找（8.7b）。 */
 const CONTINUE_TYPES = ['test-agent-keep', 'test-agent-continue'];
 let continueLookup: ((context: JobContext<Record<string, never>>) => Promise<AgentRunState | undefined>) | null = null;
+/** 失败后重试（8.10b2）：open 时给出的 retainStages（undefined 时不给出）。 */
+let retainStages: boolean | undefined;
 let executions = 0;
 const seenAgent: boolean[] = [];
 
@@ -308,7 +310,8 @@ function agentType(type: string, extra: Partial<JobTypeDefinition<Record<string,
       executions += 1;
       if (!step) return;
       const continueFrom = continueLookup && type === 'test-agent-continue' && !context.agent?.resuming ? await continueLookup(context) : undefined;
-      await withAgentRun(context.agent, (run) => step(run, context), continueFrom ? { continueFrom } : undefined);
+      const openOptions = { ...(continueFrom ? { continueFrom } : {}), ...(retainStages !== undefined ? { retainStages } : {}) };
+      await withAgentRun(context.agent, (run) => step(run, context), Object.keys(openOptions).length ? openOptions : undefined);
     },
     ...extra,
   };
@@ -328,6 +331,7 @@ beforeEach(() => {
   executions = 0;
   seenAgent.length = 0;
   continueLookup = null;
+  retainStages = undefined;
 });
 
 async function startRunner() {
@@ -1209,7 +1213,7 @@ describe('跨任务续用（8.7b）', () => {
     expect(snapshot).not.toBeNull();
     expect((generated.row.checkpoint as { agent: AgentRunState }).agent.snapshot).toBe(snapshot!.id);
     const source = await findContinuableAgentSession(appDb, member.context, target(generated.projectId));
-    expect(source).toEqual({ jobId: generated.job.id, state: (generated.row.checkpoint as { agent: AgentRunState }).agent });
+    expect(source).toEqual({ jobId: generated.job.id, state: (generated.row.checkpoint as { agent: AgentRunState }).agent, task: { step: 'generated' } });
 
     continueLookup = async (context) => (await findContinuableAgentSession(appDb, member.context, target(context.projectId!)))?.state;
     let seen: Record<string, unknown> | null = null;
@@ -1266,6 +1270,54 @@ describe('跨任务续用（8.7b）', () => {
     // 新任务的要求照常发出（已发出的阶段不从上一个任务继承）。
     expect(second).toEqual({ continued: true, session: generated.session, promptedB: false });
     expect(fake.state.calls.at(-1)!.request).toMatchObject({ prompt: '调整目录', session: generated.session });
+  });
+
+  it('失败后重试（retainStages，8.10b2）：接着失败任务的会话，阶段、已发出的阶段与待补压缩保留，任务状态为空；不给 continueFrom 时 TypeError', async () => {
+    const { dispatcher } = await startRunner();
+    const member = await newMember();
+    // 失败的任务：发出阶段 A 的要求、保存检查点后失败。
+    steps.push(async (run) => {
+      await run.baseline.write(run.sandbox, 'input', [{ path: '材料.md', data: Buffer.from('原件') }]);
+      await run.prompt(STAGE_A);
+      fake.state.calls.at(-1)!.workspace.set('结果.json', Buffer.from('草稿'));
+      await run.checkpoint({ step: 'failed' });
+      throw new JobError('TEST_FAILED', '失败');
+    });
+    const { job: failedJob, projectId } = await enqueue(member, dispatcher, 'test-agent-keep');
+    const failedRow = await waitDone(failedJob.id, 'failed', '失败');
+    const source = await findContinuableAgentSession(appDb, member.context, target(projectId));
+    expect(source).toEqual({ jobId: failedJob.id, state: (failedRow.checkpoint as { agent: AgentRunState }).agent, task: { step: 'failed' } });
+
+    continueLookup = async () => source!.state;
+    retainStages = true;
+    let seen: Record<string, unknown> | null = null;
+    steps.push(async (run) => {
+      seen = {
+        resumed: run.resumed,
+        continued: run.continued,
+        session: run.session,
+        stage: run.stage,
+        promptedA: run.wasPrompted('outline'),
+        task: run.taskCheckpoint,
+        output: (await run.readFiles(['结果.json'])).get('结果.json')?.data?.toString() ?? null,
+      };
+      await run.prompt({ ...STAGE_A, prompt: run.wasPrompted('outline') ? '继续之前的任务' : '生成目录' });
+    });
+    const { job: retry } = await enqueue(member, dispatcher, 'test-agent-continue', projectId);
+    await waitDone(retry.id, 'succeeded', '重试成功');
+    expect(seen).toEqual({ resumed: false, continued: true, session: source!.state.session, stage: 'outline', promptedA: true, task: null, output: '草稿' });
+    expect(fake.state.calls.at(-1)!.request).toMatchObject({ prompt: '继续之前的任务', session: source!.state.session });
+
+    // retainStages 不与 continueFrom 一起给出：程序错误，不建沙箱。
+    continueLookup = null;
+    steps.push(async (run) => {
+      await run.prompt(STAGE_A);
+    });
+    const created = fake.state.created.length;
+    const { job: bad } = await enqueue(member, dispatcher, 'test-agent-exec');
+    const badRow = await waitDone(bad.id, 'failed', '程序错误');
+    expect(badRow.error_code).toBe('JOB_FAILED');
+    expect(fake.state.created).toHaveLength(created);
   });
 
   it('调整任务暂停后续跑：用自己的现场（不再接着其他会话），只发“继续”', async () => {

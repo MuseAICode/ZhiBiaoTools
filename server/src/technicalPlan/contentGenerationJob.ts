@@ -9,6 +9,10 @@
 //   全文重新生成时先丢弃正文的会话（桌面版 deletePersistentTask）。正文阶段被清空的各入口都把运行进度置空，相当于桌面版删除正文会话；
 // - 可续跑：每条提示词之后保存检查点（工作区快照与 checkpoint：签名、本次编排目标），暂停或 worker 失联后续接会话，只发“继续之前的
 //   任务”；续跑时输入已变化即失败。编排已保存后续跑不再打开沙箱；
+// - 失败后重试（8.10b2，桌面版 retryFailedSections）：新任务接着失败任务的正文会话（retainStages：阶段与已发出的阶段保留），按失败时的
+//   阶段续接。现在只有基础编排一种情形（与桌面版 continuingPlanning 相同）：沿用失败任务的编排目标，重新放入材料、保留
+//   正文编排结果.json 的草稿，只发“继续之前的任务”；regenerate 沿用失败任务的，不再丢弃会话。能否重试见 store.ts 的
+//   contentGenerationRetrySourceIn，执行时再核对一次；
 // - 日志只写阶段与条数，不写编排内容（AI 生成的写作重点等）。
 import type { AgentPromptTool } from '../agent/entry.ts';
 import { AGENT_TASK_LIMITS } from '../agent/budget.ts';
@@ -46,6 +50,7 @@ import {
   CONTENT_GENERATION_JOB_TYPE,
   CONTENT_GENERATION_TASK_KIND,
   contentGenerationInputSignature,
+  contentGenerationRetrySource,
   contentGenerationSessionTarget,
   loadTechnicalPlan,
   readGlobalFactsKnowledgeItems,
@@ -56,13 +61,18 @@ import {
 export interface ContentGenerationParams {
   /** 全文重新生成（桌面版 regenerate，不带 targetItemId）：全部 AI 小节重新编排，不复用已保存的编排与正文会话。 */
   regenerate: boolean;
+  /** 失败后重试（8.10b2，桌面版 retryFailedSections）：要重试的失败任务；regenerate 与它相同。 */
+  retryOf?: string;
 }
+
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
 export function parseContentGenerationParams(raw: unknown): ContentGenerationParams {
   if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) throw new TypeError('正文生成任务参数不合法');
-  const { regenerate, ...rest } = raw as Record<string, unknown>;
+  const { regenerate, retryOf, ...rest } = raw as Record<string, unknown>;
   if (Object.keys(rest).length > 0 || typeof regenerate !== 'boolean') throw new TypeError('正文生成任务参数不合法');
-  return { regenerate };
+  if (retryOf !== undefined && (typeof retryOf !== 'string' || !UUID_PATTERN.test(retryOf))) throw new TypeError('正文生成任务参数不合法');
+  return { regenerate, ...(retryOf !== undefined ? { retryOf } : {}) };
 }
 
 export interface ContentGenerationProblem {
@@ -95,6 +105,8 @@ const CONTENT_PLANNING_INPUT_GROUP = 'content-planning-inputs';
 const CONTENT_PLANNING_OUTPUT_GROUP = 'content-planning-output';
 const CONTENT_INPUT_CHANGED_MESSAGE = '招标文件、解析结果、原方案、目录、生成配置或全局事实已变化，本次结果已丢弃，请重新开始';
 export const CONTENT_STAGE_UNAVAILABLE_CODE = 'TECHNICAL_PLAN_CONTENT_STAGE_UNAVAILABLE';
+export const CONTENT_RETRY_UNAVAILABLE_CODE = 'TECHNICAL_PLAN_CONTENT_RETRY_UNAVAILABLE';
+export const CONTENT_RETRY_UNAVAILABLE_MESSAGE = '没有可以重试的正文生成任务（原正文会话不存在或输入已变化），请重新生成正文';
 const CONTENT_STAGE_UNAVAILABLE_MESSAGE = '正文编排已保存；正文写作等后续阶段尚未开放，暂时无法继续生成正文';
 
 function contentInputChanged(): JobError {
@@ -130,11 +142,21 @@ function readContentTaskState(raw: unknown): ContentTaskState | null {
   return { signature: raw.signature, ...(ids !== undefined ? { planningTargetIds: ids as string[] } : {}), ...(raw.planned === true ? { planned: true } : {}) };
 }
 
-/** 开始时的日志（与桌面版 runContentGenerationTask 的 logs 相同；文本模型并发的一条随 8.10c 的写作阶段）。 */
-async function logStart(context: JobContext<ContentGenerationParams>, state: TechnicalPlanState, leaves: readonly LeafContext[], tables: { maxTables: number | null; maxTablesForRun: number | null }): Promise<void> {
+/**
+ * 开始时的日志（与桌面版 runContentGenerationTask 的 logs 相同；文本模型并发的一条随 8.10c 的写作阶段）。retrying 为失败后重试的
+ * 小节数（基础编排阶段的重试，桌面版 retryFailedSections && !continuingStageRun），否则为 null。
+ */
+async function logStart(
+  context: JobContext<ContentGenerationParams>,
+  state: TechnicalPlanState,
+  leaves: readonly LeafContext[],
+  tables: { maxTables: number | null; maxTablesForRun: number | null },
+  retrying: number | null,
+): Promise<void> {
   const tableRequirement = normalizeTableRequirement(state.contentGenerationOptions.tableRequirement);
   const wordControl = normalizeContentWordControl(state.outlineWordControlSnapshot);
   await context.log(`准备生成正文，共 ${leaves.length} 个小节。`);
+  if (retrying !== null) await context.log(`开始重试 ${retrying} 个失败或未完成正文小节。`);
   await context.log(
     tableRequirement === 'heavy'
       ? '表格需求：大量，保持现有表格编排逻辑。'
@@ -174,12 +196,27 @@ export function createContentGenerationJob(): JobTypeDefinition<ContentGeneratio
       // 先取签名再读状态与材料：读取期间输入变化时签名已过期，写入被拒绝。
       const current = await contentGenerationInputSignature(db, tenant, projectId);
       const state = await loadTechnicalPlan(db, tenant, projectId);
-      const saved = readContentTaskState(context.checkpoint?.task);
+      const own = readContentTaskState(context.checkpoint?.task);
+      // 失败后重试的首次执行：接着失败任务的会话与它的状态（编排目标）；之后的续跑用本任务自己的 checkpoint。
+      let retryFrom: AgentRunState | undefined;
+      let inherited: ContentTaskState | null = null;
+      if (params.retryOf !== undefined && !own && !context.agent?.resuming) {
+        // 入队后到执行之前情况可能已变化（快照被替换、输入变化）：再核对一次。
+        const source = await readForJob(() => contentGenerationRetrySource(db, tenant, projectId, context.jobId));
+        if (!source || source.jobId !== params.retryOf || source.regenerate !== params.regenerate) {
+          throw new JobError(CONTENT_RETRY_UNAVAILABLE_CODE, CONTENT_RETRY_UNAVAILABLE_MESSAGE);
+        }
+        inherited = readContentTaskState(source.task);
+        if (!inherited?.planningTargetIds || inherited.planned) throw new JobError(CONTENT_RETRY_UNAVAILABLE_CODE, CONTENT_RETRY_UNAVAILABLE_MESSAGE);
+        retryFrom = source.state;
+      }
+      const saved = own ?? inherited;
       if (saved && saved.signature !== current) throw contentInputChanged();
       const signature = saved?.signature ?? current;
       const problem = contentGenerationProblem(state);
       if (problem) throw new JobError(problem.code, problem.message);
       if (saved?.planned) throw new JobError(CONTENT_STAGE_UNAVAILABLE_CODE, CONTENT_STAGE_UNAVAILABLE_MESSAGE);
+      const retrying = params.retryOf !== undefined;
 
       const outline = state.outlineData!.outline;
       const leaves = collectAiLeaves(outline);
@@ -208,7 +245,7 @@ export function createContentGenerationJob(): JobTypeDefinition<ContentGeneratio
       const planningIds = planning.map(({ item }) => item.id);
 
       if (!context.checkpoint) {
-        await logStart(context, state, leaves, tables);
+        await logStart(context, state, leaves, tables, retrying ? targets.length : null);
         await context.log(
           !state.referenceKnowledgeDocumentIds.length
             ? '本次正文编排未选择参考知识库。'
@@ -264,9 +301,10 @@ export function createContentGenerationJob(): JobTypeDefinition<ContentGeneratio
       } else {
         const isIncremental = isIncrementalPlanning(planningIds, runtime);
         const validation = { outline, allowedKnowledgeItemIds, targetItemIds: planningIds, wordControl, totalSections: leaves.length, isIncremental };
-        // 首次执行：接着上一次正文生成的会话（正文阶段已开始时）；全文重新生成时先丢弃正文的会话。续跑：本任务自己的现场。
-        let continueFrom: AgentRunState | undefined;
-        if (context.agent && !context.agent.resuming) {
+        // 首次执行：接着上一次正文生成的会话（正文阶段已开始时）；全文重新生成时先丢弃正文的会话；失败后重试接着失败任务的会话。
+        // 续跑：本任务自己的现场。
+        let continueFrom: AgentRunState | undefined = retryFrom;
+        if (context.agent && !context.agent.resuming && !retrying) {
           if (params.regenerate) {
             await discardAgentWorkspaceSnapshots(db, tenant, context.objectStore, projectId, [CONTENT_GENERATION_TASK_KIND]);
           } else if (state.contentGenerationRuntime?.generation_started === true) {
@@ -291,7 +329,11 @@ export function createContentGenerationJob(): JobTypeDefinition<ContentGeneratio
                 files.map((file) => ({ path: file.path, data: Buffer.from(file.content, 'utf8') })),
                 { replace: true, signal: context.signal },
               );
-            if (!run.resumed) {
+            // 失败后重试（与桌面版 continuingPlanning 相同）：重新放入材料，保留结果文件的草稿供 Agent 修复。
+            if (run.continued && retryFrom) {
+              await context.log(`正文 Agent 开始基础编排，本次处理 ${planning.length} 个目录节点。`);
+              await writeInputs();
+            } else if (!run.resumed) {
               await context.log(`正文 Agent 开始基础编排，本次处理 ${planning.length} 个目录节点。`);
               await writeInputs();
               // 与桌面版 prepare_output_files 相同：新一轮清空结果文件，交给 Agent 写入（不登记为受保护文件；续跑时保留草稿）。
@@ -329,7 +371,7 @@ export function createContentGenerationJob(): JobTypeDefinition<ContentGeneratio
             if (context.signal.aborted) throw new JobInterruptedError();
             await finish(stage.value, (task) => run.checkpoint(task, 15));
           },
-          continueFrom ? { continueFrom } : undefined,
+          continueFrom ? { continueFrom, ...(retryFrom ? { retainStages: true } : {}) } : undefined,
         );
       }
       // 后续阶段（原方案还原 8.11、正文写作 8.10c 起）接入之前到此为止。

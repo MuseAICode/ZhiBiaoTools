@@ -7,6 +7,7 @@
 // - 只采用已结束（成功或失败）的任务：被取消的任务（用户取消、保存上游内容或重置时取消）在取消到退出之间仍可能保存检查点，
 //   它的会话不再续用；暂停中、排队中、执行中的任务仍是它自己的会话（且持有互斥键，调整任务此时也无法入队）；
 // - 现场须能按 checkpoint 的规则读出、有会话文件（取最新的一个；它不合法时按找不到处理，不退回更早的任务）。
+// - 失败后重试（8.10b2，桌面版 retryFailedSections）：调用方核对来源是不是要重试的那个失败任务，再按它的 task 状态续接。
 // 找不到时返回 null：调用方按“工作空间不存在，请重新生成”处理。放入快照时执行者再核对一次快照 id（execution.ts 的 open）。
 // 组织由 RLS 限定（调用方的事务经 withTenant），项目须已按业务规则校验。本模块不写日志。
 import { sql, type Kysely, type Transaction } from 'kysely';
@@ -30,6 +31,8 @@ export interface AgentSessionSource {
   readonly jobId: string;
   /** 交给 open({ continueFrom }) 的现场。 */
   readonly state: AgentRunState;
+  /** 该任务 checkpoint 中任务自己的状态（没有时为 null；失败后重试接着原任务的状态，8.10b2）。 */
+  readonly task: Record<string, unknown> | null;
 }
 
 /** 在调用方的事务中查找（例如读取页面状态时一并给出能否调整）。 */
@@ -62,7 +65,7 @@ export async function findContinuableAgentSessionIn(trx: Transaction<Database>, 
     return null;
   }
   if (!parsed || parsed.agent.session === null || parsed.agent.snapshot !== snapshot.id) return null;
-  return { jobId: row.id, state: parsed.agent };
+  return { jobId: row.id, state: parsed.agent, task: parsed.task };
 }
 
 export function findContinuableAgentSession(db: Kysely<Database>, context: TenantContext, target: AgentSessionTarget): Promise<AgentSessionSource | null> {

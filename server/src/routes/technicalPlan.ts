@@ -98,6 +98,7 @@ import {
   startGlobalFactsGeneration,
   confirmOutlineSelection,
   startContentGeneration,
+  startContentGenerationRetry,
   startOutlineAdjustment,
   startOutlineGeneration,
 } from '../technicalPlan/jobs.ts';
@@ -169,6 +170,9 @@ const CONTENT_GENERATION_SCHEMA = {
   properties: { regenerate: { type: 'boolean' } },
   additionalProperties: false,
 } as const;
+
+/** 没有参数的请求体（失败后重试，8.10b2）。 */
+const EMPTY_BODY_SCHEMA = { type: 'object', properties: {}, additionalProperties: false } as const;
 
 /** 一级目录确认：选择与修改的条数不超过待确认的一级目录数（OUTLINE_SELECTION_ITEMS_MAX），取值由业务代码再按待确认的内容校验。 */
 const OUTLINE_SELECTION_SCHEMA = {
@@ -631,6 +635,21 @@ export async function registerTechnicalPlanRoutes(app: FastifyInstance, deps: Te
     },
     async (request, reply) => {
       const job = await startContentGeneration(deps.jobs, tenantOf(request), await project(request), request.body);
+      return reply.code(202).send({ job: jobBody(job) });
+    },
+  );
+
+  // 失败后重试（8.10b2，桌面版 retryFailedSections）：没有参数，regenerate 沿用失败的任务。
+  app.post<ProjectParams & { Body: Record<string, never> }>(
+    '/:projectId/technical-plan/content-generation/retry',
+    {
+      schema: { params: PROJECT_ID_PARAMS, body: EMPTY_BODY_SCHEMA },
+      preValidation: async (request) => {
+        request.body ??= {};
+      },
+    },
+    async (request, reply) => {
+      const job = await startContentGenerationRetry(deps.jobs, tenantOf(request), await project(request));
       return reply.code(202).send({ job: jobBody(job) });
     },
   );
