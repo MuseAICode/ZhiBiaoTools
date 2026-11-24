@@ -10,6 +10,7 @@
 //   （discardTechnicalPlanSessions，桌面版 deleteGlobalFactsAgentTask）；
 // - 目录生成（第 8 步 8.7e1、8.7e2a、8.7e2b）：agent 队列，一级目录、用户确认（暂停为 waiting_for_selection）与确认之后的后续阶段
 //   （无技术评分项模式与评分模式，见 createOutlineGenerationJob）；
+// - 正文生成（第 8 步 8.10b1 起）：agent 队列，见 contentGenerationJob.ts；
 // - 目录调整（第 8 步 8.7d）：agent 队列，接着目录生成或上一次调整的会话与工作区，按用户的要求改写 outline.json
 //   （见 createOutlineAdjustmentJob）。目录生成与调整共用工作区快照类别 technical-plan-outline-generation；与全局事实的会话在同样的入口
 //   一并丢弃（桌面版 deleteOutlineAgentTask 与 deleteGlobalFactsAgentTask 总是一起调用）。
@@ -126,6 +127,8 @@ import { extractBidSections, SectionExtractionError } from './sectionExtraction.
 import {
   BID_ANALYSIS_JOB_TYPE,
   BID_SECTION_EXTRACTION_JOB_TYPE,
+  CONTENT_GENERATION_JOB_TYPE,
+  CONTENT_GENERATION_TASK_KIND,
   GLOBAL_FACTS_ADJUSTMENT_JOB_TYPE,
   GLOBAL_FACTS_ADJUSTMENT_REQUIREMENT_MAX,
   GLOBAL_FACTS_ADJUSTMENT_SUMMARY_MAX,
@@ -159,10 +162,12 @@ import {
   type TechnicalPlanState,
 } from './store.ts';
 import { BID_ANALYSIS_TASKS, bidItemLabel, isBidItemId } from './tender.ts';
+import { contentGenerationProblem, createContentGenerationJob } from './contentGenerationJob.ts';
 
 export {
   BID_ANALYSIS_JOB_TYPE,
   BID_SECTION_EXTRACTION_JOB_TYPE,
+  CONTENT_GENERATION_JOB_TYPE,
   GLOBAL_FACTS_ADJUSTMENT_JOB_TYPE,
   GLOBAL_FACTS_JOB_TYPE,
   GLOBAL_FACTS_TASK_KIND,
@@ -1081,7 +1086,8 @@ async function writeOutlineGenerationResult(
   }
   if (!written) throw outlineGenerationInputChanged();
   // 全局事实已清空：全局事实的会话不再续用（桌面版目录生成开始时删除）。目录的会话保留给目录调整。丢弃失败的留给下一次生成替换。
-  await discardAgentWorkspaceSnapshots(db, tenant, context.objectStore, projectId, [GLOBAL_FACTS_TASK_KIND]).catch(() => {});
+  // 正文已清空：正文的会话同样不再续用（桌面版目录生成开始时一并删除，8.10b1）。
+  await discardAgentWorkspaceSnapshots(db, tenant, context.objectStore, projectId, [GLOBAL_FACTS_TASK_KIND, CONTENT_GENERATION_TASK_KIND]).catch(() => {});
 }
 
 /** 一级目录确认之后、所选一级目录都不需要 AI 扩展时（见 createOutlineGenerationJob）。 */
@@ -1615,6 +1621,7 @@ export function createTechnicalPlanJobs(options: TechnicalPlanJobOptions = {}): 
     createGlobalFactsAdjustmentJob(),
     createOutlineGenerationJob(),
     createOutlineAdjustmentJob(),
+    createContentGenerationJob(),
   ];
 }
 
@@ -1670,6 +1677,7 @@ export async function cancelTechnicalPlanJobs(jobs: JobServiceDependencies, cont
     GLOBAL_FACTS_ADJUSTMENT_JOB_TYPE,
     OUTLINE_GENERATION_JOB_TYPE,
     OUTLINE_ADJUSTMENT_JOB_TYPE,
+    CONTENT_GENERATION_JOB_TYPE,
   ];
   const active = await listJobs(jobs.db, context, { projectId, active: true, limit: 20 });
   for (const job of active) {
@@ -1778,5 +1786,23 @@ export async function confirmOutlineSelection(jobs: JobServiceDependencies, cont
  * 续用（src/agent/continuation.ts 只采用已结束的任务）。
  */
 export async function discardTechnicalPlanSessions(db: Kysely<Database>, context: TenantContext, store: ObjectStore | null, projectId: string): Promise<void> {
-  await discardAgentWorkspaceSnapshots(db, context, store, projectId, [OUTLINE_TASK_KIND, GLOBAL_FACTS_TASK_KIND]);
+  // 桌面版 deleteOutlineAgentTask 同时删除正文的会话（8.10b1）。
+  await discardAgentWorkspaceSnapshots(db, context, store, projectId, [OUTLINE_TASK_KIND, GLOBAL_FACTS_TASK_KIND, CONTENT_GENERATION_TASK_KIND]);
+}
+
+/**
+ * 开始生成正文（取代桌面版 tasks.startContentGeneration 的全文生成，8.10b1）：表格需求、配图数量等取已保存的生成配置
+ * （PATCH .../generation-config）；regenerate 为全文重新生成。前置条件不满足时 409（文案与桌面版相同，见 contentGenerationProblem）；
+ * 已有进行中的技术方案任务（含暂停中的正文生成）时 409 JOB_LOCKED。入 agent 队列。单节重新生成随 8.11，失败后重试随 8.10b2；
+ * 暂停后的继续沿用任务的续跑（通用的 resumeJob）。
+ */
+export async function startContentGeneration(jobs: JobServiceDependencies, context: TenantContext, projectId: string, input: { regenerate?: boolean }): Promise<JobRecord> {
+  const problem = contentGenerationProblem(await loadTechnicalPlan(jobs.db, context, projectId));
+  if (problem) throw conflict(problem);
+  return enqueueJob(jobs, context, {
+    type: CONTENT_GENERATION_JOB_TYPE,
+    projectId,
+    lockKey: technicalPlanLockKey(projectId),
+    params: { regenerate: input.regenerate === true },
+  });
 }

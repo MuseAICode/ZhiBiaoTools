@@ -97,6 +97,7 @@ import {
   startGlobalFactsAdjustment,
   startGlobalFactsGeneration,
   confirmOutlineSelection,
+  startContentGeneration,
   startOutlineAdjustment,
   startOutlineGeneration,
 } from '../technicalPlan/jobs.ts';
@@ -159,6 +160,13 @@ const GLOBAL_FACTS_ADJUSTMENT_SCHEMA = {
 const OUTLINE_GENERATION_SCHEMA = {
   type: 'object',
   properties: { noTechnicalScoreMode: { type: 'boolean' } },
+  additionalProperties: false,
+} as const;
+
+/** 正文生成（8.10b1）：regenerate 为全文重新生成。 */
+const CONTENT_GENERATION_SCHEMA = {
+  type: 'object',
+  properties: { regenerate: { type: 'boolean' } },
   additionalProperties: false,
 } as const;
 
@@ -609,6 +617,20 @@ export async function registerTechnicalPlanRoutes(app: FastifyInstance, deps: Te
     },
     async (request, reply) => {
       const job = await startOutlineGeneration(deps.jobs, tenantOf(request), await project(request), request.body);
+      return reply.code(202).send({ job: jobBody(job) });
+    },
+  );
+
+  app.post<ProjectParams & { Body: { regenerate?: boolean } }>(
+    '/:projectId/technical-plan/content-generation',
+    {
+      schema: { params: PROJECT_ID_PARAMS, body: CONTENT_GENERATION_SCHEMA },
+      preValidation: async (request) => {
+        request.body ??= {};
+      },
+    },
+    async (request, reply) => {
+      const job = await startContentGeneration(deps.jobs, tenantOf(request), await project(request), request.body);
       return reply.code(202).send({ job: jobBody(job) });
     },
   );

@@ -26,7 +26,7 @@ describe('任务类型登记', () => {
     expect(maxAttemptsOf(definition('a', { maxAttempts: 1 }))).toBe(1);
   });
 
-  it('登记的业务任务类型：6.6 的文档解析（parse 队列、可续跑、不调用模型），6.9 的废标检查两类（ai 队列、可续跑、调用模型），6.10 的标书查重（ai 队列、可续跑、不调用模型），6.11 的技术方案两类、6.12 的可研报告四类、6.13a 的知识库文档准备与 6.13b 的知识库匹配（ai 队列、可续跑、调用模型），7.3d 的模板样张（export 队列、可续跑、不调用模型），8.7a 的可研目录生成与 8.7b 的可研目录调整（agent 队列、可续跑、调用模型、Agent 上限与工具、共用的工作区快照、成功后保留），8.7c1 的技术方案全局事实生成与 8.7c2 的全局事实调整、8.7e1 的技术方案目录生成与 8.7d 的技术方案目录调整（agent 队列、可续跑、调用模型、Agent 上限与工具、共用的工作区快照、成功后保留）', () => {
+  it('登记的业务任务类型：6.6 的文档解析（parse 队列、可续跑、不调用模型），6.9 的废标检查两类（ai 队列、可续跑、调用模型），6.10 的标书查重（ai 队列、可续跑、不调用模型），6.11 的技术方案两类、6.12 的可研报告四类、6.13a 的知识库文档准备与 6.13b 的知识库匹配（ai 队列、可续跑、调用模型），7.3d 的模板样张（export 队列、可续跑、不调用模型），8.7a 的可研目录生成与 8.7b 的可研目录调整（agent 队列、可续跑、调用模型、Agent 上限与工具、共用的工作区快照、成功后保留），8.7c1 的技术方案全局事实生成与 8.7c2 的全局事实调整、8.7e1 的技术方案目录生成与 8.7d 的技术方案目录调整（agent 队列、可续跑、调用模型、Agent 上限与工具、共用的工作区快照、成功后保留），8.10b1 的技术方案正文生成（agent 队列、可续跑、调用模型、正文生成的上限、agent-content 沙箱、工作区快照、成功后保留）', () => {
     expect(JOB_TYPES.map((item) => item.type)).toEqual([
       'document-parse',
       'rejection-items-extraction',
@@ -38,6 +38,7 @@ describe('任务类型登记', () => {
       'global-facts-adjustment',
       'outline-generation',
       'outline-adjustment',
+      'content-generation',
       'feasibility-analysis',
       'feasibility-outline',
       'feasibility-outline-adjustment',
@@ -146,6 +147,19 @@ describe('任务类型登记', () => {
     expect(outlineAdjustment.parseParams({ requirement: '删去进度计划' })).toEqual({ requirement: '删去进度计划' });
     for (const bad of [{}, { requirement: '' }, { requirement: '  有空白  ' }, { requirement: 'x'.repeat(2001) }, { requirement: 1 }, { requirement: '删去', extra: 1 }, null, []]) {
       expect(() => outlineAdjustment.parseParams(bad)).toThrow(TypeError);
+    }
+    const contentGeneration = jobTypeRegistry.get('content-generation')!;
+    expect(contentGeneration.queue).toBe('agent');
+    expect(contentGeneration.resumable).toBe(true);
+    expect(contentGeneration.billable).toBe(true);
+    expect(contentGeneration.agentLimits).toEqual(AGENT_TASK_LIMITS.contentGeneration);
+    expect(contentGeneration.agentTools).toEqual(['ask-user', 'request-termination']);
+    expect(contentGeneration.agentWorkspace).toEqual({ taskKind: 'technical-plan-content-generation', keepAfterSuccess: true });
+    expect(contentGeneration.agentSandboxTemplate).toBe('agent-content');
+    expect(contentGeneration.parseParams({ regenerate: false })).toEqual({ regenerate: false });
+    expect(contentGeneration.parseParams({ regenerate: true })).toEqual({ regenerate: true });
+    for (const bad of [{}, { regenerate: 'true' }, { regenerate: false, targetItemId: 'x' }, null, []]) {
+      expect(() => contentGeneration.parseParams(bad)).toThrow(TypeError);
     }
     const adjustment = jobTypeRegistry.get('feasibility-outline-adjustment')!;
     expect(adjustment.queue).toBe('agent');

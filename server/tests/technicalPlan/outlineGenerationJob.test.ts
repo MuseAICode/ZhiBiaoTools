@@ -670,7 +670,7 @@ describe('目录生成：一级目录确认之后', () => {
     expect({ outline: fake.saved[0]!.input.outline, project_overview: fake.saved[0]!.input.projectOverview }).toEqual(workspace.outlineData);
     expect(fake.saved[0]!.input.wordControl).toEqual(workspace.outlineWordControlSnapshot);
     expect(workspace.outlineData.outline.map((item: { number: string }) => item.number)).toEqual(['1', '2']);
-    expect(fake.discarded).toEqual([{ projectId: 'project-1', kinds: ['technical-plan-global-facts'] }]);
+    expect(fake.discarded).toEqual([{ projectId: 'project-1', kinds: ['technical-plan-global-facts', 'technical-plan-content-generation'] }]);
 
     // 两次执行的日志合起来与桌面版的相同。
     const generated = (await generateServer()).server.logs;
@@ -955,7 +955,7 @@ describe('目录生成：无技术评分项模式的后续阶段（与桌面版 
     expect(fake.saved[0]!.input.wordControl).toEqual(workspace.outlineWordControlSnapshot);
     expect(JSON.parse(record.workspace.get('outline.json')!).outline).toEqual(fake.saved[0]!.input.outline);
     expect(countLeaves(fake.saved[0]!.input.outline)).toBe(4);
-    expect(fake.discarded).toEqual([{ projectId: 'project-1', kinds: ['technical-plan-global-facts'] }]);
+    expect(fake.discarded).toEqual([{ projectId: 'project-1', kinds: ['technical-plan-global-facts', 'technical-plan-content-generation'] }]);
 
     // 两次执行的日志合起来与桌面版的相同（接连两次叶子调整只写一次，叶子数与目标不同、用户接受时的提示在最后）。
     const generated = (await generateServer(INITIAL, true)).server.logs;
@@ -1291,7 +1291,7 @@ describe('目录生成：评分模式的后续阶段（与桌面版 runOutlineGe
     const workspace = desktopRun.finished!.workspace;
     expect(placeholders({ outline: fake.saved[0]!.input.outline, project_overview: fake.saved[0]!.input.projectOverview })).toEqual(placeholders(workspace.outlineData));
     expect(fake.saved[0]!.input.wordControl).toEqual(workspace.outlineWordControlSnapshot);
-    expect(fake.discarded).toEqual([{ projectId: 'project-1', kinds: ['technical-plan-global-facts'] }]);
+    expect(fake.discarded).toEqual([{ projectId: 'project-1', kinds: ['technical-plan-global-facts', 'technical-plan-content-generation'] }]);
     const generated = (await generateServer(INITIAL, false)).server.logs;
     expect([...generated, ...server.logs]).toEqual(desktopRun.finished!.task.logs);
     expect(server.logs).toContain('一级目录已确认，当前无模板填写目录，已跳过投标模版提取，开始生成完整目录');

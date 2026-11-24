@@ -929,6 +929,16 @@ Agent 生成的 Mermaid 源码在专用的 `render-mermaid` 沙箱中转成 PNG�
 - **配图的回收**：整体替换时本节不再引用、本项目其他小节也没有引用的配图标为已被替换（迁移 0023），由清理任务删除，不长期占用组织存储配额。正文的所有清空入口——重置正文阶段、保存全局事实、目录 `replace` / `delete` / `add-*`（受影响的节点、不在新目录中的节点、不再是 `ai-generate` 叶子的节点）、目录生成与调整的结果、下游清空与清空技术方案——都先删除正文并回收配图，再删除目录节点（节点的级联删除不会替换产物）。
 - **读取**：`GET /api/projects/:projectId/technical-plan/chapters/:nodeId/body` 以 JSON 返回规范化的正文与配图产物 id（配图经 `GET /api/artifacts/:id/content` 按附件读取）；没有正文时 404。正文只由正文生成任务写入（8.10c 起），没有写接口。
 
+### 7.40 实现（路线图 8.10b1）：正文生成任务与基础编排阶段
+
+桌面版的正文生成（`contentGenerationTask.cjs` 的 `runContentGenerationTask`）在一个持久会话中依次经过基础编排、原方案还原、写作、配图、字数校正、一致性审计、去表格与格式自检。Web 版的任务类型 `content-generation`（`src/technicalPlan/contentGenerationJob.ts`）按阶段逐步接入，本步只有基础编排：
+
+- **登记**：agent 队列、`agent-content` 沙箱、上限 `AGENT_TASK_LIMITS.contentGeneration`、业务工具 `ask-user` / `request-termination`、快照类别 `technical-plan-content-generation`（成功后保留，供章节重写与导出修复续用）；参数只有 `regenerate`。开始接口 `POST /api/projects/:projectId/technical-plan/content-generation` 与其他技术方案任务互斥（同一个 lock key）。
+- **目标与复用**（`src/technicalPlan/contentPlanning.ts`）：本次目标与桌面版 `tasksToRun` 相同；版本（6）与表格需求相同的已保存编排沿用，其余交给 Agent。续跑沿用首次执行时确定的编排目标（写在 checkpoint 中）。
+- **基础编排**：材料登记为受保护文件，预置空的结果文件交给 Agent；提示词、Schema、工具、提交校验与桌面版逐项相同。Agent 写出的编排按不可信数据处理：只按稳定 id 提取本次目标（非目标、重复、引用不存在的知识库条目一律为阻塞问题），保存前只留下已知字段，写作重点与表格用途按 1000 字截短。
+- **保存**：字数、表格与配图由程序按桌面版的规则决定，`saveContentPlanningResult` 在项目锁内核对 `contentGenerationInputSignature`，相符时整体写入编排与运行进度，不符时任务以 `TECHNICAL_PLAN_INPUT_CHANGED` 失败。后续阶段接入之前，保存后任务以 `TECHNICAL_PLAN_CONTENT_STAGE_UNAVAILABLE` 失败。
+- **会话**：运行进度显示正文阶段已开始、且有可以续用的正文会话时接着它；全文重新生成先丢弃正文会话；目录与全局事实的会话被丢弃的入口与目录生成的结果一并丢弃正文会话。
+
 ## 8. 部署架构
 
 ### 8.0 部署位置（已决定，第 9 节第 13、14 项）

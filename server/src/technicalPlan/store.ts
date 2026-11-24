@@ -154,6 +154,16 @@ export function outlineSessionTarget(projectId: string): AgentSessionTarget {
   return { projectId, taskKind: OUTLINE_TASK_KIND, jobTypes: [OUTLINE_GENERATION_JOB_TYPE, OUTLINE_ADJUSTMENT_JOB_TYPE] };
 }
 
+/** 技术方案正文生成（第 8 步 8.10b1 起，src/technicalPlan/jobs.ts）：agent 队列；任务类型与桌面版相同。 */
+export const CONTENT_GENERATION_JOB_TYPE = 'content-generation';
+/** 正文生成的工作区快照类别（与桌面版的持久任务 technical-plan-content-generation 对应）。 */
+export const CONTENT_GENERATION_TASK_KIND = 'technical-plan-content-generation';
+
+/** 正文生成接着的会话：上一次正文生成写下的、与当前快照同一对的现场（src/agent/continuation.ts）。 */
+export function contentGenerationSessionTarget(projectId: string): AgentSessionTarget {
+  return { projectId, taskKind: CONTENT_GENERATION_TASK_KIND, jobTypes: [CONTENT_GENERATION_JOB_TYPE] };
+}
+
 /**
  * 技术方案的任务互斥（与桌面版 technical-plan 组的 group-exclusive 相同）：同一项目同时只有一个技术方案任务。第 8 步的目录、
  * 全局事实、正文生成任务使用同一个键。
@@ -320,7 +330,8 @@ export interface TechnicalPlanState extends TechnicalPlanGenerationConfig {
   contentGenerationPlans: Record<string, ContentGenerationPlan>;
   /** 正文生成的运行进度，没有时为 null。 */
   contentGenerationRuntime: ContentRuntime | null;
-  contentGenerationTask: null;
+  /** 本项目最近一次的正文生成任务（8.10b1），没有时为 null。 */
+  contentGenerationTask: JobBody | null;
 }
 
 // ---- 错误 ----
@@ -765,7 +776,9 @@ export async function readState(trx: Trx, projectId: string): Promise<TechnicalP
     GLOBAL_FACTS_ADJUSTMENT_JOB_TYPE,
     OUTLINE_GENERATION_JOB_TYPE,
     OUTLINE_ADJUSTMENT_JOB_TYPE,
+    CONTENT_GENERATION_JOB_TYPE,
   ]);
+  const contentGenerationTask = jobs.get(CONTENT_GENERATION_JOB_TYPE);
   const extractionTask = jobs.get(BID_SECTION_EXTRACTION_JOB_TYPE);
   const analysisTask = jobs.get(BID_ANALYSIS_JOB_TYPE);
   const globalFactsTask = jobs.get(GLOBAL_FACTS_JOB_TYPE);
@@ -818,7 +831,7 @@ export async function readState(trx: Trx, projectId: string): Promise<TechnicalP
     contentGenerationSections: await readContentSections(trx, projectId, outlineRows, outline),
     contentGenerationPlans: await readContentPlans(trx, projectId),
     contentGenerationRuntime: meta?.content_generation_runtime ?? null,
-    contentGenerationTask: null,
+    contentGenerationTask: contentGenerationTask ? jobBody(contentGenerationTask) : null,
   };
 }
 
@@ -2390,6 +2403,116 @@ export async function saveOutlineGenerationResult(
       outline_project_overview: header.overview,
       outline_word_control_snapshot: snapshot,
     });
+    return true;
+  });
+}
+
+// ---- 正文生成（第 8 步 8.10b1） ----
+
+/** 在事务中计算正文生成的输入签名（见 contentGenerationInputSignature）。 */
+async function readContentGenerationSignature(trx: Trx, projectId: string): Promise<string> {
+  const { analysis } = await readSignatures(trx, projectId);
+  const originalPlans = await trx
+    .selectFrom('technical_plan_documents')
+    .select(['file_id', 'status', 'markdown_artifact_id', 'content_hash'])
+    .where('project_id', '=', projectId)
+    .where('role', '=', 'original-plan')
+    .orderBy('created_at')
+    .orderBy('file_id')
+    .execute();
+  const items = await trx
+    .selectFrom('technical_plan_bid_items')
+    .select(['item_id', 'status', 'content'])
+    .where('project_id', '=', projectId)
+    .orderBy('item_id')
+    .execute();
+  const nodes = await trx
+    .selectFrom('technical_plan_outline_nodes')
+    .select(['node_id', 'parent_node_id', 'sort_order', 'level', 'title', 'description', 'content_mode', 'content_mode_note'])
+    .where('project_id', '=', projectId)
+    .orderBy('level')
+    .orderBy('parent_node_id')
+    .orderBy('sort_order')
+    .orderBy('node_id')
+    .execute();
+  const meta = await trx
+    .selectFrom('technical_plan_meta')
+    .select(['outline_project_overview', 'outline_word_control_snapshot'])
+    .where('project_id', '=', projectId)
+    .executeTakeFirst();
+  const config = await trx.selectFrom('technical_plan_generation_config').selectAll().where('project_id', '=', projectId).executeTakeFirst();
+  // 生成配置的全部列（时间戳除外），按列名排序。
+  const configValues = config
+    ? Object.entries(config)
+        .filter(([key]) => key !== 'created_at' && key !== 'updated_at')
+        .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
+    : null;
+  const references = await trx
+    .selectFrom('technical_plan_generation_reference_docs')
+    .select('document_id')
+    .where('project_id', '=', projectId)
+    .orderBy('sort_order')
+    .orderBy('document_id')
+    .execute();
+  const facts = await trx
+    .selectFrom('technical_plan_global_fact_groups')
+    .select(['group_id', 'title', 'content'])
+    .where('project_id', '=', projectId)
+    .orderBy('sort_order')
+    .orderBy('group_id')
+    .execute();
+  return sha256Hex(
+    JSON.stringify([
+      analysis,
+      originalPlans.map((row) => [row.file_id, row.status, row.markdown_artifact_id, row.content_hash]),
+      items.map((row) => [row.item_id, row.status, row.content]),
+      nodes.map((row) => [row.node_id, row.parent_node_id, row.sort_order, row.level, row.title, row.description, row.content_mode, row.content_mode_note]),
+      meta?.outline_project_overview ?? null,
+      meta?.outline_word_control_snapshot ?? null,
+      configValues,
+      references.map((row) => row.document_id),
+      facts.map((row) => [row.group_id, row.title, row.content]),
+    ]),
+  );
+}
+
+/**
+ * 正文生成的输入签名（8.10b1；任务首次执行开始时读取，写入时传回）：招标文件与投标范围（招标解析的签名）、原方案、招标解析项的结果、
+ * 目录的结构、标题说明与处理方式、目录的项目概述与字数控制快照、生成配置（含正文的生成选项与导出模板）、引用的知识库文档与全局事实。
+ * 各节的正文、正文生成状态、编排与运行进度不在其中（由正文生成任务自己写入）；知识库条目的内容不在其中（与全局事实生成相同）。
+ */
+export async function contentGenerationInputSignature(db: Kysely<Database>, context: TenantContext, projectId: string): Promise<string> {
+  return withTenant(db, context, (trx) => readContentGenerationSignature(trx, projectId));
+}
+
+/**
+ * 正文生成基础编排的结果（8.10b1，桌面版 persistContentPlans 与 markStageCompleted('planning')）：与 saveContentPlans 相同整体写入
+ * 各节的编排（只保存 plan 是对象、版本大于 0 的节，其余删除，已不在目录中的跳过），同时整体替换运行进度。在项目锁内核对输入签名，
+ * 不符时不写入、返回 false。参数不合法是调用方的程序错误，抛 TypeError。
+ */
+export async function saveContentPlanningResult(
+  db: Kysely<Database>,
+  context: TenantContext,
+  projectId: string,
+  input: { plans: Readonly<Record<string, unknown>>; runtime: ContentRuntime },
+  expectedSignature: string,
+): Promise<boolean> {
+  const entries = Object.entries(input.plans).flatMap(([nodeId, value]) => {
+    const id = uuid(nodeId, '节点 id');
+    const plan = normalizeContentPlan(value);
+    return plan ? [[id, plan] as [string, typeof plan]] : [];
+  });
+  const runtime = serializeRuntime(input.runtime);
+  return withTenant(db, context, async (trx) => {
+    await lockProject(trx, projectId);
+    if ((await readContentGenerationSignature(trx, projectId)) !== expectedSignature) return false;
+    const existing = await existingNodeIds(trx, projectId, entries.map(([id]) => id));
+    const kept = entries.filter(([id]) => existing.has(id));
+    let removal = trx.deleteFrom('technical_plan_content_plans').where('project_id', '=', projectId);
+    if (kept.length > 0) removal = removal.where('node_id', 'not in', kept.map(([id]) => id));
+    await removal.execute();
+    await upsertPlans(trx, context, projectId, kept);
+    await writeMeta(trx, context, projectId, { content_generation_runtime: runtime });
     return true;
   });
 }
