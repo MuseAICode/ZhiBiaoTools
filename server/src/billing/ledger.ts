@@ -281,3 +281,35 @@ export async function addModelPrice(
     }),
   );
 }
+
+/** 按张的价格版本（迁移 0045）：两个 token 单价记 0，image_price 为每张的单价。 */
+export interface NewImagePrice {
+  orgId: string | null;
+  provider: BillingProvider;
+  model: string;
+  /** 计费单位 / 张。 */
+  imagePrice: bigint;
+  effectiveFrom: Date | null;
+  note: string | null;
+  /** 上游成本 / 张，仅平台管理员可见；为空表示未录入。 */
+  upstreamImagePrice?: bigint | null;
+}
+
+/** 平台管理员新增按张的价格版本（生图模型），规则与 addModelPrice 相同。 */
+export async function addImagePrice(
+  db: Kysely<Database>,
+  context: TenantContext,
+  price: NewImagePrice,
+): Promise<{ priceId: string; effectiveFrom: Date }> {
+  return mapErrors(() =>
+    withTenant(db, context, async (trx) => {
+      const result = await sql<{ price_id: string; effective_from: Date }>`
+        SELECT price_id, effective_from
+        FROM billing_admin_add_image_price(
+          ${price.orgId}::uuid, ${price.provider}, ${price.model}, ${price.imagePrice.toString()}::bigint,
+          ${price.effectiveFrom}::timestamptz, ${price.note}, ${price.upstreamImagePrice?.toString() ?? null}::bigint)`.execute(trx);
+      const row = result.rows[0]!;
+      return { priceId: row.price_id, effectiveFrom: row.effective_from };
+    }),
+  );
+}

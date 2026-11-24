@@ -4,6 +4,7 @@
 import { sql, type Kysely, type Transaction } from 'kysely';
 import { GATEWAY_FAILURE_REASONS } from '../db/migrations/0004_ai_gateway.ts';
 import { JOB_STEP_FAILURE_REASONS } from '../db/migrations/0025_job_step_results.ts';
+import { IMAGE_FAILURE_REASONS } from '../db/migrations/0045_ai_image_generation.ts';
 import type { BillingProvider, Database, JobStepToolCall, UsageSource } from '../db/schema.ts';
 import { withTenant, type TenantContext } from '../db/tenant.ts';
 import { AppError } from '../errors.ts';
@@ -12,7 +13,9 @@ import { toBillingError } from './ledger.ts';
 export type GatewayFailureReason = (typeof GATEWAY_FAILURE_REASONS)[number];
 /** 任务调用的不收费原因（迁移 0025_job_step_results）：因平台原因中止、同一步骤已有结果。 */
 export type JobStepFailureReason = (typeof JOB_STEP_FAILURE_REASONS)[number];
-export { GATEWAY_FAILURE_REASONS, JOB_STEP_FAILURE_REASONS };
+/** 生图的不收费原因（迁移 0045）：调用方中途取消。 */
+export type ImageFailureReason = (typeof IMAGE_FAILURE_REASONS)[number];
+export { GATEWAY_FAILURE_REASONS, IMAGE_FAILURE_REASONS, JOB_STEP_FAILURE_REASONS };
 
 export interface BeginUsageInput {
   requestId: string;
@@ -91,6 +94,46 @@ export async function beginUsage(db: Kysely<Database>, context: TenantContext, i
   );
 }
 
+export interface BeginImageUsageInput {
+  requestId: string;
+  source: UsageSource;
+  jobId: string | null;
+  jobType: string | null;
+  provider: BillingProvider;
+  model: string;
+  /** 请求的张数（1～MAX_IMAGES_PER_CALL），冻结额 = 张数 × 单价。 */
+  imageCount: number;
+  holdSeconds: number;
+}
+
+/**
+ * 生图调用前冻结（迁移 0045 的 ai_image_usage_begin）：检查与 beginUsage 相同（白名单只认生图模型与按张的价格、任务费用上限、余额），
+ * 冻结额按张计算。结算用 settleUsage / settleJobStep（输入 token 0、输出 = 成功入库的张数），失败用 failUsage。
+ */
+export async function beginImageUsage(db: Kysely<Database>, context: TenantContext, input: BeginImageUsageInput): Promise<UsageHold> {
+  return mapErrors(() =>
+    withTenant(db, context, async (trx) => {
+      const result = await sql<{ usage_id: string; price_id: string; hold_amount: string; hold_expires_at: Date; available_after: string }>`
+        SELECT usage_id, price_id, hold_amount, hold_expires_at, available_after FROM ai_image_usage_begin(
+          ${input.requestId}::uuid, ${input.source}, ${input.jobId}::uuid, ${input.jobType}, ${input.provider}, ${input.model},
+          ${input.imageCount}::integer, ${input.holdSeconds}::integer)`.execute(trx);
+      const row = result.rows[0]!;
+      return {
+        usageId: row.usage_id,
+        priceId: row.price_id,
+        holdAmount: BigInt(row.hold_amount),
+        holdExpiresAt: row.hold_expires_at,
+        availableAfter: BigInt(row.available_after),
+      };
+    }),
+  );
+}
+
+/** 按张计价的结算用量：输入 token 0、输出为成功入库的张数（迁移 0045）。 */
+export function imageUsage(images: number): SettleUsageInput {
+  return { inputTokens: 0, cachedInputTokens: 0, outputTokens: images, usageSource: 'provider' };
+}
+
 async function settleIn(trx: Transaction<Database>, usageId: string, usage: SettleUsageInput): Promise<SettlementResult> {
   const result = await sql<{ status: 'billed' | 'unbilled'; amount: string; balance_after: string | null; ledger_entry_id: string | null }>`
     SELECT status, amount, balance_after, ledger_entry_id FROM ai_usage_settle(
@@ -107,7 +150,7 @@ async function settleIn(trx: Transaction<Database>, usageId: string, usage: Sett
 async function failIn(
   trx: Transaction<Database>,
   usageId: string,
-  reason: GatewayFailureReason | JobStepFailureReason,
+  reason: GatewayFailureReason | JobStepFailureReason | ImageFailureReason,
   usage: Omit<SettleUsageInput, 'usageSource'> | null,
 ): Promise<boolean> {
   const result = await sql<{ released: boolean }>`
@@ -243,7 +286,7 @@ export async function failUsage(
   db: Kysely<Database>,
   context: TenantContext,
   usageId: string,
-  reason: GatewayFailureReason | JobStepFailureReason,
+  reason: GatewayFailureReason | JobStepFailureReason | ImageFailureReason,
   usage: Omit<SettleUsageInput, 'usageSource'> | null = null,
 ): Promise<boolean> {
   return mapErrors(() => withTenant(db, context, (trx) => failIn(trx, usageId, reason, usage)));

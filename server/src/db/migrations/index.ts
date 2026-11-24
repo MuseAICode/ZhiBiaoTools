@@ -45,6 +45,7 @@ import * as jobPauseStorageQuota from './0041_job_pause_storage_quota.ts';
 import * as agentToolScopes from './0042_agent_tool_scopes.ts';
 import * as agentModelRejections from './0043_agent_model_rejections.ts';
 import * as jobPauseSelection from './0044_job_pause_selection.ts';
+import * as aiImageGeneration from './0045_ai_image_generation.ts';
 
 export const migrations: Readonly<Record<string, Migration>> = Object.freeze({
   '0001_identity': identity,
@@ -91,4 +92,5 @@ export const migrations: Readonly<Record<string, Migration>> = Object.freeze({
   '0042_agent_tool_scopes': agentToolScopes,
   '0043_agent_model_rejections': agentModelRejections,
   '0044_job_pause_selection': jobPauseSelection,
+  '0045_ai_image_generation': aiImageGeneration,
 });

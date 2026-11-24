@@ -3,7 +3,7 @@
 // 用的是同一个函数。免费必须显式标记（is_free），零价格不等于免费。
 import { sql, type Kysely } from 'kysely';
 import { toBillingError } from '../billing/ledger.ts';
-import type { BillingProvider, Database } from '../db/schema.ts';
+import type { BillingProvider, Database, PlatformModelKind } from '../db/schema.ts';
 import { withTenant, type TenantContext } from '../db/tenant.ts';
 
 /**
@@ -17,12 +17,16 @@ export interface PlatformModel {
   id: string;
   provider: BillingProvider;
   model: string;
+  /** 文本模型或生图模型（迁移 0045）。 */
+  kind: PlatformModelKind;
   isFree: boolean;
   enabled: boolean;
   note: string | null;
   /** 当前生效的平台默认价（计费单位 / 百万 token），没有时为 null。 */
   inputPricePerMtok: bigint | null;
   outputPricePerMtok: bigint | null;
+  /** 当前生效的平台默认价是按张的（计费单位 / 张）时为单价，否则为 null（迁移 0045）。 */
+  imagePrice: bigint | null;
   status: PlatformModelStatus;
   createdAt: Date;
   updatedAt: Date;
@@ -44,10 +48,21 @@ async function mapErrors<T>(run: () => Promise<T>): Promise<T> {
   }
 }
 
-export function modelStatus(model: { enabled: boolean; isFree: boolean; inputPricePerMtok: bigint | null; outputPricePerMtok: bigint | null }): PlatformModelStatus {
+export function modelStatus(model: {
+  enabled: boolean;
+  isFree: boolean;
+  kind?: PlatformModelKind;
+  inputPricePerMtok: bigint | null;
+  outputPricePerMtok: bigint | null;
+  imagePrice?: bigint | null;
+}): PlatformModelStatus {
   if (!model.enabled) return 'disabled';
   if (model.inputPricePerMtok === null || model.outputPricePerMtok === null) return 'unpriced';
-  const zero = model.inputPricePerMtok === 0n && model.outputPricePerMtok === 0n;
+  // 价格形状须与类别一致（迁移 0045 的 ai_model_price_for）：生图模型按张、文本模型按 token。
+  const image = model.kind === 'image';
+  const imagePrice = model.imagePrice ?? null;
+  if (image !== (imagePrice !== null)) return 'unpriced';
+  const zero = image ? imagePrice === 0n : model.inputPricePerMtok === 0n && model.outputPricePerMtok === 0n;
   if (zero && !model.isFree) return 'unpriced';
   if (!zero && model.isFree) return 'price_conflict';
   return 'available';
@@ -71,6 +86,23 @@ export async function registerModel(db: Kysely<Database>, context: TenantContext
       return { id: row.model_id, createdAt: row.created_at };
     }),
   );
+}
+
+/** 平台管理员登记生图模型（迁移 0045，kind = image），规则与 registerModel 相同：登记后为停用状态，免费必须显式选择。 */
+export async function registerImageModel(db: Kysely<Database>, context: TenantContext, input: RegisterModelInput): Promise<{ id: string; createdAt: Date }> {
+  return mapErrors(() =>
+    withTenant(db, context, async (trx) => {
+      const result = await sql<{ model_id: string; created_at: Date }>`
+        SELECT model_id, created_at FROM ai_admin_register_image_model(${input.provider}, ${input.model}, ${input.isFree}, ${input.note})`.execute(trx);
+      const row = result.rows[0]!;
+      return { id: row.model_id, createdAt: row.created_at };
+    }),
+  );
+}
+
+/** 生图调用前检查该组织能否调用这个生图模型（只认 kind = image 与按张的价格）；错误与 assertModelCallable 相同。 */
+export async function assertImageModelCallable(db: Kysely<Database>, context: TenantContext, provider: BillingProvider, model: string): Promise<void> {
+  await mapErrors(() => withTenant(db, context, (trx) => sql`SELECT ai_image_model_check(${provider}, ${model})`.execute(trx)));
 }
 
 /** 平台管理员启用或停用模型。停用立即对之后的调用生效，进行中的调用照常结算。 */
@@ -97,6 +129,7 @@ export async function listModels(db: Kysely<Database>, context: TenantContext): 
       id: string;
       provider: BillingProvider;
       model: string;
+      kind: PlatformModelKind;
       is_free: boolean;
       enabled: boolean;
       note: string | null;
@@ -104,12 +137,13 @@ export async function listModels(db: Kysely<Database>, context: TenantContext): 
       updated_at: Date;
       input_price_per_mtok: string | null;
       output_price_per_mtok: string | null;
+      image_price: string | null;
     }>`
-      SELECT m.id, m.provider, m.model, m.is_free, m.enabled, m.note, m.created_at, m.updated_at,
-             p.input_price_per_mtok, p.output_price_per_mtok
+      SELECT m.id, m.provider, m.model, m.kind, m.is_free, m.enabled, m.note, m.created_at, m.updated_at,
+             p.input_price_per_mtok, p.output_price_per_mtok, p.image_price
       FROM platform_models m
       LEFT JOIN LATERAL (
-        SELECT x.input_price_per_mtok, x.output_price_per_mtok FROM model_prices x
+        SELECT x.input_price_per_mtok, x.output_price_per_mtok, x.image_price FROM model_prices x
         WHERE x.org_id IS NULL AND x.provider = m.provider AND x.model = m.model AND x.effective_from <= now()
         ORDER BY x.effective_from DESC
         LIMIT 1
@@ -122,11 +156,13 @@ export async function listModels(db: Kysely<Database>, context: TenantContext): 
       id: row.id,
       provider: row.provider,
       model: row.model,
+      kind: row.kind,
       isFree: row.is_free,
       enabled: row.enabled,
       note: row.note,
       inputPricePerMtok: row.input_price_per_mtok === null ? null : BigInt(row.input_price_per_mtok),
       outputPricePerMtok: row.output_price_per_mtok === null ? null : BigInt(row.output_price_per_mtok),
+      imagePrice: row.image_price === null ? null : BigInt(row.image_price),
       createdAt: row.created_at,
       updatedAt: row.updated_at,
     };

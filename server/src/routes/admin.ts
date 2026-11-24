@@ -12,6 +12,7 @@ import type { AuthRateLimiters } from '../auth/rateLimit.ts';
 import { INVITATION_TTL_SECONDS } from '../auth/store.ts';
 import { generateToken, hashToken } from '../auth/tokens.ts';
 import {
+  addImagePrice,
   addModelPrice,
   creditOrganization,
   MODEL_NAME_PATTERN,
@@ -21,14 +22,14 @@ import {
 } from '../billing/ledger.ts';
 import { API_KEY_PATTERN, BASE_URL_MAX_LENGTH, listCredentialStatus, normalizeBaseUrl, putCredential, type CredentialStatus } from '../ai/credentials.ts';
 import type { KeyWrapper } from '../ai/keyring.ts';
-import { listModels, registerModel, setModelEnabled, type PlatformModel } from '../ai/models.ts';
+import { listModels, registerImageModel, registerModel, setModelEnabled, type PlatformModel } from '../ai/models.ts';
 import { isValidAgentTaskLimits } from '../agent/budget.ts';
 import { deleteAgentLimitOverride, listAgentLimitOverrides, setAgentLimitOverride, type AgentLimitOverride } from '../agent/limitOverrides.ts';
 import { JOB_TYPE_PATTERN } from '../db/migrations/0021_jobs.ts';
 import { AGENT_BUDGET_MAX_TURN_LIMIT } from '../db/migrations/0033_agent_job_budgets.ts';
 import { AGENT_LIMIT_OVERRIDE_NOTE_MAX_LENGTH } from '../db/migrations/0035_agent_job_limit_overrides.ts';
 import type { JobTypeRegistry } from '../jobs/definitions.ts';
-import { BILLING_PROVIDERS, type BillingProvider, type Database } from '../db/schema.ts';
+import { BILLING_PROVIDERS, CREDENTIAL_KINDS, PLATFORM_MODEL_KINDS, type BillingProvider, type CredentialKind, type Database, type PlatformModelKind } from '../db/schema.ts';
 import { withTenant } from '../db/tenant.ts';
 import { AppError } from '../errors.ts';
 import { sendMailInBackground, type Mailer } from '../mail/mailer.ts';
@@ -63,6 +64,8 @@ const MONEY_FIELDS = [
   'outputPricePerMtok',
   'upstreamInputPricePerMtok',
   'upstreamOutputPricePerMtok',
+  'imagePrice',
+  'upstreamImagePrice',
 ] as const;
 
 /**
@@ -95,12 +98,14 @@ function modelResponse(model: PlatformModel) {
     id: model.id,
     provider: model.provider,
     model: model.model,
+    kind: model.kind,
     isFree: model.isFree,
     enabled: model.enabled,
     status: model.status,
     note: model.note,
     inputPricePerMtok: model.inputPricePerMtok?.toString() ?? null,
     outputPricePerMtok: model.outputPricePerMtok?.toString() ?? null,
+    imagePrice: model.imagePrice?.toString() ?? null,
     createdAt: model.createdAt.toISOString(),
     updatedAt: model.updatedAt.toISOString(),
   };
@@ -349,6 +354,59 @@ export async function registerAdminRoutes(app: FastifyInstance, deps: AdminRoute
     },
   );
 
+  // 生图模型的按张价格（8.9，迁移 0045）：规则与 /billing/prices 相同（二次验证、生效时间不早于当前、金额为整数字符串）。
+  app.post<{
+    Body: { orgId?: string | null; provider: BillingProvider; model: string; imagePrice: string; effectiveFrom?: string; note?: string; upstreamImagePrice?: string; password: string };
+  }>(
+    '/billing/image-prices',
+    {
+      preValidation: rejectNumericMoney,
+      schema: {
+        body: {
+          type: 'object',
+          properties: {
+            orgId: { anyOf: [UUID_SCHEMA, { type: 'null' }] },
+            provider: { type: 'string', enum: [...BILLING_PROVIDERS] },
+            model: { type: 'string', pattern: MODEL_NAME_PATTERN.source },
+            imagePrice: UNITS_SCHEMA,
+            effectiveFrom: { type: 'string', maxLength: 40 },
+            note: { type: 'string', maxLength: 500 },
+            upstreamImagePrice: UNITS_SCHEMA,
+            password: STEP_UP_PASSWORD_SCHEMA,
+          },
+          required: ['provider', 'model', 'imagePrice', 'password'],
+          additionalProperties: false,
+        },
+      },
+    },
+    async (request, reply) => {
+      const body = request.body;
+      let effectiveFrom: Date | null = null;
+      if (body.effectiveFrom !== undefined) {
+        effectiveFrom = ISO_TIMESTAMP_PATTERN.test(body.effectiveFrom) ? new Date(body.effectiveFrom) : new Date(NaN);
+        if (Number.isNaN(effectiveFrom.getTime())) {
+          throw new AppError(400, 'INVALID_EFFECTIVE_FROM', '生效时间格式不正确，应为带时区的 ISO 8601 时间');
+        }
+      }
+      await verifyStepUp(request, reply, body.password);
+      const context = tenantOf(request);
+      const price = await addImagePrice(db, context, {
+        orgId: body.orgId ? body.orgId.toLowerCase() : null,
+        provider: body.provider,
+        model: body.model,
+        imagePrice: BigInt(body.imagePrice),
+        effectiveFrom,
+        note: body.note ?? null,
+        upstreamImagePrice: body.upstreamImagePrice === undefined ? null : BigInt(body.upstreamImagePrice),
+      });
+      request.log.info(
+        { billing: { action: 'image_price', priceId: price.priceId, orgId: body.orgId ?? null, provider: body.provider, model: body.model, operator: context.userId } },
+        'billing image price added',
+      );
+      return reply.code(201).send({ price: { id: price.priceId, effectiveFrom: price.effectiveFrom.toISOString() } });
+    },
+  );
+
   // 平台凭据（第 4.1~4.4 节）：只返回状态（是否已配置、末尾 4 位），任何接口都不返回明文。
   app.get('/ai/credentials', async (request) => {
     const credentials = await listCredentialStatus(db, tenantOf(request));
@@ -356,7 +414,8 @@ export async function registerAdminRoutes(app: FastifyInstance, deps: AdminRoute
   });
 
   // 写入或替换某个服务商的 API Key 和 Base URL。每次都必须同时提供 Key：修改 Base URL 不沿用已保存的 Key（第 4.4 节）。
-  app.put<{ Params: { provider: BillingProvider }; Body: { baseUrl: string; apiKey: string; password: string } }>(
+  // kind：text_model（默认，文本模型）或 image_model（生图，8.9）；两种各自保存 Base URL 与 Key。
+  app.put<{ Params: { provider: BillingProvider }; Body: { kind?: CredentialKind; baseUrl: string; apiKey: string; password: string } }>(
     '/ai/credentials/:provider',
     {
       schema: {
@@ -368,6 +427,7 @@ export async function registerAdminRoutes(app: FastifyInstance, deps: AdminRoute
         body: {
           type: 'object',
           properties: {
+            kind: { type: 'string', enum: [...CREDENTIAL_KINDS] },
             baseUrl: { type: 'string', minLength: 1, maxLength: BASE_URL_MAX_LENGTH },
             apiKey: { type: 'string', minLength: 1, maxLength: 512 },
             password: STEP_UP_PASSWORD_SCHEMA,
@@ -385,9 +445,9 @@ export async function registerAdminRoutes(app: FastifyInstance, deps: AdminRoute
       if (!API_KEY_PATTERN.test(body.apiKey)) throw new AppError(400, 'INVALID_API_KEY', 'API Key 格式不正确');
       await verifyStepUp(request, reply, body.password);
       const context = tenantOf(request);
-      const status = await putCredential(db, context, keyWrapper, { provider: request.params.provider, baseUrl, apiKey: body.apiKey });
+      const status = await putCredential(db, context, keyWrapper, { kind: body.kind ?? 'text_model', provider: request.params.provider, baseUrl, apiKey: body.apiKey });
       request.log.info(
-        { ai: { action: 'credential', provider: status.provider, baseUrl: status.baseUrl, kekVersion: status.kekVersion, operator: context.userId } },
+        { ai: { action: 'credential', provider: status.provider, kind: status.kind, baseUrl: status.baseUrl, kekVersion: status.kekVersion, operator: context.userId } },
         'ai credential saved',
       );
       return reply.code(200).send({ credential: credentialResponse(status) });
@@ -401,7 +461,8 @@ export async function registerAdminRoutes(app: FastifyInstance, deps: AdminRoute
   });
 
   // 登记：默认停用。登记免费模型等于让平台承担上游费用，所以与资金操作一样要求重新输入密码。
-  app.post<{ Body: { provider: BillingProvider; model: string; isFree: boolean; note?: string; password: string } }>(
+  // kind：text（默认）或 image（生图模型，8.9，按张计价）；登记后不能改。
+  app.post<{ Body: { provider: BillingProvider; model: string; kind?: PlatformModelKind; isFree: boolean; note?: string; password: string } }>(
     '/ai/models',
     {
       // Fastify 的校验会把字符串 "false"、数字 0 等转换成布尔值，所以在校验之前检查：免费标记只接受 JSON 布尔值。
@@ -417,6 +478,7 @@ export async function registerAdminRoutes(app: FastifyInstance, deps: AdminRoute
           properties: {
             provider: { type: 'string', enum: [...BILLING_PROVIDERS] },
             model: { type: 'string', pattern: MODEL_NAME_PATTERN.source },
+            kind: { type: 'string', enum: [...PLATFORM_MODEL_KINDS] },
             // 必填，不设默认值：是否免费必须由管理员明确选择。
             isFree: { type: 'boolean' },
             note: { type: 'string', maxLength: 500 },
@@ -431,13 +493,15 @@ export async function registerAdminRoutes(app: FastifyInstance, deps: AdminRoute
       const body = request.body;
       await verifyStepUp(request, reply, body.password);
       const context = tenantOf(request);
-      const model = await registerModel(db, context, { provider: body.provider, model: body.model, isFree: body.isFree, note: body.note ?? null });
+      const kind = body.kind ?? 'text';
+      const input = { provider: body.provider, model: body.model, isFree: body.isFree, note: body.note ?? null };
+      const model = kind === 'image' ? await registerImageModel(db, context, input) : await registerModel(db, context, input);
       request.log.info(
-        { ai: { action: 'model_register', modelId: model.id, provider: body.provider, model: body.model, isFree: body.isFree, operator: context.userId } },
+        { ai: { action: 'model_register', modelId: model.id, provider: body.provider, model: body.model, kind, isFree: body.isFree, operator: context.userId } },
         'ai model registered',
       );
       return reply.code(201).send({
-        model: { id: model.id, provider: body.provider, model: body.model, isFree: body.isFree, enabled: false, createdAt: model.createdAt.toISOString() },
+        model: { id: model.id, provider: body.provider, model: body.model, kind, isFree: body.isFree, enabled: false, createdAt: model.createdAt.toISOString() },
       });
     },
   );

@@ -92,6 +92,8 @@ export function sealCredential(wrapper: KeyWrapper, binding: CredentialBinding, 
 }
 
 export interface PutCredentialInput {
+  /** 凭据种类：文本模型（默认）或生图（迁移 0045）。 */
+  kind?: CredentialKind;
   provider: BillingProvider;
   /** 已经过 normalizeBaseUrl。 */
   baseUrl: string;
@@ -109,7 +111,7 @@ export async function putCredential(
   input: PutCredentialInput,
 ): Promise<CredentialStatus> {
   if (!API_KEY_PATTERN.test(input.apiKey)) throw new TypeError('API Key 格式不合法');
-  const binding: CredentialBinding = { id: randomUUID(), kind: 'text_model', provider: input.provider, baseUrl: input.baseUrl };
+  const binding: CredentialBinding = { id: randomUUID(), kind: input.kind ?? 'text_model', provider: input.provider, baseUrl: input.baseUrl };
   const sealed = sealCredential(wrapper, binding, input.apiKey);
   try {
     return await withTenant(db, context, async (trx) => {
@@ -140,6 +142,7 @@ export async function listCredentialStatus(db: Kysely<Database>, context: Tenant
       .selectFrom('provider_credentials')
       .select(['provider', 'kind', 'base_url', 'last4', 'kek_version', 'created_at'])
       .orderBy('provider')
+      .orderBy('kind')
       .execute(),
   );
   return rows.map((row) => ({

@@ -2,6 +2,7 @@
 // src/jobs/registry.ts；测试用的任务类型在 tests/ 中定义，不进入构建产物。
 import type { Kysely } from 'kysely';
 import type { ChatDelta, ChatRequest, ChatResult } from '../ai/gateway.ts';
+import type { ImageRequest, ImageResult } from '../ai/images.ts';
 import { isValidAgentTaskLimits, type AgentTaskLimits } from '../agent/budget.ts';
 import type { AgentSandboxTemplate, JobAgent } from '../agent/execution.ts';
 import type { JobAgentWorkspace } from '../agent/workspaceJob.ts';
@@ -35,6 +36,9 @@ export const ORG_RUNNING_JOB_LIMIT = 3;
  */
 export type JobChatRequest = Omit<ChatRequest, 'source' | 'jobId' | 'jobType' | 'stepKey'> & { stepKey: string };
 
+/** 任务中的生图调用（8.9）：来源、任务编号和类型由执行者填写；步骤键规则与 JobChatRequest 相同。 */
+export type JobImageRequest = Omit<ImageRequest, 'source' | 'jobId' | 'jobType' | 'stepKey'> & { stepKey: string };
+
 export interface JobAi {
   /**
    * 经 AI 网关调用模型（docs/SERVER_DESIGN.md 第 10 节）：按“组织 + 服务商”的并发上限排队，冻结、结算记到本任务
@@ -48,6 +52,14 @@ export interface JobAi {
    * - worker 未配置主密钥（AI_KEK_FILE）时抛 JobError('AI_UNAVAILABLE')。
    */
   chat(request: JobChatRequest, options?: { onDelta?: (delta: ChatDelta) => void }): Promise<ChatResult>;
+  /**
+   * 生图（8.9，src/ai/images.ts）：按张冻结与结算，计入本任务的费用上限（达到时抛 JobTaskLimitError，任务暂停）；余额不足、
+   * 步骤幂等、错误转换与 chat 相同。服务商返回的图片经 render-html 沙箱转成 PNG、按上传图片的规则校验后写成本任务项目的图片产物，
+   * 只按入库的张数收费；服务商失败、图片全部无效、取消与平台中断都不收费。不计入 Agent 的轮数（轮数只计模型调用路由的请求）。
+   * 需要 worker 配置主密钥、对象存储与 sandbox-runner（render-html），任务必须属于项目。
+   * 执行者（src/jobs/runner.ts）总会提供；只用于文本调用的测试替身可以省略。
+   */
+  generateImages?(request: JobImageRequest): Promise<ImageResult>;
 }
 
 /** 任务执行中可以使用的上下文。 */

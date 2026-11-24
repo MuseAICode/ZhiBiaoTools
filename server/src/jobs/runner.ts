@@ -36,6 +36,8 @@ import type { FastifyBaseLogger } from 'fastify';
 import type { Kysely } from 'kysely';
 import { JOB_DISPATCH_BATCH_MAX } from '../db/migrations/0021_jobs.ts';
 import type { AiGateway } from '../ai/gateway.ts';
+import type { AiImageGateway } from '../ai/images.ts';
+import { discardGeneratedImages, storeGeneratedImages } from '../render/generatedImages.ts';
 import type { AgentQuotaOptions } from '../agent/quota.ts';
 import { beginAgentTurn, markAgentBudgetExhausted, TASK_COST_LIMIT_CODE, TASK_TURN_LIMIT_CODE } from '../agent/budget.ts';
 import { createJobAgent, DEFAULT_AGENT_CONTEXT_WINDOW, DEFAULT_AGENT_MAX_OUTPUT_TOKENS, type AgentModelLimits } from '../agent/execution.ts';
@@ -104,6 +106,8 @@ export interface JobRunnerOptions {
   notifier?: JobNotifier;
   /** AI 网关；未配置主密钥时为 null，任务调用模型时失败（AI_UNAVAILABLE）。 */
   gateway?: AiGateway | null;
+  /** AI 网关的生图调用（8.9）；未配置主密钥时为 null，任务生图时失败（AI_UNAVAILABLE）。 */
+  imageGateway?: AiImageGateway | null;
   /** 对象存储；未配置时为 null。 */
   objectStore?: ObjectStore | null;
   /** 解析沙箱（经 sandbox-runner）；未配置时为 null。 */
@@ -156,6 +160,7 @@ export function createJobRunner(options: JobRunnerOptions): JobRunner {
   const sentinelKey = `${prefix}:jobs:sentinel`;
   const notifier = options.notifier ?? NULL_JOB_NOTIFIER;
   const gateway = options.gateway ?? null;
+  const imageGateway = options.imageGateway ?? null;
   const agentQuota = options.agentQuota;
 
   const workers: Worker<DispatchPayload>[] = [];
@@ -216,6 +221,27 @@ export function createJobRunner(options: JobRunnerOptions): JobRunner {
     let storageQuotaExceeded = false;
     const tenant = { orgId: job.orgId, userId: job.userId, role };
     const turnRef = { tenant, jobId: job.id, runId };
+    // worker 关闭、租约丢失中止的调用不收费（续跑时重做）；用户取消、暂停中止的文本调用按已产生的用量收费，生图不收费。
+    const platformAborted = () => controller.signal.reason === 'shutdown' || controller.signal.reason === 'lease-lost';
+    /** 网关错误的统一处理：余额不足、达到任务上限时之后的调用不再发起；其他 AppError 转成 JobError。 */
+    const gatewayFailure = async (error: unknown): Promise<never> => {
+      if (error instanceof AppError && error.code === 'INSUFFICIENT_BALANCE') {
+        balanceExhausted = true;
+        throw new JobBalanceExhaustedError({ cause: error });
+      }
+      if (error instanceof AppError && (error.code === TASK_COST_LIMIT_CODE || error.code === TASK_TURN_LIMIT_CODE)) {
+        // 之前已达到另一个上限时按先记下的原因暂停。
+        const reason =
+          error.code === TASK_COST_LIMIT_CODE
+            ? ((await markAgentBudgetExhausted(db, turnRef, 'task_cost_limit').catch(() => null)) ?? 'task_cost_limit')
+            : 'task_turn_limit';
+        taskLimit = new JobTaskLimitError(reason, { cause: error });
+        throw taskLimit;
+      }
+      if (controller.signal.aborted) throw error;
+      if (error instanceof AppError) throw new JobError(error.code, error.message, { cause: error });
+      throw error;
+    };
     const ai: JobAi = {
       async chat(request, chatOptions = {}) {
         if (balanceExhausted) throw new JobBalanceExhaustedError();
@@ -231,28 +257,44 @@ export function createJobRunner(options: JobRunnerOptions): JobRunner {
               log,
               // 任务中的调用一直排队等并发名额，直到任务被取消或暂停。
               concurrencyWaitMs: Number.POSITIVE_INFINITY,
-              // worker 关闭、租约丢失中止的调用不收费（续跑时重做）；用户取消、暂停中止的按已产生的用量收费。
-              platformAborted: () => controller.signal.reason === 'shutdown' || controller.signal.reason === 'lease-lost',
+              platformAborted,
               ...(chatOptions.onDelta ? { onDelta: chatOptions.onDelta } : {}),
             },
           );
         } catch (error) {
-          if (error instanceof AppError && error.code === 'INSUFFICIENT_BALANCE') {
-            balanceExhausted = true;
-            throw new JobBalanceExhaustedError({ cause: error });
-          }
-          if (error instanceof AppError && (error.code === TASK_COST_LIMIT_CODE || error.code === TASK_TURN_LIMIT_CODE)) {
-            // 之前已达到另一个上限时按先记下的原因暂停。
-            const reason =
-              error.code === TASK_COST_LIMIT_CODE
-                ? ((await markAgentBudgetExhausted(db, turnRef, 'task_cost_limit').catch(() => null)) ?? 'task_cost_limit')
-                : 'task_turn_limit';
-            taskLimit = new JobTaskLimitError(reason, { cause: error });
-            throw taskLimit;
-          }
-          if (controller.signal.aborted) throw error;
-          if (error instanceof AppError) throw new JobError(error.code, error.message, { cause: error });
-          throw error;
+          return gatewayFailure(error);
+        }
+      },
+      async generateImages(request) {
+        if (balanceExhausted) throw new JobBalanceExhaustedError();
+        if (taskLimit) throw new JobTaskLimitError(taskLimit.reason);
+        if (!imageGateway) throw new JobError('AI_UNAVAILABLE', '生图服务暂不可用，请稍后再试');
+        const storeContext = {
+          jobId: job.id,
+          signal: controller.signal,
+          // 任务日志（job_events）；context 在下面创建，调用时已存在。
+          log: (message: string, data?: Record<string, unknown>) => context.log(message, data),
+          sandbox: options.sandbox ?? null,
+          db,
+          tenant,
+          objectStore: options.objectStore ?? null,
+          projectId: job.projectId,
+        };
+        try {
+          return await imageGateway.generate(
+            tenant,
+            { ...request, source: 'job', jobId: job.id, jobType: job.type },
+            {
+              store: (images) => storeGeneratedImages(storeContext, images),
+              discard: (artifactIds) => discardGeneratedImages(storeContext, artifactIds),
+              signal: controller.signal,
+              log,
+              concurrencyWaitMs: Number.POSITIVE_INFINITY,
+              platformAborted,
+            },
+          );
+        } catch (error) {
+          return gatewayFailure(error);
         }
       },
     };

@@ -81,8 +81,8 @@ class BlockedAddressError extends Error {
   readonly code = 'EAI_BLOCKED';
 }
 
-/** 解析后校验每一个地址，有任何一个被禁止就整体拒绝。 */
-const safeLookup: LookupFunction = (hostname, options, callback) => {
+/** 解析后校验每一个地址，有任何一个被禁止就整体拒绝。生图结果的下载（src/ai/imageDownload.ts）用同一个函数。 */
+export const safeLookup: LookupFunction = (hostname, options, callback) => {
   dnsLookup(hostname, { ...options, all: true }, (error, addresses: LookupAddress[]) => {
     if (error) return callback(error, '', 0);
     if (addresses.length === 0 || addresses.some((entry) => isBlockedAddress(entry.address))) {
@@ -232,4 +232,83 @@ export async function* streamChatCompletion(request: UpstreamRequest): AsyncGene
   }
   // 没有 [DONE] 就结束了：由调用方根据是否收到 finish_reason 判断是否完整。
   return { done: false };
+}
+
+export interface UpstreamJsonRequest extends Omit<UpstreamRequest, 'maxResponseBytes'> {
+  maxResponseBytes: number;
+}
+
+/**
+ * 非流式的 JSON 请求（生图 /images/generations，8.9）：出站防护与 streamChatCompletion 相同（https、私有地址、不跟随重定向、
+ * 响应体上限、总时长由 signal 决定）。返回解析后的 JSON 对象；非 200、格式不对时抛 UpstreamError，调用方中止时抛 UpstreamAbortedError。
+ */
+export async function postUpstreamJson(request: UpstreamJsonRequest): Promise<Record<string, unknown>> {
+  const url = new URL(`${request.baseUrl}${request.path}`);
+  const host = url.hostname.toLowerCase();
+  const trusted = request.privateHosts.includes(host);
+  if (url.protocol !== 'https:' && !(url.protocol === 'http:' && trusted)) throw new UpstreamError('upstream_unreachable');
+  const literal = host.replace(/^\[|\]$/g, '');
+  if (!trusted && isIP(literal) !== 0 && isBlockedAddress(literal)) throw new UpstreamError('upstream_unreachable');
+
+  const payload = Buffer.from(JSON.stringify(request.body), 'utf8');
+  const transport = url.protocol === 'https:' ? https : http;
+  const abortedError = () => (request.isTimeout() ? new UpstreamError('upstream_timeout') : new UpstreamAbortedError());
+  if (request.signal.aborted) throw abortedError();
+
+  const response = await new Promise<http.IncomingMessage>((resolve, reject) => {
+    const req = transport.request(
+      url,
+      {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          accept: 'application/json',
+          'content-length': payload.length,
+          authorization: `Bearer ${request.apiKey}`,
+        },
+        ...(trusted ? {} : { lookup: safeLookup }),
+        signal: request.signal,
+        agent: false,
+      },
+      resolve,
+    );
+    req.on('error', () => reject(request.signal.aborted ? abortedError() : new UpstreamError('upstream_unreachable')));
+    req.end(payload);
+  });
+
+  const status = response.statusCode ?? 0;
+  const chunks: Buffer[] = [];
+  let received = 0;
+  const limit = status === 200 ? request.maxResponseBytes : ERROR_BODY_LIMIT;
+  try {
+    for await (const chunk of response) {
+      received += (chunk as Buffer).length;
+      if (received > limit) {
+        if (status !== 200) break;
+        throw new UpstreamError('invalid_upstream_response');
+      }
+      chunks.push(chunk as Buffer);
+    }
+  } catch (error) {
+    if (error instanceof UpstreamError) throw error;
+    if (request.signal.aborted) throw abortedError();
+    if (status === 200) throw new UpstreamError('upstream_unreachable');
+  } finally {
+    response.destroy();
+  }
+  if (request.signal.aborted) throw abortedError();
+  const body = Buffer.concat(chunks).toString('utf8');
+  // 不跟随重定向：3xx 与其他非 200 一样按上游失败处理。
+  if (status !== 200) {
+    const upstreamCode = errorCodeOf(body);
+    throw new UpstreamError('upstream_error', { status, ...(upstreamCode ? { upstreamCode } : {}) });
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(body);
+  } catch {
+    throw new UpstreamError('invalid_upstream_response');
+  }
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) throw new UpstreamError('invalid_upstream_response');
+  return parsed as Record<string, unknown>;
 }

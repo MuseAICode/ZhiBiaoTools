@@ -229,6 +229,24 @@ export async function supersedeArtifacts(
   });
 }
 
+/**
+ * 按编号把产物标为已被替换（生图结果因同一步骤已有结果而作废时，8.9）：只处理本组织已完成、未被替换的产物，
+ * 由清理任务在替换窗口后删除。返回标记的数量。
+ */
+export async function supersedeArtifactsById(db: Kysely<Database>, context: TenantContext, artifactIds: readonly string[]): Promise<number> {
+  if (artifactIds.length === 0) return 0;
+  return withTenant(db, context, async (trx) => {
+    const result = await trx
+      .updateTable('artifacts')
+      .set({ superseded_at: new Date() })
+      .where('id', 'in', [...artifactIds])
+      .where('status', '=', 'ready')
+      .where('superseded_at', 'is', null)
+      .executeTakeFirst();
+    return Number(result.numUpdatedRows);
+  });
+}
+
 /** 已完成、可访问的产物；其他组织的、写入中的、已被替换的、项目或来源文件已删除的都返回 null。 */
 export async function findArtifact(db: Kysely<Database>, context: TenantContext, artifactId: string): Promise<ArtifactRecord | null> {
   const row = await withTenant(db, context, (trx) =>

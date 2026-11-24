@@ -341,7 +341,7 @@ export const RENDER_HTML_MAX_PNG_BYTES = 10 * MIB;
  * （server/sandbox/export/render-html.mjs、htmlImage.mjs）。隔离参数与 parse 相同（断网、gVisor、只读根文件系统、非 root、无能力），
  * 资源为第 8 步说明第 3 项的起步值：内存 1 GiB（无 swap）、CPU 1 核，每张 30 秒（入口执行）、每批 5 分钟（命令墙钟）。
  * 每次工具调用（一批配图）一个沙箱、用完即毁，只属于一个任务。
- * 输入为 request.json（HTML 每张 ≤ 1 MiB、合计 ≤ 16 MiB，JSON 转义后至多约 6 倍）与 8.8a2 的待转图片 <id>.svg / <id>.webp
+ * 输入为 request.json（HTML 每张 ≤ 1 MiB、合计 ≤ 16 MiB，JSON 转义后至多约 6 倍）与 8.8a2 的待转图片 <id>.svg / <id>.webp（8.9 起另有 <id>.png / <id>.jpeg）
  * （每张 ≤ 10 MiB、合计 ≤ 64 MiB，大小由 worker 与入口检查）；取回只有 <id>.png（≤ 50 张、每张 ≤ 10 MiB）
  * 与 result.json，合计 ≤ 256 MiB（tmpfs 计入内存上限，实际 PNG 远小于上限）。
  */
@@ -365,7 +365,7 @@ const RENDER_HTML_TEMPLATE: SandboxTemplate = Object.freeze({
     maxFiles: RENDER_HTML_MAX_ITEMS + 1,
     maxFileBytes: 97 * MIB,
     maxTotalBytes: (97 + 64) * MIB,
-    extensions: new Set(['json', 'svg', 'webp']),
+    extensions: new Set(['json', 'svg', 'webp', 'png', 'jpeg']),
   }),
   output: Object.freeze({
     directory: '/output',
