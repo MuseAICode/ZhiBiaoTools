@@ -380,6 +380,7 @@ describe('回滚 0035', () => {
     const jobId = await enqueueAgent(context);
     const owner = connect(testDb.ownerConfig);
     try {
+      expect((await migrateDown(owner)).results?.map((result) => result.migrationName)).toEqual(['0046_technical_plan_section_bodies']);
       expect((await migrateDown(owner)).results?.map((result) => result.migrationName)).toEqual(['0045_ai_image_generation']);
       expect((await migrateDown(owner)).results?.map((result) => result.migrationName)).toEqual(['0044_job_pause_selection']);
       expect((await migrateDown(owner)).results?.map((result) => result.migrationName)).toEqual(['0043_agent_model_rejections']);

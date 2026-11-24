@@ -89,6 +89,8 @@ const APPLICATION_TABLES = [
   'technical_plan_global_fact_groups',
   'technical_plan_meta',
   'technical_plan_outline_nodes',
+  'technical_plan_section_bodies',
+  'technical_plan_section_images',
   'template_preview_requests',
   'usage_records',
   'user_settings',
@@ -167,6 +169,7 @@ const APP_FUNCTIONS = [
   'org_settings_guard',
   'projects_guard',
   'technical_plan_export_requests_guard',
+  'technical_plan_section_images_guard',
   'template_preview_requests_guard',
 ];
 
@@ -262,6 +265,7 @@ describe('迁移升级与回滚', () => {
       (await sql<{ prosrc: string }>`SELECT prosrc FROM pg_proc WHERE proname = 'ai_usage_begin'`.execute(testDb.admin)).rows.map((row) => row.prosrc);
     expectSuccess(await migrateToLatest(owner));
     expect((await source())[0]).toContain('ai_model_price');
+    expect(expectSuccess(await migrateDown(owner))).toEqual(['Down:0046_technical_plan_section_bodies']);
     expect(expectSuccess(await migrateDown(owner))).toEqual(['Down:0045_ai_image_generation']);
     expect(expectSuccess(await migrateDown(owner))).toEqual(['Down:0044_job_pause_selection']);
     expect(expectSuccess(await migrateDown(owner))).toEqual(['Down:0043_agent_model_rejections']);

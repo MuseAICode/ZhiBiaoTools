@@ -1180,6 +1180,25 @@ export interface TechnicalPlanContentPlansTable {
   updated_at: ColumnType<Date, never, never>;
 }
 
+/** 各 AI 小节的正文（迁移 0046_technical_plan_section_bodies）：规范化后的受限 HTML，随目录节点删除。 */
+export interface TechnicalPlanSectionBodiesTable {
+  org_id: Fixed<string>;
+  project_id: Fixed<string>;
+  node_id: Fixed<string>;
+  html: ColumnType<string, string, string>;
+  created_at: ColumnType<Date, never, never>;
+  updated_at: ColumnType<Date, never, never>;
+}
+
+/** AI 小节正文引用的配图产物（迁移 0046_technical_plan_section_bodies），随正文或产物删除，没有 UPDATE 授权。 */
+export interface TechnicalPlanSectionImagesTable {
+  org_id: Fixed<string>;
+  project_id: Fixed<string>;
+  node_id: Fixed<string>;
+  artifact_id: Fixed<string>;
+  created_at: ColumnType<Date, never, never>;
+}
+
 /** 选中的招标解析项（迁移 0018_technical_plan），整体替换，没有 UPDATE 授权。 */
 export interface TechnicalPlanGenerationBidTasksTable {
   org_id: Fixed<string>;
@@ -1529,6 +1548,8 @@ export interface Database {
   technical_plan_global_fact_groups: TechnicalPlanGlobalFactGroupsTable;
   technical_plan_content_sections: TechnicalPlanContentSectionsTable;
   technical_plan_content_plans: TechnicalPlanContentPlansTable;
+  technical_plan_section_bodies: TechnicalPlanSectionBodiesTable;
+  technical_plan_section_images: TechnicalPlanSectionImagesTable;
   jobs: JobsTable;
   job_events: JobEventsTable;
   job_step_results: JobStepResultsTable;

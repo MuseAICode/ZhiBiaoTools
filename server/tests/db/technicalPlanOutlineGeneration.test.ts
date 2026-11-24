@@ -845,6 +845,7 @@ describe('回滚 0044', () => {
     await expect(superuser.updateTable('jobs').set({ pause_reason: 'waiting_for_choice' }).where('id', '=', jobId).execute()).rejects.toThrow(/jobs_pause_reason_check/);
     const migrator = connect(testDb.ownerConfig);
     try {
+      expect((await migrateDown(migrator)).results?.map((result) => result.migrationName)).toEqual(['0046_technical_plan_section_bodies']);
       expect((await migrateDown(migrator)).results?.map((result) => result.migrationName)).toEqual(['0045_ai_image_generation']);
       expect((await migrateDown(migrator)).results?.map((result) => result.migrationName)).toEqual(['0044_job_pause_selection']);
       expect(await superuser.selectFrom('jobs').select(['status', 'pause_reason']).where('id', '=', jobId).executeTakeFirstOrThrow()).toEqual({ status: 'paused', pause_reason: null });
