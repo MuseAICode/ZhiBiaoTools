@@ -337,7 +337,8 @@ export interface AgentRun {
   /**
    * 写入工作区中的文件（8.10c2b1：长时工具的执行函数写回结果）。路径按 agent 工作区的放入规则校验、不能重复，受保护文件不能经这里
    * 写入（它们由 baseline.write 登记），不合法时抛 TypeError；单个文件与合计不超过 AGENT_WRITE_FILE_MAX_BYTES /
-   * AGENT_WRITE_TOTAL_MAX_BYTES。已有的同名文件被替换。
+   * AGENT_WRITE_TOTAL_MAX_BYTES。已有的同名文件被替换。放入失败（含中止）时可能留下写了一半的文件：本次执行的沙箱随之不可用（之后的提示词、
+   * 读取与检查点都失败），快照不会带上它。
    */
   writeFiles(files: readonly { path: string; data: Buffer }[]): Promise<void>;
   /** 执行一条提示词（见文件头）。可以重试的失败抛 AgentPromptRetryableError，其余按原因抛 JobError / 暂停类错误 / JobInterruptedError。 */
@@ -897,6 +898,9 @@ async function openAgentRun(
       try {
         await driver.copyIn(current, prepared, { signal });
       } catch (error) {
+        // 放入是沙箱内的 tar 直接解到 /workspace，中途失败（含中止）可能留下写了一半的文件：之后本次执行的沙箱一律不再使用，
+        // 不能再保存检查点（快照不会带上半截文件），续跑放入的是此前检查点的快照。
+        broken ??= error instanceof Error ? error : new Error('agent workspace write failed');
         throw sandboxFailure(error);
       }
     }

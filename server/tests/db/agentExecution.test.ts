@@ -1652,5 +1652,49 @@ describe('长时业务工具（8.10c2b1）', () => {
     expect(errors).toHaveLength(6);
     expect(fake.state.calls).toHaveLength(0);
   });
+
+  it('写入中途失败（沙箱错误、中止）：留下的半截文件不进快照——之后不能再保存检查点或执行提示词，续跑放入此前的快照', async () => {
+    for (const failure of ['sandbox', 'abort'] as const) {
+      fake = fakeDriver();
+      executions = 0;
+      const { dispatcher } = await startRunner();
+      const member = await newMember();
+      const outcomes: string[] = [];
+      steps = [async (run) => {
+        await run.writeFiles([{ path: '正文/1.1.html', data: Buffer.from('<p>完整的第一节</p>') }]);
+        await run.checkpoint({ done: ['1.1'] });
+        const copyIn = fake.driver.copyIn.bind(fake.driver);
+        fake.driver.copyIn = async (sandbox, files) => {
+          // 与 tar 中途失败相同：文件已部分写入。
+          await copyIn(sandbox, [{ path: '正文/1.2.html', data: Buffer.from('<p>写了一') }]);
+          if (failure === 'abort') throw new SandboxError('SANDBOX_ABORTED', '已中止');
+          throw new SandboxError('SANDBOX_FAILED', '向沙箱放入文件失败');
+        };
+        const error = await run.writeFiles([{ path: '正文/1.2.html', data: Buffer.from('<p>写了一半之后的完整内容</p>') }]).then(() => null, (caught: unknown) => caught);
+        outcomes.push((error as { name?: string; code?: string }).code ?? (error as Error).name);
+        fake.driver.copyIn = copyIn;
+        for (const attempt of [() => run.checkpoint({ done: ['1.1', '1.2'] }), () => run.prompt(PROMPT), () => run.readFiles(['正文/1.2.html'])]) {
+          const again = await attempt().then(() => null, (caught: unknown) => caught);
+          expect(again).toBeInstanceOf(JobError);
+          outcomes.push((again as JobError).code);
+        }
+        // 任务以固定错误结束（不管写入失败的原因），只看快照中有什么。
+        throw new JobError('TEST_WRITE_FAILED', '写入失败');
+      }];
+      const { job } = await enqueue(member, dispatcher, 'test-agent-long');
+      const row = await waitStatus(job.id, 'failed', '任务失败');
+      expect(row.error_code).toBe('TEST_WRITE_FAILED');
+      expect(outcomes).toEqual([failure === 'abort' ? 'JobInterruptedError' : AGENT_SANDBOX_FAILED_CODE, AGENT_SANDBOX_FAILED_CODE, AGENT_SANDBOX_FAILED_CODE, AGENT_SANDBOX_FAILED_CODE]);
+      // 快照只有失败前的检查点：完整的 1.1，没有半截的 1.2。
+      expect(row.checkpoint).toMatchObject({ task: { done: ['1.1'] } });
+      const objects = [...store.objects.values()];
+      expect(objects).toHaveLength(1);
+      const files = await readArchive(Readable.from([objects[0]!]), SANDBOX_TEMPLATES.agent.output);
+      expect(files.map((file) => file.path).filter((path) => path.startsWith('正文/'))).toEqual(['正文/1.1.html']);
+      expect(fake.state.calls).toHaveLength(0);
+      await Promise.all(runners.splice(0).map((runner) => runner.close()));
+      store.objects.clear();
+    }
+  });
 });
 
