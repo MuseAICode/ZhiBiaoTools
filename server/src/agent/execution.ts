@@ -15,7 +15,8 @@
 // - close()：销毁沙箱、作废令牌（任务在 finally 中调用，withAgentRun 代为调用）。
 // - 跨任务续用（8.7b，桌面版 persistent_task.mode = 'resume'）：调整类任务首次执行时经 open({ continueFrom }) 接着另一个任务的会话
 //   （src/agent/continuation.ts 按快照 id 找到与当前快照同一对的现场）：放入该类任务当前的快照，续接会话与受保护文件的登记，阶段、
-//   已发出的阶段与待补压缩清空（新任务的要求照常发出）。之后的检查点与续跑与普通任务相同。
+//   已发出的阶段与待补压缩清空（新任务的要求照常发出）。之后的检查点与续跑与普通任务相同。失败后重试（8.10b2，retainStages）接着的是
+//   同一件事的失败任务，阶段、已发出的阶段与待补压缩保留（任务只发“继续之前的任务”）。
 //
 // 入口的结果与失败代码都是沙箱的说法，不被采信：失败后按数据库中的事实判断原因（#92 登记）——本次执行的失败报告（8.4b）、任务的
 // 费用与轮数上限（8.3a）、任务是否仍在本次执行中、令牌是否已到期，入口报告模型调用失败时再看模型调用路由在本条提示词（或压缩）
@@ -296,7 +297,7 @@ export interface AgentRun {
   readonly baseline: AgentWorkspaceBaseline;
   /** 是否从本任务的 checkpoint 续跑（放入了上次的工作区快照）。 */
   readonly resumed: boolean;
-  /** 是否接着另一个任务的会话（8.7b，open({ continueFrom })）：放入了该类任务当前的快照，阶段与已发出的阶段从空开始。 */
+  /** 是否接着另一个任务的会话（8.7b，open({ continueFrom })）：放入了该类任务当前的快照，阶段与已发出的阶段从空开始（retainStages 时保留，8.10b2）。 */
   readonly continued: boolean;
   /** 续跑后原件仍不可用的受保护文件：任务须重新 baseline.write，否则需要还原时任务失败。 */
   readonly unavailableProtectedFiles: readonly string[];
@@ -337,6 +338,11 @@ export interface AgentOpenOptions {
    * （resuming 为 false）；续跑时放入本任务的快照，不能再给出。放入的快照不是该现场的快照时以 AGENT_WORKSPACE_RESTORE_FAILED 失败。
    */
   readonly continueFrom?: AgentRunState;
+  /**
+   * 失败后重试（8.10b2，桌面版 retryFailedSections 的 continuingPlanning）：与 continueFrom 一起给出，接着的是同一件事的失败任务，
+   * 保留阶段、已发出的阶段与待补压缩（任务据此只发“继续之前的任务”）；不给出时按跨任务续用清空。
+   */
+  readonly retainStages?: boolean;
 }
 
 /** 任务上下文中的 Agent（context.agent）。 */
@@ -419,18 +425,23 @@ export function createJobAgent(options: JobAgentOptions): JobAgent {
     resuming: parsed !== null,
     async open(openOptions: AgentOpenOptions = {}): Promise<AgentRun> {
       if (opened) throw new TypeError('一次执行只能打开一次 Agent 沙箱');
-      const inherited = openOptions.continueFrom === undefined ? null : continuationCheckpoint(openOptions.continueFrom, parsed);
+      if (openOptions.retainStages && openOptions.continueFrom === undefined) throw new TypeError('retainStages 只能与 continueFrom 一起给出');
+      const inherited = openOptions.continueFrom === undefined ? null : continuationCheckpoint(openOptions.continueFrom, parsed, openOptions.retainStages === true);
       opened = true;
       return openAgentRun(options, inherited ?? parsed, { db, driver, run, tenant, template, context }, inherited !== null);
     },
   });
 }
 
-/** 跨任务续用的现场：形状同 checkpoint 逐项检查，须有会话与快照 id；阶段、已发出的阶段与待补压缩清空，任务状态为空。 */
-function continuationCheckpoint(source: AgentRunState, own: AgentRunCheckpoint | null): AgentRunCheckpoint {
+/**
+ * 跨任务续用的现场：形状同 checkpoint 逐项检查，须有会话与快照 id；阶段、已发出的阶段与待补压缩清空（失败后重试 retainStages 时保留），
+ * 任务状态为空。
+ */
+function continuationCheckpoint(source: AgentRunState, own: AgentRunCheckpoint | null, retainStages: boolean): AgentRunCheckpoint {
   if (own !== null) throw new TypeError('续跑的执行不能接着其他任务的会话');
   const parsed = parseAgentRunCheckpoint({ agent: source as unknown as Record<string, unknown> });
   if (!parsed || parsed.agent.session === null || parsed.agent.snapshot === null) throw new TypeError('接着的会话必须有会话文件与快照');
+  if (retainStages) return { agent: parsed.agent, task: null };
   return { agent: { ...parsed.agent, stage: null, stageIndex: 0, promptedStage: null, compactionPending: null }, task: null };
 }
 

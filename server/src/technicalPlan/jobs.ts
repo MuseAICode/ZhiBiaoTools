@@ -129,6 +129,7 @@ import {
   BID_SECTION_EXTRACTION_JOB_TYPE,
   CONTENT_GENERATION_JOB_TYPE,
   CONTENT_GENERATION_TASK_KIND,
+  contentGenerationRetrySource,
   GLOBAL_FACTS_ADJUSTMENT_JOB_TYPE,
   GLOBAL_FACTS_ADJUSTMENT_REQUIREMENT_MAX,
   GLOBAL_FACTS_ADJUSTMENT_SUMMARY_MAX,
@@ -162,7 +163,12 @@ import {
   type TechnicalPlanState,
 } from './store.ts';
 import { BID_ANALYSIS_TASKS, bidItemLabel, isBidItemId } from './tender.ts';
-import { contentGenerationProblem, createContentGenerationJob } from './contentGenerationJob.ts';
+import {
+  contentGenerationProblem,
+  createContentGenerationJob,
+  CONTENT_RETRY_UNAVAILABLE_CODE,
+  CONTENT_RETRY_UNAVAILABLE_MESSAGE,
+} from './contentGenerationJob.ts';
 
 export {
   BID_ANALYSIS_JOB_TYPE,
@@ -1793,7 +1799,8 @@ export async function discardTechnicalPlanSessions(db: Kysely<Database>, context
 /**
  * 开始生成正文（取代桌面版 tasks.startContentGeneration 的全文生成，8.10b1）：表格需求、配图数量等取已保存的生成配置
  * （PATCH .../generation-config）；regenerate 为全文重新生成。前置条件不满足时 409（文案与桌面版相同，见 contentGenerationProblem）；
- * 已有进行中的技术方案任务（含暂停中的正文生成）时 409 JOB_LOCKED。入 agent 队列。单节重新生成随 8.11，失败后重试随 8.10b2；
+ * 已有进行中的技术方案任务（含暂停中的正文生成）时 409 JOB_LOCKED。入 agent 队列。单节重新生成随 8.11，失败后重试见
+ * startContentGenerationRetry；
  * 暂停后的继续沿用任务的续跑（通用的 resumeJob）。
  */
 export async function startContentGeneration(jobs: JobServiceDependencies, context: TenantContext, projectId: string, input: { regenerate?: boolean }): Promise<JobRecord> {
@@ -1804,5 +1811,24 @@ export async function startContentGeneration(jobs: JobServiceDependencies, conte
     projectId,
     lockKey: technicalPlanLockKey(projectId),
     params: { regenerate: input.regenerate === true },
+  });
+}
+
+/**
+ * 重试失败的正文生成（取代桌面版 tasks.startContentGeneration({ retryFailedSections: true })，8.10b2）：新任务接着最近一次失败的正文
+ * 生成任务的会话，按失败时的阶段续接（见 contentGenerationJob.ts）。前置条件同开始；没有可以重试的任务（最近一次不是失败、会话不能
+ * 续用、编排已保存、输入已变化，见 contentGenerationRetrySourceIn）时 409 TECHNICAL_PLAN_CONTENT_RETRY_UNAVAILABLE；已有进行中的技术方案
+ * 任务时 409 JOB_LOCKED。
+ */
+export async function startContentGenerationRetry(jobs: JobServiceDependencies, context: TenantContext, projectId: string): Promise<JobRecord> {
+  const problem = contentGenerationProblem(await loadTechnicalPlan(jobs.db, context, projectId));
+  if (problem) throw conflict(problem);
+  const source = await contentGenerationRetrySource(jobs.db, context, projectId);
+  if (!source) throw conflict({ code: CONTENT_RETRY_UNAVAILABLE_CODE, message: CONTENT_RETRY_UNAVAILABLE_MESSAGE });
+  return enqueueJob(jobs, context, {
+    type: CONTENT_GENERATION_JOB_TYPE,
+    projectId,
+    lockKey: technicalPlanLockKey(projectId),
+    params: { regenerate: source.regenerate, retryOf: source.jobId },
   });
 }

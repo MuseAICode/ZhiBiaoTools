@@ -76,6 +76,7 @@ import { isFinalStatus, latestProjectJobs, type JobRecord } from '../jobs/store.
 import { jobBody, type JobBody } from '../jobs/view.ts';
 import { storageDisabled } from '../knowledgeBase/content.ts';
 import { findContinuableAgentSessionIn, type AgentSessionTarget } from '../agent/continuation.ts';
+import type { AgentRunState } from '../agent/execution.ts';
 import { discardSectionBodies, prepareSectionBody, readSectionBody, writeSectionBody, type SectionBody } from './sectionBodies.ts';
 import {
   combineBidSectionDetections,
@@ -162,6 +163,48 @@ export const CONTENT_GENERATION_TASK_KIND = 'technical-plan-content-generation';
 /** 正文生成接着的会话：上一次正文生成写下的、与当前快照同一对的现场（src/agent/continuation.ts）。 */
 export function contentGenerationSessionTarget(projectId: string): AgentSessionTarget {
   return { projectId, taskKind: CONTENT_GENERATION_TASK_KIND, jobTypes: [CONTENT_GENERATION_JOB_TYPE] };
+}
+
+/** 失败后可以重试的正文生成任务（8.10b2，见 contentGenerationRetrySourceIn）。 */
+export interface ContentGenerationRetrySource {
+  /** 要重试的失败任务。 */
+  readonly jobId: string;
+  /** 该任务的 regenerate 参数（重试沿用，本次编排的目标与复用和它相同）。 */
+  readonly regenerate: boolean;
+  /** 该任务的 Agent 现场（交给 open({ continueFrom, retainStages })）与任务自己的状态（签名、编排目标）。 */
+  readonly state: AgentRunState;
+  readonly task: Record<string, unknown>;
+}
+
+/**
+ * 正文生成失败后能否重试（8.10b2，桌面版 retryFailedSections；在调用方的事务中）：本项目最近一次正文生成任务失败，它的 Agent 会话仍可
+ * 续用（与当前快照同一对，src/agent/continuation.ts），它在基础编排中失败（checkpoint 中有签名与编排目标、编排还没有保存），且输入签名
+ * 与它相同（输入变化后的草稿不再续用，需重新开始）。不满足时返回 null。失败的小节与后续阶段的判断随已接入的阶段。
+ * excludeJobId：重试任务执行时再核对，最近一次不算它自己。
+ */
+export async function contentGenerationRetrySourceIn(trx: Trx, projectId: string, excludeJobId?: string): Promise<ContentGenerationRetrySource | null> {
+  let query = trx.selectFrom('jobs').select(['id', 'status', 'params']).where('project_id', '=', projectId).where('type', '=', CONTENT_GENERATION_JOB_TYPE);
+  if (excludeJobId !== undefined) query = query.where('id', '!=', excludeJobId);
+  const latest = await query.orderBy('created_at', 'desc').orderBy('id', 'desc').limit(1).executeTakeFirst();
+  if (!latest || latest.status !== 'failed') return null;
+  const source = await findContinuableAgentSessionIn(trx, contentGenerationSessionTarget(projectId));
+  if (!source || source.jobId !== latest.id) return null;
+  const task = source.task;
+  if (!task || typeof task.signature !== 'string' || task.signature === '' || task.planned === true) return null;
+  const ids = task.planningTargetIds;
+  if (!Array.isArray(ids) || ids.length === 0 || !ids.every((id) => typeof id === 'string')) return null;
+  if (task.signature !== (await readContentGenerationSignature(trx, projectId))) return null;
+  const params = latest.params as Record<string, unknown> | null;
+  return { jobId: latest.id, regenerate: params?.regenerate === true, state: source.state, task };
+}
+
+export function contentGenerationRetrySource(
+  db: Kysely<Database>,
+  context: TenantContext,
+  projectId: string,
+  excludeJobId?: string,
+): Promise<ContentGenerationRetrySource | null> {
+  return withTenant(db, context, (trx) => contentGenerationRetrySourceIn(trx, projectId, excludeJobId));
 }
 
 /**
@@ -332,6 +375,8 @@ export interface TechnicalPlanState extends TechnicalPlanGenerationConfig {
   contentGenerationRuntime: ContentRuntime | null;
   /** 本项目最近一次的正文生成任务（8.10b1），没有时为 null。 */
   contentGenerationTask: JobBody | null;
+  /** 能否重试失败的正文生成（8.10b2，见 contentGenerationRetrySourceIn）：页面据此把开始按钮换成重试（桌面版 retryFailedSections）。 */
+  contentGenerationRetryable: boolean;
 }
 
 // ---- 错误 ----
@@ -832,6 +877,7 @@ export async function readState(trx: Trx, projectId: string): Promise<TechnicalP
     contentGenerationPlans: await readContentPlans(trx, projectId),
     contentGenerationRuntime: meta?.content_generation_runtime ?? null,
     contentGenerationTask: contentGenerationTask ? jobBody(contentGenerationTask) : null,
+    contentGenerationRetryable: contentGenerationTask?.status === 'failed' && (await contentGenerationRetrySourceIn(trx, projectId)) !== null,
   };
 }
 

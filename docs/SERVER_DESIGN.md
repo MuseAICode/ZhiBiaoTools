@@ -939,6 +939,14 @@ Agent 生成的 Mermaid 源码在专用的 `render-mermaid` 沙箱中转成 PNG�
 - **保存**：字数、表格与配图由程序按桌面版的规则决定，`saveContentPlanningResult` 在项目锁内核对 `contentGenerationInputSignature`，相符时整体写入编排与运行进度，不符时任务以 `TECHNICAL_PLAN_INPUT_CHANGED` 失败。后续阶段接入之前，保存后任务以 `TECHNICAL_PLAN_CONTENT_STAGE_UNAVAILABLE` 失败。
 - **会话**：运行进度显示正文阶段已开始、且有可以续用的正文会话时接着它；全文重新生成先丢弃正文会话；目录与全局事实的会话被丢弃的入口与目录生成的结果一并丢弃正文会话。
 
+### 7.41 实现（路线图 8.10b2）：正文生成失败后重试
+
+桌面版的 `retryFailedSections` 从原正文会话按失败时的阶段续接。Web 版的重试是一个新任务（`POST /api/projects/:projectId/technical-plan/content-generation/retry`，参数 `{ regenerate, retryOf }`），接着失败任务的会话：
+
+- **条件**（`contentGenerationRetrySourceIn`，页面状态 `contentGenerationRetryable`）：最近一次正文生成任务失败、它的会话与当前快照同一对（`src/agent/continuation.ts`）、它在基础编排中失败（checkpoint 有签名与编排目标、编排未保存）、输入签名未变。入队时与执行时各核对一次（执行时最近一次不算重试任务自己），不满足时 409 / 任务失败，不打开沙箱。
+- **执行者**：`open({ continueFrom, retainStages: true })`——与跨任务续用（第 7.31 节）相同地放入快照、续接会话与受保护文件的登记，但保留阶段、已发出的阶段与待补压缩，任务据此只发“继续之前的任务”。`retainStages` 只能与 `continueFrom` 一起给出。
+- **基础编排的续接**：沿用失败任务 checkpoint 中的编排目标与它的 `regenerate`；重新放入材料，不清空结果文件（Agent 的草稿留在快照中）；不丢弃会话。之后的检查点、续跑与普通任务相同。其余阶段的续接随 8.10c～8.10h。
+
 ## 8. 部署架构
 
 ### 8.0 部署位置（已决定，第 9 节第 13、14 项）

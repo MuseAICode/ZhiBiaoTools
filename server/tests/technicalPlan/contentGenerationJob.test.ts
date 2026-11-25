@@ -4,7 +4,8 @@
 // 工作区的文件、阶段的请求与检查点，按脚本给出 正文编排结果.json），桌面版的 agentService.runTask 用同一份文件调用它自己的
 // validateOutput / continueTask，在进入正文写作阶段（取模板）时停下。比较开始时的检查、日志、放入的材料、提示词、预置 Schema、工具、
 // 结果文件、提交校验的问题清单、保存的编排与运行进度（字数分配、表格与配图选择、复用、目录变更后的新增小节、全文重新生成）。另覆盖：
-// 续跑、输入已变化、编排已保存后的续跑、会话的续用与丢弃、后续阶段的固定错误。数据库与接口见 tests/db/technicalPlanContentGeneration.test.ts。
+// 续跑、输入已变化、编排已保存后的续跑、会话的续用与丢弃、后续阶段的固定错误、失败后重试（8.10b2，与桌面版 retryFailedSections 的
+// continuingPlanning 对照）。数据库与接口见 tests/db/technicalPlanContentGeneration.test.ts。
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
@@ -22,6 +23,8 @@ const fake = vi.hoisted(() => ({
   discarded: [] as unknown[],
   continuable: null as unknown,
   continuationQueries: 0,
+  retry: null as unknown,
+  retryQueries: 0,
 }));
 
 vi.mock('../../src/technicalPlan/store.ts', async (importOriginal) => {
@@ -31,6 +34,10 @@ vi.mock('../../src/technicalPlan/store.ts', async (importOriginal) => {
     contentGenerationInputSignature: async () => fake.signature,
     loadTechnicalPlan: async () => structuredClone(fake.state),
     readGlobalFactsKnowledgeItems: async () => structuredClone(fake.knowledge),
+    contentGenerationRetrySource: async () => {
+      fake.retryQueries += 1;
+      return structuredClone(fake.retry);
+    },
     saveContentPlanningResult: async (_db: unknown, _context: unknown, _projectId: string, input: unknown, signature: string) => {
       if (signature !== (fake.writeSignature ?? fake.signature)) return false;
       fake.saved.push({ input: structuredClone(input), signature });
@@ -222,7 +229,7 @@ interface DesktopRun {
 }
 
 /** 运行桌面版：基础编排阶段用给出的结果文件调用它自己的 validateOutput / continueTask；进入正文写作（取模板）时停下。 */
-async function runDesktop(state: Record<string, any>, output: string | null, payload: Record<string, unknown> = {}): Promise<DesktopRun> {
+async function runDesktop(state: Record<string, any>, output: string | null, payload: Record<string, unknown> = {}, session: Record<string, unknown> | null = null): Promise<DesktopRun> {
   const result: DesktopRun = { payload: null, report: null, logs: [], plans: null, runtime: null, reachedGeneration: false, error: null };
   const workspace = mkdtempSync(join(tmpdir(), 'content-planning-'));
   workspaces.push(workspace);
@@ -234,8 +241,8 @@ async function runDesktop(state: Record<string, any>, output: string | null, pay
     return { task: partial };
   };
   const agentService = {
-    hasPersistentTaskSession: () => false,
-    loadPersistentTask: () => null,
+    hasPersistentTaskSession: () => session !== null,
+    loadPersistentTask: () => (session ? { state: structuredClone(session), paths: { workspaceDir: workspace } } : null),
     updatePersistentTask() {},
     async runTask(request: Record<string, any>) {
       if (request.initial_stage !== 'content-planning') {
@@ -301,12 +308,15 @@ interface FakeRun {
   checkpoints: { after: Record<string, unknown> | null; explicit: { task: Record<string, unknown> | null; progress?: number }[] };
 }
 
-function fakeAgent(options: { output?: string | null; resumed?: boolean; promptedStage?: string | null; unavailable?: string[] } = {}): { agent: JobAgent; record: FakeRun } {
+function fakeAgent(
+  options: { output?: string | null; resumed?: boolean; promptedStage?: string | null; unavailable?: string[] } = {},
+): { agent: JobAgent; record: FakeRun } {
   const record: FakeRun = { opened: [], written: [], released: [], stages: [], reports: [], checkpoints: { after: null, explicit: [] } };
   const resumed = options.resumed ?? false;
   const run = {
     sandbox: { id: 'sandbox-1' },
     resumed,
+    // 与执行者相同：给出 continueFrom 时为接着另一个任务的会话。
     continued: false,
     unavailableProtectedFiles: options.unavailable ?? [],
     taskCheckpoint: null,
@@ -347,6 +357,7 @@ function fakeAgent(options: { output?: string | null; resumed?: boolean; prompte
       resuming: resumed,
       open: async (openOptions?: AgentOpenOptions) => {
         record.opened.push(openOptions ?? {});
+        run.continued = openOptions?.continueFrom !== undefined;
         return run as unknown as AgentRun;
       },
     },
@@ -356,7 +367,7 @@ function fakeAgent(options: { output?: string | null; resumed?: boolean; prompte
 
 const job = createTechnicalPlanJobs().find((item) => item.type === CONTENT_GENERATION_JOB_TYPE)! as JobTypeDefinition<any>;
 
-async function runServer(agent: JobAgent | null, options: { checkpoint?: Record<string, unknown> | null; regenerate?: boolean } = {}) {
+async function runServer(agent: JobAgent | null, options: { checkpoint?: Record<string, unknown> | null; regenerate?: boolean; retryOf?: string } = {}) {
   const logs: string[] = [];
   const savedCheckpoints: Record<string, unknown>[] = [];
   const context: JobContext<any> = {
@@ -364,7 +375,7 @@ async function runServer(agent: JobAgent | null, options: { checkpoint?: Record<
     projectId: 'project-1',
     type: job.type,
     attempt: 1,
-    params: job.parseParams({ regenerate: options.regenerate ?? false }),
+    params: job.parseParams({ regenerate: options.regenerate ?? false, ...(options.retryOf ? { retryOf: options.retryOf } : {}) }),
     checkpoint: options.checkpoint ?? null,
     tenant: { orgId: 'org-1', userId: 'user-1', role: 'owner' },
     db: null as never,
@@ -435,6 +446,8 @@ beforeEach(() => {
   fake.discarded = [];
   fake.continuable = null;
   fake.continuationQueries = 0;
+  fake.retry = null;
+  fake.retryQueries = 0;
 });
 
 describe('正文生成：基础编排（与桌面版 runContentGenerationTask 对照）', () => {
@@ -714,5 +727,93 @@ describe('正文生成：续跑、会话与输入变化', () => {
     const plan = fake.saved[0]!.input.plans[LEAF(1)].plan;
     expect(plan.writing_focus).toHaveLength(1000);
     expect(Object.keys(plan).sort()).toEqual(['image_needed', 'image_suitability_score', 'knowledge', 'original_material', 'table', 'target_words', 'writing_focus']);
+  });
+});
+
+describe('正文生成：失败后重试（8.10b2）', () => {
+  const FAILED = '00000000-0000-4000-8000-0000000000f1';
+  const SOURCE = { version: 1, session: 's.jsonl', stage: 'content-planning', stageIndex: 0, promptedStage: 'content-planning', snapshot: 'snap-1' };
+  const retrySource = (task: Record<string, unknown> = { signature: 'sig-1', planningTargetIds: AI_LEAVES }, regenerate = false) => ({
+    jobId: FAILED,
+    regenerate,
+    state: structuredClone(SOURCE),
+    task,
+  });
+
+  it('基础编排失败后重试：接着失败任务的会话（保留阶段），沿用它的编排目标，重新放入材料、保留结果文件的草稿，只发“继续之前的任务”；与桌面版 continuingPlanning 相同', async () => {
+    const output = planningOutput(AI_LEAVES);
+    const desktopRun = await runDesktop(fake.state, output, { retryFailedSections: true }, { phase: 'content-planning', prompted_stage: 'content-planning' });
+    expect(desktopRun.reachedGeneration).toBe(true);
+    fake.retry = retrySource();
+    const { agent, record } = fakeAgent({ output, promptedStage: 'content-planning' });
+    const server = await runServer(agent, { retryOf: FAILED });
+    expect(server.error).toMatchObject(STAGE_UNAVAILABLE);
+    expect(record.opened).toEqual([{ continueFrom: SOURCE, retainStages: true }]);
+    const request = desktopRun.payload!;
+    // 材料重新放入；结果文件不预置（保留草稿），与桌面版相同。
+    expect(request.files.some((file: { path: string }) => file.path === '正文编排结果.json')).toBe(false);
+    expect(record.written).toHaveLength(1);
+    expect(record.written[0]).toMatchObject({ group: 'content-planning-inputs', options: { replace: true } });
+    expect(record.written[0]!.files).toEqual(request.files);
+    expect(record.released).toEqual([]);
+    expect(request.prompt).toBe('继续之前的任务');
+    expect(record.stages[0]!.prompt).toBe('继续之前的任务');
+    expect(fake.saved[0]!.input.plans).toEqual(withoutTimes(desktopRun.plans));
+    expect(desktopRun.logs.slice(0, server.logs.length)).toEqual(server.logs);
+    expect(server.logs.slice(0, 2)).toEqual(['准备生成正文，共 6 个小节。', '开始重试 6 个失败或未完成正文小节。']);
+    // 不丢弃会话，也不按“正文阶段已开始”另找会话。
+    expect(fake.discarded).toEqual([]);
+    expect(fake.continuationQueries).toBe(0);
+    expect(record.checkpoints.after).toEqual({ signature: 'sig-1', planningTargetIds: AI_LEAVES });
+  });
+
+  it('沿用失败任务的编排目标与 regenerate（全文重新生成的重试不丢弃会话）；要求还没有发出时发完整的编排要求', async () => {
+    fake.retry = retrySource({ signature: 'sig-1', planningTargetIds: [LEAF(2), LEAF(3)] }, true);
+    const { agent, record } = fakeAgent({ output: planningOutput([LEAF(2), LEAF(3)]) });
+    const server = await runServer(agent, { retryOf: FAILED, regenerate: true });
+    expect(server.error).toMatchObject(STAGE_UNAVAILABLE);
+    expect(fake.discarded).toEqual([]);
+    expect(Object.keys(fake.saved[0]!.input.plans).sort()).toEqual([LEAF(2), LEAF(3)]);
+    expect(JSON.parse(record.written[0]!.files.find((file) => file.path === '正文编排目标.json')!.content)).toEqual({ target_ids: [LEAF(2), LEAF(3)] });
+    expect(record.stages[0]!.prompt).not.toBe('继续之前的任务');
+    // regenerate 与失败任务不同：不可重试。
+    fake.saved = [];
+    const mismatch = await runServer(fakeAgent().agent, { retryOf: FAILED, regenerate: false });
+    expect(mismatch.error).toMatchObject({ code: 'TECHNICAL_PLAN_CONTENT_RETRY_UNAVAILABLE' });
+  });
+
+  it('执行时再核对：没有可以重试的任务、不是要重试的那个、编排已保存、checkpoint 不可用、输入已变化时失败，不打开沙箱', async () => {
+    const cases: [unknown, Record<string, unknown>][] = [
+      [null, { code: 'TECHNICAL_PLAN_CONTENT_RETRY_UNAVAILABLE' }],
+      [{ ...retrySource(), jobId: '00000000-0000-4000-8000-0000000000f2' }, { code: 'TECHNICAL_PLAN_CONTENT_RETRY_UNAVAILABLE' }],
+      [retrySource({ signature: 'sig-1', planningTargetIds: AI_LEAVES, planned: true }), { code: 'TECHNICAL_PLAN_CONTENT_RETRY_UNAVAILABLE' }],
+      [retrySource({ signature: 'sig-1' }), { code: 'TECHNICAL_PLAN_CONTENT_RETRY_UNAVAILABLE' }],
+      [retrySource({ signature: 'sig-1', planningTargetIds: [1] }), { code: 'TECHNICAL_PLAN_FAILED' }],
+      [retrySource({ signature: 'sig-0', planningTargetIds: AI_LEAVES }), { code: 'TECHNICAL_PLAN_INPUT_CHANGED' }],
+    ];
+    for (const [source, error] of cases) {
+      fake.retry = source;
+      const { agent, record } = fakeAgent({ output: planningOutput(AI_LEAVES) });
+      const server = await runServer(agent, { retryOf: FAILED });
+      expect(server.error).toMatchObject(error);
+      expect(record.opened).toEqual([]);
+    }
+    expect(fake.saved).toEqual([]);
+  });
+
+  it('重试任务暂停后续跑：用自己的 checkpoint，不再查找失败任务的会话', async () => {
+    fake.retry = retrySource();
+    const { agent, record } = fakeAgent({ output: planningOutput(AI_LEAVES), resumed: true, promptedStage: 'content-planning' });
+    const server = await runServer(agent, { retryOf: FAILED, checkpoint: { agent: {}, task: { signature: 'sig-1', planningTargetIds: AI_LEAVES } } });
+    expect(server.error).toMatchObject(STAGE_UNAVAILABLE);
+    expect(fake.retryQueries).toBe(0);
+    expect(record.opened).toEqual([{}]);
+    expect(record.written).toEqual([]);
+    expect(record.stages[0]!.prompt).toBe('继续之前的任务');
+  });
+
+  it('参数：retryOf 须是 uuid', () => {
+    expect(job.parseParams({ regenerate: false, retryOf: FAILED })).toEqual({ regenerate: false, retryOf: FAILED });
+    for (const retryOf of ['', 'job-1', 1, null]) expect(() => job.parseParams({ regenerate: false, retryOf })).toThrow(TypeError);
   });
 });

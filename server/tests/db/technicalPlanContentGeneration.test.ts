@@ -4,7 +4,9 @@
 //   与运行进度；
 // - 任务（假 Agent、真实数据库）：基础编排写入的编排与运行进度，之后以 TECHNICAL_PLAN_CONTENT_STAGE_UNAVAILABLE 失败；状态中的
 //   contentGenerationTask；全部可以复用时不打开沙箱；全文重新生成；
-// - 接口：POST .../content-generation 的前置检查（文案与桌面版相同）、202、正文生成的 Agent 任务上限、请求体字段、互斥；清空时取消。
+// - 接口：POST .../content-generation 的前置检查（文案与桌面版相同）、202、正文生成的 Agent 任务上限、请求体字段、互斥；清空时取消；
+// - 失败后重试（8.10b2）：contentGenerationRetryable 与 POST .../content-generation/retry（接着失败任务的会话、保留阶段与草稿；不能重试的
+//   各种情形 409；其他组织 404）。
 // 与桌面版逐项对照见 tests/technicalPlan/contentGenerationJob.test.ts。
 import { createHash, randomUUID } from 'node:crypto';
 import { Readable } from 'node:stream';
@@ -22,7 +24,7 @@ import { migrateToLatest } from '../../src/db/migrator.ts';
 import type { Database, MemberRole } from '../../src/db/schema.ts';
 import type { TenantContext } from '../../src/db/tenant.ts';
 import type { ObjectStore } from '../../src/files/objectStore.ts';
-import type { JobContext } from '../../src/jobs/definitions.ts';
+import { JobError, type JobContext } from '../../src/jobs/definitions.ts';
 import { claimJob, finishRun, renewRun, type RunRef } from '../../src/jobs/store.ts';
 import { CONTENT_GENERATION_JOB_TYPE, createTechnicalPlanJobs } from '../../src/technicalPlan/jobs.ts';
 import {
@@ -227,17 +229,31 @@ function planningOutput(ids: readonly string[]): string {
   });
 }
 
-const AGENT_STATE = { version: 1, session: 's.jsonl', stage: 'content-planning', stageIndex: 0, promptedStage: 'content-planning', compactionPending: null, baseline: { version: 1, groups: {} }, snapshot: null };
+const AGENT_STATE = { version: 1, session: '2026-11-24T08-00-00-000Z_00000000-0000-4000-8000-0000000000aa.jsonl', stage: 'content-planning', stageIndex: 0, promptedStage: 'content-planning', compactionPending: null, baseline: { version: 1, groups: {} }, snapshot: null };
 
-/** 假 Agent：读结果文件时返回给定的 正文编排结果.json；检查点经 context.saveCheckpoint 写进任务（与执行者相同的 { agent, task } 形式）。 */
-function scriptedAgent(output: string, save: (checkpoint: Record<string, unknown>) => Promise<void>) {
-  const record = { files: new Map<string, string>(), opened: 0 };
+interface AgentOptions {
+  fail?: boolean;
+  snapshot?: string | (() => Promise<string>);
+}
+
+/**
+ * 假 Agent：读结果文件时返回给定的 正文编排结果.json；检查点经 context.saveCheckpoint 写进任务（与执行者相同的 { agent, task } 形式）。
+ * fail 时保存检查点后以提交校验失败结束（基础编排失败）；snapshot 为现场中的快照 id（失败后重试的查找按它核对）。
+ */
+function scriptedAgent(output: string, save: (checkpoint: Record<string, unknown>) => Promise<void>, options: AgentOptions = {}) {
+  const record = { files: new Map<string, string>(), opened: 0, openOptions: [] as unknown[], prompts: [] as string[] };
+  let agentState = { ...AGENT_STATE, snapshot: null as string | null };
   const run = {
     sandbox: { id: 'sandbox-1' },
     resumed: false,
+    continued: false,
     unavailableProtectedFiles: [],
     taskCheckpoint: null,
-    wasPrompted: () => false,
+    // 与执行者相同：失败后重试（retainStages）保留接着的现场中已发出的阶段。
+    promptedStage: null as string | null,
+    wasPrompted(stage: string) {
+      return this.promptedStage === stage;
+    },
     baseline: {
       async write(_sandbox: unknown, _group: string, files: { path: string; data: Buffer }[]) {
         for (const file of files) record.files.set(file.path, file.data.toString('utf8'));
@@ -248,21 +264,30 @@ function scriptedAgent(output: string, save: (checkpoint: Record<string, unknown
       return new Map([[paths[0]!, { size: output.length, data: Buffer.from(output, 'utf8') }]]);
     },
     async runStage(stage: AgentStageOptions<unknown>) {
-      if (stage.checkpointAfterPrompt) await save({ agent: AGENT_STATE, task: stage.checkpointAfterPrompt() });
+      record.prompts.push(stage.prompt);
+      if (stage.checkpointAfterPrompt) await save({ agent: agentState, task: stage.checkpointAfterPrompt() });
+      if (options.fail) throw new JobError('AGENT_SUBMISSION_FAILED', '提交校验未通过');
       const report = await stage.validate({ attempt: 1, restored: [] });
       expect(report.issues).toEqual([]);
       return { value: report.value, acceptedIssues: [], repairs: 0, executionRetries: 0 };
     },
     async checkpoint(task: Record<string, unknown> | null) {
-      await save({ agent: AGENT_STATE, task });
+      await save({ agent: agentState, task });
     },
     async close() {},
   };
   const agent: JobAgent = {
     template: 'agent',
     resuming: false,
-    open: async () => {
+    open: async (openOptions?: unknown) => {
       record.opened += 1;
+      // 与执行者相同：快照在打开之后（全文重新生成先丢弃旧快照）写下。
+      const snapshot = typeof options.snapshot === 'function' ? await options.snapshot() : (options.snapshot ?? null);
+      agentState = { ...AGENT_STATE, snapshot };
+      record.openOptions.push(openOptions ?? {});
+      const { continueFrom, retainStages } = (openOptions ?? {}) as { continueFrom?: { promptedStage: string | null }; retainStages?: boolean };
+      run.continued = continueFrom !== undefined;
+      run.promptedStage = continueFrom && retainStages ? continueFrom.promptedStage : null;
       return run as unknown as AgentRun;
     },
   };
@@ -283,13 +308,13 @@ async function jobRow(jobId: string) {
 }
 
 /** 认领并执行一次（假 Agent），按结果结束本次执行。 */
-async function execute(member: Member, projectId: string, jobId: string, output: string) {
+async function execute(member: Member, projectId: string, jobId: string, output: string, agentOptions: AgentOptions = {}) {
   const run = await claim(member, jobId);
   const row = await jobRow(jobId);
   const saveCheckpoint = async (checkpoint: Record<string, unknown>) => {
     expect(await renewRun(appDb, run, LEASE_MS, { checkpoint })).not.toBeNull();
   };
-  const { agent, record } = scriptedAgent(output, saveCheckpoint);
+  const { agent, record } = scriptedAgent(output, saveCheckpoint, agentOptions);
   const logs: string[] = [];
   const context: JobContext<any> = {
     jobId,
@@ -495,5 +520,133 @@ describe('接口', () => {
     expect((await call(other, 'POST', planUrl(projectId, '/content-generation'))).statusCode).toBe(404);
     expect((await call(owner, 'DELETE', planUrl(projectId))).statusCode).toBe(200);
     expect((await jobRow(row.id)).status).toBe('cancelled');
+  });
+});
+
+/** 超级用户直接写入正文生成的工作区快照（迁移 0040，ready；替换同类的旧快照）。 */
+async function insertSnapshot(member: Member, projectId: string): Promise<string> {
+  await superuser
+    .updateTable('agent_workspace_snapshots')
+    .set({ superseded_at: new Date() })
+    .where('project_id', '=', projectId)
+    .where('task_kind', '=', 'technical-plan-content-generation')
+    .where('superseded_at', 'is', null)
+    .execute();
+  const row = await superuser
+    .insertInto('agent_workspace_snapshots')
+    .values({
+      org_id: member.orgId,
+      project_id: projectId,
+      task_kind: 'technical-plan-content-generation',
+      status: 'ready',
+      size_bytes: 1024,
+      file_count: 0,
+      sha256: Buffer.alloc(32),
+      completed_at: new Date(),
+      created_by: member.userId,
+    } as never)
+    .returning('id')
+    .executeTakeFirstOrThrow();
+  return row.id;
+}
+
+describe('失败后重试（8.10b2）', () => {
+  /** 开始正文生成，基础编排保存检查点后失败。 */
+  async function failPlanning(member: Member, projectId: string, snapshot: string | (() => Promise<string>), body: Record<string, unknown> = {}) {
+    const started = await call(member, 'POST', planUrl(projectId, '/content-generation'), body);
+    expect(started.statusCode, started.body).toBe(202);
+    const jobId = started.json().job.id as string;
+    const failed = await execute(member, projectId, jobId, '', { fail: true, snapshot });
+    expect(failed.status).toBe('failed');
+    return jobId;
+  }
+
+  it('基础编排失败后可以重试：新任务接着失败任务的会话（保留阶段），沿用编排目标，保留结果文件的草稿；重试之后不再可以重试', async () => {
+    const owner = await newOrg();
+    const projectId = await fixture(owner);
+    expect((await loadTechnicalPlan(appDb, owner.context, projectId)).contentGenerationRetryable).toBe(false);
+    const snapshot = await insertSnapshot(owner, projectId);
+    const failedId = await failPlanning(owner, projectId, snapshot);
+    const state = await loadTechnicalPlan(appDb, owner.context, projectId);
+    expect(state.contentGenerationTask).toMatchObject({ id: failedId, status: 'failed' });
+    expect(state.contentGenerationRetryable).toBe(true);
+    expect((await call(owner, 'GET', planUrl(projectId))).json().contentGenerationRetryable).toBe(true);
+
+    expect((await call(owner, 'POST', planUrl(projectId, '/content-generation/retry'), { regenerate: true })).statusCode).toBe(400);
+    // 其他组织的项目 404。
+    const other = await newOrg();
+    expect((await call(other, 'POST', planUrl(projectId, '/content-generation/retry'))).statusCode).toBe(404);
+    const retried = await call(owner, 'POST', planUrl(projectId, '/content-generation/retry'));
+    expect(retried.statusCode, retried.body).toBe(202);
+    const retryId = retried.json().job.id as string;
+    expect(await jobRow(retryId)).toMatchObject({ type: 'content-generation', status: 'queued', params: { regenerate: false, retryOf: failedId }, lock_key: `project:${projectId}:technical-plan` });
+    // 已排队：最近一次不再是失败的任务，不能再重试；开始也被互斥键拒绝。
+    const queued = await call(owner, 'POST', planUrl(projectId, '/content-generation/retry'));
+    expect(queued.statusCode).toBe(409);
+    expect(queued.json().error.code).toBe('TECHNICAL_PLAN_CONTENT_RETRY_UNAVAILABLE');
+    const locked = await call(owner, 'POST', planUrl(projectId, '/content-generation'));
+    expect(locked.statusCode).toBe(409);
+    expect(locked.json().error.code).toBe('JOB_LOCKED');
+
+    const { status, error, record, logs } = await execute(owner, projectId, retryId, planningOutput(LEAVES), { snapshot });
+    expect(status).toBe('failed');
+    expect(error).toMatchObject({ code: 'TECHNICAL_PLAN_CONTENT_STAGE_UNAVAILABLE' });
+    const source = (await jobRow(failedId)).checkpoint as { agent: Record<string, unknown> };
+    expect(record.openOptions).toEqual([{ continueFrom: source.agent, retainStages: true }]);
+    // 材料重新放入，结果文件不清空（保留草稿）。
+    expect(JSON.parse(record.files.get('正文编排目标.json')!)).toEqual({ target_ids: LEAVES });
+    expect(record.files.has('正文编排结果.json')).toBe(false);
+    expect(record.prompts).toEqual(['继续之前的任务']);
+    expect(logs).toContain(`开始重试 ${LEAVES.length} 个失败或未完成正文小节。`);
+    expect(Object.keys((await loadTechnicalPlan(appDb, owner.context, projectId)).contentGenerationPlans).sort()).toEqual([...LEAVES].sort());
+    // 编排已保存：不再可以重试。
+    expect((await loadTechnicalPlan(appDb, owner.context, projectId)).contentGenerationRetryable).toBe(false);
+    const again = await call(owner, 'POST', planUrl(projectId, '/content-generation/retry'));
+    expect(again.statusCode).toBe(409);
+    expect(again.json().error).toMatchObject({ code: 'TECHNICAL_PLAN_CONTENT_RETRY_UNAVAILABLE' });
+  });
+
+  it('不能重试：没有失败的任务、会话不能续用（快照被替换或没有检查点）、输入已变化、前置条件不满足；全文重新生成的重试沿用 regenerate', async () => {
+    const owner = await newOrg();
+    const unavailable = async (projectId: string, code = 'TECHNICAL_PLAN_CONTENT_RETRY_UNAVAILABLE') => {
+      expect((await loadTechnicalPlan(appDb, owner.context, projectId)).contentGenerationRetryable).toBe(false);
+      const response = await call(owner, 'POST', planUrl(projectId, '/content-generation/retry'));
+      expect(response.statusCode).toBe(409);
+      expect(response.json().error.code).toBe(code);
+    };
+    // 没有正文生成任务。
+    const fresh = await fixture(owner);
+    await unavailable(fresh);
+
+    // 快照被替换：失败任务的会话不能续用。
+    const replaced = await fixture(owner);
+    await failPlanning(owner, replaced, await insertSnapshot(owner, replaced));
+    await insertSnapshot(owner, replaced);
+    await unavailable(replaced);
+
+    // 失败前没有保存检查点（例如开始时的检查失败）。
+    const noCheckpoint = await fixture(owner);
+    await insertSnapshot(owner, noCheckpoint);
+    const started = await call(owner, 'POST', planUrl(noCheckpoint, '/content-generation'));
+    const run = await claim(owner, started.json().job.id);
+    await finishRun(appDb, run, { kind: 'failed', code: 'TECHNICAL_PLAN_FAILED', message: '失败' }, true);
+    await unavailable(noCheckpoint);
+
+    // 输入已变化（全局事实改了）。
+    const changed = await fixture(owner);
+    await failPlanning(owner, changed, await insertSnapshot(owner, changed));
+    expect((await loadTechnicalPlan(appDb, owner.context, changed)).contentGenerationRetryable).toBe(true);
+    await saveGlobalFacts(appDb, owner.context, changed, [{ id: 'g1', title: '工期', content: '200 天' }]);
+    await unavailable(changed);
+    // 前置条件不满足时按开始的检查（文案与开始相同）。
+    await saveGlobalFacts(appDb, owner.context, changed, []);
+    await unavailable(changed, 'TECHNICAL_PLAN_GLOBAL_FACTS_REQUIRED');
+
+    // 全文重新生成失败后的重试沿用 regenerate。
+    const regenerated = await fixture(owner);
+    const failedId = await failPlanning(owner, regenerated, () => insertSnapshot(owner, regenerated), { regenerate: true });
+    const retried = await call(owner, 'POST', planUrl(regenerated, '/content-generation/retry'));
+    expect(retried.statusCode, retried.body).toBe(202);
+    expect((await jobRow(retried.json().job.id)).params).toEqual({ regenerate: true, retryOf: failedId });
   });
 });
