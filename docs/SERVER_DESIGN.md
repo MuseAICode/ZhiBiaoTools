@@ -958,6 +958,15 @@ Agent 生成的 Mermaid 源码在专用的 `render-mermaid` 沙箱中转成 PNG�
 - **提示词与 Schema**：写作阶段的提示词（`createContentWritingPrompt`，含目录变更后局部生成的前缀与执行摘要 `buildContentRunSummary`）、结果清单与任务文件的预置 Schema 与桌面版相同；其中提到的业务工具随 8.10c2 起接入。
 - **开始前检查模板**：`contentGenerationProblem` 在其余检查之后要求生成配置选用了模板，否则 409 `TECHNICAL_PLAN_TEMPLATE_REQUIRED`（文案与桌面版相同）；开始、重试与任务执行时都检查。
 
+### 7.43 实现（路线图 8.10c2a）：正文小节的写作请求与输出检查
+
+`src/technicalPlan/contentSectionWriting.ts`、`htmlStructure.ts`、`readableWords.ts` 是业务工具 `generate-sections` 的纯逻辑（与桌面版 `contentGenerationAgent.cjs`、`contentGenerationTaskFiles.cjs`、`utils/htmlStructure.cjs`、`utils/aiSourceExtraction.cjs`、`utils/wordCount.cjs` 逐项相同），不调用模型、不读写数据库与工作区；工具的执行（长时调用、模型调用的执行位置、计费与并发、写回工作区）随 8.10c2b。
+
+- **输入按不可信数据处理**：`任务/正文生成.json` 是 Agent 写的，先按预置 Schema 校验（封闭、字段固定），`section_id` 必须是本次目标、不能重复，否则整次提交被拒绝；写作材料（本节编排、项目概述、全局事实、生成规范、配图类型对照表、模板与模板配置、字数与配图要求）取服务端按 8.10c1 生成的输入，不取工作区中的副本。
+- **模型输出按不可信数据处理**：截断不保存；只接受纯源码或唯一完整代码块；必须是带 `app:block` 分隔的受限 HTML 正文；结构完整（元素闭合、figure 直接包含一个 img、合法的 `data-app-size`、img 在 figure 内、源码没有中途结束）。这些检查只决定能否写回工作区，不是清洗：入库时另经 `parseRestrictedHtml`（第 7.39 节）规范化。说明文字固定，不回显模型的输出。
+- **HTML 解析**：parse5 的片段解析（脚本开启，与 cheerio 的 `load(html, options, false)` 相同），按 cheerio 的遍历规则还原桌面版的结果；不新增依赖。
+- **测试**：问题清单与补齐结果和桌面版（cheerio 1.2.0）对 35 个输入的结果逐条相同（预先生成的结果随仓库提交）；写作请求的消息与桌面版 `generate-sections` 在临时工作区中发出的相同。
+
 ## 8. 部署架构
 
 ### 8.0 部署位置（已决定，第 9 节第 13、14 项）
