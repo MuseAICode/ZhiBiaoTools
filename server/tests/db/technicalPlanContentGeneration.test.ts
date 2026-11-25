@@ -27,8 +27,10 @@ import type { ObjectStore } from '../../src/files/objectStore.ts';
 import { JobError, type JobContext } from '../../src/jobs/definitions.ts';
 import { claimJob, finishRun, renewRun, type RunRef } from '../../src/jobs/store.ts';
 import { CONTENT_GENERATION_JOB_TYPE, createTechnicalPlanJobs } from '../../src/technicalPlan/jobs.ts';
+import { syncSystemTemplates } from '../../src/templates/system.ts';
 import {
   contentGenerationInputSignature,
+  readContentWritingSources,
   importTenderFiles,
   loadTechnicalPlan,
   saveBidItems,
@@ -364,6 +366,8 @@ beforeAll(async () => {
   const owner = connect(testDb.ownerConfig);
   try {
     expect((await migrateToLatest(owner)).error).toBeUndefined();
+    // 8.10c1 起正文生成要求选用模板：新项目的生成配置默认选用系统模板“标准投标”（系统模板同步之后）。
+    await syncSystemTemplates(owner as Parameters<typeof syncSystemTemplates>[0]);
   } finally {
     await owner.destroy();
   }
@@ -445,6 +449,58 @@ describe('Store', () => {
     const other = await newOrg();
     expect(await saveContentPlanningResult(appDb, other.context, projectId, { plans, runtime }, signature)).toBe(false);
   });
+
+  it('写作材料（8.10c1）：选用的模板（默认系统模板“标准投标”）与引用的知识库文档（引用顺序、完整 Markdown、全部条目）；其他组织读不到', async () => {
+    const member = await newOrg();
+    const projectId = await fixture(member);
+    const empty = await readContentWritingSources(appDb, member.context, projectId, memoryStore);
+    const standard = await superuser.selectFrom('export_templates').selectAll().where('system_key', '=', 'standard-bid').executeTakeFirstOrThrow();
+    expect(empty).toEqual({
+      template: { id: standard.id, name: standard.name, isSystem: true, config: standard.config, createdAt: standard.created_at, updatedAt: standard.updated_at },
+      knowledgeDocuments: [],
+    });
+
+    const withMarkdown = await newKnowledgeDocument(member);
+    const withoutMarkdown = await newKnowledgeDocument(member);
+    const document = await superuser.selectFrom('knowledge_documents').select('file_id').where('id', '=', withMarkdown).executeTakeFirstOrThrow();
+    const artifactId = await markdownArtifact(member, null, document.file_id, '# 运维手册\n\n7×24 值守');
+    await superuser.updateTable('knowledge_documents').set({ markdown_artifact_id: artifactId, item_count: 2 }).where('id', '=', withMarkdown).execute();
+    const item = (itemId: string, sort: number, title: string, resume: string) => ({
+      org_id: member.orgId,
+      document_id: withMarkdown,
+      item_id: itemId,
+      title,
+      resume,
+      content: '条目正文',
+      content_chars: 4,
+      sort_order: sort,
+    });
+    await superuser.insertInto('knowledge_items').values([item('K000002', 2, '培训', ''), item('K000001', 1, '运维体系', '7×24 运维')]).execute();
+    // 引用顺序：没有 Markdown 的在前。
+    await saveGenerationConfig(appDb, member.context, projectId, { referenceKnowledgeDocumentIds: [withoutMarkdown, withMarkdown] });
+    const sources = await readContentWritingSources(appDb, member.context, projectId, memoryStore);
+    expect(sources.knowledgeDocuments).toEqual([
+      { documentId: withoutMarkdown, fileName: '知识.docx', status: 'success', itemCount: 0, markdown: '', items: [] },
+      {
+        documentId: withMarkdown,
+        fileName: '知识.docx',
+        status: 'success',
+        itemCount: 2,
+        markdown: '# 运维手册\n\n7×24 值守',
+        items: [
+          { itemId: 'K000001', title: '运维体系', resume: '7×24 运维' },
+          { itemId: 'K000002', title: '培训', resume: '' },
+        ],
+      },
+    ]);
+
+    // 未选择模板时为 null（开始接口另以 409 拒绝，见“接口”）。
+    await saveGenerationConfig(appDb, member.context, projectId, { exportTemplateId: null });
+    expect((await readContentWritingSources(appDb, member.context, projectId, memoryStore)).template).toBeNull();
+    // 其他组织：项目不可见，什么都读不到。
+    const other = await newOrg();
+    expect(await readContentWritingSources(appDb, other.context, projectId, memoryStore)).toEqual({ template: null, knowledgeDocuments: [] });
+  });
 });
 
 describe('任务', () => {
@@ -502,6 +558,12 @@ describe('接口', () => {
     const factsMissing = await call(owner, 'POST', planUrl(noFacts, '/content-generation'));
     expect(factsMissing.statusCode).toBe(409);
     expect(factsMissing.json().error).toMatchObject({ code: 'TECHNICAL_PLAN_GLOBAL_FACTS_REQUIRED', message: '请先完成全局事实设定，再生成正文' });
+    // 8.10c1：未选择模板（或选用的模板被删除、外键置空）时 409。
+    const noTemplate = await fixture(owner);
+    await saveGenerationConfig(appDb, owner.context, noTemplate, { exportTemplateId: null });
+    const templateMissing = await call(owner, 'POST', planUrl(noTemplate, '/content-generation'));
+    expect(templateMissing.statusCode).toBe(409);
+    expect(templateMissing.json().error).toMatchObject({ code: 'TECHNICAL_PLAN_TEMPLATE_REQUIRED', message: '请先在“长嘛样”选择有效的正文模板' });
 
     const projectId = await fixture(owner);
     expect((await call(owner, 'POST', planUrl(projectId, '/content-generation'), { targetItemId: LEAVES[0] })).statusCode).toBe(400);

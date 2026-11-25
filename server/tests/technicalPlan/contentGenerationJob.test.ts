@@ -166,6 +166,7 @@ function baseState(overrides: Record<string, unknown> = {}): Record<string, any>
     contentGenerationSections: {},
     contentGenerationPlans: {},
     contentGenerationRuntime: null,
+    exportTemplateId: '00000000-0000-4000-8000-0000000000ee',
     ...overrides,
   };
 }
@@ -648,6 +649,8 @@ describe('正文生成：基础编排（与桌面版 runContentGenerationTask �
       [{ originalPlanFile: { status: 'error', markdownArtifactId: null } }, 'TECHNICAL_PLAN_ORIGINAL_PLAN_FAILED', '原方案解析失败，请移除后重新上传'],
       [{ originalPlanFile: { status: 'parsing', markdownArtifactId: null } }, 'TECHNICAL_PLAN_ORIGINAL_PLAN_NOT_READY', '原方案尚未解析完成，请稍后再试'],
       [{ outlineData: { outline: leafOnly } }, 'TECHNICAL_PLAN_CONTENT_SECTIONS_REQUIRED', '当前目录没有标记为“AI生成”的正文小节'],
+      // 8.10c1：桌面版在页面上开始前、任务在准备写作材料时检查（文案相同，见 tests/technicalPlan/contentWriting.test.ts）。
+      [{ exportTemplateId: null }, 'TECHNICAL_PLAN_TEMPLATE_REQUIRED', '请先在“长嘛样”选择有效的正文模板'],
     ];
     for (const [overrides, code, message] of cases) {
       fake.state = baseState(overrides);
@@ -655,7 +658,7 @@ describe('正文生成：基础编排（与桌面版 runContentGenerationTask �
       const server = await runServer(agent);
       expect(server.error).toMatchObject({ code, message });
       expect(record.opened).toEqual([]);
-      if (code === 'TECHNICAL_PLAN_WORD_CONTROL_REQUIRED' || code.startsWith('TECHNICAL_PLAN_ORIGINAL_PLAN')) continue;
+      if (code === 'TECHNICAL_PLAN_WORD_CONTROL_REQUIRED' || code === 'TECHNICAL_PLAN_TEMPLATE_REQUIRED' || code.startsWith('TECHNICAL_PLAN_ORIGINAL_PLAN')) continue;
       const desktopRun = await runDesktop(fake.state, null);
       expect(desktopRun.error).toMatchObject({ message });
     }

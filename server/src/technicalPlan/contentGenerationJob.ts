@@ -46,6 +46,7 @@ import {
   type ContentPlan,
   type LeafContext,
 } from './contentPlanning.ts';
+import { CONTENT_TEMPLATE_REQUIRED_CODE, CONTENT_TEMPLATE_REQUIRED_MESSAGE } from './contentWriting.ts';
 import {
   CONTENT_GENERATION_JOB_TYPE,
   CONTENT_GENERATION_TASK_KIND,
@@ -82,7 +83,8 @@ export interface ContentGenerationProblem {
 
 /**
  * 正文生成的前置条件（文案与桌面版 startContentGeneration、runContentGenerationTask 开始时的检查相同，按同样的顺序）：目录生效的字数
- * 快照、目录、全局事实、原方案（未解析完成 / 失败的两条与 8.7c1 相同，是 Web 版新增的）、AI 小节。
+ * 快照、目录、全局事实、原方案（未解析完成 / 失败的两条与 8.7c1 相同，是 Web 版新增的）、AI 小节、正文模板（8.10c1；桌面版在页面上开始前
+ * 与任务准备写作材料时检查，文案相同）。
  */
 export function contentGenerationProblem(state: TechnicalPlanState): ContentGenerationProblem | null {
   if (!state.outlineWordControlSnapshot) return { code: 'TECHNICAL_PLAN_WORD_CONTROL_REQUIRED', message: '当前目录没有字数控制生效快照，请重新生成目录' };
@@ -92,6 +94,8 @@ export function contentGenerationProblem(state: TechnicalPlanState): ContentGene
   if (plan?.status === 'error') return { code: 'TECHNICAL_PLAN_ORIGINAL_PLAN_FAILED', message: '原方案解析失败，请移除后重新上传' };
   if (plan && (plan.status !== 'success' || !plan.markdownArtifactId)) return { code: 'TECHNICAL_PLAN_ORIGINAL_PLAN_NOT_READY', message: '原方案尚未解析完成，请稍后再试' };
   if (!collectAiLeaves(state.outlineData.outline).length) return { code: 'TECHNICAL_PLAN_CONTENT_SECTIONS_REQUIRED', message: '当前目录没有标记为“AI生成”的正文小节' };
+  // 8.10c1：写作阶段要用生成配置中选用的模板（桌面版页面开始前检查、任务在准备写作材料时检查）。模板被删除时外键置空，所以有 id 即存在。
+  if (!state.exportTemplateId) return { code: CONTENT_TEMPLATE_REQUIRED_CODE, message: CONTENT_TEMPLATE_REQUIRED_MESSAGE };
   return null;
 }
 
