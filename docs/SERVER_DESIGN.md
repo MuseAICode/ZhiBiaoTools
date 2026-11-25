@@ -947,6 +947,17 @@ Agent 生成的 Mermaid 源码在专用的 `render-mermaid` 沙箱中转成 PNG�
 - **执行者**：`open({ continueFrom, retainStages: true })`——与跨任务续用（第 7.31 节）相同地放入快照、续接会话与受保护文件的登记，但保留阶段、已发出的阶段与待补压缩，任务据此只发“继续之前的任务”。`retainStages` 只能与 `continueFrom` 一起给出。
 - **基础编排的续接**：沿用失败任务 checkpoint 中的编排目标与它的 `regenerate`；重新放入材料，不清空结果文件（Agent 的草稿留在快照中）；不丢弃会话。之后的检查点、续跑与普通任务相同。其余阶段的续接随 8.10c～8.10h。
 
+### 7.42 实现（路线图 8.10c1）：正文写作阶段的输入
+
+8.10c 拆成 8.10c1（写作阶段的输入，本节）、8.10c2（`generate-sections` 业务工具）、8.10c3（写作阶段接入任务），见路线图“第 8 步说明”。
+
+- **材料**（`src/technicalPlan/contentWriting.ts` 的 `buildContentWritingFiles`，取代桌面版 `buildContentGenerationFiles`）：正文完整目录.json、项目概述.md、正文编排决策.json（执行摘要、本轮布局名额、字数 / 事实 / 配图要求、已完成的非目标小节、本轮目标）、受限HTML生成规范.md、配图类型对照表.md、正文模板.html（去掉示例图片的引用）、所选模板配置.json、全局事实设定.md，引用知识库时另有每篇文档的完整 Markdown（`知识库/<id>.md`）与 `知识库/索引.json`。只读已保存的编排，不重新分配字数、表格或配图。输出与桌面版逐个文件相同（测试对照）；原方案底稿（`restored_content` 等）属 8.11。
+- **固定材料**：三份资源文件以字符串常量保存在 `contentWritingResources.ts`（服务端构建只编译 `src/` 下的 TypeScript），与桌面版 `client/electron/resources/content-generation/` 逐字相同（测试核对）。布局份额与组数（`imageLayout.ts`）、画面形式（`aiImageStyles.ts`）同样与桌面版相同。
+- **读取**（`store.ts` 的 `readContentWritingSources`）：生成配置选用的模板（本组织或系统模板，经 RLS；模板被删除时外键置空）与引用的知识库文档（引用顺序、完整 Markdown、全部条目；Markdown 总大小按 `TECHNICAL_PLAN_MARKDOWN_READ_MAX_BYTES` 限制）。
+- **与桌面版的差异**：知识库索引中的文档只给出 `id`、`file_name`、`status`、`item_count`（桌面版是整条本机记录，含本机路径）；所选模板配置.json 的 `template_id` 是 `export_templates.id`。
+- **提示词与 Schema**：写作阶段的提示词（`createContentWritingPrompt`，含目录变更后局部生成的前缀与执行摘要 `buildContentRunSummary`）、结果清单与任务文件的预置 Schema 与桌面版相同；其中提到的业务工具随 8.10c2 起接入。
+- **开始前检查模板**：`contentGenerationProblem` 在其余检查之后要求生成配置选用了模板，否则 409 `TECHNICAL_PLAN_TEMPLATE_REQUIRED`（文案与桌面版相同）；开始、重试与任务执行时都检查。
+
 ## 8. 部署架构
 
 ### 8.0 部署位置（已决定，第 9 节第 13、14 项）

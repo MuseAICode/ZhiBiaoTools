@@ -97,6 +97,7 @@ import {
   type TechnicalPlanOutlineSaveReason,
 } from './outline.ts';
 import { readOutlineSelectionState, type AcceptedOutlineItem } from './outlineAgent.ts';
+import type { ContentWritingKnowledgeDocument, ContentWritingTemplate } from './contentWriting.ts';
 import {
   bidAnalysisProgress,
   bidItemLabel,
@@ -2589,6 +2590,75 @@ export async function readOutlineKnowledgeMarkdowns(
   const texts = await readArtifactTexts(objectStore, present.map((row) => ({ storageKey: row.storage_key, size: Number(row.size_bytes ?? 0) })));
   const byDocument = new Map(present.map((row, index) => [row.document_id, texts[index] ?? '']));
   return rows.map((row) => byDocument.get(row.document_id) ?? '');
+}
+
+/**
+ * 正文写作阶段的材料（路线图 8.10c1，桌面版 templateStore.getTemplate 与 knowledgeBaseService.readReferences(…, { includeMarkdown, includeItems })）：
+ * 生成配置选用的模板（本组织的或系统模板，经 RLS；未选择时为 null，被删除的模板由外键置空）与引用的知识库文档（引用顺序，每篇带完整
+ * Markdown 与全部条目，文档内按条目顺序）。Markdown 的总大小按 TECHNICAL_PLAN_MARKDOWN_READ_MAX_BYTES 限制（超过时 422）；没有 Markdown
+ * 或对象已不在存储中的为空字符串（由 buildContentWritingFiles 报告）。
+ */
+export async function readContentWritingSources(
+  db: Kysely<Database>,
+  context: TenantContext,
+  projectId: string,
+  objectStore: ObjectStore | null,
+): Promise<{ template: ContentWritingTemplate | null; knowledgeDocuments: ContentWritingKnowledgeDocument[] }> {
+  const { template, documents, items } = await withTenant(db, context, async (trx) => {
+    const template = await trx
+      .selectFrom('technical_plan_generation_config as c')
+      .innerJoin('export_templates as t', 't.id', 'c.export_template_id')
+      .select(['t.id', 't.name', 't.org_id', 't.config', 't.created_at', 't.updated_at'])
+      .where('c.project_id', '=', projectId)
+      .executeTakeFirst();
+    const documents = await trx
+      .selectFrom('technical_plan_generation_reference_docs as r')
+      .innerJoin('knowledge_documents as d', 'd.id', 'r.document_id')
+      .innerJoin('files as f', 'f.id', 'd.file_id')
+      .leftJoin('artifacts as a', (join) => join.onRef('a.id', '=', 'd.markdown_artifact_id').on('a.status', '=', 'ready'))
+      .select(['r.document_id', 'f.display_name', 'd.status', 'd.item_count', 'a.storage_key', 'a.size_bytes'])
+      .where('r.project_id', '=', projectId)
+      .orderBy('r.sort_order')
+      .orderBy('r.document_id')
+      .execute();
+    const items = documents.length
+      ? await trx
+          .selectFrom('knowledge_items')
+          .select(['document_id', 'item_id', 'title', 'resume'])
+          .where(
+            'document_id',
+            'in',
+            documents.map((row) => row.document_id),
+          )
+          .orderBy('document_id')
+          .orderBy('sort_order')
+          .orderBy('item_id')
+          .execute()
+      : [];
+    return { template, documents, items };
+  });
+  const present = documents.filter((row): row is typeof row & { storage_key: string } => typeof row.storage_key === 'string');
+  const texts = await readArtifactTexts(objectStore, present.map((row) => ({ storageKey: row.storage_key, size: Number(row.size_bytes ?? 0) })));
+  const markdownByDocument = new Map(present.map((row, index) => [row.document_id, texts[index] ?? '']));
+  const itemsByDocument = new Map<string, { itemId: string; title: string; resume: string }[]>();
+  for (const item of items) {
+    const list = itemsByDocument.get(item.document_id) ?? [];
+    list.push({ itemId: item.item_id, title: item.title, resume: item.resume });
+    itemsByDocument.set(item.document_id, list);
+  }
+  return {
+    template: template
+      ? { id: template.id, name: template.name, isSystem: template.org_id === null, config: template.config, createdAt: template.created_at, updatedAt: template.updated_at }
+      : null,
+    knowledgeDocuments: documents.map((row) => ({
+      documentId: row.document_id,
+      fileName: row.display_name,
+      status: row.status,
+      itemCount: Number(row.item_count),
+      markdown: markdownByDocument.get(row.document_id) ?? '',
+      items: itemsByDocument.get(row.document_id) ?? [],
+    })),
+  };
 }
 
 export interface GlobalFactsSources {
