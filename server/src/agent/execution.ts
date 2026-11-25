@@ -63,6 +63,7 @@ import {
   type AgentSubmissionReport,
 } from './submission.ts';
 import { issueAgentJobToken, revokeAgentJobTokens, type IssuedAgentToken } from './tokenStore.ts';
+import { serveAgentToolRequests, type AgentLongToolExecutor } from './toolRequests.ts';
 import { createAgentWorkspaceBaseline, type AgentWorkspaceBaseline, type AgentWorkspaceBaselineState } from './workspaceBaseline.ts';
 import { AGENT_WORKSPACE_REJECTED_CODE, AGENT_WORKSPACE_RESTORE_FAILED_CODE, agentWorkspaceRejectedMessage, agentWorkspaceRejectionCategory, type JobAgentWorkspace } from './workspaceJob.ts';
 import type { WorkspaceSandboxDriver } from './workspaceSandbox.ts';
@@ -107,6 +108,10 @@ const AGENT_SESSION_FILE = /^\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z_[0-9a-f]
 export const AGENT_READ_FILE_MAX_BYTES = 16 * 1024 * 1024;
 export const AGENT_READ_TOTAL_MAX_BYTES = 64 * 1024 * 1024;
 export const AGENT_READ_MAX_FILES = 256;
+/** writeFiles 的上限。 */
+export const AGENT_WRITE_FILE_MAX_BYTES = 16 * 1024 * 1024;
+export const AGENT_WRITE_TOTAL_MAX_BYTES = 64 * 1024 * 1024;
+export const AGENT_WRITE_MAX_FILES = 256;
 
 /** 组织选用的模型的上下文长度与输出上限（入口的 Pi 会话按它压缩与截断，8.6b）。 */
 export interface AgentModelLimits {
@@ -218,6 +223,13 @@ export interface AgentPromptInput {
   /** 本条提示词之内至多的轮数；省略时为入口的上限。 */
   readonly maxTurns?: number;
   readonly jsonSchemas?: Readonly<Record<string, unknown>>;
+  /**
+   * 本条提示词执行期间由执行者执行的长时业务工具（8.10c2b1，src/agent/toolRequests.ts）：工具名 → 执行函数。工具名须是任务类型
+   * 登记的 agentTools；Agent 调用这些工具时内部入口只登记请求并等待，执行者认领、执行并写下结果。执行函数抛出
+   * AgentToolRequestRejection 时说明交给 Agent、本条提示词继续；抛出其他错误时入口被中止（沙箱随之不可用），prompt 按该错误结束
+   * （中止时为 JobInterruptedError）。
+   */
+  readonly longTools?: Readonly<Record<string, AgentLongToolExecutor>>;
 }
 
 export interface AgentPromptOutcome {
@@ -322,6 +334,12 @@ export interface AgentRun {
   assistantText(options?: { maxChars?: number }): Promise<AgentAssistantText | null>;
   /** 读出工作区中的文件（不存在的不在结果中）。路径按 agent 工作区的规则校验，不合法时抛 TypeError。 */
   readFiles(paths: readonly string[], options?: { maxFileBytes?: number; maxTotalBytes?: number }): Promise<ReadonlyMap<string, AgentWorkspaceFile>>;
+  /**
+   * 写入工作区中的文件（8.10c2b1：长时工具的执行函数写回结果）。路径按 agent 工作区的放入规则校验、不能重复，受保护文件不能经这里
+   * 写入（它们由 baseline.write 登记），不合法时抛 TypeError；单个文件与合计不超过 AGENT_WRITE_FILE_MAX_BYTES /
+   * AGENT_WRITE_TOTAL_MAX_BYTES。已有的同名文件被替换。
+   */
+  writeFiles(files: readonly { path: string; data: Buffer }[]): Promise<void>;
   /** 执行一条提示词（见文件头）。可以重试的失败抛 AgentPromptRetryableError，其余按原因抛 JobError / 暂停类错误 / JobInterruptedError。 */
   prompt(input: AgentPromptInput): Promise<AgentPromptOutcome>;
   /** 一个阶段：发出提示词、提交校验、按提交策略修复，执行失败按原因重试。 */
@@ -368,6 +386,8 @@ export interface JobAgentOptions {
   context: Pick<JobContext<unknown>, 'jobId' | 'signal' | 'log'>;
   /** 新建沙箱的重试间隔（测试用）。 */
   createDelaysMs?: readonly number[];
+  /** 执行者查询长时工具请求的间隔（测试用；默认 AGENT_TOOL_REQUEST_SERVE_POLL_MS）。 */
+  toolRequestPollMs?: number;
 }
 
 /** 一次执行的墙钟（令牌有效期）：模板中入口命令的墙钟。 */
@@ -388,6 +408,30 @@ function workspaceRejected(error: SandboxError | SandboxArchiveError): JobError 
 }
 
 const READ_LIMITS = SANDBOX_TEMPLATES.agent.output;
+const WRITE_LIMITS = SANDBOX_TEMPLATES.agent.input;
+
+function normalizeWritePath(raw: unknown): string {
+  if (typeof raw !== 'string') throw new TypeError('工作区文件的路径必须是字符串');
+  try {
+    return validateRelativePath(raw, WRITE_LIMITS, false);
+  } catch (error) {
+    if (error instanceof SandboxArchiveError) throw new TypeError(`工作区文件的路径不合法（${error.reason}）`);
+    throw error;
+  }
+}
+
+/** 本条提示词的长时工具：工具名须是任务类型登记的 agentTools，值须是函数。 */
+function parseLongTools(raw: AgentPromptInput['longTools'], allowedTools: readonly string[]): ReadonlyMap<string, AgentLongToolExecutor> {
+  const result = new Map<string, AgentLongToolExecutor>();
+  if (raw === undefined) return result;
+  if (!isPlainObject(raw)) throw new TypeError('longTools 必须是对象');
+  for (const [name, executor] of Object.entries(raw)) {
+    if (!allowedTools.includes(name)) throw new TypeError(`长时工具 ${name} 不是任务类型登记的业务工具`);
+    if (typeof executor !== 'function') throw new TypeError(`长时工具 ${name} 的执行函数不合法`);
+    result.set(name, executor);
+  }
+  return result;
+}
 
 function normalizeReadPath(raw: unknown): string {
   if (typeof raw !== 'string') throw new TypeError('工作区文件的路径必须是字符串');
@@ -602,6 +646,7 @@ async function openAgentRun(
         throw new TypeError('阶段序号不合法');
       }
       const maxTurns = input.maxTurns ?? AGENT_MAX_TURNS_PER_PROMPT;
+      const longTools = parseLongTools(input.longTools, options.allowedTools);
       if (!resumeCompactionChecked) {
         resumeCompactionChecked = true;
         // 续跑时该阶段的要求尚未发出而交接压缩未完成（失败或被暂停）：先补做压缩，再发出阶段要求。
@@ -622,7 +667,37 @@ async function openAgentRun(
       // 执行入口之前的拒绝次数：失败后只采信本条提示词中记下的拒绝（8.6d3）。
       const rejectionMark = await agentModelRejectionMark(db, run);
       const deadline = AbortSignal.timeout(Math.max(1, issued.expiresAt.getTime() - Date.now()));
-      const execSignal = AbortSignal.any([signal, deadline]);
+      // 长时业务工具（8.10c2b1）：本条提示词执行期间认领并执行请求；执行函数的致命错误中止入口。
+      const servingStop = new AbortController();
+      const fatalAbort = new AbortController();
+      const execSignal = AbortSignal.any([signal, deadline, fatalAbort.signal]);
+      let fatal: { error: unknown } | null = null;
+      const serving = longTools.size === 0
+        ? Promise.resolve()
+        : serveAgentToolRequests({
+            db,
+            ref: { tenant, jobId: run.jobId, runId: run.runId },
+            executors: longTools,
+            signal: AbortSignal.any([execSignal, servingStop.signal]),
+            ...(options.toolRequestPollMs !== undefined ? { pollMs: options.toolRequestPollMs } : {}),
+          }).then((error) => {
+            // 本条提示词已结束后停止认领时中止的执行不算（Agent 已不再等待结果）。
+            if (error !== null && !servingStop.signal.aborted) {
+              fatal = { error };
+              fatalAbort.abort();
+            }
+          });
+      const stopServing = async () => {
+        servingStop.abort();
+        await serving;
+        if (fatal === null) return;
+        // 入口已被中止：沙箱不再可用。
+        const error = (fatal as { error: unknown }).error;
+        broken ??= error instanceof Error ? error : new Error('agent tool request failed');
+        if (signal.aborted) throw new JobInterruptedError();
+        if (deadline.aborted) throw timeLimitError(template);
+        throw error;
+      };
       let result;
       try {
         result = await runAgentPrompt(
@@ -644,6 +719,7 @@ async function openAgentRun(
           { signal: execSignal },
         );
       } catch (error) {
+        await stopServing();
         if (error instanceof TypeError) throw error;
         // 沙箱操作失败（中止 exec 会终止整个沙箱）、入口超时或结果不符合协议：之后只能关闭。
         if (error instanceof SandboxError || (error instanceof JobError && error.code === AGENT_ENTRY_FAILED_CODE)) broken ??= error;
@@ -653,6 +729,7 @@ async function openAgentRun(
         }
         throw explained;
       }
+      await stopServing();
       if (!result.ok) {
         if (result.code === 'RUN_ENDED' && signal.aborted) throw new JobInterruptedError();
         const explained = await explainFailure(result.code, new Error(`agent entry reported ${result.code}`), maxTurns, false, rejectionMark);
@@ -795,6 +872,35 @@ async function openAgentRun(
       return result;
     }
 
+    async function writeFiles(files: readonly { path: string; data: Buffer }[]): Promise<void> {
+      assertUsable();
+      if (!Array.isArray(files) || files.length > AGENT_WRITE_MAX_FILES) throw new TypeError('一次写入的文件过多');
+      const keys = new Set<string>();
+      const protectedKeys = new Set(
+        Object.values(baseline.toState().groups).flatMap((group) => Object.keys(group).map((path) => archivePathKey(path, WRITE_LIMITS))),
+      );
+      let total = 0;
+      const prepared: { path: string; data: Buffer }[] = [];
+      for (const file of files) {
+        if (!isPlainObject(file) || !Buffer.isBuffer(file.data)) throw new TypeError('写入的文件不合法');
+        const path = normalizeWritePath(file.path);
+        const key = archivePathKey(path, WRITE_LIMITS);
+        if (keys.has(key)) throw new TypeError('写入的文件路径重复');
+        keys.add(key);
+        if (protectedKeys.has(key)) throw new TypeError('受保护文件不能经 writeFiles 写入');
+        if (file.data.length > AGENT_WRITE_FILE_MAX_BYTES) throw new TypeError('写入的文件过大');
+        total += file.data.length;
+        if (total > AGENT_WRITE_TOTAL_MAX_BYTES) throw new TypeError('写入的文件合计过大');
+        prepared.push({ path, data: file.data });
+      }
+      if (prepared.length === 0) return;
+      try {
+        await driver.copyIn(current, prepared, { signal });
+      } catch (error) {
+        throw sandboxFailure(error);
+      }
+    }
+
     async function checkpoint(task: Record<string, unknown> | null, progress?: number): Promise<void> {
       assertUsable();
       if (task !== null && !isPlainObject(task)) throw new TypeError('任务的 checkpoint 必须是对象');
@@ -901,6 +1007,7 @@ async function openAgentRun(
       compact,
       assistantText,
       readFiles,
+      writeFiles,
       prompt,
       runStage,
       checkpoint,

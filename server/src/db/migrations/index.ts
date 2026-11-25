@@ -47,6 +47,7 @@ import * as agentModelRejections from './0043_agent_model_rejections.ts';
 import * as jobPauseSelection from './0044_job_pause_selection.ts';
 import * as aiImageGeneration from './0045_ai_image_generation.ts';
 import * as technicalPlanSectionBodies from './0046_technical_plan_section_bodies.ts';
+import * as agentToolRequests from './0047_agent_tool_requests.ts';
 
 export const migrations: Readonly<Record<string, Migration>> = Object.freeze({
   '0001_identity': identity,
@@ -95,4 +96,5 @@ export const migrations: Readonly<Record<string, Migration>> = Object.freeze({
   '0044_job_pause_selection': jobPauseSelection,
   '0045_ai_image_generation': aiImageGeneration,
   '0046_technical_plan_section_bodies': technicalPlanSectionBodies,
+  '0047_agent_tool_requests': agentToolRequests,
 });

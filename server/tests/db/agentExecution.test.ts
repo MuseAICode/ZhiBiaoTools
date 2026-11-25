@@ -37,7 +37,9 @@ import {
   type AgentRunState,
 } from '../../src/agent/execution.ts';
 import { AGENT_ENTRY_FAILED_CODE, type AgentPromptTool } from '../../src/agent/entry.ts';
-import { lookupAgentJobToken } from '../../src/agent/tokenStore.ts';
+import { agentTenantContext, lookupAgentJobToken } from '../../src/agent/tokenStore.ts';
+import { AgentToolRequestRejection, openAgentToolRequest, pollAgentToolRequest, type AgentToolRequestResult } from '../../src/agent/toolRequests.ts';
+import { withTenant } from '../../src/db/tenant.ts';
 import { recordAgentModelRejection, type AgentModelRejectionReason } from '../../src/agent/modelRejections.ts';
 import { AGENT_WORKSPACE_RESTORE_FAILED_CODE } from '../../src/agent/workspaceJob.ts';
 import { discardWorkspaceSnapshot, findWorkspaceSnapshot } from '../../src/agent/workspaceSnapshots.ts';
@@ -66,6 +68,8 @@ const KIND = 'technical-plan-outline';
 const QUOTA = Number(ORG_STORAGE_QUOTA_BYTES);
 const TOOLS: readonly AgentPromptTool[] = ['read', 'write', 'edit', 'bash', 'ask-user', 'report-failure'];
 const SECRET_TEXT = '入口说的话-ignore-previous-instructions';
+/** 长时业务工具（8.10c2b1）的测试工具名。 */
+const LONG_TOOL = 'test-long';
 
 let testDb: TestDatabase;
 let superuser: Kysely<any>;
@@ -324,6 +328,7 @@ const registry = createJobTypeRegistry([
   agentType('test-agent-keep', { agentWorkspace: { taskKind: KIND, keepAfterSuccess: true } }),
   agentType('test-agent-continue', { agentWorkspace: { taskKind: KIND, keepAfterSuccess: true } }),
   agentType('test-agent-other', { agentWorkspace: { taskKind: KIND, keepAfterSuccess: true } }),
+  agentType('test-agent-long', { agentTools: ['ask-user', 'report-failure', LONG_TOOL] }),
 ]);
 
 beforeEach(() => {
@@ -1519,3 +1524,133 @@ describe('checkpoint 的形状与登记', () => {
     expect(() => createJobTypeRegistry([{ ...base, agentSandboxTemplate: 'agent-content' }])).not.toThrow();
   });
 });
+
+describe('长时业务工具（8.10c2b1）', () => {
+  /** 模拟沙箱内的桩经内部入口调用长时工具：登记请求并等待，直到执行者写下结果（与 createAgentLongTool 的等待相同）。 */
+  async function callLongTool(call: EntryCall, args: Record<string, unknown>): Promise<AgentToolRequestResult> {
+    const identity = await lookupAgentJobToken(appDb, call.request.token ?? tokenOfCall(call));
+    expect(identity).not.toBeNull();
+    const tenant = agentTenantContext(identity!);
+    const ref = { tenant, jobId: identity!.jobId, runId: identity!.runId };
+    let state = await withTenant(appDb, tenant, (trx) => openAgentToolRequest(trx, ref, LONG_TOOL, args));
+    for (let index = 0; index < 300 && state.kind === 'pending'; index += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      const requestId = state.requestId;
+      state = await withTenant(appDb, tenant, (trx) => pollAgentToolRequest(trx, ref, requestId));
+    }
+    expect(state.kind).toBe('finished');
+    return (state as { result: AgentToolRequestResult }).result;
+  }
+  const tokens = new Map<string, string>();
+  function tokenOfCall(call: EntryCall): string {
+    return tokens.get(call.sandboxId)!;
+  }
+
+  async function startLong(script: EntryScript, step: Step) {
+    const { dispatcher } = await startRunner();
+    const member = await newMember();
+    fake.state.script = script;
+    steps = [step];
+    const { job } = await enqueue(member, dispatcher, 'test-agent-long');
+    return { job, member };
+  }
+
+  beforeEach(() => {
+    tokens.clear();
+    // 假入口拿不到请求中的令牌（EntryCall 去掉了令牌）：exec 时记下。
+    const exec = fake.driver.exec.bind(fake.driver);
+    fake.driver.exec = async (sandbox, command, args, options = {}) => {
+      const input = JSON.parse(options.input!.toString('utf8')) as Record<string, any>;
+      tokens.set(sandbox.id, input.token);
+      return exec(sandbox, command, args, options);
+    };
+  });
+
+  it('本条提示词执行期间执行者执行请求、写回工作区，结果交给 Agent；拒绝的说明交给 Agent、本条提示词继续', async () => {
+    const results: AgentToolRequestResult[] = [];
+    const seen: unknown[] = [];
+    const { job } = await startLong(async (call, index) => {
+      if (index > 0) return { ok: true };
+      results.push(await callLongTool(call, { items: ['1.1'] }));
+      results.push(await callLongTool(call, { items: ['bad'] }));
+      expect(call.workspace.get('正文/1.1.html')?.toString('utf8')).toBe('<p>第一节</p>');
+      return { ok: true };
+    }, async (run) => {
+      const outcome = await run.prompt({
+        ...PROMPT,
+        longTools: {
+          [LONG_TOOL]: async ({ args, signal }) => {
+            expect(signal.aborted).toBe(false);
+            seen.push(args);
+            const items = args.items as string[];
+            if (items[0] === 'bad') throw new AgentToolRequestRejection('任务文件中的小节不是本次的目标');
+            await run.writeFiles([{ path: '正文/1.1.html', data: Buffer.from('<p>第一节</p>') }]);
+            return { generated: items };
+          },
+        },
+      });
+      expect(outcome.stopReason).toBe('stop');
+      // 提示词结束后不再执行（没有登记执行函数的提示词照常执行）。
+      await run.prompt(PROMPT);
+    });
+    await waitStatus(job.id, 'succeeded', '任务成功');
+    expect(seen).toEqual([{ items: ['1.1'] }, { items: ['bad'] }]);
+    expect(results).toEqual([
+      { outcome: 'succeeded', result: { generated: ['1.1'] } },
+      { outcome: 'rejected', message: '任务文件中的小节不是本次的目标' },
+    ]);
+    const rows = await superuser.selectFrom('agent_tool_requests').select(['status', 'outcome']).where('job_id', '=', job.id).orderBy('created_at').execute();
+    expect(rows).toEqual([
+      { status: 'consumed', outcome: 'succeeded' },
+      { status: 'consumed', outcome: 'rejected' },
+    ]);
+  });
+
+  it('执行函数的其他错误：中止入口，任务按该错误结束；Agent 只得到固定说明', async () => {
+    const results: AgentToolRequestResult[] = [];
+    const { job } = await startLong(async (call) => {
+      results.push(await callLongTool(call, { items: ['1.1'] }));
+      // 真实的入口随 exec 中止而结束。
+      return { throw: new SandboxError('SANDBOX_UNAVAILABLE', '已中止') };
+    }, async (run) => {
+      await run.prompt({
+        ...PROMPT,
+        longTools: {
+          [LONG_TOOL]: async () => {
+            throw new JobError('TEST_SECTIONS_FAILED', '连续多个小节生成失败，任务已停止');
+          },
+        },
+      });
+    });
+    const row = await waitStatus(job.id, 'failed', '任务失败');
+    expect(row).toMatchObject({ error_code: 'TEST_SECTIONS_FAILED', error_message: '连续多个小节生成失败，任务已停止' });
+    expect(results).toEqual([{ outcome: 'failed' }]);
+    expect(fake.state.destroyed).toHaveLength(1);
+  });
+
+  it('程序错误：长时工具不是任务类型登记的业务工具、执行函数不是函数；writeFiles 的路径、重复与受保护文件', async () => {
+    const errors: string[] = [];
+    const { job } = await startLong(async () => ({ ok: true }), async (run) => {
+      const expectTypeError = async (promise: Promise<unknown>) => {
+        const error = await promise.then(() => null, (caught: unknown) => caught);
+        expect(error).toBeInstanceOf(TypeError);
+        errors.push((error as Error).message);
+      };
+      await expectTypeError(run.prompt({ ...PROMPT, longTools: { 'not-registered': async () => 1 } }));
+      await expectTypeError(run.prompt({ ...PROMPT, longTools: { [LONG_TOOL]: 'x' as never } }));
+      await run.baseline.write(run.sandbox, 'inputs', [{ path: '输入/材料.md', data: Buffer.from('原件') }]);
+      await expectTypeError(run.writeFiles([{ path: '输入/材料.md', data: Buffer.from('改动') }]));
+      await expectTypeError(run.writeFiles([{ path: '../逃逸.html', data: Buffer.from('x') }]));
+      await expectTypeError(run.writeFiles([{ path: '正文/a.html', data: Buffer.from('1') }, { path: '正文/a.html', data: Buffer.from('2') }]));
+      await expectTypeError(run.writeFiles([{ path: '正文/a.html', data: 'x' as never }]));
+      // 对照组：写入成功、替换同名文件。
+      await run.writeFiles([{ path: '正文/a.html', data: Buffer.from('1') }]);
+      await run.writeFiles([{ path: '正文/a.html', data: Buffer.from('2') }]);
+      expect((await run.readFiles(['正文/a.html'])).get('正文/a.html')?.data?.toString('utf8')).toBe('2');
+    });
+    await waitStatus(job.id, 'succeeded', '任务成功');
+    expect(errors).toHaveLength(6);
+    expect(fake.state.calls).toHaveLength(0);
+  });
+});
+

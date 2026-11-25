@@ -59,6 +59,7 @@ import type { JOB_EVENT_KINDS, JOB_STATUSES } from './migrations/0021_jobs.ts';
 import type { AGENT_BUDGET_EXHAUSTED_REASONS } from './migrations/0033_agent_job_budgets.ts';
 import type { AGENT_QUESTION_STATUSES } from './migrations/0039_agent_questions.ts';
 import type { AGENT_MODEL_REJECTION_REASONS } from './migrations/0043_agent_model_rejections.ts';
+import type { AGENT_TOOL_REQUEST_OUTCOMES, AGENT_TOOL_REQUEST_STATUSES } from './migrations/0047_agent_tool_requests.ts';
 import type { JOB_PAUSE_REASONS } from './migrations/0044_job_pause_selection.ts';
 import type { ProjectKind } from '../projects/store.ts';
 
@@ -1453,6 +1454,31 @@ export interface AgentQuestionsTable {
   created_at: ColumnType<Date, never, never>;
 }
 
+export type AgentToolRequestStatus = (typeof AGENT_TOOL_REQUEST_STATUSES)[number];
+export type AgentToolRequestOutcome = (typeof AGENT_TOOL_REQUEST_OUTCOMES)[number];
+
+/**
+ * 长时业务工具调用的交接（迁移 0047_agent_tool_requests，8.10c2b1）：内部入口登记、执行者认领并写下结果、内部入口取回后交给 Agent。
+ * 每个任务同时至多一个未关闭的请求（pending / running / finished）；状态的改法由触发器 AR001 限定，各时间由触发器填写；没有 DELETE。
+ */
+export interface AgentToolRequestsTable {
+  id: ColumnType<string, never, never>;
+  org_id: ColumnType<string, string, never>;
+  job_id: ColumnType<string, string, never>;
+  run_id: ColumnType<string, string, never>;
+  tool: ColumnType<string, string, never>;
+  args_hash: ColumnType<Buffer, Buffer, never>;
+  args: ColumnType<Record<string, unknown>, string, never>;
+  status: ColumnType<AgentToolRequestStatus, never, AgentToolRequestStatus>;
+  outcome: ColumnType<AgentToolRequestOutcome | null, never, AgentToolRequestOutcome>;
+  result: ColumnType<unknown, never, string | null>;
+  message: ColumnType<string | null, never, string | null>;
+  created_at: ColumnType<Date, never, never>;
+  claimed_at: ColumnType<Date | null, never, never>;
+  finished_at: ColumnType<Date | null, never, never>;
+  consumed_at: ColumnType<Date | null, never, never>;
+}
+
 /**
  * Agent 工作区快照（迁移 0040_agent_workspace_snapshots，8.5a）：每个项目、每类任务至多一个当前的快照（已完成、未被替换）。
  * storage_key 是生成列 'org/{org_id}/agent-workspaces/{id}'；完成后内容不能改、只能标为已被替换一次（AW003），配额由触发器检查（AW001）；
@@ -1563,4 +1589,5 @@ export interface Database {
   agent_workspace_snapshots: AgentWorkspaceSnapshotsTable;
   agent_tool_scopes: AgentToolScopesTable;
   agent_model_rejections: AgentModelRejectionsTable;
+  agent_tool_requests: AgentToolRequestsTable;
 }
