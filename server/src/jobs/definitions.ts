@@ -50,8 +50,10 @@ export interface JobAi {
    *   不收费。平台自身故障导致的重复调用不向用户收费；
    * - 网关的其他错误（上游失败、模型停用等）转成 JobError，代码和文案与接口相同（给用户看的），任务可以自行重试或失败；
    * - worker 未配置主密钥（AI_KEK_FILE）时抛 JobError('AI_UNAVAILABLE')。
+   * - options.signal（8.10c2b2）：调用方另行中止本次调用（如批量调用的连续失败守卫中止剩余各项），与任务的取消、暂停合并；按调用方中止
+   *   处理——已产生的用量照常结算，结果为 aborted。
    */
-  chat(request: JobChatRequest, options?: { onDelta?: (delta: ChatDelta) => void }): Promise<ChatResult>;
+  chat(request: JobChatRequest, options?: { onDelta?: (delta: ChatDelta) => void; signal?: AbortSignal }): Promise<ChatResult>;
   /**
    * 生图（8.9，src/ai/images.ts）：按张冻结与结算，计入本任务的费用上限（达到时抛 JobTaskLimitError，任务暂停）；余额不足、
    * 步骤幂等、错误转换与 chat 相同。服务商返回的图片经 render-html 沙箱转成 PNG、按上传图片的规则校验后写成本任务项目的图片产物，

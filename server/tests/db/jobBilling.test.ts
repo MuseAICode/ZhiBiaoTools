@@ -590,6 +590,51 @@ describe('worker 中的任务调用', () => {
     expect(await usageOf(ctx.orgId)).toHaveLength(1);
   });
 
+  it('调用方另给的 signal（8.10c2b2）：中止这一次调用，按已产生的用量结算、结果为 aborted；任务照常继续、之后的调用不受影响', async () => {
+    const ctx = await newMember(10n * JOB_MIN_START_BALANCE);
+    let upstreamClosed = false;
+    let calls = 0;
+    // 第一次调用输出一段内容后一直不结束；之后的调用正常结束。
+    provider.setHandler(async (_request, response) => {
+      calls += 1;
+      if (calls > 1) return streamCompletion(response, { usage: USAGE });
+      response.on('close', () => (upstreamClosed = true));
+      await streamCompletion(response, { pieces: ['第一段内容'], usage: USAGE, beforeDone: new Promise(() => {}) });
+    });
+    const outcomes: { aborted: boolean; billing: string }[] = [];
+    const caller: JobTypeDefinition<Record<string, never>> = {
+      type: 'test-caller-signal',
+      queue: 'ai',
+      resumable: true,
+      billable: true,
+      parseParams: () => ({}),
+      async run(context) {
+        const controller = new AbortController();
+        const first = await context.ai.chat(
+          { provider: 'deepseek', model: 'deepseek-chat', messages: MESSAGES, maxOutputTokens: MAX_OUTPUT, stepKey: 'caller:1' },
+          { signal: controller.signal, onDelta: () => controller.abort() },
+        );
+        outcomes.push({ aborted: first.aborted, billing: first.billing.status });
+        const second = await context.ai.chat({ provider: 'deepseek', model: 'deepseek-chat', messages: MESSAGES, maxOutputTokens: MAX_OUTPUT, stepKey: 'caller:2' });
+        outcomes.push({ aborted: second.aborted, billing: second.billing.status });
+      },
+    };
+    const registry = createJobTypeRegistry([caller]);
+    await startRunner(registry, { gateway: newGateway() });
+    const job = await enqueueJob(service(registry), ctx, { type: 'test-caller-signal', params: {} });
+    const done = await waitForStatus(job.id, 'succeeded');
+    await waitFor(async () => (upstreamClosed ? true : null), 5_000, 'upstream connection closed');
+    expect(outcomes).toEqual([
+      { aborted: true, billing: 'billed' },
+      { aborted: false, billing: 'billed' },
+    ]);
+    const usages = await usageOf(ctx.orgId);
+    expect(usages.map((usage) => usage.status)).toEqual(['billed', 'billed']);
+    // 中止的一次按已产生的输出估算，不超过冻结额；任务的费用是两次之和。
+    expect(BigInt(usages[0]!.amount)).toBeLessThanOrEqual(HOLD);
+    expect(done.billed_amount).toBe(String(usages.reduce((sum, usage) => sum + BigInt(usage.amount), 0n)));
+  });
+
   it('worker 在调用中途崩溃：冻结到期后不再占用余额、不收费；任务被收回后从 checkpoint 续跑，已扣费的步骤不重做、不重复扣费', async () => {
     const ctx = await newMember(10n * JOB_MIN_START_BALANCE);
     const { registry, runs } = chatJobTypes();

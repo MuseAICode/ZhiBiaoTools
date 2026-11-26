@@ -8,13 +8,18 @@
 // 直接调用工具接口也一样被拦住（#91 确认）。桩只负责让 Agent 正常工作：
 // - ask-user / request-termination 收到 { answered: false, pending: true } 时等 PENDING_RETRY_DELAY_MS 后以完全相同的参数再次调用，
 //   不交给模型（8.4c1、8.4c2 登记）；
+// - generate-sections（8.10c2b2，长时工具，src/agent/toolRequests.ts）收到 { completed: false, pending: true } 时同样等待后以完全相同的
+//   参数再次调用，不交给模型，每次等待经 onUpdate 给出进度提示；名称与说明沿用桌面版 contentGenerationAgent.cjs（说明中“知识库等”
+//   按工作区中是否有知识库索引给出，与桌面版按是否引用知识库相同；只影响说明文字）；
 // - report-failure 报告成功、request-termination 收到 { terminated: true } 后立即结束 Pi 会话（不再调用任何工具），
 //   入口报告 REPORTED_FAILURE（8.4b 登记）；
 // - request-termination 收到 { terminated: false } 时把 instruction（放宽后的执行要求）作为工具结果交给模型；
 // - worker 的 4xx 说明（参数不合法、阶段外、次数上限、另有问题在等待等）作为工具错误交给模型，由模型修正；
 //   401（令牌失效）与 409 JOB_NOT_RUNNING（本次执行已结束）立即结束 Pi 会话，入口报告 TOKEN_INVALID / RUN_ENDED；
 //   其他情形（5xx、连不上、超时、响应不合法）只给模型固定的说明，不带出响应正文。
+import { existsSync } from 'node:fs';
 import { request as httpRequest } from 'node:http';
+import { join } from 'node:path';
 import { EntryError } from './protocol.mjs';
 
 /** 一次工具调用（含等待用户回答的 50 秒）的时限。 */
@@ -242,7 +247,42 @@ function requestTerminationStub({ Type, call, end }) {
   };
 }
 
-const STUBS = Object.freeze({ 'ask-user': askUserStub, 'report-failure': reportFailureStub, 'request-termination': requestTerminationStub });
+/** 正文生成的任务文件与知识库索引（与 src/technicalPlan/contentWriting.ts 的 taskFilePath('sections')、知识库/索引.json 相同）。 */
+export const CONTENT_SECTIONS_TASK_FILE = '任务/正文生成.json';
+export const KNOWLEDGE_INDEX_FILE = '知识库/索引.json';
+const TASK_FILE_WRITING = '写完再调用对应工具提交。';
+const isLongPending = (result) => isPlainObject(result) && result.pending === true && result.completed === false;
+
+/** generate-sections 的桩（桌面版 contentGenerationAgent.cjs 的名称与说明）：worker 的执行者在本条提示词执行期间生成并写回各节正文。 */
+function generateSectionsStub({ Type, call, workspaceDir }) {
+  const hasKnowledgeBase = existsSync(join(workspaceDir, KNOWLEDGE_INDEX_FILE));
+  return {
+    name: 'generate-sections',
+    label: '批量生成正文小节',
+    description: `读取 ${CONTENT_SECTIONS_TASK_FILE} 中的全部小节并提交生成受限 HTML，格式为 {"sections":[{"section_id":"…","instructions":"…","references":"…"}]}，每项三个字段都必填。section_id 原样填写正文编排决策 targets 中本节的 id，不使用 number。instructions 仅填写本节新增配图安排，以及已有编排和公共规则之外确有必要的补充要求：配图安排包含布局、组数、逐图表达目的、图片类型和生成方式（aiImage/htmlImage/mermaid），AI 图片另写明画面类型、主体、视角景别和画面形式；没有新增配图和补充要求时填空字符串，失败重试时可填写具体纠错要求。references 为${hasKnowledgeBase ? '知识库等' : ''}补充资料的相关原文摘录并注明来源，完整全局事实由程序提供，无补充资料时填空字符串。程序自动提供本节编排、完整全局事实及公共材料，无需复述目标字数、写作重点、表格安排和格式规则。已生成正文的小节自动跳过，重复提交同一任务文件不会重写；确需整节重写时该项加 "regenerate": true。${TASK_FILE_WRITING}程序队列按用户配置控制实际并发，超出上限的任务自动排队，各节独立落盘。返回 total、success、skipped 和 unresolved（失败小节及原因）；失败小节修正文件中的要求后再次提交即可。`,
+    executionMode: 'sequential',
+    parameters: Type.Object({}, { additionalProperties: false }),
+    execute: async (_toolCallId, params, signal, onUpdate) => {
+      let result = await call('generate-sections', params, signal);
+      while (isLongPending(result)) {
+        // 刷新 Agent 的无进展计时（桌面版每节完成时 onUpdate）。
+        onUpdate?.({ content: [{ type: 'text', text: '正文小节仍在生成，完成后自动返回结果' }], details: { pending: true } });
+        await delay(PENDING_RETRY_DELAY_MS, signal);
+        if (signal?.aborted) throw new ToolCallError('工具调用已中止');
+        result = await call('generate-sections', params, signal);
+      }
+      // 与桌面版相同：模型只接收统计与未成功项（紧凑的 JSON）。
+      return { content: [{ type: 'text', text: JSON.stringify(result) }], details: result };
+    },
+  };
+}
+
+const STUBS = Object.freeze({
+  'ask-user': askUserStub,
+  'report-failure': reportFailureStub,
+  'request-termination': requestTerminationStub,
+  'generate-sections': generateSectionsStub,
+});
 
 /** 业务工具（worker 一侧的名字）面向模型的工具名。 */
 export function modelToolName(name) {
@@ -253,10 +293,11 @@ export function modelToolName(name) {
  * 为请求中的业务工具创建桩（Pi 的工具定义，由 pi.mjs 经 defineTool 登记）。
  * - Type：TypeBox（随 Pi 加载）；
  * - call(name, args, signal)：调用 worker 一侧的工具，返回 result，失败抛 ToolCallError（默认经 callBusinessTool）；
- * - end(code)：结束 Pi 会话，入口报告 code（REPORTED_FAILURE、TOKEN_INVALID、RUN_ENDED）。
+ * - end(code)：结束 Pi 会话，入口报告 code（REPORTED_FAILURE、TOKEN_INVALID、RUN_ENDED）；
+ * - workspaceDir：工作区（generate-sections 的说明按其中是否有知识库索引给出）。
  * fatal 的 ToolCallError 由这里转成 end(code)，再作为工具错误交给模型（会话随即结束）。
  */
-export function createBusinessToolStubs({ Type, names, call, end }) {
+export function createBusinessToolStubs({ Type, names, call, end, workspaceDir = '/workspace' }) {
   const guardedCall = async (name, args, signal) => {
     try {
       return await call(name, args, signal);
@@ -269,6 +310,6 @@ export function createBusinessToolStubs({ Type, names, call, end }) {
   return names.map((name) => {
     const factory = STUBS[name];
     if (!factory) throw new EntryError('INTERNAL');
-    return factory({ Type, call: guardedCall, end });
+    return factory({ Type, call: guardedCall, end, workspaceDir });
   });
 }

@@ -3,9 +3,15 @@
 // - callBusinessTool：只发 POST /v1/tools/call、令牌只在 Authorization 中、请求体只有 { name, arguments }；
 //   200 取 result；401 / 409 JOB_NOT_RUNNING 为 fatal（TOKEN_INVALID / RUN_ENDED）；其他 4xx 带 worker 的说明（截短）；
 //   5xx、响应不合法、过大、无限长、不响应、连不上、中止只给固定说明，不带出响应正文；
-// - 桩的行为：pending 时以相同参数再次调用；报告失败 / 用户选择终止时结束会话；fatal 时结束会话；选择继续时把 instruction 交给模型。
+// - 桩的行为：pending 时以相同参数再次调用；报告失败 / 用户选择终止时结束会话；fatal 时结束会话；选择继续时把 instruction 交给模型；
+// - generate-sections（8.10c2b2）：名称、标签与说明和桌面版 contentGenerationAgent.cjs 相同（有无知识库两种说明），长时调用的 pending
+//   以相同参数再次调用并给出进度提示，结果按紧凑的 JSON 交给模型。
 // 真实的 Pi 经真实路由调用桩的流程见 tests/agent/piBusinessTools.test.ts。
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
+import { createRequire } from 'node:module';
+import { tmpdir } from 'node:os';
+import { dirname, join } from 'node:path';
 import type { AddressInfo } from 'node:net';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { askUserTool } from '../../src/agent/askUserTool.ts';
@@ -13,10 +19,15 @@ import { reportFailureTool } from '../../src/agent/reportFailureTool.ts';
 import { requestTerminationTool } from '../../src/agent/requestTerminationTool.ts';
 import { generateAgentToken } from '../../src/agent/token.ts';
 import { agentToolRegistry } from '../../src/agent/toolRegistry.ts';
+import { generateSectionsTool } from '../../src/technicalPlan/contentSectionGeneration.ts';
+import { CONTENT_SECTIONS_TASK_FILE as SERVER_TASK_FILE } from '../../src/technicalPlan/contentSectionWriting.ts';
+import { CONTENT_WRITING_KNOWLEDGE_INDEX_FILE } from '../../src/technicalPlan/contentWriting.ts';
 import { BUSINESS_TOOLS } from '../../sandbox/agent/protocol.mjs';
 import {
   callBusinessTool,
+  CONTENT_SECTIONS_TASK_FILE,
   createBusinessToolStubs,
+  KNOWLEDGE_INDEX_FILE,
   MAX_TOOL_ERROR_CHARS,
   MAX_TOOL_RESPONSE_BYTES,
   modelToolName,
@@ -40,21 +51,77 @@ function constraints(schema: unknown): unknown {
 
 const noop = async () => ({});
 
+// 桌面版的工具定义（加载方式与 tests/technicalPlan/contentSectionWriting.test.ts 相同：前端依赖换成桩）。
+const require = createRequire(import.meta.url);
+const desktopStub: unknown = new Proxy(function stubbed() {}, {
+  get: (_target, key) => (key === Symbol.toPrimitive ? () => '' : desktopStub),
+  apply: () => desktopStub,
+  construct: () => desktopStub as object,
+});
+function loadDesktop(path: string): any {
+  const Module = require('node:module') as { _load: (request: string, parent: unknown, isMain: boolean) => unknown };
+  const original = Module._load;
+  const ajv = require('ajv') as unknown;
+  Module._load = function load(request: string, parent: unknown, isMain: boolean) {
+    if (request === 'ajv') return ajv;
+    if (['cheerio', 'docx', 'electron', 'image-size', 'mime-types'].includes(request)) return desktopStub;
+    return original.call(this, request, parent, isMain);
+  };
+  try {
+    return require(path);
+  } finally {
+    Module._load = original;
+  }
+}
+const desktopAgent = loadDesktop('../../../client/electron/services/contentGenerationAgent.cjs') as {
+  createContentGenerationTools(options: Record<string, unknown>, context: Record<string, unknown>): { name: string; label: string; description: string; executionMode: string }[];
+};
+const workspaces: string[] = [];
+afterAll(() => {
+  for (const dir of workspaces) rmSync(dir, { recursive: true, force: true });
+});
+function workspace(files: Record<string, string>): string {
+  const dir = mkdtempSync(join(tmpdir(), 'business-tools-'));
+  workspaces.push(dir);
+  for (const [path, content] of Object.entries(files)) {
+    mkdirSync(dirname(join(dir, path)), { recursive: true });
+    writeFileSync(join(dir, path), content, 'utf8');
+  }
+  return dir;
+}
+
 describe('桩的定义', () => {
   it('参数 schema 与 worker 登记的相同；面向模型的名字：request-termination 为 report-failure', () => {
     const stubs = createBusinessToolStubs({ Type, names: [...BUSINESS_TOOLS], call: noop, end: () => {} });
-    const server = { 'ask-user': askUserTool, 'report-failure': reportFailureTool, 'request-termination': requestTerminationTool } as const;
+    const server = { 'ask-user': askUserTool, 'report-failure': reportFailureTool, 'request-termination': requestTerminationTool, 'generate-sections': generateSectionsTool } as const;
     BUSINESS_TOOLS.forEach((name, index) => {
       expect(constraints(stubs[index]!.parameters)).toEqual(constraints(server[name].argumentsSchema));
       expect(stubs[index]!.name).toBe(modelToolName(name));
       // 生产登记中有同名的工具。
       expect(agentToolRegistry.get(name)).toBeDefined();
     });
-    expect(stubs.map((stub) => stub.name)).toEqual(['ask-user', 'report-failure', 'report-failure']);
+    expect(stubs.map((stub) => stub.name)).toEqual(['ask-user', 'report-failure', 'report-failure', 'generate-sections']);
     expect(stubs[2]!.label).toBe('请求终止任务');
     // 问题按纯文本显示（#84）：提示中不要求 Markdown。
-    expect(stubs[0]!.promptGuidelines.join('\n')).toContain('不要使用 Markdown');
+    expect(stubs[0]!.promptGuidelines!.join('\n')).toContain('不要使用 Markdown');
     expect(() => createBusinessToolStubs({ Type, names: ['openxml'], call: noop, end: () => {} })).toThrow();
+  });
+
+  it('generate-sections：名称、标签与说明与桌面版相同（有无知识库），任务文件与知识库索引的路径与服务端相同', () => {
+    expect(CONTENT_SECTIONS_TASK_FILE).toBe(SERVER_TASK_FILE);
+    expect(KNOWLEDGE_INDEX_FILE).toBe(CONTENT_WRITING_KNOWLEDGE_INDEX_FILE);
+    for (const hasKnowledgeBase of [false, true]) {
+      const dir = workspace(hasKnowledgeBase ? { [KNOWLEDGE_INDEX_FILE]: '[]' } : {});
+      const [stub] = createBusinessToolStubs({ Type, names: ['generate-sections'], call: noop, end: () => {}, workspaceDir: dir });
+      const desktop = desktopAgent.createContentGenerationTools({ hasKnowledgeBase }, { Type: desktopStub, workspaceDir: dir, setActiveTools: () => {}, baseline: null }).find((tool) => tool.name === 'generate-sections')!;
+      expect({ name: stub!.name, label: stub!.label, description: stub!.description, executionMode: stub!.executionMode }).toEqual({
+        name: desktop.name,
+        label: desktop.label,
+        description: desktop.description,
+        executionMode: desktop.executionMode,
+      });
+      expect(stub!.description.includes('知识库等')).toBe(hasKnowledgeBase);
+    }
   });
 });
 
@@ -171,7 +238,7 @@ describe('callBusinessTool', () => {
 describe('桩的行为', () => {
   const question = { question: '选哪个', options: [{ label: '甲', custom: false }, { label: '乙', custom: false }] };
 
-  function stubs(responses: Array<unknown | ToolCallError>, names: readonly string[] = BUSINESS_TOOLS.filter((name) => name !== 'request-termination')) {
+  function stubs(responses: Array<unknown | ToolCallError>, names: readonly string[] = ['ask-user', 'report-failure']) {
     const calls: Array<{ name: string; args: unknown }> = [];
     const ended: string[] = [];
     const list = createBusinessToolStubs({
@@ -220,6 +287,26 @@ describe('桩的行为', () => {
     run = stubs([{ unexpected: true }], names);
     await expect(run.list[0]!.execute('c', { reason: 'r' })).rejects.toThrow('平台暂时无法执行该工具，请稍后重试');
     expect(run.ended).toEqual([]);
+  });
+
+  it('generate-sections：pending 时以相同参数再次调用并给出进度提示，不交给模型；结果按紧凑的 JSON 交给模型；中止时报工具错误', async () => {
+    const pending = { completed: false, pending: true, message: 'm' };
+    const done = { total: 2, success: 1, skipped: 0, unresolved: [{ section_id: 'a', status: 'error', error: '失败' }] };
+    const run = stubs([pending, pending, done], ['generate-sections']);
+    const updates: unknown[] = [];
+    const result = await run.list[0]!.execute('c', {}, undefined, (update) => updates.push(update));
+    expect(run.calls).toEqual([0, 1, 2].map(() => ({ name: 'generate-sections', args: {} })));
+    expect(updates).toHaveLength(2);
+    expect(result).toEqual({ content: [{ type: 'text', text: JSON.stringify(done) }], details: done });
+    expect(run.ended).toEqual([]);
+    // ask-user 的 pending 形状（answered: false）不是长时工具的 pending：原样交给模型。
+    const other = stubs([{ answered: false, pending: true }], ['generate-sections']);
+    expect((await other.list[0]!.execute('c', {})).details).toEqual({ answered: false, pending: true });
+    const controller = new AbortController();
+    const aborted = stubs([pending, done], ['generate-sections']);
+    const call = aborted.list[0]!.execute('c', {}, controller.signal, () => controller.abort());
+    await expect(call).rejects.toThrow('工具调用已中止');
+    expect(aborted.calls).toHaveLength(1);
   });
 
   it('fatal 错误结束会话（TOKEN_INVALID / RUN_ENDED）并作为工具错误交给模型；其他错误只交给模型', async () => {

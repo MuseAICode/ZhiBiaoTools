@@ -26,11 +26,11 @@ export interface BusinessToolStub {
   name: string;
   label: string;
   description: string;
-  promptSnippet: string;
-  promptGuidelines: string[];
+  promptSnippet?: string;
+  promptGuidelines?: string[];
   executionMode: 'sequential';
   parameters: Record<string, unknown>;
-  execute(toolCallId: string, params: any, signal?: AbortSignal): Promise<{ content: Array<{ type: 'text'; text: string }>; details: unknown }>;
+  execute(toolCallId: string, params: any, signal?: AbortSignal, onUpdate?: (update: { content: Array<{ type: 'text'; text: string }>; details: unknown }) => void): Promise<{ content: Array<{ type: 'text'; text: string }>; details: unknown }>;
 }
 
 export function createBusinessToolStubs(options: {
@@ -38,4 +38,8 @@ export function createBusinessToolStubs(options: {
   names: readonly string[];
   call: (name: string, args: any, signal?: AbortSignal) => Promise<unknown>;
   end: (code: EntryErrorCode) => void;
+  workspaceDir?: string;
 }): BusinessToolStub[];
+
+export const CONTENT_SECTIONS_TASK_FILE: string;
+export const KNOWLEDGE_INDEX_FILE: string;
