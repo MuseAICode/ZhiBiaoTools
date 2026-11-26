@@ -1,0 +1,2060 @@
+{
+  "cases": [
+    {
+      "name": "全部合格",
+      "targets": [
+        {
+          "id": "n-1",
+          "number": "1.1",
+          "title": "施工组织",
+          "file": "正文/n-1.html"
+        },
+        {
+          "id": "节点 2",
+          "number": "1.2",
+          "title": "质量保证",
+          "file": "正文/%E8%8A%82%E7%82%B9%202.html"
+        }
+      ],
+      "files": {
+        "正文生成结果.json": "{\"sections\":[{\"section_id\":\"n-1\",\"file\":\"正文/n-1.html\",\"words\":10},{\"section_id\":\"节点 2\",\"file\":\"正文/%E8%8A%82%E7%82%B9%202.html\",\"words\":10}]}",
+        "正文/n-1.html": "<!-- app:block -->\n<p id=\"s_p001\">本节说明施工组织安排。</p>",
+        "正文/%E8%8A%82%E7%82%B9%202.html": "<!-- app:block -->\n<p id=\"s_p001\">本节说明施工组织安排。</p>"
+      },
+      "images": [],
+      "dirs": []
+    },
+    {
+      "name": "结果清单不存在",
+      "targets": [
+        {
+          "id": "n-1",
+          "number": "1.1",
+          "title": "施工组织",
+          "file": "正文/n-1.html"
+        },
+        {
+          "id": "节点 2",
+          "number": "1.2",
+          "title": "质量保证",
+          "file": "正文/%E8%8A%82%E7%82%B9%202.html"
+        }
+      ],
+      "files": {
+        "正文/n-1.html": "<!-- app:block -->\n<p id=\"s_p001\">本节说明施工组织安排。</p>",
+        "正文/%E8%8A%82%E7%82%B9%202.html": "<!-- app:block -->\n<p id=\"s_p001\">本节说明施工组织安排。</p>"
+      },
+      "images": [],
+      "dirs": []
+    },
+    {
+      "name": "结果清单不是 JSON",
+      "targets": [
+        {
+          "id": "n-1",
+          "number": "1.1",
+          "title": "施工组织",
+          "file": "正文/n-1.html"
+        },
+        {
+          "id": "节点 2",
+          "number": "1.2",
+          "title": "质量保证",
+          "file": "正文/%E8%8A%82%E7%82%B9%202.html"
+        }
+      ],
+      "files": {
+        "正文生成结果.json": "{\"sections\": [",
+        "正文/n-1.html": "<!-- app:block -->\n<p id=\"s_p001\">本节说明施工组织安排。</p>",
+        "正文/%E8%8A%82%E7%82%B9%202.html": "<!-- app:block -->\n<p id=\"s_p001\">本节说明施工组织安排。</p>"
+      },
+      "images": [],
+      "dirs": []
+    },
+    {
+      "name": "结果清单带 BOM",
+      "targets": [
+        {
+          "id": "n-1",
+          "number": "1.1",
+          "title": "施工组织",
+          "file": "正文/n-1.html"
+        },
+        {
+          "id": "节点 2",
+          "number": "1.2",
+          "title": "质量保证",
+          "file": "正文/%E8%8A%82%E7%82%B9%202.html"
+        }
+      ],
+      "files": {
+        "正文生成结果.json": "﻿{\"sections\":[{\"section_id\":\"n-1\",\"file\":\"正文/n-1.html\",\"words\":10},{\"section_id\":\"节点 2\",\"file\":\"正文/%E8%8A%82%E7%82%B9%202.html\",\"words\":10}]}",
+        "正文/n-1.html": "<!-- app:block -->\n<p id=\"s_p001\">本节说明施工组织安排。</p>",
+        "正文/%E8%8A%82%E7%82%B9%202.html": "<!-- app:block -->\n<p id=\"s_p001\">本节说明施工组织安排。</p>"
+      },
+      "images": [],
+      "dirs": []
+    },
+    {
+      "name": "结果清单为 null",
+      "targets": [
+        {
+          "id": "n-1",
+          "number": "1.1",
+          "title": "施工组织",
+          "file": "正文/n-1.html"
+        },
+        {
+          "id": "节点 2",
+          "number": "1.2",
+          "title": "质量保证",
+          "file": "正文/%E8%8A%82%E7%82%B9%202.html"
+        }
+      ],
+      "files": {
+        "正文生成结果.json": "null",
+        "正文/n-1.html": "<!-- app:block -->\n<p id=\"s_p001\">本节说明施工组织安排。</p>",
+        "正文/%E8%8A%82%E7%82%B9%202.html": "<!-- app:block -->\n<p id=\"s_p001\">本节说明施工组织安排。</p>"
+      },
+      "images": [],
+      "dirs": []
+    },
+    {
+      "name": "结果清单 sections 不是数组",
+      "targets": [
+        {
+          "id": "n-1",
+          "number": "1.1",
+          "title": "施工组织",
+          "file": "正文/n-1.html"
+        },
+        {
+          "id": "节点 2",
+          "number": "1.2",
+          "title": "质量保证",
+          "file": "正文/%E8%8A%82%E7%82%B9%202.html"
+        }
+      ],
+      "files": {
+        "正文生成结果.json": "{\"sections\":{}}",
+        "正文/n-1.html": "<!-- app:block -->\n<p id=\"s_p001\">本节说明施工组织安排。</p>",
+        "正文/%E8%8A%82%E7%82%B9%202.html": "<!-- app:block -->\n<p id=\"s_p001\">本节说明施工组织安排。</p>"
+      },
+      "images": [],
+      "dirs": []
+    },
+    {
+      "name": "结果清单字段不合规",
+      "targets": [
+        {
+          "id": "n-1",
+          "number": "1.1",
+          "title": "施工组织",
+          "file": "正文/n-1.html"
+        },
+        {
+          "id": "节点 2",
+          "number": "1.2",
+          "title": "质量保证",
+          "file": "正文/%E8%8A%82%E7%82%B9%202.html"
+        }
+      ],
+      "files": {
+        "正文生成结果.json": "{\"sections\":[{\"section_id\":\"n-1\",\"file\":\"正文/n-1.html\",\"words\":0,\"extra\":1},{\"section_id\":\"节点 2\",\"words\":\"x\"}]}",
+        "正文/n-1.html": "<!-- app:block -->\n<p id=\"s_p001\">本节说明施工组织安排。</p>",
+        "正文/%E8%8A%82%E7%82%B9%202.html": "<!-- app:block -->\n<p id=\"s_p001\">本节说明施工组织安排。</p>"
+      },
+      "images": [],
+      "dirs": []
+    },
+    {
+      "name": "结果清单缺少小节",
+      "targets": [
+        {
+          "id": "n-1",
+          "number": "1.1",
+          "title": "施工组织",
+          "file": "正文/n-1.html"
+        },
+        {
+          "id": "节点 2",
+          "number": "1.2",
+          "title": "质量保证",
+          "file": "正文/%E8%8A%82%E7%82%B9%202.html"
+        }
+      ],
+      "files": {
+        "正文生成结果.json": "{\"sections\":[{\"section_id\":\"n-1\",\"file\":\"正文/n-1.html\",\"words\":3}]}",
+        "正文/n-1.html": "<!-- app:block -->\n<p id=\"s_p001\">本节说明施工组织安排。</p>",
+        "正文/%E8%8A%82%E7%82%B9%202.html": "<!-- app:block -->\n<p id=\"s_p001\">本节说明施工组织安排。</p>"
+      },
+      "images": [],
+      "dirs": []
+    },
+    {
+      "name": "结果清单文件路径不匹配",
+      "targets": [
+        {
+          "id": "n-1",
+          "number": "1.1",
+          "title": "施工组织",
+          "file": "正文/n-1.html"
+        },
+        {
+          "id": "节点 2",
+          "number": "1.2",
+          "title": "质量保证",
+          "file": "正文/%E8%8A%82%E7%82%B9%202.html"
+        }
+      ],
+      "files": {
+        "正文生成结果.json": "{\"sections\":[{\"section_id\":\"n-1\",\"file\":\"正文/other.html\",\"words\":3},{\"section_id\":\"节点 2\",\"file\":\"正文/%E8%8A%82%E7%82%B9%202.html\",\"words\":3}]}",
+        "正文/n-1.html": "<!-- app:block -->\n<p id=\"s_p001\">本节说明施工组织安排。</p>",
+        "正文/%E8%8A%82%E7%82%B9%202.html": "<!-- app:block -->\n<p id=\"s_p001\">本节说明施工组织安排。</p>"
+      },
+      "images": [],
+      "dirs": []
+    },
+    {
+      "name": "结果清单重复小节",
+      "targets": [
+        {
+          "id": "n-1",
+          "number": "1.1",
+          "title": "施工组织",
+          "file": "正文/n-1.html"
+        },
+        {
+          "id": "节点 2",
+          "number": "1.2",
+          "title": "质量保证",
+          "file": "正文/%E8%8A%82%E7%82%B9%202.html"
+        }
+      ],
+      "files": {
+        "正文生成结果.json": "{\"sections\":[{\"section_id\":\"n-1\",\"file\":\"正文/n-1.html\",\"words\":3},{\"section_id\":\"n-1\",\"file\":\"正文/n-1.html\",\"words\":3},{\"section_id\":\"节点 2\",\"file\":\"正文/%E8%8A%82%E7%82%B9%202.html\",\"words\":3}]}",
+        "正文/n-1.html": "<!-- app:block -->\n<p id=\"s_p001\">本节说明施工组织安排。</p>",
+        "正文/%E8%8A%82%E7%82%B9%202.html": "<!-- app:block -->\n<p id=\"s_p001\">本节说明施工组织安排。</p>"
+      },
+      "images": [],
+      "dirs": []
+    },
+    {
+      "name": "结果清单含非目标小节",
+      "targets": [
+        {
+          "id": "n-1",
+          "number": "1.1",
+          "title": "施工组织",
+          "file": "正文/n-1.html"
+        },
+        {
+          "id": "节点 2",
+          "number": "1.2",
+          "title": "质量保证",
+          "file": "正文/%E8%8A%82%E7%82%B9%202.html"
+        }
+      ],
+      "files": {
+        "正文生成结果.json": "{\"sections\":[{\"section_id\":\"n-1\",\"file\":\"正文/n-1.html\",\"words\":3},{\"section_id\":\"x\",\"file\":\"正文/x.html\",\"words\":3}]}",
+        "正文/n-1.html": "<!-- app:block -->\n<p id=\"s_p001\">本节说明施工组织安排。</p>",
+        "正文/%E8%8A%82%E7%82%B9%202.html": "<!-- app:block -->\n<p id=\"s_p001\">本节说明施工组织安排。</p>"
+      },
+      "images": [],
+      "dirs": []
+    },
+    {
+      "name": "小节文件不存在",
+      "targets": [
+        {
+          "id": "n-1",
+          "number": "1.1",
+          "title": "施工组织",
+          "file": "正文/n-1.html"
+        },
+        {
+          "id": "节点 2",
+          "number": "1.2",
+          "title": "质量保证",
+          "file": "正文/%E8%8A%82%E7%82%B9%202.html"
+        }
+      ],
+      "files": {
+        "正文生成结果.json": "{\"sections\":[{\"section_id\":\"n-1\",\"file\":\"正文/n-1.html\",\"words\":10},{\"section_id\":\"节点 2\",\"file\":\"正文/%E8%8A%82%E7%82%B9%202.html\",\"words\":10}]}",
+        "正文/n-1.html": "<!-- app:block -->\n<p id=\"s_p001\">本节说明施工组织安排。</p>"
+      },
+      "images": [],
+      "dirs": []
+    },
+    {
+      "name": "小节文件为空白",
+      "targets": [
+        {
+          "id": "n-1",
+          "number": "1.1",
+          "title": "施工组织",
+          "file": "正文/n-1.html"
+        },
+        {
+          "id": "节点 2",
+          "number": "1.2",
+          "title": "质量保证",
+          "file": "正文/%E8%8A%82%E7%82%B9%202.html"
+        }
+      ],
+      "files": {
+        "正文生成结果.json": "{\"sections\":[{\"section_id\":\"n-1\",\"file\":\"正文/n-1.html\",\"words\":10},{\"section_id\":\"节点 2\",\"file\":\"正文/%E8%8A%82%E7%82%B9%202.html\",\"words\":10}]}",
+        "正文/n-1.html": "  \n",
+        "正文/%E8%8A%82%E7%82%B9%202.html": "<!-- app:block -->\n<p id=\"s_p001\">本节说明施工组织安排。</p>"
+      },
+      "images": [],
+      "dirs": []
+    },
+    {
+      "name": "小节为 Markdown",
+      "targets": [
+        {
+          "id": "n-1",
+          "number": "1.1",
+          "title": "施工组织",
+          "file": "正文/n-1.html"
+        },
+        {
+          "id": "节点 2",
+          "number": "1.2",
+          "title": "质量保证",
+          "file": "正文/%E8%8A%82%E7%82%B9%202.html"
+        }
+      ],
+      "files": {
+        "正文生成结果.json": "{\"sections\":[{\"section_id\":\"n-1\",\"file\":\"正文/n-1.html\",\"words\":10},{\"section_id\":\"节点 2\",\"file\":\"正文/%E8%8A%82%E7%82%B9%202.html\",\"words\":10}]}",
+        "正文/n-1.html": "# 标题\n\n正文内容",
+        "正文/%E8%8A%82%E7%82%B9%202.html": "<!-- app:block -->\n<p id=\"s_p001\">本节说明施工组织安排。</p>"
+      },
+      "images": [],
+      "dirs": []
+    },
+    {
+      "name": "小节带代码围栏",
+      "targets": [
+        {
+          "id": "n-1",
+          "number": "1.1",
+          "title": "施工组织",
+          "file": "正文/n-1.html"
+        },
+        {
+          "id": "节点 2",
+          "number": "1.2",
+          "title": "质量保证",
+          "file": "正文/%E8%8A%82%E7%82%B9%202.html"
+        }
+      ],
+      "files": {
+        "正文生成结果.json": "{\"sections\":[{\"section_id\":\"n-1\",\"file\":\"正文/n-1.html\",\"words\":10},{\"section_id\":\"节点 2\",\"file\":\"正文/%E8%8A%82%E7%82%B9%202.html\",\"words\":10}]}",
+        "正文/n-1.html": "```html\n<!-- app:block -->\n<p>正文</p>\n```",
+        "正文/%E8%8A%82%E7%82%B9%202.html": "<!-- app:block -->\n<p id=\"s_p001\">本节说明施工组织安排。</p>"
+      },
+      "images": [],
+      "dirs": []
+    },
+    {
+      "name": "小节缺少分隔",
+      "targets": [
+        {
+          "id": "n-1",
+          "number": "1.1",
+          "title": "施工组织",
+          "file": "正文/n-1.html"
+        },
+        {
+          "id": "节点 2",
+          "number": "1.2",
+          "title": "质量保证",
+          "file": "正文/%E8%8A%82%E7%82%B9%202.html"
+        }
+      ],
+      "files": {
+        "正文生成结果.json": "{\"sections\":[{\"section_id\":\"n-1\",\"file\":\"正文/n-1.html\",\"words\":10},{\"section_id\":\"节点 2\",\"file\":\"正文/%E8%8A%82%E7%82%B9%202.html\",\"words\":10}]}",
+        "正文/n-1.html": "<p id=\"s_p001\">没有分隔的正文</p>",
+        "正文/%E8%8A%82%E7%82%B9%202.html": "<!-- app:block -->\n<p id=\"s_p001\">本节说明施工组织安排。</p>"
+      },
+      "images": [],
+      "dirs": []
+    },
+    {
+      "name": "小节只有标题",
+      "targets": [
+        {
+          "id": "n-1",
+          "number": "1.1",
+          "title": "施工组织",
+          "file": "正文/n-1.html"
+        },
+        {
+          "id": "节点 2",
+          "number": "1.2",
+          "title": "质量保证",
+          "file": "正文/%E8%8A%82%E7%82%B9%202.html"
+        }
+      ],
+      "files": {
+        "正文生成结果.json": "{\"sections\":[{\"section_id\":\"n-1\",\"file\":\"正文/n-1.html\",\"words\":10},{\"section_id\":\"节点 2\",\"file\":\"正文/%E8%8A%82%E7%82%B9%202.html\",\"words\":10}]}",
+        "正文/n-1.html": "<!-- app:block -->\n<h3 id=\"s_h001\">只有标题</h3>",
+        "正文/%E8%8A%82%E7%82%B9%202.html": "<!-- app:block -->\n<p id=\"s_p001\">本节说明施工组织安排。</p>"
+      },
+      "images": [],
+      "dirs": []
+    },
+    {
+      "name": "小节缺少结束标签",
+      "targets": [
+        {
+          "id": "n-1",
+          "number": "1.1",
+          "title": "施工组织",
+          "file": "正文/n-1.html"
+        },
+        {
+          "id": "节点 2",
+          "number": "1.2",
+          "title": "质量保证",
+          "file": "正文/%E8%8A%82%E7%82%B9%202.html"
+        }
+      ],
+      "files": {
+        "正文生成结果.json": "{\"sections\":[{\"section_id\":\"n-1\",\"file\":\"正文/n-1.html\",\"words\":10},{\"section_id\":\"节点 2\",\"file\":\"正文/%E8%8A%82%E7%82%B9%202.html\",\"words\":10}]}",
+        "正文/n-1.html": "<!-- app:block -->\n<p id=\"s_p001\">段落<strong>加粗</p>\n<!-- app:block -->\n<ul id=\"s_ul001\"><li>一</ul>",
+        "正文/%E8%8A%82%E7%82%B9%202.html": "<!-- app:block -->\n<p id=\"s_p001\">本节说明施工组织安排。</p>"
+      },
+      "images": [],
+      "dirs": []
+    },
+    {
+      "name": "小节有异常结束标记",
+      "targets": [
+        {
+          "id": "n-1",
+          "number": "1.1",
+          "title": "施工组织",
+          "file": "正文/n-1.html"
+        },
+        {
+          "id": "节点 2",
+          "number": "1.2",
+          "title": "质量保证",
+          "file": "正文/%E8%8A%82%E7%82%B9%202.html"
+        }
+      ],
+      "files": {
+        "正文生成结果.json": "{\"sections\":[{\"section_id\":\"n-1\",\"file\":\"正文/n-1.html\",\"words\":10},{\"section_id\":\"节点 2\",\"file\":\"正文/%E8%8A%82%E7%82%B9%202.html\",\"words\":10}]}",
+        "正文/n-1.html": "<!-- app:block -->\n<p id=\"s_p001\">正文</p>\n<!-- app:block -->\n<figure id=\"f1\" data-app-generation=\"aiImage\" data-app-size=\"wide\"><template data-app-role=\"prompt\">提示</ template><img alt=\"图\" data-app-asset-ref=\"图片/a.png\"><figcaption>图 1</figcaption></figure>",
+        "正文/%E8%8A%82%E7%82%B9%202.html": "<!-- app:block -->\n<p id=\"s_p001\">本节说明施工组织安排。</p>"
+      },
+      "images": [
+        "图片/a.png"
+      ],
+      "dirs": []
+    },
+    {
+      "name": "配图引用存在",
+      "targets": [
+        {
+          "id": "n-1",
+          "number": "1.1",
+          "title": "施工组织",
+          "file": "正文/n-1.html"
+        },
+        {
+          "id": "节点 2",
+          "number": "1.2",
+          "title": "质量保证",
+          "file": "正文/%E8%8A%82%E7%82%B9%202.html"
+        }
+      ],
+      "files": {
+        "正文生成结果.json": "{\"sections\":[{\"section_id\":\"n-1\",\"file\":\"正文/n-1.html\",\"words\":10},{\"section_id\":\"节点 2\",\"file\":\"正文/%E8%8A%82%E7%82%B9%202.html\",\"words\":10}]}",
+        "正文/n-1.html": "<!-- app:block -->\n<p id=\"s_p001\">说明文字。</p>\n<!-- app:block -->\n<figure id=\"f1\" data-app-generation=\"aiImage\" data-app-size=\"wide\"><template data-app-role=\"prompt\">施工现场全景</template><img alt=\"施工现场\" data-app-asset-ref=\"图片/a.png\"><figcaption>图 1 施工现场</figcaption></figure>",
+        "正文/%E8%8A%82%E7%82%B9%202.html": "<!-- app:block -->\n<p id=\"s_p001\">本节说明施工组织安排。</p>"
+      },
+      "images": [
+        "图片/a.png"
+      ],
+      "dirs": []
+    },
+    {
+      "name": "配图引用规范化后存在",
+      "targets": [
+        {
+          "id": "n-1",
+          "number": "1.1",
+          "title": "施工组织",
+          "file": "正文/n-1.html"
+        },
+        {
+          "id": "节点 2",
+          "number": "1.2",
+          "title": "质量保证",
+          "file": "正文/%E8%8A%82%E7%82%B9%202.html"
+        }
+      ],
+      "files": {
+        "正文生成结果.json": "{\"sections\":[{\"section_id\":\"n-1\",\"file\":\"正文/n-1.html\",\"words\":10},{\"section_id\":\"节点 2\",\"file\":\"正文/%E8%8A%82%E7%82%B9%202.html\",\"words\":10}]}",
+        "正文/n-1.html": "<!-- app:block -->\n<p id=\"s_p001\">说明文字。</p>\n<!-- app:block -->\n<figure id=\"f1\" data-app-generation=\"aiImage\" data-app-size=\"wide\"><template data-app-role=\"prompt\">施工现场全景</template><img alt=\"施工现场\" data-app-asset-ref=\"./图片//a.png\"><figcaption>图 1 施工现场</figcaption></figure>",
+        "正文/%E8%8A%82%E7%82%B9%202.html": "<!-- app:block -->\n<p id=\"s_p001\">本节说明施工组织安排。</p>"
+      },
+      "images": [
+        "图片/a.png"
+      ],
+      "dirs": []
+    },
+    {
+      "name": "配图尚未生成",
+      "targets": [
+        {
+          "id": "n-1",
+          "number": "1.1",
+          "title": "施工组织",
+          "file": "正文/n-1.html"
+        },
+        {
+          "id": "节点 2",
+          "number": "1.2",
+          "title": "质量保证",
+          "file": "正文/%E8%8A%82%E7%82%B9%202.html"
+        }
+      ],
+      "files": {
+        "正文生成结果.json": "{\"sections\":[{\"section_id\":\"n-1\",\"file\":\"正文/n-1.html\",\"words\":10},{\"section_id\":\"节点 2\",\"file\":\"正文/%E8%8A%82%E7%82%B9%202.html\",\"words\":10}]}",
+        "正文/n-1.html": "<!-- app:block -->\n<p id=\"s_p001\">说明文字。</p>\n<!-- app:block -->\n<figure id=\"f1\" data-app-generation=\"aiImage\" data-app-size=\"wide\"><template data-app-role=\"prompt\">施工现场全景</template><img alt=\"施工现场\"><figcaption>图 1 施工现场</figcaption></figure>",
+        "正文/%E8%8A%82%E7%82%B9%202.html": "<!-- app:block -->\n<p id=\"s_p001\">本节说明施工组织安排。</p>"
+      },
+      "images": [],
+      "dirs": []
+    },
+    {
+      "name": "配图没有 alt 且未生成",
+      "targets": [
+        {
+          "id": "n-1",
+          "number": "1.1",
+          "title": "施工组织",
+          "file": "正文/n-1.html"
+        },
+        {
+          "id": "节点 2",
+          "number": "1.2",
+          "title": "质量保证",
+          "file": "正文/%E8%8A%82%E7%82%B9%202.html"
+        }
+      ],
+      "files": {
+        "正文生成结果.json": "{\"sections\":[{\"section_id\":\"n-1\",\"file\":\"正文/n-1.html\",\"words\":10},{\"section_id\":\"节点 2\",\"file\":\"正文/%E8%8A%82%E7%82%B9%202.html\",\"words\":10}]}",
+        "正文/n-1.html": "<!-- app:block -->\n<p id=\"s_p001\">说明文字。</p>\n<!-- app:block -->\n<figure id=\"f1\" data-app-generation=\"aiImage\" data-app-size=\"wide\"><template data-app-role=\"prompt\">施工现场全景</template><img data-app-asset-ref=\"\"><figcaption>图 1 施工现场</figcaption></figure>",
+        "正文/%E8%8A%82%E7%82%B9%202.html": "<!-- app:block -->\n<p id=\"s_p001\">本节说明施工组织安排。</p>"
+      },
+      "images": [],
+      "dirs": []
+    },
+    {
+      "name": "配图文件不存在",
+      "targets": [
+        {
+          "id": "n-1",
+          "number": "1.1",
+          "title": "施工组织",
+          "file": "正文/n-1.html"
+        },
+        {
+          "id": "节点 2",
+          "number": "1.2",
+          "title": "质量保证",
+          "file": "正文/%E8%8A%82%E7%82%B9%202.html"
+        }
+      ],
+      "files": {
+        "正文生成结果.json": "{\"sections\":[{\"section_id\":\"n-1\",\"file\":\"正文/n-1.html\",\"words\":10},{\"section_id\":\"节点 2\",\"file\":\"正文/%E8%8A%82%E7%82%B9%202.html\",\"words\":10}]}",
+        "正文/n-1.html": "<!-- app:block -->\n<p id=\"s_p001\">说明文字。</p>\n<!-- app:block -->\n<figure id=\"f1\" data-app-generation=\"aiImage\" data-app-size=\"wide\"><template data-app-role=\"prompt\">施工现场全景</template><img alt=\"施工现场\" data-app-asset-ref=\"图片/missing.png\"><figcaption>图 1 施工现场</figcaption></figure>",
+        "正文/%E8%8A%82%E7%82%B9%202.html": "<!-- app:block -->\n<p id=\"s_p001\">本节说明施工组织安排。</p>"
+      },
+      "images": [],
+      "dirs": []
+    },
+    {
+      "name": "配图引用是目录",
+      "targets": [
+        {
+          "id": "n-1",
+          "number": "1.1",
+          "title": "施工组织",
+          "file": "正文/n-1.html"
+        },
+        {
+          "id": "节点 2",
+          "number": "1.2",
+          "title": "质量保证",
+          "file": "正文/%E8%8A%82%E7%82%B9%202.html"
+        }
+      ],
+      "files": {
+        "正文生成结果.json": "{\"sections\":[{\"section_id\":\"n-1\",\"file\":\"正文/n-1.html\",\"words\":10},{\"section_id\":\"节点 2\",\"file\":\"正文/%E8%8A%82%E7%82%B9%202.html\",\"words\":10}]}",
+        "正文/n-1.html": "<!-- app:block -->\n<p id=\"s_p001\">说明文字。</p>\n<!-- app:block -->\n<figure id=\"f1\" data-app-generation=\"aiImage\" data-app-size=\"wide\"><template data-app-role=\"prompt\">施工现场全景</template><img alt=\"施工现场\" data-app-asset-ref=\"图片\"><figcaption>图 1 施工现场</figcaption></figure>",
+        "正文/%E8%8A%82%E7%82%B9%202.html": "<!-- app:block -->\n<p id=\"s_p001\">本节说明施工组织安排。</p>"
+      },
+      "images": [],
+      "dirs": [
+        "图片"
+      ]
+    },
+    {
+      "name": "配图引用穿越",
+      "targets": [
+        {
+          "id": "n-1",
+          "number": "1.1",
+          "title": "施工组织",
+          "file": "正文/n-1.html"
+        },
+        {
+          "id": "节点 2",
+          "number": "1.2",
+          "title": "质量保证",
+          "file": "正文/%E8%8A%82%E7%82%B9%202.html"
+        }
+      ],
+      "files": {
+        "正文生成结果.json": "{\"sections\":[{\"section_id\":\"n-1\",\"file\":\"正文/n-1.html\",\"words\":10},{\"section_id\":\"节点 2\",\"file\":\"正文/%E8%8A%82%E7%82%B9%202.html\",\"words\":10}]}",
+        "正文/n-1.html": "<!-- app:block -->\n<p id=\"s_p001\">说明文字。</p>\n<!-- app:block -->\n<figure id=\"f1\" data-app-generation=\"aiImage\" data-app-size=\"wide\"><template data-app-role=\"prompt\">施工现场全景</template><img alt=\"施工现场\" data-app-asset-ref=\"../外部.png\"><figcaption>图 1 施工现场</figcaption></figure>",
+        "正文/%E8%8A%82%E7%82%B9%202.html": "<!-- app:block -->\n<p id=\"s_p001\">本节说明施工组织安排。</p>"
+      },
+      "images": [],
+      "dirs": []
+    },
+    {
+      "name": "配图引用为绝对路径",
+      "targets": [
+        {
+          "id": "n-1",
+          "number": "1.1",
+          "title": "施工组织",
+          "file": "正文/n-1.html"
+        },
+        {
+          "id": "节点 2",
+          "number": "1.2",
+          "title": "质量保证",
+          "file": "正文/%E8%8A%82%E7%82%B9%202.html"
+        }
+      ],
+      "files": {
+        "正文生成结果.json": "{\"sections\":[{\"section_id\":\"n-1\",\"file\":\"正文/n-1.html\",\"words\":10},{\"section_id\":\"节点 2\",\"file\":\"正文/%E8%8A%82%E7%82%B9%202.html\",\"words\":10}]}",
+        "正文/n-1.html": "<!-- app:block -->\n<p id=\"s_p001\">说明文字。</p>\n<!-- app:block -->\n<figure id=\"f1\" data-app-generation=\"aiImage\" data-app-size=\"wide\"><template data-app-role=\"prompt\">施工现场全景</template><img alt=\"施工现场\" data-app-asset-ref=\"/etc/passwd\"><figcaption>图 1 施工现场</figcaption></figure>",
+        "正文/%E8%8A%82%E7%82%B9%202.html": "<!-- app:block -->\n<p id=\"s_p001\">本节说明施工组织安排。</p>"
+      },
+      "images": [],
+      "dirs": []
+    },
+    {
+      "name": "配图引用为网址",
+      "targets": [
+        {
+          "id": "n-1",
+          "number": "1.1",
+          "title": "施工组织",
+          "file": "正文/n-1.html"
+        },
+        {
+          "id": "节点 2",
+          "number": "1.2",
+          "title": "质量保证",
+          "file": "正文/%E8%8A%82%E7%82%B9%202.html"
+        }
+      ],
+      "files": {
+        "正文生成结果.json": "{\"sections\":[{\"section_id\":\"n-1\",\"file\":\"正文/n-1.html\",\"words\":10},{\"section_id\":\"节点 2\",\"file\":\"正文/%E8%8A%82%E7%82%B9%202.html\",\"words\":10}]}",
+        "正文/n-1.html": "<!-- app:block -->\n<p id=\"s_p001\">说明文字。</p>\n<!-- app:block -->\n<figure id=\"f1\" data-app-generation=\"aiImage\" data-app-size=\"wide\"><template data-app-role=\"prompt\">施工现场全景</template><img alt=\"施工现场\" data-app-asset-ref=\"https://example.com/a.png\"><figcaption>图 1 施工现场</figcaption></figure>",
+        "正文/%E8%8A%82%E7%82%B9%202.html": "<!-- app:block -->\n<p id=\"s_p001\">本节说明施工组织安排。</p>"
+      },
+      "images": [],
+      "dirs": []
+    },
+    {
+      "name": "配图引用含反斜杠",
+      "targets": [
+        {
+          "id": "n-1",
+          "number": "1.1",
+          "title": "施工组织",
+          "file": "正文/n-1.html"
+        },
+        {
+          "id": "节点 2",
+          "number": "1.2",
+          "title": "质量保证",
+          "file": "正文/%E8%8A%82%E7%82%B9%202.html"
+        }
+      ],
+      "files": {
+        "正文生成结果.json": "{\"sections\":[{\"section_id\":\"n-1\",\"file\":\"正文/n-1.html\",\"words\":10},{\"section_id\":\"节点 2\",\"file\":\"正文/%E8%8A%82%E7%82%B9%202.html\",\"words\":10}]}",
+        "正文/n-1.html": "<!-- app:block -->\n<p id=\"s_p001\">说明文字。</p>\n<!-- app:block -->\n<figure id=\"f1\" data-app-generation=\"aiImage\" data-app-size=\"wide\"><template data-app-role=\"prompt\">施工现场全景</template><img alt=\"施工现场\" data-app-asset-ref=\"图片\\a.png\"><figcaption>图 1 施工现场</figcaption></figure>",
+        "正文/%E8%8A%82%E7%82%B9%202.html": "<!-- app:block -->\n<p id=\"s_p001\">本节说明施工组织安排。</p>"
+      },
+      "images": [],
+      "dirs": []
+    },
+    {
+      "name": "第二张配图不存在",
+      "targets": [
+        {
+          "id": "n-1",
+          "number": "1.1",
+          "title": "施工组织",
+          "file": "正文/n-1.html"
+        },
+        {
+          "id": "节点 2",
+          "number": "1.2",
+          "title": "质量保证",
+          "file": "正文/%E8%8A%82%E7%82%B9%202.html"
+        }
+      ],
+      "files": {
+        "正文生成结果.json": "{\"sections\":[{\"section_id\":\"n-1\",\"file\":\"正文/n-1.html\",\"words\":10},{\"section_id\":\"节点 2\",\"file\":\"正文/%E8%8A%82%E7%82%B9%202.html\",\"words\":10}]}",
+        "正文/n-1.html": "<!-- app:block -->\n<p id=\"s_p001\">说明文字。</p>\n<!-- app:block -->\n<figure id=\"f1\" data-app-generation=\"aiImage\" data-app-size=\"wide\"><template data-app-role=\"prompt\">施工现场全景</template><img alt=\"一\" data-app-asset-ref=\"图片/a.png\"><figcaption>图 1 施工现场</figcaption></figure>\n<!-- app:block -->\n<figure id=\"f2\" data-app-generation=\"aiImage\" data-app-size=\"wide\"><template data-app-role=\"prompt\">二</template><img alt=\"二\" data-app-asset-ref=\"图片/b.png\"></figure>",
+        "正文/%E8%8A%82%E7%82%B9%202.html": "<!-- app:block -->\n<p id=\"s_p001\">本节说明施工组织安排。</p>"
+      },
+      "images": [
+        "图片/a.png"
+      ],
+      "dirs": []
+    },
+    {
+      "name": "模板中的 img",
+      "targets": [
+        {
+          "id": "n-1",
+          "number": "1.1",
+          "title": "施工组织",
+          "file": "正文/n-1.html"
+        },
+        {
+          "id": "节点 2",
+          "number": "1.2",
+          "title": "质量保证",
+          "file": "正文/%E8%8A%82%E7%82%B9%202.html"
+        }
+      ],
+      "files": {
+        "正文生成结果.json": "{\"sections\":[{\"section_id\":\"n-1\",\"file\":\"正文/n-1.html\",\"words\":10},{\"section_id\":\"节点 2\",\"file\":\"正文/%E8%8A%82%E7%82%B9%202.html\",\"words\":10}]}",
+        "正文/n-1.html": "<!-- app:block -->\n<p id=\"s_p001\">正文<template><img alt=\"藏在模板中\"></template></p>",
+        "正文/%E8%8A%82%E7%82%B9%202.html": "<!-- app:block -->\n<p id=\"s_p001\">本节说明施工组织安排。</p>"
+      },
+      "images": [],
+      "dirs": []
+    },
+    {
+      "name": "img 不在 figure 中",
+      "targets": [
+        {
+          "id": "n-1",
+          "number": "1.1",
+          "title": "施工组织",
+          "file": "正文/n-1.html"
+        },
+        {
+          "id": "节点 2",
+          "number": "1.2",
+          "title": "质量保证",
+          "file": "正文/%E8%8A%82%E7%82%B9%202.html"
+        }
+      ],
+      "files": {
+        "正文生成结果.json": "{\"sections\":[{\"section_id\":\"n-1\",\"file\":\"正文/n-1.html\",\"words\":10},{\"section_id\":\"节点 2\",\"file\":\"正文/%E8%8A%82%E7%82%B9%202.html\",\"words\":10}]}",
+        "正文/n-1.html": "<!-- app:block -->\n<p id=\"s_p001\">正文</p><img alt=\"游离\" data-app-asset-ref=\"图片/a.png\">",
+        "正文/%E8%8A%82%E7%82%B9%202.html": "<!-- app:block -->\n<p id=\"s_p001\">本节说明施工组织安排。</p>"
+      },
+      "images": [
+        "图片/a.png"
+      ],
+      "dirs": []
+    },
+    {
+      "name": "figure 缺少比例且有两张图",
+      "targets": [
+        {
+          "id": "n-1",
+          "number": "1.1",
+          "title": "施工组织",
+          "file": "正文/n-1.html"
+        },
+        {
+          "id": "节点 2",
+          "number": "1.2",
+          "title": "质量保证",
+          "file": "正文/%E8%8A%82%E7%82%B9%202.html"
+        }
+      ],
+      "files": {
+        "正文生成结果.json": "{\"sections\":[{\"section_id\":\"n-1\",\"file\":\"正文/n-1.html\",\"words\":10},{\"section_id\":\"节点 2\",\"file\":\"正文/%E8%8A%82%E7%82%B9%202.html\",\"words\":10}]}",
+        "正文/n-1.html": "<!-- app:block -->\n<p id=\"s_p001\">正文</p>\n<!-- app:block -->\n<figure id=\"f1\" data-app-generation=\"aiImage\"><template data-app-role=\"prompt\">提示</template><img alt=\"一\" data-app-asset-ref=\"图片/a.png\"><img alt=\"二\" data-app-asset-ref=\"图片/a.png\"></figure>",
+        "正文/%E8%8A%82%E7%82%B9%202.html": "<!-- app:block -->\n<p id=\"s_p001\">本节说明施工组织安排。</p>"
+      },
+      "images": [
+        "图片/a.png"
+      ],
+      "dirs": []
+    },
+    {
+      "name": "危险标签",
+      "targets": [
+        {
+          "id": "n-1",
+          "number": "1.1",
+          "title": "施工组织",
+          "file": "正文/n-1.html"
+        },
+        {
+          "id": "节点 2",
+          "number": "1.2",
+          "title": "质量保证",
+          "file": "正文/%E8%8A%82%E7%82%B9%202.html"
+        }
+      ],
+      "files": {
+        "正文生成结果.json": "{\"sections\":[{\"section_id\":\"n-1\",\"file\":\"正文/n-1.html\",\"words\":10},{\"section_id\":\"节点 2\",\"file\":\"正文/%E8%8A%82%E7%82%B9%202.html\",\"words\":10}]}",
+        "正文/n-1.html": "<!-- app:block -->\n<script>alert(1)</script><p id=\"s_p001\">正文</p>",
+        "正文/%E8%8A%82%E7%82%B9%202.html": "<!-- app:block -->\n<p id=\"s_p001\">本节说明施工组织安排。</p>"
+      },
+      "images": [],
+      "dirs": []
+    },
+    {
+      "name": "不支持的块标签",
+      "targets": [
+        {
+          "id": "n-1",
+          "number": "1.1",
+          "title": "施工组织",
+          "file": "正文/n-1.html"
+        },
+        {
+          "id": "节点 2",
+          "number": "1.2",
+          "title": "质量保证",
+          "file": "正文/%E8%8A%82%E7%82%B9%202.html"
+        }
+      ],
+      "files": {
+        "正文生成结果.json": "{\"sections\":[{\"section_id\":\"n-1\",\"file\":\"正文/n-1.html\",\"words\":10},{\"section_id\":\"节点 2\",\"file\":\"正文/%E8%8A%82%E7%82%B9%202.html\",\"words\":10}]}",
+        "正文/n-1.html": "<!-- app:block -->\n<p id=\"s_p001\">正文</p>\n<!-- app:block -->\n<div><p id=\"s_p002\">包在 div 中</p></div>",
+        "正文/%E8%8A%82%E7%82%B9%202.html": "<!-- app:block -->\n<p id=\"s_p001\">本节说明施工组织安排。</p>"
+      },
+      "images": [],
+      "dirs": []
+    },
+    {
+      "name": "链接与样式",
+      "targets": [
+        {
+          "id": "n-1",
+          "number": "1.1",
+          "title": "施工组织",
+          "file": "正文/n-1.html"
+        },
+        {
+          "id": "节点 2",
+          "number": "1.2",
+          "title": "质量保证",
+          "file": "正文/%E8%8A%82%E7%82%B9%202.html"
+        }
+      ],
+      "files": {
+        "正文生成结果.json": "{\"sections\":[{\"section_id\":\"n-1\",\"file\":\"正文/n-1.html\",\"words\":10},{\"section_id\":\"节点 2\",\"file\":\"正文/%E8%8A%82%E7%82%B9%202.html\",\"words\":10}]}",
+        "正文/n-1.html": "<!-- app:block -->\n<p id=\"s_p001\" style=\"color:red\" onclick=\"x()\">见<a href=\"https://example.com\">链接</a></p>",
+        "正文/%E8%8A%82%E7%82%B9%202.html": "<!-- app:block -->\n<p id=\"s_p001\">本节说明施工组织安排。</p>"
+      },
+      "images": [],
+      "dirs": []
+    },
+    {
+      "name": "两节都有问题",
+      "targets": [
+        {
+          "id": "n-1",
+          "number": "1.1",
+          "title": "施工组织",
+          "file": "正文/n-1.html"
+        },
+        {
+          "id": "节点 2",
+          "number": "1.2",
+          "title": "质量保证",
+          "file": "正文/%E8%8A%82%E7%82%B9%202.html"
+        }
+      ],
+      "files": {
+        "正文生成结果.json": "{\"sections\":[{\"section_id\":\"n-1\",\"file\":\"正文/n-1.html\",\"words\":10},{\"section_id\":\"节点 2\",\"file\":\"正文/%E8%8A%82%E7%82%B9%202.html\",\"words\":10}]}",
+        "正文/n-1.html": "# 标题",
+        "正文/%E8%8A%82%E7%82%B9%202.html": "<!-- app:block -->\n<p id=\"s_p001\">段落<em>未闭合</p>"
+      },
+      "images": [],
+      "dirs": []
+    },
+    {
+      "name": "只有一个目标",
+      "targets": [
+        {
+          "id": "n-1",
+          "number": "1.1",
+          "title": "施工组织",
+          "file": "正文/n-1.html"
+        }
+      ],
+      "files": {
+        "正文生成结果.json": "{\"sections\":[{\"section_id\":\"n-1\",\"file\":\"正文/n-1.html\",\"words\":10}]}",
+        "正文/n-1.html": "<!-- app:block -->\n<p id=\"s_p001\">本节说明施工组织安排。</p>"
+      },
+      "images": [],
+      "dirs": []
+    },
+    {
+      "name": "没有编号的目标",
+      "targets": [
+        {
+          "id": "n-1",
+          "title": "施工组织",
+          "file": "正文/n-1.html"
+        }
+      ],
+      "files": {
+        "正文生成结果.json": "{\"sections\":[{\"section_id\":\"n-1\",\"file\":\"正文/n-1.html\",\"words\":10}]}",
+        "正文/n-1.html": "<!-- app:block -->\n<p id=\"s_p001\">本节说明施工组织安排。</p>"
+      },
+      "images": [],
+      "dirs": []
+    }
+  ],
+  "expected": {
+    "全部合格": {
+      "sections": [
+        {
+          "section_id": "n-1",
+          "number": "1.1",
+          "title": "施工组织",
+          "file": "正文/n-1.html",
+          "words": 10
+        },
+        {
+          "section_id": "节点 2",
+          "number": "1.2",
+          "title": "质量保证",
+          "file": "正文/%E8%8A%82%E7%82%B9%202.html",
+          "words": 10
+        }
+      ],
+      "issues": []
+    },
+    "结果清单不存在": {
+      "sections": [
+        {
+          "section_id": "n-1",
+          "number": "1.1",
+          "title": "施工组织",
+          "file": "正文/n-1.html",
+          "words": 10
+        },
+        {
+          "section_id": "节点 2",
+          "number": "1.2",
+          "title": "质量保证",
+          "file": "正文/%E8%8A%82%E7%82%B9%202.html",
+          "words": 10
+        }
+      ],
+      "issues": [
+        {
+          "type": "manifest",
+          "severity": "blocking",
+          "file": "正文生成结果.json",
+          "message": "正文生成结果.json 尚未生成"
+        }
+      ]
+    },
+    "结果清单不是 JSON": {
+      "sections": [
+        {
+          "section_id": "n-1",
+          "number": "1.1",
+          "title": "施工组织",
+          "file": "正文/n-1.html",
+          "words": 10
+        },
+        {
+          "section_id": "节点 2",
+          "number": "1.2",
+          "title": "质量保证",
+          "file": "正文/%E8%8A%82%E7%82%B9%202.html",
+          "words": 10
+        }
+      ],
+      "issues": [
+        {
+          "type": "manifest",
+          "severity": "blocking",
+          "file": "正文生成结果.json",
+          "message": "正文生成结果.json 不是有效 JSON：Unexpected end of JSON input"
+        }
+      ]
+    },
+    "结果清单带 BOM": {
+      "sections": [
+        {
+          "section_id": "n-1",
+          "number": "1.1",
+          "title": "施工组织",
+          "file": "正文/n-1.html",
+          "words": 10
+        },
+        {
+          "section_id": "节点 2",
+          "number": "1.2",
+          "title": "质量保证",
+          "file": "正文/%E8%8A%82%E7%82%B9%202.html",
+          "words": 10
+        }
+      ],
+      "issues": [
+        {
+          "type": "manifest",
+          "severity": "blocking",
+          "file": "正文生成结果.json",
+          "message": "正文生成结果.json 不是有效 JSON：Unexpected token '﻿', \"﻿{\"section\"... is not valid JSON"
+        }
+      ]
+    },
+    "结果清单为 null": {
+      "sections": [
+        {
+          "section_id": "n-1",
+          "number": "1.1",
+          "title": "施工组织",
+          "file": "正文/n-1.html",
+          "words": 10
+        },
+        {
+          "section_id": "节点 2",
+          "number": "1.2",
+          "title": "质量保证",
+          "file": "正文/%E8%8A%82%E7%82%B9%202.html",
+          "words": 10
+        }
+      ],
+      "issues": [
+        {
+          "type": "manifest",
+          "severity": "blocking",
+          "file": "正文生成结果.json",
+          "message": "正文生成结果.json  must be object"
+        }
+      ]
+    },
+    "结果清单 sections 不是数组": {
+      "sections": [
+        {
+          "section_id": "n-1",
+          "number": "1.1",
+          "title": "施工组织",
+          "file": "正文/n-1.html",
+          "words": 10
+        },
+        {
+          "section_id": "节点 2",
+          "number": "1.2",
+          "title": "质量保证",
+          "file": "正文/%E8%8A%82%E7%82%B9%202.html",
+          "words": 10
+        }
+      ],
+      "issues": [
+        {
+          "type": "manifest",
+          "severity": "blocking",
+          "file": "正文生成结果.json",
+          "message": "正文生成结果.json /sections must be array"
+        }
+      ]
+    },
+    "结果清单字段不合规": {
+      "sections": [
+        {
+          "section_id": "n-1",
+          "number": "1.1",
+          "title": "施工组织",
+          "file": "正文/n-1.html",
+          "words": 10
+        },
+        {
+          "section_id": "节点 2",
+          "number": "1.2",
+          "title": "质量保证",
+          "file": "正文/%E8%8A%82%E7%82%B9%202.html",
+          "words": 10
+        }
+      ],
+      "issues": [
+        {
+          "type": "manifest",
+          "severity": "blocking",
+          "file": "正文生成结果.json",
+          "message": "正文生成结果.json /sections/0 must NOT have additional properties"
+        },
+        {
+          "type": "manifest",
+          "severity": "blocking",
+          "file": "正文生成结果.json",
+          "message": "正文生成结果.json /sections/0/words must be >= 1"
+        },
+        {
+          "type": "manifest",
+          "severity": "blocking",
+          "file": "正文生成结果.json",
+          "message": "正文生成结果.json /sections/1 must have required property 'file'"
+        },
+        {
+          "type": "manifest",
+          "severity": "blocking",
+          "file": "正文生成结果.json",
+          "message": "正文生成结果.json /sections/1/words must be integer"
+        }
+      ]
+    },
+    "结果清单缺少小节": {
+      "sections": [
+        {
+          "section_id": "n-1",
+          "number": "1.1",
+          "title": "施工组织",
+          "file": "正文/n-1.html",
+          "words": 10
+        },
+        {
+          "section_id": "节点 2",
+          "number": "1.2",
+          "title": "质量保证",
+          "file": "正文/%E8%8A%82%E7%82%B9%202.html",
+          "words": 10
+        }
+      ],
+      "issues": [
+        {
+          "type": "manifest",
+          "severity": "blocking",
+          "file": "正文生成结果.json",
+          "message": "正文生成结果清单与本次目标小节不一致"
+        },
+        {
+          "type": "manifest",
+          "severity": "blocking",
+          "file": "正文生成结果.json",
+          "message": "正文结果缺少小节或文件路径不匹配：节点 2"
+        }
+      ]
+    },
+    "结果清单文件路径不匹配": {
+      "sections": [
+        {
+          "section_id": "n-1",
+          "number": "1.1",
+          "title": "施工组织",
+          "file": "正文/n-1.html",
+          "words": 10
+        },
+        {
+          "section_id": "节点 2",
+          "number": "1.2",
+          "title": "质量保证",
+          "file": "正文/%E8%8A%82%E7%82%B9%202.html",
+          "words": 10
+        }
+      ],
+      "issues": [
+        {
+          "type": "manifest",
+          "severity": "blocking",
+          "file": "正文生成结果.json",
+          "message": "正文结果缺少小节或文件路径不匹配：n-1"
+        }
+      ]
+    },
+    "结果清单重复小节": {
+      "sections": [
+        {
+          "section_id": "n-1",
+          "number": "1.1",
+          "title": "施工组织",
+          "file": "正文/n-1.html",
+          "words": 10
+        },
+        {
+          "section_id": "节点 2",
+          "number": "1.2",
+          "title": "质量保证",
+          "file": "正文/%E8%8A%82%E7%82%B9%202.html",
+          "words": 10
+        }
+      ],
+      "issues": [
+        {
+          "type": "manifest",
+          "severity": "blocking",
+          "file": "正文生成结果.json",
+          "message": "正文生成结果清单与本次目标小节不一致"
+        }
+      ]
+    },
+    "结果清单含非目标小节": {
+      "sections": [
+        {
+          "section_id": "n-1",
+          "number": "1.1",
+          "title": "施工组织",
+          "file": "正文/n-1.html",
+          "words": 10
+        },
+        {
+          "section_id": "节点 2",
+          "number": "1.2",
+          "title": "质量保证",
+          "file": "正文/%E8%8A%82%E7%82%B9%202.html",
+          "words": 10
+        }
+      ],
+      "issues": [
+        {
+          "type": "manifest",
+          "severity": "blocking",
+          "file": "正文生成结果.json",
+          "message": "正文结果缺少小节或文件路径不匹配：节点 2"
+        }
+      ]
+    },
+    "小节文件不存在": {
+      "sections": [
+        {
+          "section_id": "n-1",
+          "number": "1.1",
+          "title": "施工组织",
+          "file": "正文/n-1.html",
+          "words": 10
+        },
+        {
+          "section_id": "节点 2",
+          "number": "1.2",
+          "title": "质量保证",
+          "file": "正文/%E8%8A%82%E7%82%B9%202.html",
+          "words": 0
+        }
+      ],
+      "issues": [
+        {
+          "section_id": "节点 2",
+          "number": "1.2",
+          "title": "质量保证",
+          "file": "正文/%E8%8A%82%E7%82%B9%202.html",
+          "type": "missing",
+          "severity": "blocking",
+          "message": "小节 HTML 文件不存在",
+          "fixable": false
+        }
+      ]
+    },
+    "小节文件为空白": {
+      "sections": [
+        {
+          "section_id": "n-1",
+          "number": "1.1",
+          "title": "施工组织",
+          "file": "正文/n-1.html",
+          "words": 0
+        },
+        {
+          "section_id": "节点 2",
+          "number": "1.2",
+          "title": "质量保证",
+          "file": "正文/%E8%8A%82%E7%82%B9%202.html",
+          "words": 10
+        }
+      ],
+      "issues": [
+        {
+          "section_id": "n-1",
+          "number": "1.1",
+          "title": "施工组织",
+          "file": "正文/n-1.html",
+          "type": "content",
+          "severity": "blocking",
+          "message": "必须输出带 app:block 分隔的有效受限 HTML 正文，不得输出 Markdown 或代码围栏",
+          "fixable": false
+        }
+      ]
+    },
+    "小节为 Markdown": {
+      "sections": [
+        {
+          "section_id": "n-1",
+          "number": "1.1",
+          "title": "施工组织",
+          "file": "正文/n-1.html",
+          "words": 6
+        },
+        {
+          "section_id": "节点 2",
+          "number": "1.2",
+          "title": "质量保证",
+          "file": "正文/%E8%8A%82%E7%82%B9%202.html",
+          "words": 10
+        }
+      ],
+      "issues": [
+        {
+          "section_id": "n-1",
+          "number": "1.1",
+          "title": "施工组织",
+          "file": "正文/n-1.html",
+          "type": "content",
+          "severity": "blocking",
+          "message": "必须输出带 app:block 分隔的有效受限 HTML 正文，不得输出 Markdown 或代码围栏",
+          "fixable": true
+        }
+      ]
+    },
+    "小节带代码围栏": {
+      "sections": [
+        {
+          "section_id": "n-1",
+          "number": "1.1",
+          "title": "施工组织",
+          "file": "正文/n-1.html",
+          "words": 0
+        },
+        {
+          "section_id": "节点 2",
+          "number": "1.2",
+          "title": "质量保证",
+          "file": "正文/%E8%8A%82%E7%82%B9%202.html",
+          "words": 10
+        }
+      ],
+      "issues": [
+        {
+          "section_id": "n-1",
+          "number": "1.1",
+          "title": "施工组织",
+          "file": "正文/n-1.html",
+          "type": "content",
+          "severity": "blocking",
+          "message": "必须输出带 app:block 分隔的有效受限 HTML 正文，不得输出 Markdown 或代码围栏",
+          "fixable": false
+        }
+      ]
+    },
+    "小节缺少分隔": {
+      "sections": [
+        {
+          "section_id": "n-1",
+          "number": "1.1",
+          "title": "施工组织",
+          "file": "正文/n-1.html",
+          "words": 7
+        },
+        {
+          "section_id": "节点 2",
+          "number": "1.2",
+          "title": "质量保证",
+          "file": "正文/%E8%8A%82%E7%82%B9%202.html",
+          "words": 10
+        }
+      ],
+      "issues": [
+        {
+          "section_id": "n-1",
+          "number": "1.1",
+          "title": "施工组织",
+          "file": "正文/n-1.html",
+          "type": "content",
+          "severity": "blocking",
+          "message": "必须输出带 app:block 分隔的有效受限 HTML 正文，不得输出 Markdown 或代码围栏",
+          "fixable": true
+        }
+      ]
+    },
+    "小节只有标题": {
+      "sections": [
+        {
+          "section_id": "n-1",
+          "number": "1.1",
+          "title": "施工组织",
+          "file": "正文/n-1.html",
+          "words": 4
+        },
+        {
+          "section_id": "节点 2",
+          "number": "1.2",
+          "title": "质量保证",
+          "file": "正文/%E8%8A%82%E7%82%B9%202.html",
+          "words": 10
+        }
+      ],
+      "issues": [
+        {
+          "section_id": "n-1",
+          "number": "1.1",
+          "title": "施工组织",
+          "file": "正文/n-1.html",
+          "type": "content",
+          "severity": "blocking",
+          "message": "必须输出带 app:block 分隔的有效受限 HTML 正文，不得输出 Markdown 或代码围栏",
+          "fixable": true
+        }
+      ]
+    },
+    "小节缺少结束标签": {
+      "sections": [
+        {
+          "section_id": "n-1",
+          "number": "1.1",
+          "title": "施工组织",
+          "file": "正文/n-1.html",
+          "words": 5
+        },
+        {
+          "section_id": "节点 2",
+          "number": "1.2",
+          "title": "质量保证",
+          "file": "正文/%E8%8A%82%E7%82%B9%202.html",
+          "words": 10
+        }
+      ],
+      "issues": [
+        {
+          "section_id": "n-1",
+          "number": "1.1",
+          "title": "施工组织",
+          "file": "正文/n-1.html",
+          "type": "structure",
+          "severity": "blocking",
+          "message": "第 2 行<strong> 缺少结束标签 </strong>",
+          "fixable": true
+        }
+      ]
+    },
+    "小节有异常结束标记": {
+      "sections": [
+        {
+          "section_id": "n-1",
+          "number": "1.1",
+          "title": "施工组织",
+          "file": "正文/n-1.html",
+          "words": 6
+        },
+        {
+          "section_id": "节点 2",
+          "number": "1.2",
+          "title": "质量保证",
+          "file": "正文/%E8%8A%82%E7%82%B9%202.html",
+          "words": 10
+        }
+      ],
+      "issues": [
+        {
+          "section_id": "n-1",
+          "number": "1.1",
+          "title": "施工组织",
+          "file": "正文/n-1.html",
+          "type": "structure",
+          "severity": "blocking",
+          "message": "第 4 行出现异常结束标记（</ 后不是标签名），多为模型输出异常，标记之后的内容可能缺失",
+          "fixable": true
+        },
+        {
+          "section_id": "n-1",
+          "number": "1.1",
+          "title": "施工组织",
+          "file": "正文/n-1.html",
+          "type": "structure",
+          "severity": "blocking",
+          "message": "第 4 行<figure id=\"f1\"> 缺少结束标签 </figure>",
+          "fixable": true
+        },
+        {
+          "section_id": "n-1",
+          "number": "1.1",
+          "title": "施工组织",
+          "file": "正文/n-1.html",
+          "type": "structure",
+          "severity": "blocking",
+          "message": "第 4 行<template> 缺少结束标签 </template>",
+          "fixable": true
+        },
+        {
+          "section_id": "n-1",
+          "number": "1.1",
+          "title": "施工组织",
+          "file": "正文/n-1.html",
+          "type": "structure",
+          "severity": "blocking",
+          "message": "第 4 行<figure id=\"f1\"> 须直接包含且仅包含一个 img，当前为 0 个",
+          "fixable": true
+        },
+        {
+          "section_id": "n-1",
+          "number": "1.1",
+          "title": "施工组织",
+          "file": "正文/n-1.html",
+          "type": "structure",
+          "severity": "blocking",
+          "message": "第 4 行<img> 须放在 figure 内",
+          "fixable": true
+        }
+      ]
+    },
+    "配图引用存在": {
+      "sections": [
+        {
+          "section_id": "n-1",
+          "number": "1.1",
+          "title": "施工组织",
+          "file": "正文/n-1.html",
+          "words": 10
+        },
+        {
+          "section_id": "节点 2",
+          "number": "1.2",
+          "title": "质量保证",
+          "file": "正文/%E8%8A%82%E7%82%B9%202.html",
+          "words": 10
+        }
+      ],
+      "issues": []
+    },
+    "配图引用规范化后存在": {
+      "sections": [
+        {
+          "section_id": "n-1",
+          "number": "1.1",
+          "title": "施工组织",
+          "file": "正文/n-1.html",
+          "words": 10
+        },
+        {
+          "section_id": "节点 2",
+          "number": "1.2",
+          "title": "质量保证",
+          "file": "正文/%E8%8A%82%E7%82%B9%202.html",
+          "words": 10
+        }
+      ],
+      "issues": []
+    },
+    "配图尚未生成": {
+      "sections": [
+        {
+          "section_id": "n-1",
+          "number": "1.1",
+          "title": "施工组织",
+          "file": "正文/n-1.html",
+          "words": 10
+        },
+        {
+          "section_id": "节点 2",
+          "number": "1.2",
+          "title": "质量保证",
+          "file": "正文/%E8%8A%82%E7%82%B9%202.html",
+          "words": 10
+        }
+      ],
+      "issues": [
+        {
+          "section_id": "n-1",
+          "number": "1.1",
+          "title": "施工组织",
+          "file": "正文/n-1.html",
+          "type": "image-ref",
+          "severity": "blocking",
+          "message": "图片尚未生成或未填写 data-app-asset-ref：施工现场",
+          "fixable": false
+        }
+      ]
+    },
+    "配图没有 alt 且未生成": {
+      "sections": [
+        {
+          "section_id": "n-1",
+          "number": "1.1",
+          "title": "施工组织",
+          "file": "正文/n-1.html",
+          "words": 10
+        },
+        {
+          "section_id": "节点 2",
+          "number": "1.2",
+          "title": "质量保证",
+          "file": "正文/%E8%8A%82%E7%82%B9%202.html",
+          "words": 10
+        }
+      ],
+      "issues": [
+        {
+          "section_id": "n-1",
+          "number": "1.1",
+          "title": "施工组织",
+          "file": "正文/n-1.html",
+          "type": "image-ref",
+          "severity": "blocking",
+          "message": "图片尚未生成或未填写 data-app-asset-ref：未命名图片",
+          "fixable": false
+        }
+      ]
+    },
+    "配图文件不存在": {
+      "sections": [
+        {
+          "section_id": "n-1",
+          "number": "1.1",
+          "title": "施工组织",
+          "file": "正文/n-1.html",
+          "words": 10
+        },
+        {
+          "section_id": "节点 2",
+          "number": "1.2",
+          "title": "质量保证",
+          "file": "正文/%E8%8A%82%E7%82%B9%202.html",
+          "words": 10
+        }
+      ],
+      "issues": [
+        {
+          "section_id": "n-1",
+          "number": "1.1",
+          "title": "施工组织",
+          "file": "正文/n-1.html",
+          "type": "image-ref",
+          "severity": "blocking",
+          "message": "正文引用的图片文件不存在：图片/missing.png",
+          "fixable": false
+        }
+      ]
+    },
+    "配图引用是目录": {
+      "sections": [
+        {
+          "section_id": "n-1",
+          "number": "1.1",
+          "title": "施工组织",
+          "file": "正文/n-1.html",
+          "words": 10
+        },
+        {
+          "section_id": "节点 2",
+          "number": "1.2",
+          "title": "质量保证",
+          "file": "正文/%E8%8A%82%E7%82%B9%202.html",
+          "words": 10
+        }
+      ],
+      "issues": [
+        {
+          "section_id": "n-1",
+          "number": "1.1",
+          "title": "施工组织",
+          "file": "正文/n-1.html",
+          "type": "image-ref",
+          "severity": "blocking",
+          "message": "正文引用的图片文件不存在：图片",
+          "fixable": false
+        }
+      ]
+    },
+    "配图引用穿越": {
+      "sections": [
+        {
+          "section_id": "n-1",
+          "number": "1.1",
+          "title": "施工组织",
+          "file": "正文/n-1.html",
+          "words": 10
+        },
+        {
+          "section_id": "节点 2",
+          "number": "1.2",
+          "title": "质量保证",
+          "file": "正文/%E8%8A%82%E7%82%B9%202.html",
+          "words": 10
+        }
+      ],
+      "issues": [
+        {
+          "section_id": "n-1",
+          "number": "1.1",
+          "title": "施工组织",
+          "file": "正文/n-1.html",
+          "type": "image-ref",
+          "severity": "blocking",
+          "message": "图片或源码路径必须是当前工作区内使用正斜杠的相对路径",
+          "fixable": false
+        }
+      ]
+    },
+    "配图引用为绝对路径": {
+      "sections": [
+        {
+          "section_id": "n-1",
+          "number": "1.1",
+          "title": "施工组织",
+          "file": "正文/n-1.html",
+          "words": 10
+        },
+        {
+          "section_id": "节点 2",
+          "number": "1.2",
+          "title": "质量保证",
+          "file": "正文/%E8%8A%82%E7%82%B9%202.html",
+          "words": 10
+        }
+      ],
+      "issues": [
+        {
+          "section_id": "n-1",
+          "number": "1.1",
+          "title": "施工组织",
+          "file": "正文/n-1.html",
+          "type": "image-ref",
+          "severity": "blocking",
+          "message": "图片或源码路径必须是当前工作区内使用正斜杠的相对路径",
+          "fixable": false
+        }
+      ]
+    },
+    "配图引用为网址": {
+      "sections": [
+        {
+          "section_id": "n-1",
+          "number": "1.1",
+          "title": "施工组织",
+          "file": "正文/n-1.html",
+          "words": 4
+        },
+        {
+          "section_id": "节点 2",
+          "number": "1.2",
+          "title": "质量保证",
+          "file": "正文/%E8%8A%82%E7%82%B9%202.html",
+          "words": 10
+        }
+      ],
+      "issues": [
+        {
+          "section_id": "n-1",
+          "number": "1.1",
+          "title": "施工组织",
+          "file": "正文/n-1.html",
+          "type": "image-ref",
+          "severity": "blocking",
+          "message": "图片或源码路径必须是当前工作区内使用正斜杠的相对路径",
+          "fixable": false
+        }
+      ]
+    },
+    "配图引用含反斜杠": {
+      "sections": [
+        {
+          "section_id": "n-1",
+          "number": "1.1",
+          "title": "施工组织",
+          "file": "正文/n-1.html",
+          "words": 10
+        },
+        {
+          "section_id": "节点 2",
+          "number": "1.2",
+          "title": "质量保证",
+          "file": "正文/%E8%8A%82%E7%82%B9%202.html",
+          "words": 10
+        }
+      ],
+      "issues": [
+        {
+          "section_id": "n-1",
+          "number": "1.1",
+          "title": "施工组织",
+          "file": "正文/n-1.html",
+          "type": "image-ref",
+          "severity": "blocking",
+          "message": "图片或源码路径必须是当前工作区内使用正斜杠的相对路径",
+          "fixable": false
+        }
+      ]
+    },
+    "第二张配图不存在": {
+      "sections": [
+        {
+          "section_id": "n-1",
+          "number": "1.1",
+          "title": "施工组织",
+          "file": "正文/n-1.html",
+          "words": 10
+        },
+        {
+          "section_id": "节点 2",
+          "number": "1.2",
+          "title": "质量保证",
+          "file": "正文/%E8%8A%82%E7%82%B9%202.html",
+          "words": 10
+        }
+      ],
+      "issues": [
+        {
+          "section_id": "n-1",
+          "number": "1.1",
+          "title": "施工组织",
+          "file": "正文/n-1.html",
+          "type": "image-ref",
+          "severity": "blocking",
+          "message": "正文引用的图片文件不存在：图片/b.png",
+          "fixable": false
+        }
+      ]
+    },
+    "模板中的 img": {
+      "sections": [
+        {
+          "section_id": "n-1",
+          "number": "1.1",
+          "title": "施工组织",
+          "file": "正文/n-1.html",
+          "words": 2
+        },
+        {
+          "section_id": "节点 2",
+          "number": "1.2",
+          "title": "质量保证",
+          "file": "正文/%E8%8A%82%E7%82%B9%202.html",
+          "words": 10
+        }
+      ],
+      "issues": [
+        {
+          "section_id": "n-1",
+          "number": "1.1",
+          "title": "施工组织",
+          "file": "正文/n-1.html",
+          "type": "image-ref",
+          "severity": "blocking",
+          "message": "图片尚未生成或未填写 data-app-asset-ref：藏在模板中",
+          "fixable": false
+        },
+        {
+          "section_id": "n-1",
+          "number": "1.1",
+          "title": "施工组织",
+          "file": "正文/n-1.html",
+          "type": "structure",
+          "severity": "blocking",
+          "message": "第 2 行<img> 须放在 figure 内",
+          "fixable": true
+        }
+      ]
+    },
+    "img 不在 figure 中": {
+      "sections": [
+        {
+          "section_id": "n-1",
+          "number": "1.1",
+          "title": "施工组织",
+          "file": "正文/n-1.html",
+          "words": 2
+        },
+        {
+          "section_id": "节点 2",
+          "number": "1.2",
+          "title": "质量保证",
+          "file": "正文/%E8%8A%82%E7%82%B9%202.html",
+          "words": 10
+        }
+      ],
+      "issues": [
+        {
+          "section_id": "n-1",
+          "number": "1.1",
+          "title": "施工组织",
+          "file": "正文/n-1.html",
+          "type": "structure",
+          "severity": "blocking",
+          "message": "第 2 行<img> 须放在 figure 内",
+          "fixable": true
+        }
+      ]
+    },
+    "figure 缺少比例且有两张图": {
+      "sections": [
+        {
+          "section_id": "n-1",
+          "number": "1.1",
+          "title": "施工组织",
+          "file": "正文/n-1.html",
+          "words": 2
+        },
+        {
+          "section_id": "节点 2",
+          "number": "1.2",
+          "title": "质量保证",
+          "file": "正文/%E8%8A%82%E7%82%B9%202.html",
+          "words": 10
+        }
+      ],
+      "issues": [
+        {
+          "section_id": "n-1",
+          "number": "1.1",
+          "title": "施工组织",
+          "file": "正文/n-1.html",
+          "type": "structure",
+          "severity": "blocking",
+          "message": "第 4 行<figure id=\"f1\"> 须直接包含且仅包含一个 img，当前为 2 个",
+          "fixable": true
+        },
+        {
+          "section_id": "n-1",
+          "number": "1.1",
+          "title": "施工组织",
+          "file": "正文/n-1.html",
+          "type": "structure",
+          "severity": "blocking",
+          "message": "第 4 行<figure id=\"f1\"> 缺少合法的 data-app-size",
+          "fixable": true
+        }
+      ]
+    },
+    "危险标签": {
+      "sections": [
+        {
+          "section_id": "n-1",
+          "number": "1.1",
+          "title": "施工组织",
+          "file": "正文/n-1.html",
+          "words": 4
+        },
+        {
+          "section_id": "节点 2",
+          "number": "1.2",
+          "title": "质量保证",
+          "file": "正文/%E8%8A%82%E7%82%B9%202.html",
+          "words": 10
+        }
+      ],
+      "issues": []
+    },
+    "不支持的块标签": {
+      "sections": [
+        {
+          "section_id": "n-1",
+          "number": "1.1",
+          "title": "施工组织",
+          "file": "正文/n-1.html",
+          "words": 6
+        },
+        {
+          "section_id": "节点 2",
+          "number": "1.2",
+          "title": "质量保证",
+          "file": "正文/%E8%8A%82%E7%82%B9%202.html",
+          "words": 10
+        }
+      ],
+      "issues": []
+    },
+    "链接与样式": {
+      "sections": [
+        {
+          "section_id": "n-1",
+          "number": "1.1",
+          "title": "施工组织",
+          "file": "正文/n-1.html",
+          "words": 3
+        },
+        {
+          "section_id": "节点 2",
+          "number": "1.2",
+          "title": "质量保证",
+          "file": "正文/%E8%8A%82%E7%82%B9%202.html",
+          "words": 10
+        }
+      ],
+      "issues": []
+    },
+    "两节都有问题": {
+      "sections": [
+        {
+          "section_id": "n-1",
+          "number": "1.1",
+          "title": "施工组织",
+          "file": "正文/n-1.html",
+          "words": 2
+        },
+        {
+          "section_id": "节点 2",
+          "number": "1.2",
+          "title": "质量保证",
+          "file": "正文/%E8%8A%82%E7%82%B9%202.html",
+          "words": 5
+        }
+      ],
+      "issues": [
+        {
+          "section_id": "n-1",
+          "number": "1.1",
+          "title": "施工组织",
+          "file": "正文/n-1.html",
+          "type": "content",
+          "severity": "blocking",
+          "message": "必须输出带 app:block 分隔的有效受限 HTML 正文，不得输出 Markdown 或代码围栏",
+          "fixable": true
+        },
+        {
+          "section_id": "节点 2",
+          "number": "1.2",
+          "title": "质量保证",
+          "file": "正文/%E8%8A%82%E7%82%B9%202.html",
+          "type": "structure",
+          "severity": "blocking",
+          "message": "第 2 行<em> 缺少结束标签 </em>",
+          "fixable": true
+        }
+      ]
+    },
+    "只有一个目标": {
+      "sections": [
+        {
+          "section_id": "n-1",
+          "number": "1.1",
+          "title": "施工组织",
+          "file": "正文/n-1.html",
+          "words": 10
+        }
+      ],
+      "issues": []
+    },
+    "没有编号的目标": {
+      "sections": [
+        {
+          "section_id": "n-1",
+          "title": "施工组织",
+          "file": "正文/n-1.html",
+          "words": 10
+        }
+      ],
+      "issues": []
+    }
+  }
+}
