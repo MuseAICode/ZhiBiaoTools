@@ -1,0 +1,879 @@
+{
+  "cases": [
+    {
+      "name": "全部就绪，在范围内",
+      "targets": [
+        {
+          "id": "n-1",
+          "number": "1.1",
+          "title": "施工组织",
+          "file": "正文/n-1.html"
+        },
+        {
+          "id": "n-2",
+          "number": "1.2",
+          "title": "质量保证",
+          "file": "正文/n-2.html"
+        },
+        {
+          "id": "n-3",
+          "number": "1.3",
+          "title": "安全文明",
+          "file": "正文/n-3.html"
+        }
+      ],
+      "word_control": {
+        "minimumWords": 10,
+        "maximumWords": 1000,
+        "checkTotalWords": true
+      },
+      "files": {
+        "正文/n-1.html": "<!-- app:block -->\n<p id=\"s_p001\">本节说明施工组织安排，包括人员、机械与进度计划。</p>",
+        "正文/n-2.html": "<!-- app:block -->\n<p id=\"s_p001\">本节说明质量保证体系与检验制度。</p>\n<!-- app:block -->\n<p id=\"s_p002\">质量目标为一次验收合格。</p>",
+        "正文/n-3.html": "<!-- app:block -->\n<p id=\"s_p001\">本节说明安全文明施工措施。</p>"
+      },
+      "images": [],
+      "dirs": []
+    },
+    {
+      "name": "低于下限",
+      "targets": [
+        {
+          "id": "n-1",
+          "number": "1.1",
+          "title": "施工组织",
+          "file": "正文/n-1.html"
+        },
+        {
+          "id": "n-2",
+          "number": "1.2",
+          "title": "质量保证",
+          "file": "正文/n-2.html"
+        },
+        {
+          "id": "n-3",
+          "number": "1.3",
+          "title": "安全文明",
+          "file": "正文/n-3.html"
+        }
+      ],
+      "word_control": {
+        "minimumWords": 5000,
+        "maximumWords": 9000,
+        "checkTotalWords": true
+      },
+      "files": {
+        "正文/n-1.html": "<!-- app:block -->\n<p id=\"s_p001\">本节说明施工组织安排，包括人员、机械与进度计划。</p>",
+        "正文/n-2.html": "<!-- app:block -->\n<p id=\"s_p001\">本节说明质量保证体系与检验制度。</p>\n<!-- app:block -->\n<p id=\"s_p002\">质量目标为一次验收合格。</p>",
+        "正文/n-3.html": "<!-- app:block -->\n<p id=\"s_p001\">本节说明安全文明施工措施。</p>"
+      },
+      "images": [],
+      "dirs": []
+    },
+    {
+      "name": "超过上限",
+      "targets": [
+        {
+          "id": "n-1",
+          "number": "1.1",
+          "title": "施工组织",
+          "file": "正文/n-1.html"
+        },
+        {
+          "id": "n-2",
+          "number": "1.2",
+          "title": "质量保证",
+          "file": "正文/n-2.html"
+        },
+        {
+          "id": "n-3",
+          "number": "1.3",
+          "title": "安全文明",
+          "file": "正文/n-3.html"
+        }
+      ],
+      "word_control": {
+        "minimumWords": 0,
+        "maximumWords": 20,
+        "checkTotalWords": true
+      },
+      "files": {
+        "正文/n-1.html": "<!-- app:block -->\n<p id=\"s_p001\">本节说明施工组织安排，包括人员、机械与进度计划。</p>",
+        "正文/n-2.html": "<!-- app:block -->\n<p id=\"s_p001\">本节说明质量保证体系与检验制度。</p>\n<!-- app:block -->\n<p id=\"s_p002\">质量目标为一次验收合格。</p>",
+        "正文/n-3.html": "<!-- app:block -->\n<p id=\"s_p001\">本节说明安全文明施工措施。</p>"
+      },
+      "images": [],
+      "dirs": []
+    },
+    {
+      "name": "不限上下限",
+      "targets": [
+        {
+          "id": "n-1",
+          "number": "1.1",
+          "title": "施工组织",
+          "file": "正文/n-1.html"
+        },
+        {
+          "id": "n-2",
+          "number": "1.2",
+          "title": "质量保证",
+          "file": "正文/n-2.html"
+        },
+        {
+          "id": "n-3",
+          "number": "1.3",
+          "title": "安全文明",
+          "file": "正文/n-3.html"
+        }
+      ],
+      "word_control": {
+        "minimumWords": 0,
+        "maximumWords": 0,
+        "checkTotalWords": true
+      },
+      "files": {
+        "正文/n-1.html": "<!-- app:block -->\n<p id=\"s_p001\">本节说明施工组织安排，包括人员、机械与进度计划。</p>",
+        "正文/n-2.html": "<!-- app:block -->\n<p id=\"s_p001\">本节说明质量保证体系与检验制度。</p>\n<!-- app:block -->\n<p id=\"s_p002\">质量目标为一次验收合格。</p>",
+        "正文/n-3.html": "<!-- app:block -->\n<p id=\"s_p001\">本节说明安全文明施工措施。</p>"
+      },
+      "images": [],
+      "dirs": []
+    },
+    {
+      "name": "不检查总字数",
+      "targets": [
+        {
+          "id": "n-1",
+          "number": "1.1",
+          "title": "施工组织",
+          "file": "正文/n-1.html"
+        },
+        {
+          "id": "n-2",
+          "number": "1.2",
+          "title": "质量保证",
+          "file": "正文/n-2.html"
+        },
+        {
+          "id": "n-3",
+          "number": "1.3",
+          "title": "安全文明",
+          "file": "正文/n-3.html"
+        }
+      ],
+      "word_control": {
+        "minimumWords": 5000,
+        "maximumWords": 9000,
+        "checkTotalWords": false
+      },
+      "files": {
+        "正文/n-1.html": "<!-- app:block -->\n<p id=\"s_p001\">本节说明施工组织安排，包括人员、机械与进度计划。</p>",
+        "正文/n-2.html": "<!-- app:block -->\n<p id=\"s_p001\">本节说明质量保证体系与检验制度。</p>\n<!-- app:block -->\n<p id=\"s_p002\">质量目标为一次验收合格。</p>",
+        "正文/n-3.html": "<!-- app:block -->\n<p id=\"s_p001\">本节说明安全文明施工措施。</p>"
+      },
+      "images": [],
+      "dirs": []
+    },
+    {
+      "name": "一节文件不存在",
+      "targets": [
+        {
+          "id": "n-1",
+          "number": "1.1",
+          "title": "施工组织",
+          "file": "正文/n-1.html"
+        },
+        {
+          "id": "n-2",
+          "number": "1.2",
+          "title": "质量保证",
+          "file": "正文/n-2.html"
+        },
+        {
+          "id": "n-3",
+          "number": "1.3",
+          "title": "安全文明",
+          "file": "正文/n-3.html"
+        }
+      ],
+      "word_control": {
+        "minimumWords": 10,
+        "maximumWords": 1000,
+        "checkTotalWords": true
+      },
+      "files": {
+        "正文/n-1.html": "<!-- app:block -->\n<p id=\"s_p001\">本节说明施工组织安排，包括人员、机械与进度计划。</p>",
+        "正文/n-3.html": "<!-- app:block -->\n<p id=\"s_p001\">本节说明安全文明施工措施。</p>"
+      },
+      "images": [],
+      "dirs": []
+    },
+    {
+      "name": "一节为空白",
+      "targets": [
+        {
+          "id": "n-1",
+          "number": "1.1",
+          "title": "施工组织",
+          "file": "正文/n-1.html"
+        },
+        {
+          "id": "n-2",
+          "number": "1.2",
+          "title": "质量保证",
+          "file": "正文/n-2.html"
+        },
+        {
+          "id": "n-3",
+          "number": "1.3",
+          "title": "安全文明",
+          "file": "正文/n-3.html"
+        }
+      ],
+      "word_control": {
+        "minimumWords": 10,
+        "maximumWords": 1000,
+        "checkTotalWords": true
+      },
+      "files": {
+        "正文/n-1.html": "<!-- app:block -->\n<p id=\"s_p001\">本节说明施工组织安排，包括人员、机械与进度计划。</p>",
+        "正文/n-2.html": "   \n",
+        "正文/n-3.html": "<!-- app:block -->\n<p id=\"s_p001\">本节说明安全文明施工措施。</p>"
+      },
+      "images": [],
+      "dirs": []
+    },
+    {
+      "name": "一节只有分隔与空段落",
+      "targets": [
+        {
+          "id": "n-1",
+          "number": "1.1",
+          "title": "施工组织",
+          "file": "正文/n-1.html"
+        },
+        {
+          "id": "n-2",
+          "number": "1.2",
+          "title": "质量保证",
+          "file": "正文/n-2.html"
+        },
+        {
+          "id": "n-3",
+          "number": "1.3",
+          "title": "安全文明",
+          "file": "正文/n-3.html"
+        }
+      ],
+      "word_control": {
+        "minimumWords": 10,
+        "maximumWords": 1000,
+        "checkTotalWords": true
+      },
+      "files": {
+        "正文/n-1.html": "<!-- app:block -->\n<p id=\"s_p001\">本节说明施工组织安排，包括人员、机械与进度计划。</p>",
+        "正文/n-2.html": "<!-- app:block -->\n<p id=\"s_p001\"></p>",
+        "正文/n-3.html": "<!-- app:block -->\n<p id=\"s_p001\">本节说明安全文明施工措施。</p>"
+      },
+      "images": [],
+      "dirs": []
+    },
+    {
+      "name": "有缺失时其他小节的问题不拦截",
+      "targets": [
+        {
+          "id": "n-1",
+          "number": "1.1",
+          "title": "施工组织",
+          "file": "正文/n-1.html"
+        },
+        {
+          "id": "n-2",
+          "number": "1.2",
+          "title": "质量保证",
+          "file": "正文/n-2.html"
+        },
+        {
+          "id": "n-3",
+          "number": "1.3",
+          "title": "安全文明",
+          "file": "正文/n-3.html"
+        }
+      ],
+      "word_control": {
+        "minimumWords": 10,
+        "maximumWords": 1000,
+        "checkTotalWords": true
+      },
+      "files": {
+        "正文/n-1.html": "# 标题\n\n一段 Markdown 正文",
+        "正文/n-3.html": "<!-- app:block -->\n<p id=\"s_p001\">未闭合的段落"
+      },
+      "images": [],
+      "dirs": []
+    },
+    {
+      "name": "全部有字，一节是 Markdown",
+      "targets": [
+        {
+          "id": "n-1",
+          "number": "1.1",
+          "title": "施工组织",
+          "file": "正文/n-1.html"
+        },
+        {
+          "id": "n-2",
+          "number": "1.2",
+          "title": "质量保证",
+          "file": "正文/n-2.html"
+        },
+        {
+          "id": "n-3",
+          "number": "1.3",
+          "title": "安全文明",
+          "file": "正文/n-3.html"
+        }
+      ],
+      "word_control": {
+        "minimumWords": 10,
+        "maximumWords": 1000,
+        "checkTotalWords": true
+      },
+      "files": {
+        "正文/n-1.html": "<!-- app:block -->\n<p id=\"s_p001\">本节说明施工组织安排，包括人员、机械与进度计划。</p>",
+        "正文/n-2.html": "# 质量保证\n\n本节说明质量保证体系。",
+        "正文/n-3.html": "<!-- app:block -->\n<p id=\"s_p001\">本节说明安全文明施工措施。</p>"
+      },
+      "images": [],
+      "dirs": []
+    },
+    {
+      "name": "全部有字，一节缺少结束标签",
+      "targets": [
+        {
+          "id": "n-1",
+          "number": "1.1",
+          "title": "施工组织",
+          "file": "正文/n-1.html"
+        },
+        {
+          "id": "n-2",
+          "number": "1.2",
+          "title": "质量保证",
+          "file": "正文/n-2.html"
+        },
+        {
+          "id": "n-3",
+          "number": "1.3",
+          "title": "安全文明",
+          "file": "正文/n-3.html"
+        }
+      ],
+      "word_control": {
+        "minimumWords": 10,
+        "maximumWords": 1000,
+        "checkTotalWords": true
+      },
+      "files": {
+        "正文/n-1.html": "<!-- app:block -->\n<p id=\"s_p001\">本节说明施工组织安排，包括人员、机械与进度计划。</p>",
+        "正文/n-2.html": "<!-- app:block -->\n<p id=\"s_p001\">本节说明质量保证体系<strong>与检验制度。</p>",
+        "正文/n-3.html": "<!-- app:block -->\n<p id=\"s_p001\">本节说明安全文明施工措施。</p>"
+      },
+      "images": [],
+      "dirs": []
+    },
+    {
+      "name": "全部有字，两节都有问题时报第一节",
+      "targets": [
+        {
+          "id": "n-1",
+          "number": "1.1",
+          "title": "施工组织",
+          "file": "正文/n-1.html"
+        },
+        {
+          "id": "n-2",
+          "number": "1.2",
+          "title": "质量保证",
+          "file": "正文/n-2.html"
+        },
+        {
+          "id": "n-3",
+          "number": "1.3",
+          "title": "安全文明",
+          "file": "正文/n-3.html"
+        }
+      ],
+      "word_control": {
+        "minimumWords": 10,
+        "maximumWords": 1000,
+        "checkTotalWords": true
+      },
+      "files": {
+        "正文/n-1.html": "<!-- app:block -->\n<p id=\"s_p001\">本节说明施工组织安排，包括人员、机械与进度计划。</p>",
+        "正文/n-2.html": "质量保证的纯文本正文。",
+        "正文/n-3.html": "<!-- app:block -->\n<p id=\"s_p001\">未闭合的段落"
+      },
+      "images": [],
+      "dirs": []
+    },
+    {
+      "name": "配图引用存在",
+      "targets": [
+        {
+          "id": "n-1",
+          "number": "1.1",
+          "title": "施工组织",
+          "file": "正文/n-1.html"
+        },
+        {
+          "id": "n-2",
+          "number": "1.2",
+          "title": "质量保证",
+          "file": "正文/n-2.html"
+        }
+      ],
+      "word_control": {
+        "minimumWords": 10,
+        "maximumWords": 1000,
+        "checkTotalWords": true
+      },
+      "files": {
+        "正文/n-1.html": "<!-- app:block -->\n<p id=\"s_p001\">本节说明施工组织安排，包括人员、机械与进度计划。</p>",
+        "正文/n-2.html": "<!-- app:block -->\n<p id=\"s_p001\">本节说明质量保证体系。</p>\n<!-- app:block -->\n<figure id=\"f1\" data-app-generation=\"aiImage\" data-app-size=\"wide\"><template data-app-role=\"prompt\">施工流程示意</template><img alt=\"施工流程图\" data-app-asset-ref=\"图片/流程.png\"><figcaption>图 1 施工流程图</figcaption></figure>"
+      },
+      "images": [
+        "图片/流程.png"
+      ],
+      "dirs": []
+    },
+    {
+      "name": "配图引用规范化后存在",
+      "targets": [
+        {
+          "id": "n-1",
+          "number": "1.1",
+          "title": "施工组织",
+          "file": "正文/n-1.html"
+        },
+        {
+          "id": "n-2",
+          "number": "1.2",
+          "title": "质量保证",
+          "file": "正文/n-2.html"
+        }
+      ],
+      "word_control": {
+        "minimumWords": 10,
+        "maximumWords": 1000,
+        "checkTotalWords": true
+      },
+      "files": {
+        "正文/n-1.html": "<!-- app:block -->\n<p id=\"s_p001\">本节说明施工组织安排，包括人员、机械与进度计划。</p>",
+        "正文/n-2.html": "<!-- app:block -->\n<p id=\"s_p001\">本节说明质量保证体系。</p>\n<!-- app:block -->\n<figure id=\"f1\" data-app-generation=\"aiImage\" data-app-size=\"wide\"><template data-app-role=\"prompt\">施工流程示意</template><img alt=\"施工流程图\" data-app-asset-ref=\"图片/./流程.png\"><figcaption>图 1 施工流程图</figcaption></figure>"
+      },
+      "images": [
+        "图片/流程.png"
+      ],
+      "dirs": []
+    },
+    {
+      "name": "配图尚未生成",
+      "targets": [
+        {
+          "id": "n-1",
+          "number": "1.1",
+          "title": "施工组织",
+          "file": "正文/n-1.html"
+        },
+        {
+          "id": "n-2",
+          "number": "1.2",
+          "title": "质量保证",
+          "file": "正文/n-2.html"
+        }
+      ],
+      "word_control": {
+        "minimumWords": 10,
+        "maximumWords": 1000,
+        "checkTotalWords": true
+      },
+      "files": {
+        "正文/n-1.html": "<!-- app:block -->\n<p id=\"s_p001\">本节说明施工组织安排，包括人员、机械与进度计划。</p>",
+        "正文/n-2.html": "<!-- app:block -->\n<p id=\"s_p001\">本节说明质量保证体系。</p>\n<!-- app:block -->\n<figure id=\"f1\" data-app-generation=\"aiImage\" data-app-size=\"wide\"><template data-app-role=\"prompt\">施工流程示意</template><img alt=\"施工流程图\"><figcaption>图 1 施工流程图</figcaption></figure>"
+      },
+      "images": [],
+      "dirs": []
+    },
+    {
+      "name": "配图文件不存在",
+      "targets": [
+        {
+          "id": "n-1",
+          "number": "1.1",
+          "title": "施工组织",
+          "file": "正文/n-1.html"
+        },
+        {
+          "id": "n-2",
+          "number": "1.2",
+          "title": "质量保证",
+          "file": "正文/n-2.html"
+        }
+      ],
+      "word_control": {
+        "minimumWords": 10,
+        "maximumWords": 1000,
+        "checkTotalWords": true
+      },
+      "files": {
+        "正文/n-1.html": "<!-- app:block -->\n<p id=\"s_p001\">本节说明施工组织安排，包括人员、机械与进度计划。</p>",
+        "正文/n-2.html": "<!-- app:block -->\n<p id=\"s_p001\">本节说明质量保证体系。</p>\n<!-- app:block -->\n<figure id=\"f1\" data-app-generation=\"aiImage\" data-app-size=\"wide\"><template data-app-role=\"prompt\">施工流程示意</template><img alt=\"施工流程图\" data-app-asset-ref=\"图片/缺失.png\"><figcaption>图 1 施工流程图</figcaption></figure>"
+      },
+      "images": [],
+      "dirs": []
+    },
+    {
+      "name": "配图引用是目录",
+      "targets": [
+        {
+          "id": "n-1",
+          "number": "1.1",
+          "title": "施工组织",
+          "file": "正文/n-1.html"
+        },
+        {
+          "id": "n-2",
+          "number": "1.2",
+          "title": "质量保证",
+          "file": "正文/n-2.html"
+        }
+      ],
+      "word_control": {
+        "minimumWords": 10,
+        "maximumWords": 1000,
+        "checkTotalWords": true
+      },
+      "files": {
+        "正文/n-1.html": "<!-- app:block -->\n<p id=\"s_p001\">本节说明施工组织安排，包括人员、机械与进度计划。</p>",
+        "正文/n-2.html": "<!-- app:block -->\n<p id=\"s_p001\">本节说明质量保证体系。</p>\n<!-- app:block -->\n<figure id=\"f1\" data-app-generation=\"aiImage\" data-app-size=\"wide\"><template data-app-role=\"prompt\">施工流程示意</template><img alt=\"施工流程图\" data-app-asset-ref=\"图片\"><figcaption>图 1 施工流程图</figcaption></figure>"
+      },
+      "dirs": [
+        "图片"
+      ],
+      "images": []
+    },
+    {
+      "name": "配图引用越出工作区",
+      "targets": [
+        {
+          "id": "n-1",
+          "number": "1.1",
+          "title": "施工组织",
+          "file": "正文/n-1.html"
+        },
+        {
+          "id": "n-2",
+          "number": "1.2",
+          "title": "质量保证",
+          "file": "正文/n-2.html"
+        }
+      ],
+      "word_control": {
+        "minimumWords": 10,
+        "maximumWords": 1000,
+        "checkTotalWords": true
+      },
+      "files": {
+        "正文/n-1.html": "<!-- app:block -->\n<p id=\"s_p001\">本节说明施工组织安排，包括人员、机械与进度计划。</p>",
+        "正文/n-2.html": "<!-- app:block -->\n<p id=\"s_p001\">本节说明质量保证体系。</p>\n<!-- app:block -->\n<figure id=\"f1\" data-app-generation=\"aiImage\" data-app-size=\"wide\"><template data-app-role=\"prompt\">施工流程示意</template><img alt=\"施工流程图\" data-app-asset-ref=\"../外部.png\"><figcaption>图 1 施工流程图</figcaption></figure>"
+      },
+      "images": [],
+      "dirs": []
+    },
+    {
+      "name": "配图提示词不计字数",
+      "targets": [
+        {
+          "id": "n-1",
+          "number": "1.1",
+          "title": "施工组织",
+          "file": "正文/n-1.html"
+        },
+        {
+          "id": "n-2",
+          "number": "1.2",
+          "title": "质量保证",
+          "file": "正文/n-2.html"
+        }
+      ],
+      "word_control": {
+        "minimumWords": 10,
+        "maximumWords": 1000,
+        "checkTotalWords": true
+      },
+      "files": {
+        "正文/n-1.html": "<!-- app:block -->\n<p id=\"s_p001\">本节说明施工组织安排，包括人员、机械与进度计划。</p>",
+        "正文/n-2.html": "<!-- app:block -->\n<p id=\"s_p001\">本节说明质量保证体系。</p>\n<!-- app:block -->\n<figure id=\"f1\" data-app-generation=\"aiImage\" data-app-size=\"wide\"><template data-app-role=\"prompt\">一大段很长很长的配图提示词文字不计入正文字数，一大段很长很长的配图提示词文字</template><img alt=\"流程\" data-app-asset-ref=\"图片/流程.png\"><figcaption>图 1 流程</figcaption></figure>"
+      },
+      "images": [
+        "图片/流程.png"
+      ],
+      "dirs": []
+    },
+    {
+      "name": "单个目标",
+      "targets": [
+        {
+          "id": "n-1",
+          "number": "1.1",
+          "title": "施工组织",
+          "file": "正文/n-1.html"
+        }
+      ],
+      "word_control": {
+        "minimumWords": 10,
+        "maximumWords": 1000,
+        "checkTotalWords": true
+      },
+      "files": {
+        "正文/n-1.html": "<!-- app:block -->\n<p id=\"s_p001\">本节说明施工组织安排，包括人员、机械与进度计划。</p>"
+      },
+      "images": [],
+      "dirs": []
+    }
+  ],
+  "expected": {
+    "全部就绪，在范围内": {
+      "result": {
+        "complete": true,
+        "total_words": 59,
+        "minimum_words": 10,
+        "maximum_words": 1000,
+        "check_total_words": true,
+        "section_count": 3,
+        "missing_count": 0,
+        "detail_file": "程序清单/正文字数统计.json",
+        "note": "本工具只统计实际字数：保持正文不变，不以任何方式（包括脚本批量删改）调整字数；字数要求由程序在本阶段提交后按设置统一处理。"
+      },
+      "list_file": "{\n  \"total_words\": 59,\n  \"sections\": [\n    {\n      \"section_id\": \"n-1\",\n      \"number\": \"1.1\",\n      \"file\": \"正文/n-1.html\",\n      \"words\": 21\n    },\n    {\n      \"section_id\": \"n-2\",\n      \"number\": \"1.2\",\n      \"file\": \"正文/n-2.html\",\n      \"words\": 26\n    },\n    {\n      \"section_id\": \"n-3\",\n      \"number\": \"1.3\",\n      \"file\": \"正文/n-3.html\",\n      \"words\": 12\n    }\n  ],\n  \"missing_section_ids\": []\n}",
+      "protection": true
+    },
+    "低于下限": {
+      "result": {
+        "complete": true,
+        "total_words": 59,
+        "minimum_words": 5000,
+        "maximum_words": 9000,
+        "check_total_words": true,
+        "section_count": 3,
+        "missing_count": 0,
+        "detail_file": "程序清单/正文字数统计.json",
+        "note": "本工具只统计实际字数：保持正文不变，不以任何方式（包括脚本批量删改）调整字数；字数要求由程序在本阶段提交后按设置统一处理。"
+      },
+      "list_file": "{\n  \"total_words\": 59,\n  \"sections\": [\n    {\n      \"section_id\": \"n-1\",\n      \"number\": \"1.1\",\n      \"file\": \"正文/n-1.html\",\n      \"words\": 21\n    },\n    {\n      \"section_id\": \"n-2\",\n      \"number\": \"1.2\",\n      \"file\": \"正文/n-2.html\",\n      \"words\": 26\n    },\n    {\n      \"section_id\": \"n-3\",\n      \"number\": \"1.3\",\n      \"file\": \"正文/n-3.html\",\n      \"words\": 12\n    }\n  ],\n  \"missing_section_ids\": []\n}",
+      "protection": true
+    },
+    "超过上限": {
+      "result": {
+        "complete": true,
+        "total_words": 59,
+        "minimum_words": 0,
+        "maximum_words": 20,
+        "check_total_words": true,
+        "section_count": 3,
+        "missing_count": 0,
+        "detail_file": "程序清单/正文字数统计.json",
+        "note": "本工具只统计实际字数：保持正文不变，不以任何方式（包括脚本批量删改）调整字数；字数要求由程序在本阶段提交后按设置统一处理。"
+      },
+      "list_file": "{\n  \"total_words\": 59,\n  \"sections\": [\n    {\n      \"section_id\": \"n-1\",\n      \"number\": \"1.1\",\n      \"file\": \"正文/n-1.html\",\n      \"words\": 21\n    },\n    {\n      \"section_id\": \"n-2\",\n      \"number\": \"1.2\",\n      \"file\": \"正文/n-2.html\",\n      \"words\": 26\n    },\n    {\n      \"section_id\": \"n-3\",\n      \"number\": \"1.3\",\n      \"file\": \"正文/n-3.html\",\n      \"words\": 12\n    }\n  ],\n  \"missing_section_ids\": []\n}",
+      "protection": true
+    },
+    "不限上下限": {
+      "result": {
+        "complete": true,
+        "total_words": 59,
+        "minimum_words": 0,
+        "maximum_words": 0,
+        "check_total_words": true,
+        "section_count": 3,
+        "missing_count": 0,
+        "detail_file": "程序清单/正文字数统计.json",
+        "note": "本工具只统计实际字数：保持正文不变，不以任何方式（包括脚本批量删改）调整字数；字数要求由程序在本阶段提交后按设置统一处理。"
+      },
+      "list_file": "{\n  \"total_words\": 59,\n  \"sections\": [\n    {\n      \"section_id\": \"n-1\",\n      \"number\": \"1.1\",\n      \"file\": \"正文/n-1.html\",\n      \"words\": 21\n    },\n    {\n      \"section_id\": \"n-2\",\n      \"number\": \"1.2\",\n      \"file\": \"正文/n-2.html\",\n      \"words\": 26\n    },\n    {\n      \"section_id\": \"n-3\",\n      \"number\": \"1.3\",\n      \"file\": \"正文/n-3.html\",\n      \"words\": 12\n    }\n  ],\n  \"missing_section_ids\": []\n}",
+      "protection": true
+    },
+    "不检查总字数": {
+      "result": {
+        "complete": true,
+        "total_words": 59,
+        "minimum_words": 5000,
+        "maximum_words": 9000,
+        "check_total_words": false,
+        "section_count": 3,
+        "missing_count": 0,
+        "detail_file": "程序清单/正文字数统计.json",
+        "note": "本工具只统计实际字数：保持正文不变，不以任何方式（包括脚本批量删改）调整字数；字数要求由程序在本阶段提交后按设置统一处理。"
+      },
+      "list_file": "{\n  \"total_words\": 59,\n  \"sections\": [\n    {\n      \"section_id\": \"n-1\",\n      \"number\": \"1.1\",\n      \"file\": \"正文/n-1.html\",\n      \"words\": 21\n    },\n    {\n      \"section_id\": \"n-2\",\n      \"number\": \"1.2\",\n      \"file\": \"正文/n-2.html\",\n      \"words\": 26\n    },\n    {\n      \"section_id\": \"n-3\",\n      \"number\": \"1.3\",\n      \"file\": \"正文/n-3.html\",\n      \"words\": 12\n    }\n  ],\n  \"missing_section_ids\": []\n}",
+      "protection": true
+    },
+    "一节文件不存在": {
+      "result": {
+        "complete": false,
+        "total_words": 33,
+        "minimum_words": 10,
+        "maximum_words": 1000,
+        "check_total_words": true,
+        "section_count": 2,
+        "missing_count": 1,
+        "detail_file": "程序清单/正文字数统计.json",
+        "note": "本工具只统计实际字数：保持正文不变，不以任何方式（包括脚本批量删改）调整字数；字数要求由程序在本阶段提交后按设置统一处理。"
+      },
+      "list_file": "{\n  \"total_words\": 33,\n  \"sections\": [\n    {\n      \"section_id\": \"n-1\",\n      \"number\": \"1.1\",\n      \"file\": \"正文/n-1.html\",\n      \"words\": 21\n    },\n    {\n      \"section_id\": \"n-3\",\n      \"number\": \"1.3\",\n      \"file\": \"正文/n-3.html\",\n      \"words\": 12\n    }\n  ],\n  \"missing_section_ids\": [\n    \"n-2\"\n  ]\n}",
+      "protection": false
+    },
+    "一节为空白": {
+      "result": {
+        "complete": false,
+        "total_words": 33,
+        "minimum_words": 10,
+        "maximum_words": 1000,
+        "check_total_words": true,
+        "section_count": 2,
+        "missing_count": 1,
+        "detail_file": "程序清单/正文字数统计.json",
+        "note": "本工具只统计实际字数：保持正文不变，不以任何方式（包括脚本批量删改）调整字数；字数要求由程序在本阶段提交后按设置统一处理。"
+      },
+      "list_file": "{\n  \"total_words\": 33,\n  \"sections\": [\n    {\n      \"section_id\": \"n-1\",\n      \"number\": \"1.1\",\n      \"file\": \"正文/n-1.html\",\n      \"words\": 21\n    },\n    {\n      \"section_id\": \"n-3\",\n      \"number\": \"1.3\",\n      \"file\": \"正文/n-3.html\",\n      \"words\": 12\n    }\n  ],\n  \"missing_section_ids\": [\n    \"n-2\"\n  ]\n}",
+      "protection": false
+    },
+    "一节只有分隔与空段落": {
+      "result": {
+        "complete": false,
+        "total_words": 33,
+        "minimum_words": 10,
+        "maximum_words": 1000,
+        "check_total_words": true,
+        "section_count": 2,
+        "missing_count": 1,
+        "detail_file": "程序清单/正文字数统计.json",
+        "note": "本工具只统计实际字数：保持正文不变，不以任何方式（包括脚本批量删改）调整字数；字数要求由程序在本阶段提交后按设置统一处理。"
+      },
+      "list_file": "{\n  \"total_words\": 33,\n  \"sections\": [\n    {\n      \"section_id\": \"n-1\",\n      \"number\": \"1.1\",\n      \"file\": \"正文/n-1.html\",\n      \"words\": 21\n    },\n    {\n      \"section_id\": \"n-3\",\n      \"number\": \"1.3\",\n      \"file\": \"正文/n-3.html\",\n      \"words\": 12\n    }\n  ],\n  \"missing_section_ids\": [\n    \"n-2\"\n  ]\n}",
+      "protection": false
+    },
+    "有缺失时其他小节的问题不拦截": {
+      "result": {
+        "complete": false,
+        "total_words": 13,
+        "minimum_words": 10,
+        "maximum_words": 1000,
+        "check_total_words": true,
+        "section_count": 2,
+        "missing_count": 1,
+        "detail_file": "程序清单/正文字数统计.json",
+        "note": "本工具只统计实际字数：保持正文不变，不以任何方式（包括脚本批量删改）调整字数；字数要求由程序在本阶段提交后按设置统一处理。"
+      },
+      "list_file": "{\n  \"total_words\": 13,\n  \"sections\": [\n    {\n      \"section_id\": \"n-1\",\n      \"number\": \"1.1\",\n      \"file\": \"正文/n-1.html\",\n      \"words\": 7\n    },\n    {\n      \"section_id\": \"n-3\",\n      \"number\": \"1.3\",\n      \"file\": \"正文/n-3.html\",\n      \"words\": 6\n    }\n  ],\n  \"missing_section_ids\": [\n    \"n-2\"\n  ]\n}",
+      "protection": false
+    },
+    "全部有字，一节是 Markdown": {
+      "error": "正文/n-2.html：必须输出带 app:block 分隔的有效受限 HTML 正文，不得输出 Markdown 或代码围栏",
+      "list_file": null,
+      "protection": false
+    },
+    "全部有字，一节缺少结束标签": {
+      "error": "正文/n-2.html：第 2 行<strong> 缺少结束标签 </strong>",
+      "list_file": null,
+      "protection": false
+    },
+    "全部有字，两节都有问题时报第一节": {
+      "error": "正文/n-2.html：必须输出带 app:block 分隔的有效受限 HTML 正文，不得输出 Markdown 或代码围栏",
+      "list_file": null,
+      "protection": false
+    },
+    "配图引用存在": {
+      "result": {
+        "complete": true,
+        "total_words": 38,
+        "minimum_words": 10,
+        "maximum_words": 1000,
+        "check_total_words": true,
+        "section_count": 2,
+        "missing_count": 0,
+        "detail_file": "程序清单/正文字数统计.json",
+        "note": "本工具只统计实际字数：保持正文不变，不以任何方式（包括脚本批量删改）调整字数；字数要求由程序在本阶段提交后按设置统一处理。"
+      },
+      "list_file": "{\n  \"total_words\": 38,\n  \"sections\": [\n    {\n      \"section_id\": \"n-1\",\n      \"number\": \"1.1\",\n      \"file\": \"正文/n-1.html\",\n      \"words\": 21\n    },\n    {\n      \"section_id\": \"n-2\",\n      \"number\": \"1.2\",\n      \"file\": \"正文/n-2.html\",\n      \"words\": 17\n    }\n  ],\n  \"missing_section_ids\": []\n}",
+      "protection": true
+    },
+    "配图引用规范化后存在": {
+      "result": {
+        "complete": true,
+        "total_words": 38,
+        "minimum_words": 10,
+        "maximum_words": 1000,
+        "check_total_words": true,
+        "section_count": 2,
+        "missing_count": 0,
+        "detail_file": "程序清单/正文字数统计.json",
+        "note": "本工具只统计实际字数：保持正文不变，不以任何方式（包括脚本批量删改）调整字数；字数要求由程序在本阶段提交后按设置统一处理。"
+      },
+      "list_file": "{\n  \"total_words\": 38,\n  \"sections\": [\n    {\n      \"section_id\": \"n-1\",\n      \"number\": \"1.1\",\n      \"file\": \"正文/n-1.html\",\n      \"words\": 21\n    },\n    {\n      \"section_id\": \"n-2\",\n      \"number\": \"1.2\",\n      \"file\": \"正文/n-2.html\",\n      \"words\": 17\n    }\n  ],\n  \"missing_section_ids\": []\n}",
+      "protection": true
+    },
+    "配图尚未生成": {
+      "error": "正文/n-2.html：图片尚未生成或未填写 data-app-asset-ref：施工流程图",
+      "list_file": null,
+      "protection": false
+    },
+    "配图文件不存在": {
+      "error": "正文/n-2.html：正文引用的图片文件不存在：图片/缺失.png",
+      "list_file": null,
+      "protection": false
+    },
+    "配图引用是目录": {
+      "error": "正文/n-2.html：正文引用的图片文件不存在：图片",
+      "list_file": null,
+      "protection": false
+    },
+    "配图引用越出工作区": {
+      "error": "正文/n-2.html：图片或源码路径必须是当前工作区内使用正斜杠的相对路径",
+      "list_file": null,
+      "protection": false
+    },
+    "配图提示词不计字数": {
+      "result": {
+        "complete": true,
+        "total_words": 35,
+        "minimum_words": 10,
+        "maximum_words": 1000,
+        "check_total_words": true,
+        "section_count": 2,
+        "missing_count": 0,
+        "detail_file": "程序清单/正文字数统计.json",
+        "note": "本工具只统计实际字数：保持正文不变，不以任何方式（包括脚本批量删改）调整字数；字数要求由程序在本阶段提交后按设置统一处理。"
+      },
+      "list_file": "{\n  \"total_words\": 35,\n  \"sections\": [\n    {\n      \"section_id\": \"n-1\",\n      \"number\": \"1.1\",\n      \"file\": \"正文/n-1.html\",\n      \"words\": 21\n    },\n    {\n      \"section_id\": \"n-2\",\n      \"number\": \"1.2\",\n      \"file\": \"正文/n-2.html\",\n      \"words\": 14\n    }\n  ],\n  \"missing_section_ids\": []\n}",
+      "protection": true
+    },
+    "单个目标": {
+      "result": {
+        "complete": true,
+        "total_words": 21,
+        "minimum_words": 10,
+        "maximum_words": 1000,
+        "check_total_words": true,
+        "section_count": 1,
+        "missing_count": 0,
+        "detail_file": "程序清单/正文字数统计.json",
+        "note": "本工具只统计实际字数：保持正文不变，不以任何方式（包括脚本批量删改）调整字数；字数要求由程序在本阶段提交后按设置统一处理。"
+      },
+      "list_file": "{\n  \"total_words\": 21,\n  \"sections\": [\n    {\n      \"section_id\": \"n-1\",\n      \"number\": \"1.1\",\n      \"file\": \"正文/n-1.html\",\n      \"words\": 21\n    }\n  ],\n  \"missing_section_ids\": []\n}",
+      "protection": true
+    }
+  }
+}

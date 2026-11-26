@@ -5,7 +5,8 @@
 //   5xx、响应不合法、过大、无限长、不响应、连不上、中止只给固定说明，不带出响应正文；
 // - 桩的行为：pending 时以相同参数再次调用；报告失败 / 用户选择终止时结束会话；fatal 时结束会话；选择继续时把 instruction 交给模型；
 // - generate-sections（8.10c2b2）：名称、标签与说明和桌面版 contentGenerationAgent.cjs 相同（有无知识库两种说明），长时调用的 pending
-//   以相同参数再次调用并给出进度提示，结果按紧凑的 JSON 交给模型。
+//   以相同参数再次调用并给出进度提示，结果按紧凑的 JSON 交给模型；
+// - check-word-count（8.10c3b1）：名称、标签与说明和桌面版 contentGenerationWordTools.cjs 相同，长时调用的处理与 generate-sections 相同。
 // 真实的 Pi 经真实路由调用桩的流程见 tests/agent/piBusinessTools.test.ts。
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
@@ -20,6 +21,7 @@ import { requestTerminationTool } from '../../src/agent/requestTerminationTool.t
 import { generateAgentToken } from '../../src/agent/token.ts';
 import { agentToolRegistry } from '../../src/agent/toolRegistry.ts';
 import { generateSectionsTool } from '../../src/technicalPlan/contentSectionGeneration.ts';
+import { checkWordCountTool } from '../../src/technicalPlan/contentWordCount.ts';
 import { CONTENT_SECTIONS_TASK_FILE as SERVER_TASK_FILE } from '../../src/technicalPlan/contentSectionWriting.ts';
 import { CONTENT_WRITING_KNOWLEDGE_INDEX_FILE } from '../../src/technicalPlan/contentWriting.ts';
 import { BUSINESS_TOOLS } from '../../sandbox/agent/protocol.mjs';
@@ -93,14 +95,14 @@ function workspace(files: Record<string, string>): string {
 describe('桩的定义', () => {
   it('参数 schema 与 worker 登记的相同；面向模型的名字：request-termination 为 report-failure', () => {
     const stubs = createBusinessToolStubs({ Type, names: [...BUSINESS_TOOLS], call: noop, end: () => {} });
-    const server = { 'ask-user': askUserTool, 'report-failure': reportFailureTool, 'request-termination': requestTerminationTool, 'generate-sections': generateSectionsTool } as const;
+    const server = { 'ask-user': askUserTool, 'report-failure': reportFailureTool, 'request-termination': requestTerminationTool, 'generate-sections': generateSectionsTool, 'check-word-count': checkWordCountTool } as const;
     BUSINESS_TOOLS.forEach((name, index) => {
       expect(constraints(stubs[index]!.parameters)).toEqual(constraints(server[name].argumentsSchema));
       expect(stubs[index]!.name).toBe(modelToolName(name));
       // 生产登记中有同名的工具。
       expect(agentToolRegistry.get(name)).toBeDefined();
     });
-    expect(stubs.map((stub) => stub.name)).toEqual(['ask-user', 'report-failure', 'report-failure', 'generate-sections']);
+    expect(stubs.map((stub) => stub.name)).toEqual(['ask-user', 'report-failure', 'report-failure', 'generate-sections', 'check-word-count']);
     expect(stubs[2]!.label).toBe('请求终止任务');
     // 问题按纯文本显示（#84）：提示中不要求 Markdown。
     expect(stubs[0]!.promptGuidelines!.join('\n')).toContain('不要使用 Markdown');
@@ -122,6 +124,18 @@ describe('桩的定义', () => {
       });
       expect(stub!.description.includes('知识库等')).toBe(hasKnowledgeBase);
     }
+  });
+
+  it('check-word-count：名称、标签与说明与桌面版相同', () => {
+    const dir = workspace({});
+    const [stub] = createBusinessToolStubs({ Type, names: ['check-word-count'], call: noop, end: () => {}, workspaceDir: dir });
+    const desktop = desktopAgent.createContentGenerationTools({}, { Type: desktopStub, workspaceDir: dir, setActiveTools: () => {}, baseline: null }).find((tool) => tool.name === 'check-word-count')!;
+    expect({ name: stub!.name, label: stub!.label, description: stub!.description, executionMode: stub!.executionMode }).toEqual({
+      name: desktop.name,
+      label: desktop.label,
+      description: desktop.description,
+      executionMode: desktop.executionMode,
+    });
   });
 });
 
@@ -307,6 +321,18 @@ describe('桩的行为', () => {
     const call = aborted.list[0]!.execute('c', {}, controller.signal, () => controller.abort());
     await expect(call).rejects.toThrow('工具调用已中止');
     expect(aborted.calls).toHaveLength(1);
+  });
+
+  it('check-word-count：pending 时以相同参数再次调用并给出进度提示；结果按紧凑的 JSON 交给模型', async () => {
+    const pending = { completed: false, pending: true, message: 'm' };
+    const done = { complete: true, total_words: 10, section_count: 1, missing_count: 0 };
+    const run = stubs([pending, done], ['check-word-count']);
+    const updates: unknown[] = [];
+    const result = await run.list[0]!.execute('c', {}, undefined, (update) => updates.push(update));
+    expect(run.calls).toEqual([0, 1].map(() => ({ name: 'check-word-count', args: {} })));
+    expect(updates).toHaveLength(1);
+    expect(result).toEqual({ content: [{ type: 'text', text: JSON.stringify(done) }], details: done });
+    expect(run.ended).toEqual([]);
   });
 
   it('fatal 错误结束会话（TOKEN_INVALID / RUN_ENDED）并作为工具错误交给模型；其他错误只交给模型', async () => {

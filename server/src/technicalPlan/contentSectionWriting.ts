@@ -168,6 +168,8 @@ export interface ContentSectionWritingMaterials {
     readonly image_requirements: string;
     readonly word_requirements: string;
     readonly user_requirement: string;
+    /** 字数要求（check-word-count，8.10c3b1）。 */
+    readonly word_control: { readonly minimumWords: number; readonly maximumWords: number; readonly checkTotalWords: boolean };
     readonly targets: readonly ContentWritingTarget[];
   };
   /** 目标 id → 目标（目录顺序）。 */

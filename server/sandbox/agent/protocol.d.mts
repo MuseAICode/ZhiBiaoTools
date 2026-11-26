@@ -7,7 +7,7 @@ export const MAX_RESULT_BYTES: number;
 export const GATEWAY_BASE_URL: string;
 export const GATEWAY_TIMEOUT_MS: number;
 export const NATIVE_TOOLS: readonly ['read', 'write', 'edit', 'bash', 'grep', 'find', 'ls'];
-export const BUSINESS_TOOLS: readonly ['ask-user', 'report-failure', 'request-termination', 'generate-sections'];
+export const BUSINESS_TOOLS: readonly ['ask-user', 'report-failure', 'request-termination', 'generate-sections', 'check-word-count'];
 export const LOCAL_TOOLS: readonly ['json-validation'];
 export const MAX_JSON_SCHEMAS: number;
 export const MAX_WORKSPACE_PATH_BYTES: number;

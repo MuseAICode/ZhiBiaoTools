@@ -101,8 +101,9 @@ export function contentGenerationProblem(state: TechnicalPlanState): ContentGene
 
 /** 与桌面版相同：原生工具、json-validation、ask-user 与需用户确认的失败报告（顶层任务的 report-failure 即 request-termination）。 */
 const CONTENT_PLANNING_TOOLS: readonly AgentPromptTool[] = ['read', 'write', 'edit', 'bash', 'grep', 'find', 'ls', 'json-validation', 'ask-user', 'request-termination'];
-// generate-sections（8.10c2b2）只在写作阶段的提示词中启用（8.10c3 接入），基础编排阶段的工具调用被阶段限制拦住。
-const CONTENT_GENERATION_BUSINESS_TOOLS = ['ask-user', 'request-termination', 'generate-sections'] as const;
+// generate-sections（8.10c2b2）与 check-word-count（8.10c3b1）只在写作阶段的提示词中启用（8.10c3c 接入），基础编排阶段的工具调用
+// 被阶段限制拦住。
+const CONTENT_GENERATION_BUSINESS_TOOLS = ['ask-user', 'request-termination', 'generate-sections', 'check-word-count'] as const;
 const CONTINUE_PROMPT = '继续之前的任务';
 /** 基础编排放入的材料的受保护文件分组。 */
 const CONTENT_PLANNING_INPUT_GROUP = 'content-planning-inputs';

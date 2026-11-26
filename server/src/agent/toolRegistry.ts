@@ -5,6 +5,7 @@ import { reportFailureTool } from './reportFailureTool.ts';
 import { requestTerminationTool } from './requestTerminationTool.ts';
 import { createAgentToolRegistry, type AgentToolDefinition } from './tools.ts';
 import { generateSectionsTool } from '../technicalPlan/contentSectionGeneration.ts';
+import { checkWordCountTool } from '../technicalPlan/contentWordCount.ts';
 
 export const AGENT_TOOLS: readonly AgentToolDefinition<any, any>[] = Object.freeze([
   // 8.4b：Agent 报告无法继续，执行者据此结束任务（AGENT_REPORTED_FAILURE）。
@@ -15,6 +16,8 @@ export const AGENT_TOOLS: readonly AgentToolDefinition<any, any>[] = Object.free
   requestTerminationTool,
   // 8.10c2b2：正文生成写作阶段的批量小节生成（长时工具，由执行者执行，src/agent/toolRequests.ts）。
   generateSectionsTool,
+  // 8.10c3b1：正文写作阶段的字数统计（长时工具，由执行者执行）；全部正文就绪后进入图片保护。
+  checkWordCountTool,
 ]);
 
 export const agentToolRegistry = createAgentToolRegistry(AGENT_TOOLS);
