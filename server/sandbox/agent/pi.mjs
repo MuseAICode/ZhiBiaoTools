@@ -195,7 +195,7 @@ export async function runPiPrompt(request, { baseUrl, workspaceDir = WORKSPACE_D
   };
   const businessNames = request.tools.filter((name) => BUSINESS_TOOLS.includes(name));
   const call = callTool ?? ((name, args, signal) => callBusinessTool({ baseUrl, token: request.token, name, args, signal }));
-  const businessTools = createBusinessToolStubs({ Type: typebox.Type, names: businessNames, call, end }).map((tool) => codingAgent.defineTool(tool));
+  const businessTools = createBusinessToolStubs({ Type: typebox.Type, names: businessNames, call, end, workspaceDir }).map((tool) => codingAgent.defineTool(tool));
   const localTools = request.tools.includes(JSON_VALIDATION_TOOL_NAME)
     ? [codingAgent.defineTool(createJsonValidationTool({ Type: typebox.Type, workspaceDir, presetSchemas: request.jsonSchemas ?? {} }))]
     : [];

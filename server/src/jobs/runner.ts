@@ -253,7 +253,8 @@ export function createJobRunner(options: JobRunnerOptions): JobRunner {
             tenant,
             { ...request, source: 'job', jobId: job.id, jobType: job.type },
             {
-              signal: controller.signal,
+              // 调用方另给的 signal（8.10c2b2）与任务的合并；平台原因中止仍只看任务的 signal（platformAborted）。
+              signal: chatOptions.signal ? AbortSignal.any([controller.signal, chatOptions.signal]) : controller.signal,
               log,
               // 任务中的调用一直排队等并发名额，直到任务被取消或暂停。
               concurrencyWaitMs: Number.POSITIVE_INFINITY,
