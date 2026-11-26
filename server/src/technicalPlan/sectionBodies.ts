@@ -54,6 +54,22 @@ export class SectionBodyRejectedError extends AppError {
  * 产物是否属于本项目由 writeSectionBody 在数据库中核对。
  */
 export function prepareSectionBody(source: string): PreparedSectionBody {
+  const html = normalizeSectionHtml(source);
+  const all = assetRefs(html);
+  const refs = all.filter((ref) => ARTIFACT_ID.test(ref));
+  if (refs.length !== all.length) throw new SectionBodyRejectedError(['配图引用必须是本项目已生成的图片（data-app-asset-ref 为图片产物 id）']);
+  if (refs.length > TECHNICAL_PLAN_SECTION_IMAGES_MAX) {
+    throw new SectionBodyRejectedError([`一节正文至多引用 ${TECHNICAL_PLAN_SECTION_IMAGES_MAX} 张配图`]);
+  }
+  return { html, imageArtifactIds: refs };
+}
+
+/**
+ * 经白名单规范化一节正文、不核对配图引用（纯函数）：为空、有 error 级问题、没有可保存的块或规范化后超过单节上限时抛
+ * SectionBodyRejectedError。prepareSectionBody 在此之上核对配图引用；正文生成的提交校验（8.10c3a，contentSubmission.ts）在 Agent
+ * 提交时按同一规则检查（那时配图引用还是工作区路径）。
+ */
+export function normalizeSectionHtml(source: string): string {
   const raw = String(source ?? '');
   if (!raw.trim()) throw new SectionBodyRejectedError(['正文为空']);
   const parsed = parseRestrictedHtml(raw);
@@ -68,13 +84,7 @@ export function prepareSectionBody(source: string): PreparedSectionBody {
   if (Buffer.byteLength(html, 'utf8') > TECHNICAL_PLAN_SECTION_HTML_MAX_BYTES) {
     throw new SectionBodyRejectedError([`正文超过 ${TECHNICAL_PLAN_SECTION_HTML_MAX_BYTES / 1024 / 1024} MiB`]);
   }
-  const all = assetRefs(html);
-  const refs = all.filter((ref) => ARTIFACT_ID.test(ref));
-  if (refs.length !== all.length) throw new SectionBodyRejectedError(['配图引用必须是本项目已生成的图片（data-app-asset-ref 为图片产物 id）']);
-  if (refs.length > TECHNICAL_PLAN_SECTION_IMAGES_MAX) {
-    throw new SectionBodyRejectedError([`一节正文至多引用 ${TECHNICAL_PLAN_SECTION_IMAGES_MAX} 张配图`]);
-  }
-  return { html, imageArtifactIds: refs };
+  return html;
 }
 
 /** 规范化正文中 img 的 data-app-asset-ref（按首次出现排序、去重）。 */

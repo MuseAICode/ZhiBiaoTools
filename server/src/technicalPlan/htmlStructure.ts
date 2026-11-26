@@ -143,6 +143,21 @@ export function assertHtmlStructure(html: unknown, options?: HtmlStructureOption
   if (issues.length) throw new HtmlStructureError(issues);
 }
 
+/**
+ * 按文档顺序列出某种元素的属性（与桌面版 cheerio 的 `$(tag)` 相同：片段解析、进入 <template> 的内容；同名属性取第一个）。
+ * 供提交校验检查 img 的配图引用（8.10c3a，contentSubmission.ts，桌面版 validateContentImageReferences）。
+ */
+export function elementAttributes(html: unknown, tagName: string): ReadonlyMap<string, string>[] {
+  const root = parseFragment(String(html), { scriptingEnabled: true });
+  return descendants(root)
+    .filter((node) => node.tagName === tagName)
+    .map((node) => {
+      const attributes = new Map<string, string>();
+      for (const attr of node.attrs) if (!attributes.has(attr.name)) attributes.set(attr.name, attr.value);
+      return attributes;
+    });
+}
+
 /** template 内容中第一个 htmlparser2 树中 type 为 'tag' 的子节点（script / style 不算）。 */
 function firstTag(template: Template): Element | undefined {
   return template.content.childNodes.find((child): child is Element => isElement(child) && child.tagName !== 'script' && child.tagName !== 'style');
