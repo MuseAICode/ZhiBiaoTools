@@ -15,7 +15,7 @@ import { sql, type Kysely } from 'kysely';
 import type { AgentModelRejectionReason, Database } from '../db/schema.ts';
 import { withOrgContext, withTenant } from '../db/tenant.ts';
 import { AppError } from '../errors.ts';
-import { JobError } from '../jobs/definitions.ts';
+import { JobError, JobModelUnavailableError } from '../jobs/definitions.ts';
 import type { RunRef } from '../jobs/store.ts';
 import type { AgentTurnRef } from './budget.ts';
 
@@ -38,6 +38,16 @@ const REJECTION_BY_CODE: Readonly<Record<string, AgentModelRejectionReason>> = O
 export function agentModelRejectionReason(error: unknown): AgentModelRejectionReason | null {
   if (!(error instanceof AppError) && !(error instanceof JobError)) return null;
   return Object.hasOwn(REJECTION_BY_CODE, error.code) ? REJECTION_BY_CODE[error.code]! : null;
+}
+
+/**
+ * 执行者自己经 JobAi 调用模型（如长时业务工具 generate-sections，8.10c2b2）时，没有选择模型 / 所选模型不可用的错误 → 与 Agent 的
+ * 模型调用相同的暂停（#98 决定：暂停为 model_not_configured / model_unavailable、写明原因，修正配置后从断点续跑）；其他错误为 null。
+ */
+export function jobModelUnavailableError(error: unknown): JobModelUnavailableError | null {
+  const reason = agentModelRejectionReason(error);
+  if (reason === 'model_not_configured' || reason === 'model_unavailable') return new JobModelUnavailableError(reason, { cause: error });
+  return null;
 }
 
 /**

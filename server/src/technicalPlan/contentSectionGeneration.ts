@@ -12,7 +12,9 @@
 //      全部小节同时提交、由网关排队；写作材料取服务端的输入（ContentSectionWritingMaterials），不读工作区的副本；
 //   4. 输出检查通过后经 run.writeFiles 写回 `正文/<id>.html`（各节依次写入，不并发放入）；输出不合格的本节失败、交回 Agent 重试；
 //   5. 服务端连续 10 个请求本身失败且其间没有成功（createAiBatchGuard）时中止剩余各节，按 AI_UPSTREAM_UNAVAILABLE 结束任务；
-//      余额不足、达到任务上限、任务中断、写回失败与其他错误同样中止剩余各节并作为致命错误抛出（执行者中止入口、按该错误结束）。
+//      余额不足、达到任务上限、任务中断、写回失败与其他错误同样中止剩余各节并作为致命错误抛出（执行者中止入口、按该错误结束）；
+//      没有选择模型、所选模型未登记 / 已停用 / 未定价、服务未配置等平台配置问题（#124 用户决定，与 #98 一致）转成
+//      JobModelUnavailableError：任务暂停为 model_not_configured / model_unavailable（写明原因），修正配置后从断点续跑，不计入连续失败。
 // - 步骤键在续跑时可重算：`content-section:<小节 id>:<n>`，n 为本任务中该小节的第几次写作（从 1 开始）；预热为
 //   `content-section-prefix:<m>`，m 为第几次提交。计数随任务的 checkpoint 保存（state()，8.10c3 写入）：worker 崩溃后从上次的
 //   checkpoint 续跑，同一小节、同一请求内容的调用取回已保存的结果、不再扣费；regenerate 与失败后的重试换用新的 n，重新调用模型。
@@ -26,6 +28,7 @@ import {
   type AgentToolRequestExecution,
 } from '../agent/toolRequests.ts';
 import type { AgentRun } from '../agent/execution.ts';
+import { jobModelUnavailableError } from '../agent/modelRejections.ts';
 import type { ChatResult } from '../ai/gateway.ts';
 import { abortableDelay } from '../jobs/control.ts';
 import { createAiBatchGuard, isAiUpstreamFailure } from '../jobs/aiBatchGuard.ts';
@@ -184,8 +187,14 @@ export function createGenerateSectionsExecutor(options: GenerateSectionsOptions)
     return new Set(jobs.filter((job) => nonBlank.has(materials.targets.get(job.section_id)!.file)).map((job) => job.section_id));
   }
 
-  const chat = (stepKey: string, messages: ReturnType<typeof sharedPrefixMessages>, signal: AbortSignal, maxOutputTokens?: number): Promise<ChatResult> =>
-    ai.chat({ provider: model.provider, model: model.model, messages, stepKey, ...(maxOutputTokens !== undefined ? { maxOutputTokens } : {}) }, { signal });
+  /** 没有选择模型 / 所选模型不可用（未登记、已停用、未定价、服务未配置）转成暂停（#98，见文件头）；不计入连续失败。 */
+  const chat = async (stepKey: string, messages: ReturnType<typeof sharedPrefixMessages>, signal: AbortSignal, maxOutputTokens?: number): Promise<ChatResult> => {
+    try {
+      return await ai.chat({ provider: model.provider, model: model.model, messages, stepKey, ...(maxOutputTokens !== undefined ? { maxOutputTokens } : {}) }, { signal });
+    } catch (error) {
+      throw jobModelUnavailableError(error) ?? error;
+    }
+  };
 
   /** 预热公共前缀（与桌面版 warmPromptPrefix 相同）：模型服务的普通失败不影响后续请求；暂停、上限、中断等照常抛出。 */
   async function warmUp(signal: AbortSignal): Promise<void> {
@@ -196,6 +205,7 @@ export function createGenerateSectionsExecutor(options: GenerateSectionsOptions)
       await abortableDelay(warmupSettleMs, signal);
     } catch (error) {
       if (signal.aborted) throw new JobInterruptedError();
+      // 模型服务的普通失败忽略；模型不可用（已转成 JobModelUnavailableError）与暂停类错误照常抛出。
       if (error instanceof JobError) return;
       throw error;
     }
@@ -255,7 +265,8 @@ export function createGenerateSectionsExecutor(options: GenerateSectionsOptions)
           guard.failure(error);
           return { section_id: section.id, status: 'error', error: error.message };
         }
-        // 其余是致命错误：余额不足、任务上限、中断、模型不可调用等 JobAi 的错误，写回工作区或 onSectionSaved 失败，程序错误。
+        // 其余是致命错误：余额不足、任务上限、没有选择模型 / 所选模型不可用（暂停，#98）、中断等 JobAi 的错误，写回工作区或
+        // onSectionSaved 失败，程序错误。
         recordFatal(error);
         return { section_id: section.id, status: 'error', error: '已取消' };
       }

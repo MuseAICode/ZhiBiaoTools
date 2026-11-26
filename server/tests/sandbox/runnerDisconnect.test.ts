@@ -326,6 +326,9 @@ describe('closing the sandbox-runner', () => {
     socket.on('data', (chunk: Buffer) => {
       received += chunk.toString('latin1');
     });
+    // runner 关闭后会关闭这条连接。app.close() 返回时客户端一侧可能还没处理完收到的响应字节（CI 中偶发 received 为空），
+    // 等客户端的连接关闭（之前的数据都已交给 data 事件）再检查响应。
+    const clientClosed = new Promise<void>((resolve) => socket.once('close', () => resolve()));
     socket.write([
       `PUT /v1/sandboxes/${SANDBOX_ID}/input HTTP/1.1`, 'host: 127.0.0.1', `authorization: Bearer ${TOKEN}`, `${SANDBOX_JOB_HEADER}: ${JOB_ID}`,
       'content-type: application/x-tar', `content-length: ${body.length}`, '', '',
@@ -336,6 +339,7 @@ describe('closing the sandbox-runner', () => {
     await sleep(GRACE_MS / 3);
     socket.write(body.subarray(MIB));
     expect(await closing).not.toBeNull();
+    await Promise.race([clientClosed, sleep(SETTLE_MS).then(() => Promise.reject(new Error('client connection was not closed')))]);
     expect(received).toMatch(/^HTTP\/1\.1 204 /);
     expect(local.records[0]).toMatchObject({ outcome: 'completed', aborted: false, bytes: body.length });
   });

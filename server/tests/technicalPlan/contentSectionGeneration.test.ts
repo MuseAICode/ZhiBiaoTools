@@ -9,7 +9,7 @@ import type { ChatResult } from '../../src/ai/gateway.ts';
 import type { AgentWorkspaceFile } from '../../src/agent/execution.ts';
 import { AgentToolRequestRejection } from '../../src/agent/toolRequests.ts';
 import { AI_UPSTREAM_UNAVAILABLE } from '../../src/jobs/aiBatchGuard.ts';
-import { JobBalanceExhaustedError, JobError, JobInterruptedError, JobTaskLimitError, type JobAi, type JobChatRequest } from '../../src/jobs/definitions.ts';
+import { JobBalanceExhaustedError, JobError, JobInterruptedError, JobModelUnavailableError, JobTaskLimitError, type JobAi, type JobChatRequest } from '../../src/jobs/definitions.ts';
 import {
   CONTENT_SECTIONS_TASK_MAX_BYTES,
   createGenerateSectionsExecutor,
@@ -309,7 +309,6 @@ describe('generate-sections fatal errors', () => {
   const fatalCases: [string, () => Error][] = [
     ['insufficient balance', () => new JobBalanceExhaustedError()],
     ['task limit', () => new JobTaskLimitError('task_cost_limit')],
-    ['model not callable', () => new JobError('AI_MODEL_DISABLED', '该模型已停用')],
     ['unexpected error', () => new TypeError('bug')],
   ];
   for (const [name, make] of fatalCases) {
@@ -322,6 +321,56 @@ describe('generate-sections fatal errors', () => {
       expect(run.writes).toEqual([]);
     });
   }
+
+  // #124 用户决定（与 #98 一致）：平台配置问题暂停（写明原因），修正后从断点续跑；不计入连续 10 次模型服务失败。
+  const configCases: [string, 'model_not_configured' | 'model_unavailable'][] = [
+    ['AI_MODEL_NOT_CONFIGURED', 'model_not_configured'],
+    ['AI_MODEL_NOT_REGISTERED', 'model_unavailable'],
+    ['AI_MODEL_DISABLED', 'model_unavailable'],
+    ['MODEL_PRICE_NOT_CONFIGURED', 'model_unavailable'],
+    ['AI_PROVIDER_NOT_CONFIGURED', 'model_unavailable'],
+    ['AI_GATEWAY_DISABLED', 'model_unavailable'],
+  ];
+  for (const [code, reason] of configCases) {
+    it(`pauses as ${reason} on ${code}, aborting the other sections`, async () => {
+      const run = tasks(3);
+      const cause = new JobError(code, '模型配置问题');
+      const { ai, calls } = fakeAi((request) => (sectionOf(request) === 0 ? { content: '' } : sectionOf(request) === 2 ? cause : 'hang'));
+      const error = await executor(run, ai).execute().catch((caught: unknown) => caught);
+      expect(error).toBeInstanceOf(JobModelUnavailableError);
+      expect((error as JobModelUnavailableError).reason).toBe(reason);
+      expect((error as Error).cause).toBe(cause);
+      expect(calls.filter((call) => sectionOf(call.request) === 1 || sectionOf(call.request) === 3).every((call) => call.signal?.aborted)).toBe(true);
+      expect(run.writes).toEqual([]);
+    });
+  }
+
+  it('does not count model configuration problems as upstream failures', async () => {
+    // 9 个服务商失败之后是模型不可用：暂停为 model_unavailable，而不是守卫的 AI_UPSTREAM_UNAVAILABLE；其余各节已取消。
+    const run = tasks(COUNT);
+    const { ai } = fakeAi(async (request) => {
+      const n = sectionOf(request);
+      if (n === 0) return { content: '' };
+      if (n <= 9) return UPSTREAM();
+      if (n === 10) {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        return new JobError('AI_MODEL_DISABLED', '该模型已停用');
+      }
+      return 'hang';
+    });
+    const error = await executor(run, ai).execute().catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(JobModelUnavailableError);
+    expect((error as JobModelUnavailableError).reason).toBe('model_unavailable');
+  });
+
+  it('pauses when the warm-up finds the model unavailable, without sending any section', async () => {
+    const run = tasks(2);
+    const { ai, calls } = fakeAi((request) => (sectionOf(request) === 0 ? new JobError('AI_MODEL_NOT_CONFIGURED', '尚未选择文本模型') : { content: HTML(sectionOf(request)) }));
+    const error = await executor(run, ai).execute().catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(JobModelUnavailableError);
+    expect((error as JobModelUnavailableError).reason).toBe('model_not_configured');
+    expect(calls).toHaveLength(1);
+  });
 
   it('treats a pause during the warm-up as fatal without writing any section', async () => {
     const run = tasks(2);

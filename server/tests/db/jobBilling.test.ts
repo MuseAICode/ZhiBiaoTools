@@ -49,6 +49,10 @@ import { jobBody } from '../../src/jobs/view.ts';
 import { bullmqConnection } from '../../src/redis.ts';
 import { startMockProvider, streamCompletion, streamDeltas, type MockProvider } from '../ai/mockProvider.ts';
 import { rawRedis, redisConfig, testLogger, uniquePrefix, waitFor, wipeQueueKeys } from './jobFixtures.ts';
+import { createGenerateSectionsExecutor, parseGenerateSectionsState } from '../../src/technicalPlan/contentSectionGeneration.ts';
+import { CONTENT_SECTIONS_TASK_FILE } from '../../src/technicalPlan/contentSectionWriting.ts';
+import { contentSectionFile } from '../../src/technicalPlan/contentWriting.ts';
+import { LEAF, MATERIALS } from '../technicalPlan/generateSectionsFixture.ts';
 import { connect, createTestDatabase, type TestDatabase } from './harness.ts';
 
 const API_KEY = `sk-mock-${randomBytes(16).toString('hex')}`;
@@ -63,6 +67,7 @@ const HOLD = BigInt(inputTokenUpperBound(MESSAGES) + MAX_OUTPUT);
 /** 模拟服务商返回的用量（输入 3000、输出 1000）对应的扣费。 */
 const CHARGE = 4000n;
 const USAGE = { prompt_tokens: 3000, completion_tokens: 1000, total_tokens: 4000 };
+const DISABLED_MODEL = 'deepseek-reasoner';
 
 const SETTINGS: GatewaySettings = {
   upstreamTimeoutMs: 5_000,
@@ -266,6 +271,14 @@ beforeAll(async () => {
   }).execute();
   await superuser.insertInto('platform_models').values({
     provider: 'deepseek', model: 'deepseek-chat', is_free: false, enabled: true, created_by: platformAdmin, updated_by: platformAdmin,
+  }).execute();
+  // 已登记、已定价但停用的模型（generate-sections 遇到模型不可用时暂停，8.10c2b2）。
+  await superuser.insertInto('model_prices').values({
+    provider: 'deepseek', model: DISABLED_MODEL, input_price_per_mtok: PRICE_PER_MTOK, output_price_per_mtok: PRICE_PER_MTOK,
+    effective_from: past, created_at: past, created_by: platformAdmin,
+  }).execute();
+  await superuser.insertInto('platform_models').values({
+    provider: 'deepseek', model: DISABLED_MODEL, is_free: false, enabled: false, created_by: platformAdmin, updated_by: platformAdmin,
   }).execute();
 
   appDb = connect<Database>(testDb.appConfig, 30);
@@ -633,6 +646,68 @@ describe('worker 中的任务调用', () => {
     // 中止的一次按已产生的输出估算，不超过冻结额；任务的费用是两次之和。
     expect(BigInt(usages[0]!.amount)).toBeLessThanOrEqual(HOLD);
     expect(done.billed_amount).toBe(String(usages.reduce((sum, usage) => sum + BigInt(usage.amount), 0n)));
+  });
+
+  it('generate-sections 遇到所选模型不可用（8.10c2b2，#124 用户决定同 #98）：暂停为 model_unavailable 并写明原因；启用模型后继续，从断点续跑完成', async () => {
+    const ctx = await newMember(10n * JOB_MIN_START_BALANCE);
+    const html = '<!-- app:block -->\n<p>本节说明施工组织安排。</p>';
+    provider.setHandler(async (_request, response) => streamCompletion(response, { pieces: [html], usage: USAGE }));
+    // 工作区与任务文件在内存中（随任务保留，续跑时沿用）；计数随 checkpoint 保存。
+    const workspace = new Map<string, Buffer>([[CONTENT_SECTIONS_TASK_FILE, Buffer.from(JSON.stringify({ sections: [1, 2].map((n) => ({ section_id: LEAF(n), instructions: '', references: '' })) }))]]);
+    const sections: JobTypeDefinition<Record<string, never>> = {
+      type: 'test-generate-sections',
+      queue: 'ai',
+      resumable: true,
+      billable: true,
+      parseParams: () => ({}),
+      async run(context) {
+        const executor = createGenerateSectionsExecutor({
+          run: {
+            async readFiles(paths) {
+              return new Map(paths.filter((path) => workspace.has(path)).map((path) => [path, { size: workspace.get(path)!.length, data: workspace.get(path)! }]));
+            },
+            async writeFiles(files) {
+              for (const file of files) workspace.set(file.path, file.data);
+            },
+          },
+          ai: context.ai,
+          model: { provider: 'deepseek', model: DISABLED_MODEL },
+          materials: MATERIALS,
+          state: parseGenerateSectionsState(context.checkpoint?.sections ?? null),
+          warmupSettleMs: 0,
+        });
+        try {
+          await executor.execute({ requestId: 'r', args: {}, signal: context.signal });
+        } finally {
+          await context.saveCheckpoint({ sections: executor.state() as unknown as Record<string, unknown> });
+        }
+      },
+    };
+    const registry = createJobTypeRegistry([sections]);
+    await startRunner(registry, { gateway: newGateway() });
+    const job = await enqueueJob(service(registry), ctx, { type: 'test-generate-sections', params: {} });
+    const paused = await waitForStatus(job.id, 'paused');
+    expect(paused).toMatchObject({ pause_reason: 'model_unavailable', billed_amount: '0', error_code: null });
+    const events = await superuser.selectFrom('job_events').select(['kind', 'message', 'data']).where('job_id', '=', job.id).orderBy('id').execute();
+    expect(events.at(-1)).toMatchObject({ kind: 'paused', data: { reason: 'model_unavailable' } });
+    expect(events.at(-1)!.message).toContain('请在设置中选择可用的模型后继续');
+    // 不调用服务商、不收费，没有写回任何小节。
+    expect(provider.requests).toHaveLength(0);
+    expect(await usageOf(ctx.orgId)).toEqual([]);
+    expect(workspace.has(contentSectionFile(LEAF(1)))).toBe(false);
+
+    // 修正配置（启用模型）后继续：从断点续跑完成，两节写回。
+    await superuser.updateTable('platform_models').set({ enabled: true }).where('model', '=', DISABLED_MODEL).execute();
+    try {
+      await resumeJob(service(registry), ctx, job.id);
+      await waitForStatus(job.id, 'succeeded');
+    } finally {
+      await superuser.updateTable('platform_models').set({ enabled: false }).where('model', '=', DISABLED_MODEL).execute();
+    }
+    expect(workspace.get(contentSectionFile(LEAF(1)))!.toString('utf8')).toBe(html);
+    expect(workspace.get(contentSectionFile(LEAF(2)))!.toString('utf8')).toBe(html);
+    // 预热 1 次 + 两节各 1 次。
+    expect(provider.requests).toHaveLength(3);
   });
 
   it('worker 在调用中途崩溃：冻结到期后不再占用余额、不收费；任务被收回后从 checkpoint 续跑，已扣费的步骤不重做、不重复扣费', async () => {
