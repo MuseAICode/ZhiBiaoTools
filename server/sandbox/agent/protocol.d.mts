@@ -18,6 +18,10 @@ export const SESSION_FILE_PATTERN: RegExp;
 export const MAX_PROMPT_CHARS: number;
 export const MAX_TURNS_PER_PROMPT: number;
 export const MAX_COMPACTION_INSTRUCTIONS_CHARS: number;
+export const CHILD_TIMEOUT_RANGE: Readonly<{ min: number; max: number }>;
+export const CHILD_OUTCOMES: readonly ['stop', 'length', 'reported', 'turn-limit', 'time-limit', 'model-failed'];
+export const MAX_CHILD_FAILURE_REASON_CHARS: number;
+export const MAX_REMOVE_PATHS: number;
 export const CONTEXT_WINDOW_RANGE: Readonly<{ min: number; max: number }>;
 export const MAX_OUTPUT_TOKENS_RANGE: Readonly<{ min: number; max: number }>;
 
@@ -69,7 +73,33 @@ export interface CompactRequest {
   instructions: string;
   model: { contextWindow: number; maxOutputTokens: number };
 }
-export type EntryRequest = SessionRequest | PromptRequest | CompactRequest;
+export interface ChildPromptRequest {
+  version: 1;
+  action: 'child-prompt';
+  token: string;
+  prompt: string;
+  session: string | null;
+  tools: NativeTool[];
+  maxTurns: number;
+  timeoutMs: number;
+  model: { contextWindow: number; maxOutputTokens: number };
+}
+export interface RemoveRequest {
+  version: 1;
+  action: 'remove';
+  token: string;
+  paths: string[];
+}
+export type EntryRequest = SessionRequest | PromptRequest | CompactRequest | ChildPromptRequest | RemoveRequest;
+export type ChildOutcome = (typeof CHILD_OUTCOMES)[number];
+export interface ChildPromptOutcome {
+  session: string | null;
+  turns: number;
+  outcome: ChildOutcome;
+  reason: string | null;
+}
+export type RunChildPrompt = (request: ChildPromptRequest, options: { baseUrl: string }) => Promise<ChildPromptOutcome>;
+export function removeWorkspaceFiles(paths: readonly string[], options?: { workspaceDir?: string }): number;
 
 export interface PromptOutcome {
   session: string;
@@ -94,4 +124,6 @@ export function runEntry(options: {
   timeoutMs?: number;
   runPrompt?: RunPrompt;
   runCompact?: RunCompact;
+  runChildPrompt?: RunChildPrompt;
+  removeFiles?: (paths: string[]) => number;
 }): Promise<0 | 1>;

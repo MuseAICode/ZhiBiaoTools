@@ -6,8 +6,9 @@
 //   超时、被终止、其他退出码、多出的输出、形状不符一律 AGENT_ENTRY_FAILED（JobError，说明固定，不含入口的输出）；
 // - 入口按协议报告的失败（令牌无效、连不上平台入口等）作为结果返回，由调用方决定如何处理（8.6d 的执行流程）。
 //
-// 三种请求：session（8.6a，确认令牌有效、取到期时间）、prompt（8.6b，在 Pi 会话中执行一条提示词，返回会话文件名、轮数与结束原因）
-// 与 compact（8.6d2，压缩已有会话的上下文，返回会话文件名与是否真的压缩了）。Agent 的回复全文不经标准输出（结果至多 16 KiB），
+// 请求：session（8.6a，确认令牌有效、取到期时间）、prompt（8.6b，在 Pi 会话中执行一条提示词，返回会话文件名、轮数与结束原因）、
+// compact（8.6d2，压缩已有会话的上下文，返回会话文件名与是否真的压缩了）、child-prompt（8.10c3b2，在子会话中执行一条提示词，
+// 返回子会话文件名、轮数、结束方式与报告失败的原因）与 remove（8.10c3b2，删除工作区中的文件，返回删除的个数）。Agent 的回复全文不经标准输出（结果至多 16 KiB），
 // 由 worker 从工作区的会话文件中取回（src/agent/assistantText.ts）。
 // prompt 的结果只说明入口按协议走完了：Agent 写了什么、会话中有什么，都由 worker 从工作区取回后按不可信内容处理（8.6d）；
 // 入口报告的 MODEL_FAILED 不区分原因（令牌失效、任务上限、余额不足等），原因由调用方按任务状态判断，不采信沙箱的说法；
@@ -104,12 +105,43 @@ export interface AgentCompactRequest {
   instructions: string;
   model: { contextWindow: number; maxOutputTokens: number };
 }
-export type AgentEntryRequest = AgentSessionRequest | AgentPromptRequest | AgentCompactRequest;
+/** 子会话的墙钟范围与结束方式（与 protocol.mjs 的 CHILD_TIMEOUT_RANGE、CHILD_OUTCOMES 相同，8.10c3b2）。 */
+export const AGENT_CHILD_TIMEOUT_RANGE = { min: 1_000, max: 120 * 60_000 } as const;
+export const AGENT_CHILD_OUTCOMES = ['stop', 'length', 'reported', 'turn-limit', 'time-limit', 'model-failed'] as const;
+export type AgentChildOutcome = (typeof AGENT_CHILD_OUTCOMES)[number];
+export const AGENT_CHILD_FAILURE_REASON_MAX_CHARS = 500;
+export const AGENT_REMOVE_MAX_PATHS = 256;
+
+/**
+ * 在子会话中执行一条提示词（8.10c3b2）：工具只有原生工具（report-failure 由入口在沙箱内登记，原因作为结果返回），
+ * 会话文件在工作区之外；不写阶段（迁移 0042 的业务工具范围不变，子会话的清单中没有业务工具）。
+ */
+export interface AgentChildPromptRequest {
+  action: 'child-prompt';
+  token: string;
+  prompt: string;
+  /** 续接的子会话文件名（同一次执行的执行重试）；null 新建。 */
+  session: string | null;
+  tools: readonly AgentNativeTool[];
+  maxTurns: number;
+  /** 本条提示词的墙钟（入口执行）。 */
+  timeoutMs: number;
+  model: { contextWindow: number; maxOutputTokens: number };
+}
+/** 删除工作区中的文件（8.10c3b2）。 */
+export interface AgentRemoveRequest {
+  action: 'remove';
+  token: string;
+  paths: readonly string[];
+}
+export type AgentEntryRequest = AgentSessionRequest | AgentPromptRequest | AgentCompactRequest | AgentChildPromptRequest | AgentRemoveRequest;
 
 export type AgentEntryResult =
   | { ok: true; action: 'session'; expiresAt: Date }
   | { ok: true; action: 'prompt'; session: string; turns: number; stopReason: 'stop' | 'length' }
   | { ok: true; action: 'compact'; session: string; compacted: boolean }
+  | { ok: true; action: 'child-prompt'; session: string | null; turns: number; outcome: AgentChildOutcome; reason: string | null }
+  | { ok: true; action: 'remove'; removed: number }
   | { ok: false; code: AgentEntryErrorCode };
 
 const isIntegerIn = (value: unknown, range: { min: number; max: number }): value is number =>
@@ -170,11 +202,37 @@ function promptFields(request: AgentPromptRequest): Record<string, unknown> {
   };
 }
 
+function childPromptFields(request: AgentChildPromptRequest): Record<string, unknown> {
+  const { prompt, session, tools, maxTurns, timeoutMs, model } = request;
+  if (typeof prompt !== 'string' || prompt.trim() === '' || prompt.length > AGENT_PROMPT_MAX_CHARS) throw new TypeError('invalid agent prompt');
+  if (session !== null && !AGENT_SESSION_FILE_PATTERN.test(session)) throw new TypeError('invalid agent session file');
+  const native: readonly string[] = AGENT_NATIVE_TOOLS;
+  if (!Array.isArray(tools) || new Set(tools).size !== tools.length || !tools.every((tool) => native.includes(tool))) throw new TypeError('invalid agent child tools');
+  if (!isIntegerIn(maxTurns, { min: 1, max: AGENT_MAX_TURNS_PER_PROMPT })) throw new TypeError('invalid agent max turns');
+  if (!isIntegerIn(timeoutMs, AGENT_CHILD_TIMEOUT_RANGE)) throw new TypeError('invalid agent child timeout');
+  return { prompt, session, tools: [...tools], maxTurns, timeoutMs, model: modelField(model) };
+}
+
+function removeFields(request: AgentRemoveRequest): Record<string, unknown> {
+  const { paths } = request;
+  if (!Array.isArray(paths) || paths.length === 0 || paths.length > AGENT_REMOVE_MAX_PATHS || new Set(paths).size !== paths.length) throw new TypeError('invalid agent remove paths');
+  if (!paths.every(isAgentWorkspaceRelativePath)) throw new TypeError('invalid agent remove paths');
+  return { paths: [...paths] };
+}
+
+const REQUEST_FIELDS: { [A in AgentEntryRequest['action']]: (request: Extract<AgentEntryRequest, { action: A }>) => Record<string, unknown> } = {
+  session: () => ({}),
+  prompt: promptFields,
+  compact: compactFields,
+  'child-prompt': childPromptFields,
+  remove: removeFields,
+};
+
 /** 编码请求：令牌格式不对、字段不合法、超过上限时抛 TypeError（调用方的错误，不执行）。 */
 export function encodeAgentEntryRequest(request: AgentEntryRequest): Buffer {
-  if (request.action !== 'session' && request.action !== 'prompt' && request.action !== 'compact') throw new TypeError('unknown agent entry action');
+  if (!Object.hasOwn(REQUEST_FIELDS, request.action)) throw new TypeError('unknown agent entry action');
   if (!isWellFormedAgentToken(request.token)) throw new TypeError('invalid agent token');
-  const fields = request.action === 'prompt' ? promptFields(request) : request.action === 'compact' ? compactFields(request) : {};
+  const fields = (REQUEST_FIELDS[request.action] as (value: AgentEntryRequest) => Record<string, unknown>)(request);
   const body = { version: AGENT_ENTRY_PROTOCOL_VERSION, action: request.action, token: request.token, ...fields };
   const encoded = Buffer.from(JSON.stringify(body), 'utf8');
   if (encoded.length > AGENT_ENTRY_MAX_INPUT_BYTES) throw new TypeError('agent entry request too large');
@@ -200,7 +258,10 @@ const ISO_INSTANT_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
  * 解析入口的执行结果；expected 给出时，成功结果的 action 必须与请求相同、prompt 的轮数不超过请求的上限、compact 的会话文件名与请求相同。不符合协议时抛 AGENT_ENTRY_FAILED（cause 写明哪一项不符，只进日志）；入口按协议报告的失败作为结果返回。
  * 标准输出来自沙箱：不采信其中的任何其他内容，也不把它写进错误说明。
  */
-export function parseAgentEntryResult(exec: SandboxExecResult, expected?: { action: AgentEntryRequest['action']; maxTurns?: number; session?: string }): AgentEntryResult {
+export function parseAgentEntryResult(
+  exec: SandboxExecResult,
+  expected?: { action: AgentEntryRequest['action']; maxTurns?: number; session?: string | null; paths?: number },
+): AgentEntryResult {
   const maxTurns = expected?.maxTurns;
   const expectedAction = expected?.action;
   if (exec.timedOut) throw entryFailed('entry timed out');
@@ -239,6 +300,26 @@ export function parseAgentEntryResult(exec: SandboxExecResult, expected?: { acti
       if (typeof value.compacted !== 'boolean') throw entryFailed('entry result compacted invalid');
       return { ok: true, action: 'compact', session: value.session, compacted: value.compacted };
     }
+    if (value.action === 'child-prompt') {
+      if (!hasExactKeys(value, ['version', 'ok', 'action', 'session', 'turns', 'outcome', 'reason'])) throw entryFailed('entry result shape mismatch');
+      if (value.session !== null && (typeof value.session !== 'string' || !AGENT_SESSION_FILE_PATTERN.test(value.session))) throw entryFailed('entry result session invalid');
+      // 续接的子会话：文件名不变（Pi 追加到同一个文件）。
+      if (typeof expected?.session === 'string' && value.session !== null && value.session !== expected.session) throw entryFailed('entry result session mismatch');
+      if (!isIntegerIn(value.turns, { min: 0, max: maxTurns ?? AGENT_MAX_TURNS_PER_PROMPT })) throw entryFailed('entry result turns invalid');
+      if (typeof value.outcome !== 'string' || !(AGENT_CHILD_OUTCOMES as readonly string[]).includes(value.outcome)) throw entryFailed('entry result outcome invalid');
+      const outcome = value.outcome as AgentChildOutcome;
+      if (outcome === 'reported') {
+        if (typeof value.reason !== 'string' || value.reason.trim() === '' || Array.from(value.reason).length > AGENT_CHILD_FAILURE_REASON_MAX_CHARS) throw entryFailed('entry result reason invalid');
+      } else if (value.reason !== null) {
+        throw entryFailed('entry result reason invalid');
+      }
+      return { ok: true, action: 'child-prompt', session: value.session as string | null, turns: value.turns as number, outcome, reason: value.reason as string | null };
+    }
+    if (value.action === 'remove') {
+      if (!hasExactKeys(value, ['version', 'ok', 'action', 'removed'])) throw entryFailed('entry result shape mismatch');
+      if (!isIntegerIn(value.removed, { min: 0, max: expected?.paths ?? AGENT_REMOVE_MAX_PATHS })) throw entryFailed('entry result removed invalid');
+      return { ok: true, action: 'remove', removed: value.removed as number };
+    }
     throw entryFailed('entry result action invalid');
   }
   if (value.ok === false) {
@@ -264,10 +345,22 @@ export async function runAgentEntry(
 ): Promise<AgentEntryResult> {
   const input = encodeAgentEntryRequest(request);
   const exec = await driver.exec(sandbox, AGENT_ENTRY_COMMAND, [], { ...options, input });
-  const expected = request.action === 'prompt'
-    ? { action: 'prompt' as const, maxTurns: request.maxTurns }
-    : request.action === 'compact' ? { action: 'compact' as const, session: request.session } : { action: 'session' as const };
-  return parseAgentEntryResult(exec, expected);
+  return parseAgentEntryResult(exec, expectedResult(request));
+}
+
+function expectedResult(request: AgentEntryRequest): NonNullable<Parameters<typeof parseAgentEntryResult>[1]> {
+  switch (request.action) {
+    case 'prompt':
+      return { action: 'prompt', maxTurns: request.maxTurns };
+    case 'compact':
+      return { action: 'compact', session: request.session };
+    case 'child-prompt':
+      return { action: 'child-prompt', maxTurns: request.maxTurns, session: request.session };
+    case 'remove':
+      return { action: 'remove', paths: request.paths.length };
+    case 'session':
+      return { action: 'session' };
+  }
 }
 
 /** 请求中的业务工具（worker 一侧的工具名）。 */
@@ -309,5 +402,28 @@ export async function runAgentCompaction(
 ): Promise<AgentEntryResult> {
   encodeAgentEntryRequest(request);
   if (!(await setAgentToolScope(db, run, [], allowedTools))) return { ok: false, code: 'RUN_ENDED' };
+  return runAgentEntry(driver, sandbox, request, options);
+}
+
+/**
+ * 在子会话中执行一条提示词（8.10c3b2）：不写阶段（子会话没有业务工具，主会话的范围保持不变），直接执行入口。
+ * 报告失败的原因（reason）来自沙箱，按不可信的纯文本处理（调用方只把它交回同一个 Agent）。
+ */
+export function runAgentChildPrompt(
+  driver: Pick<SandboxDriver, 'exec'>,
+  sandbox: SandboxRef,
+  request: AgentChildPromptRequest,
+  options: SandboxOperationOptions = {},
+): Promise<AgentEntryResult> {
+  return runAgentEntry(driver, sandbox, request, options);
+}
+
+/** 删除工作区中的文件（8.10c3b2）。 */
+export function runAgentRemove(
+  driver: Pick<SandboxDriver, 'exec'>,
+  sandbox: SandboxRef,
+  request: AgentRemoveRequest,
+  options: SandboxOperationOptions = {},
+): Promise<AgentEntryResult> {
   return runAgentEntry(driver, sandbox, request, options);
 }

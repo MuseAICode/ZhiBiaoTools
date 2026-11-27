@@ -27,10 +27,15 @@ import { lstatSync, mkdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { BUSINESS_TOOLS, EntryError, SESSION_FILE_PATTERN } from './protocol.mjs';
 import { createJsonValidationTool, JSON_VALIDATION_TOOL_NAME } from './jsonValidation.mjs';
-import { callBusinessTool, createBusinessToolStubs, modelToolName } from './tools.mjs';
+import { callBusinessTool, createBusinessToolStubs, createChildReportFailureTool, modelToolName } from './tools.mjs';
 
 export const WORKSPACE_DIR = '/workspace';
 export const SESSIONS_DIR = '/workspace/pi-sessions';
+/**
+ * 子会话（8.10c3b2）的会话文件：在工作区之外（与桌面版子任务的会话目录在任务工作区之外相同），不进工作区快照、不续跑；
+ * 只在同一次执行的执行重试中续接。
+ */
+export const CHILD_SESSIONS_DIR = '/tmp/pi-child-sessions';
 /** Pi 的配置目录（只在 /tmp 中，Pi 在本平台的配置下不写入；不放进工作区）。 */
 export const AGENT_DIR = '/tmp/pi-agent';
 export const INSTRUCTIONS_PATH = new URL('./workspace-instructions.md', import.meta.url);
@@ -236,6 +241,82 @@ export async function runPiPrompt(request, { baseUrl, workspaceDir = WORKSPACE_D
   const name = sessionFileName(session, sessionManager);
   session.dispose();
   return { session: name, turns, stopReason: assistant.stopReason };
+}
+
+/**
+ * 在子会话中执行一条提示词（8.10c3b2，protocol.mjs 的 child-prompt 请求；桌面版 editContentSections 的子 Agent）。
+ * 与 runPiPrompt 相同的 Pi 配置，不同之处：会话文件在 sessionsDir（默认 CHILD_SESSIONS_DIR，工作区之外）；工具只有请求中的原生工具
+ * 与沙箱内处理的 report-failure（createChildReportFailureTool），不登记业务工具与本地工具；本条提示词的墙钟 timeoutMs 到期时中止会话。
+ * 返回 { session, turns, outcome, reason }：outcome 为 stop / length（正常结束）、reported（子 Agent 报告失败，reason 为原因）、
+ * turn-limit（第 maxTurns + 1 轮开始时中止）、time-limit（墙钟到期）、model-failed（模型调用失败，原因由 worker 判断）。
+ * session 为会话文件名，Pi 尚未写出会话文件时为 null。会话文件不存在或无效时抛 SESSION_INVALID。
+ */
+export async function runPiChildPrompt(request, { baseUrl, workspaceDir = WORKSPACE_DIR, sessionsDir = CHILD_SESSIONS_DIR, agentDir = AGENT_DIR, instructionsPath = INSTRUCTIONS_PATH } = {}) {
+  const { codingAgent, typebox, model, modelRuntime, settingsManager, resourceLoader, sessionPath } = await preparePi(request, { baseUrl, workspaceDir, sessionsDir, agentDir, instructionsPath });
+  let sessionManager;
+  try {
+    sessionManager = sessionPath ? codingAgent.SessionManager.open(sessionPath, sessionsDir, workspaceDir) : codingAgent.SessionManager.create(workspaceDir, sessionsDir);
+  } catch {
+    throw new EntryError('SESSION_INVALID');
+  }
+  const bashTool = codingAgent.createBashToolDefinition(workspaceDir, { shellPath: '/bin/sh', operations: createBashOperations(codingAgent) });
+  let session = null;
+  /** 只记第一个结束原因。 */
+  let ended = null;
+  const end = (outcome, reason = null) => {
+    if (ended !== null) return;
+    ended = { outcome, reason };
+    void session?.abort();
+  };
+  const reportTool = codingAgent.defineTool(createChildReportFailureTool({ Type: typebox.Type, report: (reason) => end('reported', reason) }));
+  ({ session } = await codingAgent.createAgentSession({
+    cwd: workspaceDir,
+    agentDir,
+    model,
+    modelRuntime,
+    thinkingLevel: 'off',
+    tools: [...request.tools, 'report-failure'],
+    customTools: [bashTool, reportTool],
+    resourceLoader,
+    settingsManager,
+    sessionManager,
+  }));
+
+  let turns = 0;
+  const unsubscribe = session.subscribe((event) => {
+    if (event.type !== 'turn_start' || ended !== null) return;
+    turns += 1;
+    if (turns > request.maxTurns) end('turn-limit');
+  });
+  const timer = setTimeout(() => end('time-limit'), request.timeoutMs);
+  try {
+    await session.prompt(request.prompt, { expandPromptTemplates: false });
+  } catch {
+    // 中止或模型调用失败：按下面的结束原因与最后一条回复判断。
+  } finally {
+    clearTimeout(timer);
+    unsubscribe();
+  }
+  let outcome = ended?.outcome ?? null;
+  if (outcome === null) {
+    const assistant = lastAssistant(session.messages);
+    outcome = assistant && (assistant.stopReason === 'stop' || assistant.stopReason === 'length') ? assistant.stopReason : 'model-failed';
+  }
+  const name = existingChildSessionName(session, sessionManager, sessionsDir);
+  session.dispose();
+  return { session: name, turns: Math.min(turns, request.maxTurns), outcome, reason: ended?.outcome === 'reported' ? ended.reason : null };
+}
+
+/** 子会话的会话文件名：Pi 已写出、是 sessionsDir 中的普通文件时给出，否则为 null（下一次执行重新新建）。 */
+function existingChildSessionName(session, sessionManager, sessionsDir) {
+  const sessionFile = session.sessionFile ?? sessionManager.getSessionFile();
+  const name = typeof sessionFile === 'string' ? sessionFile.slice(sessionFile.lastIndexOf('/') + 1) : '';
+  if (!SESSION_FILE_PATTERN.test(name)) return null;
+  try {
+    return lstatSync(join(sessionsDir, name)).isFile() ? name : null;
+  } catch {
+    return null;
+  }
 }
 
 /** 会话文件名（Pi 命名，位于 sessionsDir 中）；不符合 SESSION_FILE_PATTERN 时 INTERNAL。 */

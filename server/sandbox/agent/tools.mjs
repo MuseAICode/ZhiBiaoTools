@@ -191,8 +191,8 @@ function askUserStub({ Type, call }) {
 
 const reasonParameter = (Type, description) => Type.Object({ reason: Type.String({ minLength: 1, maxLength: REASON_MAX_LENGTH, description }) }, { additionalProperties: false });
 
-/** report-failure 的桩（直接报告，桌面版 failure_handled_by_parent 的分支）。 */
-function reportFailureStub({ Type, call, end }) {
+/** 直接报告失败的 report-failure 面向模型的定义（桌面版 piTaskFailureTool.cjs 直接报告的分支；主会话与子会话相同）。 */
+function reportFailureDefinition(Type) {
   return {
     name: 'report-failure',
     label: '报告任务失败',
@@ -205,6 +205,13 @@ function reportFailureStub({ Type, call, end }) {
     ],
     executionMode: 'sequential',
     parameters: reasonParameter(Type, '面向普通用户的任务失败原因，并说明需要补充或调整的业务内容。'),
+  };
+}
+
+/** report-failure 的桩（主会话：经 worker 写下失败报告，任务随之失败）。 */
+function reportFailureStub({ Type, call, end }) {
+  return {
+    ...reportFailureDefinition(Type),
     execute: async (_toolCallId, params, signal) => {
       const result = await call('report-failure', params, signal);
       if (isPlainObject(result) && result.reported === true) end('REPORTED_FAILURE');
@@ -299,6 +306,22 @@ function checkWordCountStub({ Type, call }) {
       const result = await callLongTool(call, 'check-word-count', params, signal, onUpdate, '正在统计正文总字数，完成后自动返回结果');
       // 与桌面版相同：结果按紧凑的 JSON 交给模型。
       return { content: [{ type: 'text', text: JSON.stringify(result) }], details: result };
+    },
+  };
+}
+
+/**
+ * 子会话的 report-failure（8.10c3b2，桌面版 failure_handled_by_parent：失败交回父 Agent）：在沙箱内处理，不经 worker、不写失败报告；
+ * 名称、说明与参数与主会话的 report-failure 相同。report(reason) 记下原因并结束子会话，入口把原因作为结果交给 worker。
+ */
+export function createChildReportFailureTool({ Type, report }) {
+  return {
+    ...reportFailureDefinition(Type),
+    execute: async (_toolCallId, params) => {
+      const reason = isPlainObject(params) && typeof params.reason === 'string' ? params.reason.trim() : '';
+      if (reason === '') throw new Error('reason 不能为空');
+      report(reason);
+      return jsonContent({ reported: true });
     },
   };
 }

@@ -8,7 +8,9 @@
 //   其他异常一律 INTERNAL、不带出说明；worker 一侧的编码与结果检查（会话文件名、轮数不超过请求的上限、结束原因）；
 // - compact 请求（8.6d2）：会话必须已有、压缩指令非空且有上限，先确认令牌再交给 Pi 会话（桩代替 pi.mjs）；worker 一侧的编码、
 //   会话文件名必须与请求相同、compacted 必须是布尔值，回复正文等多余字段一律 AGENT_ENTRY_FAILED。
-// 真实的 Pi 会话（pi.mjs）经真实的模型调用路由见 tests/agent/piSession.test.ts；真实沙箱中经 /etc/hosts 中的 agent-gw 访问、令牌不出现在进程的环境与参数中，见 tests/sandbox/docker/agentEntry.test.ts。
+// - child-prompt / remove 请求（8.10c3b2）：两侧的常量相同，worker 一侧的编码（工具只能是原生工具、墙钟在范围内）与结果检查
+//   （续接时会话文件名不变、轮数不超过上限、结束方式登记过、只有报告失败带原因且有上限、删除个数不超过请求的个数）。
+// 真实的 Pi 会话（pi.mjs）经真实的模型调用路由见 tests/agent/piSession.test.ts、piChildSession.test.ts；真实沙箱中经 /etc/hosts 中的 agent-gw 访问、令牌不出现在进程的环境与参数中，见 tests/sandbox/docker/agentEntry.test.ts。
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { PassThrough, Readable, Writable } from 'node:stream';
@@ -61,7 +63,18 @@ import {
   isAgentWorkspaceRelativePath,
   parseAgentEntryResult,
   runAgentEntry,
+  AGENT_CHILD_OUTCOMES,
+  AGENT_CHILD_TIMEOUT_RANGE,
+  AGENT_CHILD_FAILURE_REASON_MAX_CHARS,
+  AGENT_REMOVE_MAX_PATHS,
+  type AgentChildPromptRequest,
 } from '../../src/agent/entry.ts';
+import {
+  CHILD_OUTCOMES,
+  CHILD_TIMEOUT_RANGE,
+  MAX_CHILD_FAILURE_REASON_CHARS,
+  MAX_REMOVE_PATHS,
+} from '../../sandbox/agent/protocol.mjs';
 import { generateAgentToken } from '../../src/agent/token.ts';
 import { JobError } from '../../src/jobs/definitions.ts';
 import type { SandboxExecResult, SandboxRef } from '../../src/sandbox/driver.ts';
@@ -677,5 +690,76 @@ describe('compact 请求（8.6d2）', () => {
         expect.objectContaining({ code: 'AGENT_ENTRY_FAILED' }),
       );
     });
+  });
+});
+
+describe('child-prompt 与 remove 请求（8.10c3b2）', () => {
+  const exec = (stdout: string, exitCode = 0): SandboxExecResult => ({ exitCode, timedOut: false, stdout, stderr: '', stdoutTruncated: false, stderrTruncated: false });
+  const childRequest: AgentChildPromptRequest = {
+    action: 'child-prompt',
+    token: TOKEN,
+    prompt: '修复本节',
+    session: null,
+    tools: ['read', 'edit', 'bash'],
+    maxTurns: 100,
+    timeoutMs: 30 * 60_000,
+    model: { contextWindow: 128_000, maxOutputTokens: 8_192 },
+  };
+  const childOk = (fields: Record<string, unknown> = {}) => `${JSON.stringify({ version: 1, ok: true, action: 'child-prompt', session: SESSION, turns: 3, outcome: 'stop', reason: null, ...fields })}\n`;
+
+  it('两侧的常量相同', () => {
+    expect(AGENT_CHILD_OUTCOMES).toEqual(CHILD_OUTCOMES);
+    expect(AGENT_CHILD_TIMEOUT_RANGE).toEqual(CHILD_TIMEOUT_RANGE);
+    expect(AGENT_CHILD_FAILURE_REASON_MAX_CHARS).toBe(MAX_CHILD_FAILURE_REASON_CHARS);
+    expect(AGENT_REMOVE_MAX_PATHS).toBe(MAX_REMOVE_PATHS);
+  });
+
+  it('编码：两侧解析一致；工具只能是原生工具，墙钟、轮数在范围内，路径合法不重复', () => {
+    expect(parseRequest(encodeAgentEntryRequest(childRequest))).toEqual({ version: 1, ...childRequest });
+    for (const broken of [
+      { ...childRequest, tools: ['read', 'report-failure'] },
+      { ...childRequest, tools: ['ask-user'] },
+      { ...childRequest, tools: ['read', 'read'] },
+      { ...childRequest, timeoutMs: AGENT_CHILD_TIMEOUT_RANGE.max + 1 },
+      { ...childRequest, timeoutMs: 1.5 },
+      { ...childRequest, maxTurns: AGENT_MAX_TURNS_PER_PROMPT + 1 },
+      { ...childRequest, prompt: ' ' },
+      { ...childRequest, session: 'x.jsonl' },
+    ]) {
+      expect(() => encodeAgentEntryRequest(broken as AgentChildPromptRequest)).toThrow(TypeError);
+    }
+    const remove = { action: 'remove' as const, token: TOKEN, paths: ['正文/1.html'] };
+    expect(parseRequest(encodeAgentEntryRequest(remove))).toEqual({ version: 1, ...remove });
+    for (const paths of [[], ['a', 'a'], ['../a'], Array.from({ length: AGENT_REMOVE_MAX_PATHS + 1 }, (_, index) => `${index}`)]) {
+      expect(() => encodeAgentEntryRequest({ ...remove, paths })).toThrow(TypeError);
+    }
+  });
+
+  it('结果：按请求检查会话文件名、轮数、结束方式与原因', () => {
+    const expected = { action: 'child-prompt' as const, maxTurns: 5, session: null };
+    expect(parseAgentEntryResult(exec(childOk()), expected)).toEqual({ ok: true, action: 'child-prompt', session: SESSION, turns: 3, outcome: 'stop', reason: null });
+    expect(parseAgentEntryResult(exec(childOk({ session: null, turns: 0, outcome: 'model-failed' })), expected)).toMatchObject({ session: null, outcome: 'model-failed' });
+    expect(parseAgentEntryResult(exec(childOk({ outcome: 'reported', reason: '无法继续' })), expected)).toMatchObject({ outcome: 'reported', reason: '无法继续' });
+    // 续接：会话文件名必须相同（入口没有写出时可以为 null）。
+    expect(parseAgentEntryResult(exec(childOk()), { ...expected, session: SESSION })).toMatchObject({ session: SESSION });
+    const other = SESSION.replace('01a1e18b', '01a1e18c');
+    for (const [stdout, override] of [
+      [childOk({ session: other }), { session: SESSION }],
+      [childOk({ turns: 6 }), {}],
+      [childOk({ turns: -1 }), {}],
+      [childOk({ outcome: 'done' }), {}],
+      [childOk({ reason: '只有报告失败才有原因' }), {}],
+      [childOk({ outcome: 'reported', reason: null }), {}],
+      [childOk({ outcome: 'reported', reason: 'x'.repeat(AGENT_CHILD_FAILURE_REASON_MAX_CHARS + 1) }), {}],
+      [childOk({ extra: 1 }), {}],
+      [childOk({ session: '../x.jsonl' }), {}],
+    ] as const) {
+      expect(() => parseAgentEntryResult(exec(stdout), { ...expected, ...override })).toThrow(expect.objectContaining({ code: 'AGENT_ENTRY_FAILED' }));
+    }
+    const removed = (value: unknown) => `${JSON.stringify({ version: 1, ok: true, action: 'remove', removed: value })}\n`;
+    expect(parseAgentEntryResult(exec(removed(2)), { action: 'remove', paths: 2 })).toEqual({ ok: true, action: 'remove', removed: 2 });
+    for (const value of [3, -1, 1.5, '1']) {
+      expect(() => parseAgentEntryResult(exec(removed(value)), { action: 'remove', paths: 2 })).toThrow(expect.objectContaining({ code: 'AGENT_ENTRY_FAILED' }));
+    }
   });
 });
