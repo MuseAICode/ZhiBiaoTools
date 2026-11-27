@@ -446,15 +446,57 @@ describe('并发与转发', () => {
   // 也不会出现 TCP 自连接；万一本机有服务在这个端口上，下面对 ECONNREFUSED 的断言会直接指出原因。
   const REFUSED_PORT = 1023;
 
+  /**
+   * “worker 不可用”用例失败时的诊断（只在失败时收集，写进断言信息，CI 日志中可见）：实际状态码、响应头与响应体、
+   * agent-gw 记录的告警与错误码、上游端口与 agent-gw 自己的端口，以及此刻探测上游端口的连接情况
+   * （被拒绝 / 有服务接受连接及其返回的头几个字节 / TCP 自连接）。#127 的原始失败未能确认原因，再次出现时按这些信息排查。
+   */
+  async function upstreamFailureReport(context: { upstreamPort: number; gatewayPort: number; response: Response }): Promise<string> {
+    const probe = await new Promise<string>((resolve) => {
+      const socket = connect(context.upstreamPort, '127.0.0.1');
+      const chunks: Buffer[] = [];
+      let summary = '';
+      const finish = (text: string) => {
+        socket.destroy();
+        resolve(text);
+      };
+      socket.setTimeout(500, () => finish(`${summary}；500 毫秒内收到 ${Buffer.concat(chunks).length} 字节：${JSON.stringify(Buffer.concat(chunks).toString('latin1').slice(0, 200))}`));
+      socket.once('connect', () => {
+        const selfConnect = socket.localPort === socket.remotePort;
+        summary = `有连接被接受（本端 ${socket.localAddress}:${socket.localPort} → ${socket.remoteAddress}:${socket.remotePort}${selfConnect ? '，TCP 自连接' : ''}）`;
+        socket.write('GET / HTTP/1.1\r\nHost: probe\r\nConnection: close\r\n\r\n');
+      });
+      socket.on('data', (chunk: Buffer) => chunks.push(chunk));
+      socket.once('end', () => finish(`${summary}；对端关闭，收到 ${Buffer.concat(chunks).length} 字节：${JSON.stringify(Buffer.concat(chunks).toString('latin1').slice(0, 200))}`));
+      socket.once('error', (error: NodeJS.ErrnoException) => finish(summary ? `${summary}；随后出错 ${error.code ?? error.message}` : `连接失败：${error.code ?? error.message}`));
+    });
+    const warnings = logs
+      .lines()
+      .filter((line) => typeof line.level === 'number' && line.level >= 40)
+      .map((line) => ({ msg: line.msg, err: line.err === undefined ? undefined : { code: (line.err as { code?: string }).code, message: (line.err as { message?: string }).message } }));
+    return [
+      '“worker 不可用”用例失败，诊断信息：',
+      `  实际状态码：${context.response.status}`,
+      `  响应头：${JSON.stringify(context.response.headers)}`,
+      `  响应体：${context.response.body.slice(0, 1_000)}`,
+      `  上游端口：${context.upstreamPort}；agent-gw 端口：${context.gatewayPort}${context.upstreamPort === context.gatewayPort ? '（相同：agent-gw 拿到了上游端口，转给了自己）' : ''}`,
+      `  agent-gw 告警：${JSON.stringify(warnings)}`,
+      `  此刻探测上游端口：${probe}`,
+    ].join('\n');
+  }
+
   it('worker 不可用（连接被拒绝）→ 502，不回显内部地址', async () => {
     const dead = await startGateway({ upstream: `http://127.0.0.1:${REFUSED_PORT}` });
     try {
       const response = await send({ headers: auth(), port: dead.port });
-      expect(response.status).toBe(502);
-      expect(response.body).not.toContain('127.0.0.1');
-      expect(response.body).not.toContain(String(REFUSED_PORT));
       const warning = logs.lines().find((line) => line.msg === 'agent upstream unavailable');
-      expect((warning?.err as { code?: string } | undefined)?.code).toBe('ECONNREFUSED');
+      const errorCode = (warning?.err as { code?: string } | undefined)?.code;
+      const passed = response.status === 502 && !response.body.includes('127.0.0.1') && !response.body.includes(String(REFUSED_PORT)) && errorCode === 'ECONNREFUSED';
+      const report = passed ? '' : await upstreamFailureReport({ upstreamPort: REFUSED_PORT, gatewayPort: dead.port, response });
+      expect(response.status, report).toBe(502);
+      expect(response.body, report).not.toContain('127.0.0.1');
+      expect(response.body, report).not.toContain(String(REFUSED_PORT));
+      expect(errorCode, report).toBe('ECONNREFUSED');
     } finally {
       await dead.app.close();
     }
@@ -468,10 +510,13 @@ describe('并发与转发', () => {
     const dead = await startGateway({ upstream: `http://127.0.0.1:${hangUpPort}` });
     try {
       const response = await send({ headers: auth(), port: dead.port });
-      expect(response.status).toBe(502);
-      expect(response.body).not.toContain('127.0.0.1');
-      expect(response.body).not.toContain(String(hangUpPort));
-      expect(logs.lines().some((line) => line.msg === 'agent upstream unavailable')).toBe(true);
+      const warned = logs.lines().some((line) => line.msg === 'agent upstream unavailable');
+      const passed = response.status === 502 && !response.body.includes('127.0.0.1') && !response.body.includes(String(hangUpPort)) && warned;
+      const report = passed ? '' : await upstreamFailureReport({ upstreamPort: hangUpPort, gatewayPort: dead.port, response });
+      expect(response.status, report).toBe(502);
+      expect(response.body, report).not.toContain('127.0.0.1');
+      expect(response.body, report).not.toContain(String(hangUpPort));
+      expect(warned, report).toBe(true);
     } finally {
       await dead.app.close();
       await new Promise<void>((resolve) => hangUp.close(() => resolve()));
