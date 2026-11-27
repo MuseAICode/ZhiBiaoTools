@@ -13,6 +13,8 @@
 // - checkpoint()：先还原受保护文件，再经 context.agentWorkspace.saveCheckpoint 保存快照与 checkpoint（会话文件名、阶段、
 //   已发出的阶段、待补压缩、受保护文件的登记、同时保存的快照 id 与任务自己的状态）；超出存储配额时 JobStorageQuotaError，会话随沙箱结束；
 // - close()：销毁沙箱、作废令牌（任务在 finally 中调用，withAgentRun 代为调用）。
+// - childPrompt() / removeFiles()（8.10c3b2）：长时工具执行期间在同一沙箱内运行子会话（同一令牌，同时至多 AGENT_CHILD_SESSION_CONCURRENCY
+//   个，失败按数据库中的事实判断），删除工作区中的文件（还原本批以外被子会话新建的小节）。
 // - 跨任务续用（8.7b，桌面版 persistent_task.mode = 'resume'）：调整类任务首次执行时经 open({ continueFrom }) 接着另一个任务的会话
 //   （src/agent/continuation.ts 按快照 id 找到与当前快照同一对的现场）：放入该类任务当前的快照，续接会话与受保护文件的登记，阶段、
 //   已发出的阶段与待补压缩清空（新任务的要求照常发出）。之后的检查点与续跑与普通任务相同。失败后重试（8.10b2，retainStages）接着的是
@@ -45,10 +47,17 @@ import { AGENT_SESSION_FILE_READ_MAX_BYTES, agentAssistantTextLimit, extractAgen
 import {
   AGENT_COMPACTION_INSTRUCTIONS_MAX_CHARS,
   AGENT_ENTRY_FAILED_CODE,
+  encodeAgentEntryRequest,
   AGENT_MAX_TURNS_PER_PROMPT,
+  AGENT_CHILD_TIMEOUT_RANGE,
+  AGENT_NATIVE_TOOLS,
+  runAgentChildPrompt,
   runAgentCompaction,
   runAgentPrompt,
+  runAgentRemove,
   type AgentEntryErrorCode,
+  type AgentEntryResult,
+  type AgentNativeTool,
   type AgentPromptTool,
 } from './entry.ts';
 import { AGENT_REPORTED_FAILURE_CODE, AGENT_REPORTED_FAILURE_FALLBACK_MESSAGE, findAgentFailureReport } from './failureReport.ts';
@@ -112,6 +121,19 @@ export const AGENT_READ_MAX_FILES = 256;
 export const AGENT_WRITE_FILE_MAX_BYTES = 16 * 1024 * 1024;
 export const AGENT_WRITE_TOTAL_MAX_BYTES = 64 * 1024 * 1024;
 export const AGENT_WRITE_MAX_FILES = 256;
+
+/**
+ * 子会话（8.10c3b2）：同一次执行中同时运行的子会话至多这么多个，超出的排队。agent-gw 限定同一令牌同时进行的请求至多 4 个
+ * （gateway.ts 的 maxInFlightPerToken），主会话在长时工具执行期间占 1 个（等待工具结果），每个子会话同时至多 1 个模型调用。
+ * 桌面版按文本并发上限的 2 倍限制子 Agent 数（agentService.cjs 的 CHILD_AGENT_CONCURRENCY_MULTIPLIER）。
+ */
+export const AGENT_CHILD_SESSION_CONCURRENCY = 3;
+/** 子会话一条提示词之内至多的轮数（桌面版 CHILD_AGENT_MAX_TURNS_PER_PROMPT）。 */
+export const AGENT_CHILD_MAX_TURNS_PER_PROMPT = 100;
+/** 子会话一条提示词的墙钟（桌面版子任务的 timeout_ms 30 分钟；由入口执行）。 */
+export const AGENT_CHILD_TIMEOUT_MS = 30 * 60_000;
+/** 入口没有在墙钟到期后按时结束时，worker 再等这么久后中止 exec（终止整个沙箱）。 */
+export const AGENT_CHILD_TIMEOUT_GRACE_MS = 60_000;
 
 /** 组织选用的模型的上下文长度与输出上限（入口的 Pi 会话按它压缩与截断，8.6b）。 */
 export interface AgentModelLimits {
@@ -255,6 +277,35 @@ export class AgentPromptRetryableError extends Error {
   }
 }
 
+/** 子会话的一条提示词（8.10c3b2，桌面版 editContentSections 的子 Agent）。 */
+export interface AgentChildPromptInput {
+  readonly prompt: string;
+  /** 续接的子会话（同一次执行中的执行重试，取上一次结果的 session）；省略或 null 时新建。 */
+  readonly session?: string | null;
+  /** 启用的原生工具；省略时为全部原生工具（桌面版 SECTION_EDIT_CHILD_TOOLS，另有沙箱内处理的 report-failure）。 */
+  readonly tools?: readonly AgentNativeTool[];
+  /** 省略时为 AGENT_CHILD_MAX_TURNS_PER_PROMPT。 */
+  readonly maxTurns?: number;
+  /** 本条提示词的墙钟；省略时为 AGENT_CHILD_TIMEOUT_MS（不超过本次执行剩余的时间）。 */
+  readonly timeoutMs?: number;
+  /** 中止本条提示词：中止 exec 会终止整个沙箱，只用于本批因致命错误放弃时。 */
+  readonly signal?: AbortSignal;
+}
+
+/**
+ * 子会话一条提示词的结果。completed：正常结束；reported：子 Agent 报告失败（reason 为它写的原因，来自沙箱，只作为纯文本交回同一个
+ * 主 Agent）；turn-limit / time-limit：轮数或墙钟到达上限；session-invalid：子会话文件不可用（被改动或删除）；model-failed：模型调用
+ * 失败或连不上平台入口（按数据库中的事实判断之后仍可重试，reason 为固定文字），调用方可以在同一子会话中重试。
+ * 余额不足、任务上限、模型不可用、任务已不在执行、本次执行的时限、沙箱失败、结果不符合协议等由调用方的任务处理，按原因抛出。
+ */
+export interface AgentChildPromptOutcome {
+  readonly status: 'completed' | 'reported' | 'turn-limit' | 'time-limit' | 'session-invalid' | 'model-failed';
+  /** 子会话文件名（续接用）；入口没有写出会话文件时为 null。 */
+  readonly session: string | null;
+  readonly turns: number;
+  readonly reason: string | null;
+}
+
 /** 阶段交接的上下文压缩（8.6d2，桌面版 compact_before_prompt）。 */
 export interface AgentCompactionInput {
   /** 压缩之后要进入的阶段（任务代码中的常量）。 */
@@ -341,6 +392,18 @@ export interface AgentRun {
    * 读取与检查点都失败），快照不会带上它。
    */
   writeFiles(files: readonly { path: string; data: Buffer }[]): Promise<void>;
+  /**
+   * 删除工作区中的文件（8.10c3b2：还原本批以外被子会话新建的小节）。路径规则与 writeFiles 相同，受保护文件不能删除，不合法时抛 TypeError；
+   * 不存在的跳过。经入口在沙箱内执行（remove 请求）。
+   */
+  removeFiles(paths: readonly string[]): Promise<void>;
+  /**
+   * 在子会话中执行一条提示词（8.10c3b2，见 AgentChildPromptInput）：只能在一条提示词执行期间（长时工具的执行函数中）调用，否则抛
+   * TypeError。同一沙箱内与主会话、其他子会话同时运行（至多 AGENT_CHILD_SESSION_CONCURRENCY 个，超出的排队），用同一个任务令牌：
+   * 模型调用经 agent-gw 计入本任务的计费、轮数与费用上限。子会话的工具只有原生工具与 report-failure（不经 worker），不改动
+   * 本条提示词的业务工具范围。
+   */
+  childPrompt(input: AgentChildPromptInput): Promise<AgentChildPromptOutcome>;
   /** 执行一条提示词（见文件头）。可以重试的失败抛 AgentPromptRetryableError，其余按原因抛 JobError / 暂停类错误 / JobInterruptedError。 */
   prompt(input: AgentPromptInput): Promise<AgentPromptOutcome>;
   /** 一个阶段：发出提示词、提交校验、按提交策略修复，执行失败按原因重试。 */
@@ -573,6 +636,10 @@ async function openAgentRun(
       compactionPending: parsed?.agent.compactionPending ?? null,
       snapshot: parsed?.agent.snapshot ?? null,
     };
+    // 正在执行的提示词数（子会话只能在此期间运行）与子会话的排队（8.10c3b2）。
+    let activePrompts = 0;
+    let runningChildren = 0;
+    const childWaiters: Array<() => void> = [];
     // 续跑后的第一条提示词之前检查一次 checkpoint 中的待补压缩（桌面版 resumePendingCompaction）。
     let resumeCompactionChecked = parsed === null;
     const allowedTools = options.allowedTools;
@@ -700,6 +767,7 @@ async function openAgentRun(
         throw error;
       };
       let result;
+      activePrompts += 1;
       try {
         result = await runAgentPrompt(
           db,
@@ -720,6 +788,7 @@ async function openAgentRun(
           { signal: execSignal },
         );
       } catch (error) {
+        activePrompts -= 1;
         await stopServing();
         if (error instanceof TypeError) throw error;
         // 沙箱操作失败（中止 exec 会终止整个沙箱）、入口超时或结果不符合协议：之后只能关闭。
@@ -730,6 +799,7 @@ async function openAgentRun(
         }
         throw explained;
       }
+      activePrompts -= 1;
       await stopServing();
       if (!result.ok) {
         if (result.code === 'RUN_ENDED' && signal.aborted) throw new JobInterruptedError();
@@ -905,6 +975,159 @@ async function openAgentRun(
       }
     }
 
+    async function removeFiles(paths: readonly string[]): Promise<void> {
+      assertUsable();
+      if (!Array.isArray(paths) || paths.length > AGENT_WRITE_MAX_FILES) throw new TypeError('一次删除的文件过多');
+      const protectedKeys = new Set(
+        Object.values(baseline.toState().groups).flatMap((group) => Object.keys(group).map((path) => archivePathKey(path, WRITE_LIMITS))),
+      );
+      const keys = new Set<string>();
+      const prepared: string[] = [];
+      for (const raw of paths) {
+        const path = normalizeWritePath(raw);
+        const key = archivePathKey(path, WRITE_LIMITS);
+        if (keys.has(key)) throw new TypeError('删除的文件路径重复');
+        keys.add(key);
+        if (protectedKeys.has(key)) throw new TypeError('受保护文件不能经 removeFiles 删除');
+        prepared.push(path);
+      }
+      if (prepared.length === 0) return;
+      if (issued.expiresAt.getTime() - Date.now() <= 0) throw timeLimitError(template);
+      const deadline = AbortSignal.timeout(Math.max(1, issued.expiresAt.getTime() - Date.now()));
+      let result: AgentEntryResult;
+      try {
+        result = await runAgentRemove(driver, current, { action: 'remove', token: issued.token, paths: prepared }, { signal: AbortSignal.any([signal, deadline]) });
+      } catch (error) {
+        if (error instanceof TypeError) throw error;
+        if (deadline.aborted && !signal.aborted) {
+          broken ??= error instanceof Error ? error : new Error('agent remove timed out');
+          throw timeLimitError(template);
+        }
+        if (error instanceof JobError && error.code === AGENT_ENTRY_FAILED_CODE) {
+          broken ??= error;
+          throw error;
+        }
+        throw sandboxFailure(error);
+      }
+      if (result.ok && result.action === 'remove') return;
+      if (!result.ok && result.code === 'RUN_ENDED' && signal.aborted) throw new JobInterruptedError();
+      const explained = await explainFailure(result.ok ? null : result.code, new Error('agent remove failed'), 0, false, await agentModelRejectionMark(db, run));
+      broken ??= explained;
+      throw explained instanceof AgentPromptRetryableError ? explained.jobError : explained;
+    }
+
+    async function acquireChildSlot(abort: AbortSignal): Promise<() => void> {
+      if (runningChildren >= AGENT_CHILD_SESSION_CONCURRENCY) {
+        await new Promise<void>((resolve, reject) => {
+          const grant = () => {
+            abort.removeEventListener('abort', onAbort);
+            resolve();
+          };
+          const onAbort = () => {
+            const index = childWaiters.indexOf(grant);
+            if (index >= 0) childWaiters.splice(index, 1);
+            reject(new JobInterruptedError());
+          };
+          childWaiters.push(grant);
+          abort.addEventListener('abort', onAbort, { once: true });
+        });
+      }
+      runningChildren += 1;
+      let released = false;
+      return () => {
+        if (released) return;
+        released = true;
+        runningChildren -= 1;
+        // 名额交给排在最前的等待者（它在 resolve 之后自行计入）。
+        childWaiters.shift()?.();
+      };
+    }
+
+    async function childPrompt(input: AgentChildPromptInput): Promise<AgentChildPromptOutcome> {
+      assertUsable();
+      if (activePrompts === 0) throw new TypeError('子会话只能在一条提示词执行期间（长时工具的执行函数中）运行');
+      if (!isPlainObject(input)) throw new TypeError('子会话的输入不合法');
+      if (input.signal !== undefined && !(input.signal instanceof AbortSignal)) throw new TypeError('signal 不合法');
+      const tools = input.tools ?? AGENT_NATIVE_TOOLS;
+      const maxTurns = input.maxTurns ?? AGENT_CHILD_MAX_TURNS_PER_PROMPT;
+      const requestedTimeout = input.timeoutMs ?? AGENT_CHILD_TIMEOUT_MS;
+      if (!Number.isSafeInteger(requestedTimeout) || requestedTimeout < AGENT_CHILD_TIMEOUT_RANGE.min || requestedTimeout > AGENT_CHILD_TIMEOUT_RANGE.max) {
+        throw new TypeError('子会话的墙钟不合法');
+      }
+      const request = {
+        action: 'child-prompt' as const,
+        token: issued.token,
+        prompt: input.prompt,
+        session: input.session ?? null,
+        tools,
+        maxTurns,
+        timeoutMs: requestedTimeout,
+        model,
+      };
+      // 先检查请求（不合法时不排队、不执行）。
+      encodeAgentEntryRequest(request);
+      const abort = input.signal ? AbortSignal.any([signal, input.signal]) : signal;
+      const release = await acquireChildSlot(abort);
+      try {
+        assertUsable();
+        if (abort.aborted) throw new JobInterruptedError();
+        const remaining = issued.expiresAt.getTime() - Date.now();
+        if (remaining <= 0) throw timeLimitError(template);
+        // 入口按 timeoutMs 结束本条提示词；本次执行剩余的时间更短时以它为准（到期即本次执行的时限）。
+        const timeoutMs = Math.max(AGENT_CHILD_TIMEOUT_RANGE.min, Math.min(requestedTimeout, remaining));
+        const rejectionMark = await agentModelRejectionMark(db, run);
+        const deadline = AbortSignal.timeout(Math.max(1, remaining));
+        const childDeadline = AbortSignal.timeout(timeoutMs + AGENT_CHILD_TIMEOUT_GRACE_MS);
+        let result: AgentEntryResult;
+        try {
+          result = await runAgentChildPrompt(driver, current, { ...request, timeoutMs }, { signal: AbortSignal.any([abort, deadline, childDeadline]) });
+        } catch (error) {
+          if (error instanceof TypeError) throw error;
+          // 中止或超时的 exec 会终止整个沙箱；入口超时、结果不符合协议同样不再使用沙箱。
+          if (error instanceof SandboxError || (error instanceof JobError && error.code === AGENT_ENTRY_FAILED_CODE)) broken ??= error;
+          if (abort.aborted) throw new JobInterruptedError();
+          if (error instanceof SandboxError && error.code === 'SANDBOX_ABORTED' && !deadline.aborted) {
+            // 入口没有在墙钟到期后结束（childDeadline）：沙箱已被终止。
+            throw new JobError(AGENT_SANDBOX_FAILED_CODE, SANDBOX_FAILED_MESSAGE, { cause: error });
+          }
+          const explained = await explainFailure(null, error, maxTurns, deadline.aborted, rejectionMark);
+          if (explained instanceof JobError && explained.code === AGENT_ENTRY_FAILED_CODE) {
+            throw error instanceof SandboxError ? new JobError(AGENT_SANDBOX_FAILED_CODE, SANDBOX_FAILED_MESSAGE, { cause: error }) : error;
+          }
+          throw explained instanceof AgentPromptRetryableError ? explained.jobError : explained;
+        }
+        if (result.ok) {
+          if (result.action !== 'child-prompt') throw new JobError(AGENT_ENTRY_FAILED_CODE, 'Agent 入口执行失败');
+          const base = { session: result.session, turns: result.turns };
+          switch (result.outcome) {
+            case 'stop':
+            case 'length':
+              return { ...base, status: 'completed', reason: null };
+            case 'reported':
+              return { ...base, status: 'reported', reason: result.reason };
+            case 'turn-limit':
+            case 'time-limit':
+              return { ...base, status: result.outcome, reason: null };
+            case 'model-failed':
+              return explainChildFailure('MODEL_FAILED', base, maxTurns, rejectionMark);
+          }
+        }
+        if (result.code === 'RUN_ENDED' && signal.aborted) throw new JobInterruptedError();
+        return explainChildFailure(result.code, { session: request.session, turns: 0 }, maxTurns, rejectionMark);
+      } finally {
+        release();
+      }
+    }
+
+    /** 子会话的失败按数据库中的事实判断：能重试的交给调用方，会话文件不可用只影响本子会话，其余按原因抛出（之后沙箱不再使用）。 */
+    async function explainChildFailure(code: AgentEntryErrorCode, base: { session: string | null; turns: number }, maxTurns: number, rejectionMark: number): Promise<AgentChildPromptOutcome> {
+      const explained = await explainFailure(code, new Error(`agent child entry reported ${code}`), maxTurns, false, rejectionMark);
+      if (explained instanceof AgentPromptRetryableError) return { ...base, status: 'model-failed', reason: explained.reason };
+      if (explained instanceof JobError && explained.code === AGENT_SESSION_INVALID_CODE) return { session: null, turns: base.turns, status: 'session-invalid', reason: null };
+      broken ??= explained;
+      throw explained;
+    }
+
     async function checkpoint(task: Record<string, unknown> | null, progress?: number): Promise<void> {
       assertUsable();
       if (task !== null && !isPlainObject(task)) throw new TypeError('任务的 checkpoint 必须是对象');
@@ -1012,6 +1235,8 @@ async function openAgentRun(
       assistantText,
       readFiles,
       writeFiles,
+      removeFiles,
+      childPrompt,
       prompt,
       runStage,
       checkpoint,

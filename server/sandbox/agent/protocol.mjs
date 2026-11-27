@@ -7,7 +7,7 @@
 // 结果写到**标准输出**：恰好一行 JSON（以换行结束），至多 MAX_RESULT_BYTES；退出码 0 表示 ok，1 表示按协议报告的失败。
 // 失败只给出固定的错误代码与固定的说明，不含请求、令牌、网关的响应正文。worker 按不可信输入解析结果（src/agent/entry.ts）。
 //
-// 三种请求（action）：
+// 请求（action）：
 // - session（8.6a）：经 agent-gw 的 GET /v1/session 确认令牌有效，返回令牌的到期时间；
 // - prompt（8.6b）：先同样确认令牌，再在 Pi 会话中执行**一条**提示词（新建会话或续接 /workspace/pi-sessions/ 中的会话文件），
 //   返回会话文件名、本条提示词用掉的轮数与结束原因。Pi 会话的实现在 pi.mjs，由 entry.mjs 注入（runPrompt），本文件不加载 Pi。
@@ -20,7 +20,18 @@
 // - compact（8.6d2）：先同样确认令牌，再压缩已有会话的上下文（Pi 的 session.compact，压缩指令由 worker 给出，与桌面版的阶段交接
 //   压缩相同），返回会话文件名与是否真的压缩了（compacted = false：会话太短或刚压缩过，Pi 认为无需压缩）。不注册任何工具。
 //   Agent 的回复全文不经标准输出（结果至多 16 KiB）：worker 从工作区的会话文件中取回（src/agent/assistantText.ts）。
+// - child-prompt（8.10c3b2）：先同样确认令牌，再在**子会话**中执行一条提示词（桌面版 editContentSections 的子 Agent，
+//   failure_handled_by_parent）。由 worker 的执行者在长时工具执行期间发出，同一沙箱中可以有几个子会话与主会话同时运行（各自一个
+//   入口进程）：会话文件在工作区之外的 CHILD_SESSIONS_DIR（不进快照，不续跑），工具只有请求中的原生工具与沙箱内处理的
+//   report-failure（不经 worker、不写失败报告：原因作为结果交给 worker，由父任务处理），不登记任何业务工具。本条提示词的墙钟
+//   timeoutMs 由入口执行（到期中止会话，outcome = time-limit）：worker 中止一次 exec 会终止整个沙箱，不能用来停止单个子会话。
+//   轮数上限、模型调用失败、报告失败都作为 outcome 返回（ok = true），以便 worker 拿到会话文件名、在同一会话中执行重试；
+//   模型调用失败的原因仍由 worker 按数据库中的事实判断。
+// - remove（8.10c3b2）：先同样确认令牌，再删除工作区中的指定文件（只删普通文件与符号链接本身，不删目录、不跟随链接到工作区之外），
+//   返回删除的个数。执行者用它还原“本批以外被子会话新建的小节”（桌面版 untouched 中原本不存在的文件）。
+import { lstatSync, realpathSync, unlinkSync } from 'node:fs';
 import { request as httpRequest } from 'node:http';
+import { dirname, join, sep } from 'node:path';
 
 export const PROTOCOL_VERSION = 1;
 export const MAX_REQUEST_BYTES = 1024 * 1024;
@@ -59,6 +70,14 @@ export const MAX_TURNS_PER_PROMPT = 1_000;
 /** 模型的上下文长度与输出上限的取值范围（worker 按组织选用的模型给出；平台另把 max_tokens 截到 AI_MAX_OUTPUT_TOKENS）。 */
 export const CONTEXT_WINDOW_RANGE = Object.freeze({ min: 8_192, max: 2_000_000 });
 export const MAX_OUTPUT_TOKENS_RANGE = Object.freeze({ min: 256, max: 131_072 });
+/** 子会话一条提示词的墙钟（timeoutMs）的取值范围（8.10c3b2；worker 默认 30 分钟，与桌面版子任务的 timeout_ms 相同）。 */
+export const CHILD_TIMEOUT_RANGE = Object.freeze({ min: 1_000, max: 120 * 60_000 });
+/** 子会话一条提示词的结束方式（8.10c3b2）。 */
+export const CHILD_OUTCOMES = Object.freeze(['stop', 'length', 'reported', 'turn-limit', 'time-limit', 'model-failed']);
+/** 子会话报告失败的原因至多这么多字符（与 report-failure 的参数上限相同）。 */
+export const MAX_CHILD_FAILURE_REASON_CHARS = 500;
+/** remove 一次至多删除这么多个文件。 */
+export const MAX_REMOVE_PATHS = 256;
 /** 压缩指令至多这么多字符（桌面版的指令只有几百个字符）。 */
 export const MAX_COMPACTION_INSTRUCTIONS_CHARS = 16 * 1024;
 const ISO_INSTANT_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
@@ -178,6 +197,69 @@ function parseCompactFields(value) {
   return { session, instructions, model: parseModel(model) };
 }
 
+const CHILD_PROMPT_KEYS = Object.freeze(['version', 'action', 'token', 'prompt', 'session', 'tools', 'maxTurns', 'timeoutMs', 'model']);
+
+/** child-prompt：工具只能是原生工具（report-failure 由入口在沙箱内登记，不在清单中），墙钟在范围内。 */
+function parseChildPromptFields(value) {
+  if (!hasExactKeys(value, CHILD_PROMPT_KEYS)) throw new EntryError('BAD_REQUEST');
+  const { prompt, session, tools, maxTurns, timeoutMs, model } = value;
+  if (typeof prompt !== 'string' || prompt.trim() === '' || prompt.length > MAX_PROMPT_CHARS) throw new EntryError('BAD_REQUEST');
+  if (session !== null && (typeof session !== 'string' || !SESSION_FILE_PATTERN.test(session))) throw new EntryError('BAD_REQUEST');
+  if (!Array.isArray(tools) || tools.length > NATIVE_TOOLS.length || new Set(tools).size !== tools.length) throw new EntryError('BAD_REQUEST');
+  if (!tools.every((name) => typeof name === 'string' && NATIVE_TOOLS.includes(name))) throw new EntryError('BAD_REQUEST');
+  if (!isIntegerIn(maxTurns, { min: 1, max: MAX_TURNS_PER_PROMPT })) throw new EntryError('BAD_REQUEST');
+  if (!isIntegerIn(timeoutMs, CHILD_TIMEOUT_RANGE)) throw new EntryError('BAD_REQUEST');
+  return { prompt, session, tools: [...tools], maxTurns, timeoutMs, model: parseModel(model) };
+}
+
+/** remove：1～MAX_REMOVE_PATHS 个不重复的工作区相对路径。 */
+function parseRemoveFields(value) {
+  if (!hasExactKeys(value, ['version', 'action', 'token', 'paths'])) throw new EntryError('BAD_REQUEST');
+  const { paths } = value;
+  if (!Array.isArray(paths) || paths.length === 0 || paths.length > MAX_REMOVE_PATHS || new Set(paths).size !== paths.length) throw new EntryError('BAD_REQUEST');
+  if (!paths.every(isWorkspaceRelativePath)) throw new EntryError('BAD_REQUEST');
+  return { paths: [...paths] };
+}
+
+/**
+ * 删除工作区中的文件（remove 请求）：不存在的跳过；只删普通文件与符号链接本身（不删目录）；所在目录解析后必须仍在工作区之内
+ * （中间的目录被换成指向工作区之外的链接时跳过）。返回删除的个数。
+ */
+export function removeWorkspaceFiles(paths, { workspaceDir = '/workspace' } = {}) {
+  let root;
+  try {
+    root = realpathSync(workspaceDir);
+  } catch {
+    throw new EntryError('INTERNAL');
+  }
+  let removed = 0;
+  for (const path of paths) {
+    const target = join(root, path);
+    let parent;
+    try {
+      parent = realpathSync(dirname(target));
+    } catch {
+      continue;
+    }
+    if (parent !== root && !parent.startsWith(`${root}${sep}`)) continue;
+    const file = join(parent, target.slice(target.lastIndexOf(sep) + 1));
+    let stat;
+    try {
+      stat = lstatSync(file);
+    } catch {
+      continue;
+    }
+    if (!stat.isFile() && !stat.isSymbolicLink()) continue;
+    try {
+      unlinkSync(file);
+      removed += 1;
+    } catch {
+      // 删除失败（并发删除等）不算入口失败，worker 按结果之外的事实处理。
+    }
+  }
+  return removed;
+}
+
 /** 严格解析请求：严格 UTF-8、一个 JSON 对象、字段恰好是该 action 登记的那几个（多余的、缺少的、类型不对的一律拒绝）。 */
 export function parseRequest(bytes) {
   let text;
@@ -200,6 +282,8 @@ export function parseRequest(bytes) {
   }
   if (value.action === 'prompt') return { version: PROTOCOL_VERSION, action: 'prompt', token: value.token, ...parsePromptFields(value) };
   if (value.action === 'compact') return { version: PROTOCOL_VERSION, action: 'compact', token: value.token, ...parseCompactFields(value) };
+  if (value.action === 'child-prompt') return { version: PROTOCOL_VERSION, action: 'child-prompt', token: value.token, ...parseChildPromptFields(value) };
+  if (value.action === 'remove') return { version: PROTOCOL_VERSION, action: 'remove', token: value.token, ...parseRemoveFields(value) };
   throw new EntryError('BAD_REQUEST');
 }
 
@@ -267,13 +351,26 @@ function errorResult(error) {
   return { ok: false, error: { code, message: ENTRY_ERROR_MESSAGES[code] } };
 }
 
+/** 子会话的结果只留登记的字段（形状不对时 INTERNAL）。 */
+function childOutcome(outcome, maxTurns) {
+  const { session, turns, outcome: end, reason } = outcome ?? {};
+  if (session !== null && (typeof session !== 'string' || !SESSION_FILE_PATTERN.test(session))) throw new EntryError('INTERNAL');
+  if (!isIntegerIn(turns, { min: 0, max: maxTurns }) || !CHILD_OUTCOMES.includes(end)) throw new EntryError('INTERNAL');
+  if (end === 'reported') {
+    if (typeof reason !== 'string' || reason.trim() === '' || Array.from(reason).length > MAX_CHILD_FAILURE_REASON_CHARS) throw new EntryError('INTERNAL');
+    return { session, turns, outcome: end, reason };
+  }
+  return { session, turns, outcome: end, reason: null };
+}
+
 /**
  * 执行一次入口请求，把结果写到 stdout，返回退出码（0 为 ok，1 为失败）。
  * runPrompt（pi.mjs 的 runPiPrompt）只在 prompt 请求、令牌确认有效之后调用，返回 { session, turns, stopReason }，
  * 失败时抛 EntryError（其他异常一律按 INTERNAL 报告，不带出说明）。runCompact（pi.mjs 的 runPiCompaction）同样只在 compact 请求、
- * 令牌确认有效之后调用，返回 { session, compacted }。
+ * 令牌确认有效之后调用，返回 { session, compacted }。runChildPrompt（pi.mjs 的 runPiChildPrompt）只在 child-prompt 请求、令牌确认有效之后
+ * 调用，返回 { session（未写出会话文件时为 null）, turns, outcome, reason }；removeFiles 默认为 removeWorkspaceFiles。
  */
-export async function runEntry({ stdin, stdout, baseUrl = GATEWAY_BASE_URL, timeoutMs = GATEWAY_TIMEOUT_MS, runPrompt, runCompact }) {
+export async function runEntry({ stdin, stdout, baseUrl = GATEWAY_BASE_URL, timeoutMs = GATEWAY_TIMEOUT_MS, runPrompt, runCompact, runChildPrompt, removeFiles = removeWorkspaceFiles }) {
   let result;
   try {
     const request = parseRequest(await readRequest(stdin));
@@ -284,6 +381,11 @@ export async function runEntry({ stdin, stdout, baseUrl = GATEWAY_BASE_URL, time
       if (typeof runCompact !== 'function') throw new EntryError('INTERNAL');
       const outcome = await runCompact(request, { baseUrl });
       result = { ok: true, action: 'compact', session: outcome.session, compacted: outcome.compacted === true };
+    } else if (request.action === 'child-prompt') {
+      if (typeof runChildPrompt !== 'function') throw new EntryError('INTERNAL');
+      result = { ok: true, action: 'child-prompt', ...childOutcome(await runChildPrompt(request, { baseUrl }), request.maxTurns) };
+    } else if (request.action === 'remove') {
+      result = { ok: true, action: 'remove', removed: removeFiles(request.paths) };
     } else {
       if (typeof runPrompt !== 'function') throw new EntryError('INTERNAL');
       const outcome = await runPrompt(request, { baseUrl });

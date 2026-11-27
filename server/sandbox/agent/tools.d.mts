@@ -41,5 +41,9 @@ export function createBusinessToolStubs(options: {
   workspaceDir?: string;
 }): BusinessToolStub[];
 
+export function createChildReportFailureTool(options: { Type: unknown; report: (reason: string) => void }): Omit<BusinessToolStub, 'execute'> & {
+  execute(toolCallId: string, params: any): Promise<{ content: Array<{ type: 'text'; text: string }>; details: unknown }>;
+};
+
 export const CONTENT_SECTIONS_TASK_FILE: string;
 export const KNOWLEDGE_INDEX_FILE: string;

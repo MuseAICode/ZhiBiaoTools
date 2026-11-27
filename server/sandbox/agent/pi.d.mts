@@ -1,8 +1,9 @@
 // pi.mjs 的类型（测试从 TypeScript 导入）。
-import type { CompactOutcome, CompactRequest, PromptOutcome, PromptRequest } from './protocol.mjs';
+import type { ChildPromptOutcome, ChildPromptRequest, CompactOutcome, CompactRequest, PromptOutcome, PromptRequest } from './protocol.mjs';
 
 export const WORKSPACE_DIR: string;
 export const SESSIONS_DIR: string;
+export const CHILD_SESSIONS_DIR: string;
 export const AGENT_DIR: string;
 export const INSTRUCTIONS_PATH: URL;
 export const BASH_COMMAND_TIMEOUT_SECONDS: number;
@@ -32,3 +33,14 @@ export function runPiCompaction(
     instructionsPath?: URL | string;
   },
 ): Promise<CompactOutcome>;
+
+export function runPiChildPrompt(
+  request: ChildPromptRequest,
+  options: {
+    baseUrl: string;
+    workspaceDir?: string;
+    sessionsDir?: string;
+    agentDir?: string;
+    instructionsPath?: URL | string;
+  },
+): Promise<ChildPromptOutcome>;
