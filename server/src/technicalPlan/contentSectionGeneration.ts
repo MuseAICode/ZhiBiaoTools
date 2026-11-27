@@ -19,6 +19,9 @@
 //   `content-section-prefix:<m>`，m 为第几次提交。计数随任务的 checkpoint 保存（state()，8.10c3 写入）：worker 崩溃后从上次的
 //   checkpoint 续跑，同一小节、同一请求内容的调用取回已保存的结果、不再扣费；regenerate 与失败后的重试换用新的 n，重新调用模型。
 //
+// 进入图片保护（check-word-count 确认正文全部就绪，8.10c3b1，contentImageProtection.ts）之后不再生成正文：按 AgentToolRequestRejection
+// 交回 Agent（桌面版此时已从 Agent 可用的工具中去掉 generate-sections）。
+//
 // 返回给 Agent 的只有统计与未成功项（compactResults），日志不记写作材料、模型输出与任务文件的内容。
 import {
   AgentToolRequestRejection,
@@ -33,6 +36,7 @@ import type { ChatResult } from '../ai/gateway.ts';
 import { abortableDelay } from '../jobs/control.ts';
 import { createAiBatchGuard, isAiUpstreamFailure } from '../jobs/aiBatchGuard.ts';
 import type { JobModel } from '../jobs/chat.ts';
+import type { ContentImageProtection } from './contentImageProtection.ts';
 import { JobError, JobInterruptedError, type JobAi } from '../jobs/definitions.ts';
 import {
   compactResults,
@@ -116,6 +120,8 @@ export interface GenerateSectionsOptions {
   readonly materials: ContentSectionWritingMaterials;
   /** 上次 checkpoint 中的计数（首次执行省略）。 */
   readonly state?: GenerateSectionsState;
+  /** 本任务的图片保护（8.10c3b1，与 check-word-count 共用）：进入保护后不再生成正文。 */
+  readonly protection?: Pick<ContentImageProtection, 'assertToolAllowed'>;
   /** 一节写回工作区之后调用（8.10c3 写入运行进度与字数）。抛出的错误按致命错误处理。 */
   onSectionSaved?(section: GeneratedSection): void | Promise<void>;
   /** 测试用：预热之后的等待。 */
@@ -212,6 +218,7 @@ export function createGenerateSectionsExecutor(options: GenerateSectionsOptions)
   }
 
   async function execute(request: AgentToolRequestExecution): Promise<unknown> {
+    options.protection?.assertToolAllowed(GENERATE_SECTIONS_TOOL);
     const jobs = await readTask();
     try {
       planContentSectionBatch(jobs, materials.targets, () => false);

@@ -10,7 +10,8 @@
 //   不交给模型（8.4c1、8.4c2 登记）；
 // - generate-sections（8.10c2b2，长时工具，src/agent/toolRequests.ts）收到 { completed: false, pending: true } 时同样等待后以完全相同的
 //   参数再次调用，不交给模型，每次等待经 onUpdate 给出进度提示；名称与说明沿用桌面版 contentGenerationAgent.cjs（说明中“知识库等”
-//   按工作区中是否有知识库索引给出，与桌面版按是否引用知识库相同；只影响说明文字）；
+//   按工作区中是否有知识库索引给出，与桌面版按是否引用知识库相同；只影响说明文字）；check-word-count（8.10c3b1）相同，名称与说明沿用
+//   桌面版 contentGenerationWordTools.cjs；
 // - report-failure 报告成功、request-termination 收到 { terminated: true } 后立即结束 Pi 会话（不再调用任何工具），
 //   入口报告 REPORTED_FAILURE（8.4b 登记）；
 // - request-termination 收到 { terminated: false } 时把 instruction（放宽后的执行要求）作为工具结果交给模型；
@@ -263,15 +264,40 @@ function generateSectionsStub({ Type, call, workspaceDir }) {
     executionMode: 'sequential',
     parameters: Type.Object({}, { additionalProperties: false }),
     execute: async (_toolCallId, params, signal, onUpdate) => {
-      let result = await call('generate-sections', params, signal);
-      while (isLongPending(result)) {
-        // 刷新 Agent 的无进展计时（桌面版每节完成时 onUpdate）。
-        onUpdate?.({ content: [{ type: 'text', text: '正文小节仍在生成，完成后自动返回结果' }], details: { pending: true } });
-        await delay(PENDING_RETRY_DELAY_MS, signal);
-        if (signal?.aborted) throw new ToolCallError('工具调用已中止');
-        result = await call('generate-sections', params, signal);
-      }
+      // 每次等待刷新 Agent 的无进展计时（桌面版每节完成时 onUpdate）。
+      const result = await callLongTool(call, 'generate-sections', params, signal, onUpdate, '正文小节仍在生成，完成后自动返回结果');
       // 与桌面版相同：模型只接收统计与未成功项（紧凑的 JSON）。
+      return { content: [{ type: 'text', text: JSON.stringify(result) }], details: result };
+    },
+  };
+}
+
+/** 等待长时工具的结果：pending 时等待后以相同参数再次调用（不交给模型），每次等待经 onUpdate 给出进度提示。 */
+async function callLongTool(call, name, params, signal, onUpdate, progress) {
+  let result = await call(name, params, signal);
+  while (isLongPending(result)) {
+    onUpdate?.({ content: [{ type: 'text', text: progress }], details: { pending: true } });
+    await delay(PENDING_RETRY_DELAY_MS, signal);
+    if (signal?.aborted) throw new ToolCallError('工具调用已中止');
+    result = await call(name, params, signal);
+  }
+  return result;
+}
+
+/** 与桌面版 WORD_COUNT_ONLY_NOTE 相同（src/technicalPlan/contentWordCount.ts）。 */
+const WORD_COUNT_ONLY_NOTE = '本工具只统计实际字数：保持正文不变，不以任何方式（包括脚本批量删改）调整字数；字数要求由程序在本阶段提交后按设置统一处理。';
+
+/** check-word-count 的桩（桌面版 contentGenerationWordTools.cjs 的名称与说明）：worker 的执行者统计实际字数并写入清单。 */
+function checkWordCountStub({ Type, call }) {
+  return {
+    name: 'check-word-count',
+    label: '检查正文总字数',
+    description: `仅在全部正文和配图完成后调用。读取实际 HTML，返回总字数、上下限和缺失小节数，各节字数及缺失小节 ID 写入 程序清单/正文字数统计.json，按需读取；内容就绪后启用图片写入保护，不修改正文。${WORD_COUNT_ONLY_NOTE}`,
+    executionMode: 'sequential',
+    parameters: Type.Object({}, { additionalProperties: false }),
+    execute: async (_toolCallId, params, signal, onUpdate) => {
+      const result = await callLongTool(call, 'check-word-count', params, signal, onUpdate, '正在统计正文总字数，完成后自动返回结果');
+      // 与桌面版相同：结果按紧凑的 JSON 交给模型。
       return { content: [{ type: 'text', text: JSON.stringify(result) }], details: result };
     },
   };
@@ -282,6 +308,7 @@ const STUBS = Object.freeze({
   'report-failure': reportFailureStub,
   'request-termination': requestTerminationStub,
   'generate-sections': generateSectionsStub,
+  'check-word-count': checkWordCountStub,
 });
 
 /** 业务工具（worker 一侧的名字）面向模型的工具名。 */

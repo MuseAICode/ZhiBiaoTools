@@ -153,7 +153,7 @@ describe('任务类型登记', () => {
     expect(contentGeneration.resumable).toBe(true);
     expect(contentGeneration.billable).toBe(true);
     expect(contentGeneration.agentLimits).toEqual(AGENT_TASK_LIMITS.contentGeneration);
-    expect(contentGeneration.agentTools).toEqual(['ask-user', 'request-termination', 'generate-sections']);
+    expect(contentGeneration.agentTools).toEqual(['ask-user', 'request-termination', 'generate-sections', 'check-word-count']);
     expect(contentGeneration.agentWorkspace).toEqual({ taskKind: 'technical-plan-content-generation', keepAfterSuccess: true });
     expect(contentGeneration.agentSandboxTemplate).toBe('agent-content');
     expect(contentGeneration.parseParams({ regenerate: false })).toEqual({ regenerate: false });

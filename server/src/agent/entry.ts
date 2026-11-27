@@ -52,7 +52,7 @@ export type AgentEntryErrorCode = (typeof AGENT_ENTRY_ERROR_CODES)[number];
 export const AGENT_NATIVE_TOOLS = ['read', 'write', 'edit', 'bash', 'grep', 'find', 'ls'] as const;
 export type AgentNativeTool = (typeof AGENT_NATIVE_TOOLS)[number];
 /** 入口有桩的业务工具（与 protocol.mjs 的 BUSINESS_TOOLS 相同，名字是 src/agent/toolRegistry.ts 中登记的工具名）。 */
-export const AGENT_BUSINESS_TOOLS = ['ask-user', 'report-failure', 'request-termination', 'generate-sections'] as const;
+export const AGENT_BUSINESS_TOOLS = ['ask-user', 'report-failure', 'request-termination', 'generate-sections', 'check-word-count'] as const;
 export type AgentBusinessTool = (typeof AGENT_BUSINESS_TOOLS)[number];
 /** 入口在沙箱内执行的本地工具（与 protocol.mjs 的 LOCAL_TOOLS 相同）。 */
 export const AGENT_LOCAL_TOOLS = ['json-validation'] as const;
