@@ -1,7 +1,7 @@
 // agent-gw（src/agent/gateway.ts，路线图第 8 步 8.2b）的单元测试：用一个记录请求的 HTTP 桩代替 worker。
 // 每一项检查都有恶意样本（被拒绝、没有转给 worker）与对照组（合法请求转给 worker 并原样回传）。
 import { createServer, request as httpRequest, type IncomingHttpHeaders, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
-import { connect, type AddressInfo, type Socket } from 'node:net';
+import { connect, createServer as createNetServer, type AddressInfo, type Socket } from 'node:net';
 import { setTimeout as sleep } from 'node:timers/promises';
 import type { FastifyInstance } from 'fastify';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
@@ -440,19 +440,41 @@ describe('并发与转发', () => {
     }
   });
 
-  it('worker 不可用 → 502，不回显内部地址', async () => {
-    const closed = createServer();
-    await new Promise<void>((resolve) => closed.listen(0, '127.0.0.1', resolve));
-    const deadPort = (closed.address() as AddressInfo).port;
-    await new Promise<void>((resolve) => closed.close(() => resolve()));
-    const dead = await startGateway({ upstream: `http://127.0.0.1:${deadPort}` });
+  // 连接被拒绝的上游用临时端口范围之外的固定端口，不能用“先监听 0 再关闭”的端口：关闭后该端口回到临时端口池，
+  // 紧接着的 listen(0)（包括 startGateway 自己的）可能恰好再拿到它（本机实测约 1/7000），agent-gw 于是转给自己，返回 429 而不是 502。
+  // listen(0) 与 connect 的源端口都只取自临时端口范围（Linux 32768–60999，macOS / Windows 49152–65535），所以这个端口不会被测试占用，
+  // 也不会出现 TCP 自连接；万一本机有服务在这个端口上，下面对 ECONNREFUSED 的断言会直接指出原因。
+  const REFUSED_PORT = 1023;
+
+  it('worker 不可用（连接被拒绝）→ 502，不回显内部地址', async () => {
+    const dead = await startGateway({ upstream: `http://127.0.0.1:${REFUSED_PORT}` });
     try {
       const response = await send({ headers: auth(), port: dead.port });
       expect(response.status).toBe(502);
       expect(response.body).not.toContain('127.0.0.1');
-      expect(response.body).not.toContain(String(deadPort));
+      expect(response.body).not.toContain(String(REFUSED_PORT));
+      const warning = logs.lines().find((line) => line.msg === 'agent upstream unavailable');
+      expect((warning?.err as { code?: string } | undefined)?.code).toBe('ECONNREFUSED');
     } finally {
       await dead.app.close();
+    }
+  });
+
+  it('worker 接受连接后立即断开 → 502，不回显内部地址', async () => {
+    // 端口在整个用例期间一直被这个服务占用，不存在被别的监听拿走的竞态。
+    const hangUp = createNetServer((socket) => socket.destroy());
+    await new Promise<void>((resolve) => hangUp.listen(0, '127.0.0.1', resolve));
+    const hangUpPort = (hangUp.address() as AddressInfo).port;
+    const dead = await startGateway({ upstream: `http://127.0.0.1:${hangUpPort}` });
+    try {
+      const response = await send({ headers: auth(), port: dead.port });
+      expect(response.status).toBe(502);
+      expect(response.body).not.toContain('127.0.0.1');
+      expect(response.body).not.toContain(String(hangUpPort));
+      expect(logs.lines().some((line) => line.msg === 'agent upstream unavailable')).toBe(true);
+    } finally {
+      await dead.app.close();
+      await new Promise<void>((resolve) => hangUp.close(() => resolve()));
     }
   });
 });
