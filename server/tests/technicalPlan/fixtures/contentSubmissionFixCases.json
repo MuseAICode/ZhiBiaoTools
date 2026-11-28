@@ -1,0 +1,378 @@
+{
+  "cases": [
+    {
+      "name": "混合：已修好的跳过、文件缺失与图片引用交回主 Agent、结构问题由子任务修复、修复后仍有问题、子任务报告失败、本批以外被改动的还原",
+      "factsRequirements": "缺失的事实按通用做法概括表达，不虚构具体参数。",
+      "rules": "# 受限 HTML 生成规范\n\n只用 p、h3、ul、table、figure。",
+      "targets": [
+        {
+          "id": "s1",
+          "number": "1.1",
+          "title": "项目概述",
+          "file": "正文/s1.html"
+        },
+        {
+          "id": "s2",
+          "number": "1.2",
+          "title": "技术路线",
+          "file": "正文/s2.html"
+        },
+        {
+          "id": "s3",
+          "number": "1.3",
+          "title": "质量保证",
+          "file": "正文/s3.html"
+        },
+        {
+          "id": "s4",
+          "number": "1.4",
+          "title": "进度计划",
+          "file": "正文/s4.html"
+        },
+        {
+          "id": "s5",
+          "number": "1.5",
+          "title": "安全措施",
+          "file": "正文/s5.html"
+        },
+        {
+          "id": "s6",
+          "number": "1.6",
+          "title": "文明施工",
+          "file": "正文/s6.html"
+        },
+        {
+          "id": "s7",
+          "number": "1.7",
+          "title": "售后服务",
+          "file": "正文/s7.html"
+        }
+      ],
+      "files": {
+        "正文/s1.html": "<!-- app:block -->\n<p id=\"s_p001\">第一节正文。</p>",
+        "正文/s3.html": "<!-- app:block -->\n<p id=\"s_p001\">第三节正文</p>\n<!-- app:block -->\n<figure id=\"s_f001\" data-app-generation=\"aiImage\" data-app-size=\"wide\"><template data-app-role=\"prompt\">施工流程示意</template><img alt=\"示意图\" data-app-asset-ref=\"图片/不存在.png\"><figcaption>图 1</figcaption></figure>",
+        "正文/s4.html": "<!-- app:block -->\n<p id=\"s_p001\">第四节正文<strong>加粗未闭合</p>",
+        "正文/s5.html": "<!-- app:block -->\n<p id=\"s_p001\">第五节正文<em>强调未闭合</p>",
+        "正文/s6.html": "<!-- app:block -->\n<p id=\"s_p001\">第六节正文<strong>未闭合</p>",
+        "正文/s7.html": "<!-- app:block -->\n<p id=\"s_p001\">第七节正文。</p>"
+      },
+      "images": [],
+      "issues": {
+        "issues": [
+          {
+            "section_id": "s4",
+            "type": "structure",
+            "severity": "blocking",
+            "message": "旧的问题说明（不使用）",
+            "fixable": true
+          },
+          {
+            "section_id": "s1",
+            "type": "structure",
+            "severity": "blocking",
+            "message": "旧的问题说明（不使用）",
+            "fixable": true
+          },
+          {
+            "section_id": "x9",
+            "type": "structure",
+            "severity": "blocking",
+            "message": "旧的问题说明（不使用）",
+            "fixable": true
+          },
+          {
+            "section_id": "s2",
+            "type": "structure",
+            "severity": "blocking",
+            "message": "旧的问题说明（不使用）",
+            "fixable": true
+          },
+          {
+            "section_id": "s3",
+            "type": "structure",
+            "severity": "blocking",
+            "message": "旧的问题说明（不使用）",
+            "fixable": true
+          },
+          {
+            "section_id": "s4",
+            "type": "structure",
+            "severity": "blocking",
+            "message": "旧的问题说明（不使用）",
+            "fixable": true
+          },
+          {
+            "section_id": "s5",
+            "type": "structure",
+            "severity": "blocking",
+            "message": "旧的问题说明（不使用）",
+            "fixable": true
+          },
+          {
+            "section_id": "s6",
+            "type": "structure",
+            "severity": "blocking",
+            "message": "旧的问题说明（不使用）",
+            "fixable": true
+          }
+        ]
+      },
+      "children": {
+        "s4": {
+          "write": {
+            "正文/s4.html": "<!-- app:block -->\n<p id=\"s_p001\">第四节正文<strong>加粗已闭合</strong></p>",
+            "正文/s7.html": "被子任务改动"
+          }
+        },
+        "s5": {
+          "write": {
+            "正文/s5.html": "<!-- app:block -->\n<p id=\"s_p001\">第五节正文<em>仍未闭合</p>"
+          }
+        },
+        "s6": {
+          "fail": "本节缺少必要资料，无法继续"
+        }
+      }
+    },
+    {
+      "name": "全部已修好：跳过，不派发子任务",
+      "factsRequirements": "缺失的事实按通用做法概括表达，不虚构具体参数。",
+      "rules": "# 受限 HTML 生成规范\n\n只用 p、h3、ul、table、figure。",
+      "targets": [
+        {
+          "id": "s1",
+          "number": "1.1",
+          "title": "项目概述",
+          "file": "正文/s1.html"
+        },
+        {
+          "id": "s2",
+          "number": "1.2",
+          "title": "技术路线",
+          "file": "正文/s2.html"
+        },
+        {
+          "id": "s3",
+          "number": "1.3",
+          "title": "质量保证",
+          "file": "正文/s3.html"
+        }
+      ],
+      "files": {
+        "正文/s1.html": "<!-- app:block -->\n<p id=\"s_p001\">第1节正文。</p>",
+        "正文/s2.html": "<!-- app:block -->\n<p id=\"s_p001\">第2节正文。</p>",
+        "正文/s3.html": "<!-- app:block -->\n<p id=\"s_p001\">第3节正文。</p>"
+      },
+      "images": [],
+      "issues": {
+        "issues": [
+          {
+            "section_id": "s1",
+            "type": "structure",
+            "severity": "blocking",
+            "message": "旧的问题说明（不使用）",
+            "fixable": true
+          },
+          {
+            "section_id": "s3",
+            "type": "structure",
+            "severity": "blocking",
+            "message": "旧的问题说明（不使用）",
+            "fixable": true
+          }
+        ]
+      },
+      "children": {}
+    },
+    {
+      "name": "图片引用存在、只有结构问题：交给子任务；子任务新建本批以外原本不存在的小节被删除",
+      "factsRequirements": "缺失的事实按通用做法概括表达，不虚构具体参数。",
+      "rules": "# 受限 HTML 生成规范\n\n只用 p、h3、ul、table、figure。",
+      "targets": [
+        {
+          "id": "s1",
+          "number": "1.1",
+          "title": "项目概述",
+          "file": "正文/s1.html"
+        },
+        {
+          "id": "s2",
+          "number": "1.2",
+          "title": "技术路线",
+          "file": "正文/s2.html"
+        },
+        {
+          "id": "s3",
+          "number": "1.3",
+          "title": "质量保证",
+          "file": "正文/s3.html"
+        }
+      ],
+      "files": {
+        "正文/s1.html": "<!-- app:block -->\n<p id=\"s_p001\">第一节正文</p>\n<!-- app:block -->\n<figure id=\"s_f001\" data-app-generation=\"aiImage\" data-app-size=\"wide\"><template data-app-role=\"prompt\">施工流程示意</template><img alt=\"示意图\" data-app-asset-ref=\"图片/s1-1.png\"><figcaption>图 1<span>未闭合</figcaption></figure>",
+        "正文/s2.html": "<!-- app:block -->\n<p id=\"s_p001\">第二节正文。</p>"
+      },
+      "images": [
+        "图片/s1-1.png"
+      ],
+      "issues": {
+        "issues": [
+          {
+            "section_id": "s1",
+            "type": "structure",
+            "severity": "blocking",
+            "message": "旧的问题说明（不使用）",
+            "fixable": true
+          }
+        ]
+      },
+      "children": {
+        "s1": {
+          "write": {
+            "正文/s1.html": "<!-- app:block -->\n<p id=\"s_p001\">第一节正文</p>\n<!-- app:block -->\n<figure id=\"s_f001\" data-app-generation=\"aiImage\" data-app-size=\"wide\"><template data-app-role=\"prompt\">施工流程示意</template><img alt=\"示意图\" data-app-asset-ref=\"图片/s1-1.png\"><figcaption>图 1</figcaption></figure>",
+            "正文/s3.html": "被子任务新建"
+          }
+        }
+      }
+    },
+    {
+      "name": "没有问题清单",
+      "factsRequirements": "缺失的事实按通用做法概括表达，不虚构具体参数。",
+      "rules": "# 受限 HTML 生成规范\n\n只用 p、h3、ul、table、figure。",
+      "targets": [
+        {
+          "id": "s1",
+          "number": "1.1",
+          "title": "项目概述",
+          "file": "正文/s1.html"
+        },
+        {
+          "id": "s2",
+          "number": "1.2",
+          "title": "技术路线",
+          "file": "正文/s2.html"
+        }
+      ],
+      "files": {
+        "正文/s1.html": "<!-- app:block -->\n<p id=\"s_p001\">第一节正文。</p>"
+      },
+      "images": [],
+      "issues": null,
+      "children": {}
+    }
+  ],
+  "expected": {
+    "混合：已修好的跳过、文件缺失与图片引用交回主 Agent、结构问题由子任务修复、修复后仍有问题、子任务报告失败、本批以外被改动的还原": {
+      "result": {
+        "total": 6,
+        "success": 1,
+        "skipped": 1,
+        "unresolved": [
+          {
+            "section_id": "s2",
+            "status": "error",
+            "error": "子任务无法处理，请直接修复：小节 HTML 文件不存在"
+          },
+          {
+            "section_id": "s3",
+            "status": "error",
+            "error": "子任务无法处理，请直接修复：正文引用的图片文件不存在：图片/不存在.png"
+          },
+          {
+            "section_id": "s5",
+            "status": "error",
+            "facts": {
+              "has_data_tables": false
+            },
+            "issues": [
+              {
+                "section_id": "s5",
+                "number": "1.5",
+                "title": "安全措施",
+                "file": "正文/s5.html",
+                "type": "structure",
+                "severity": "blocking",
+                "message": "第 2 行<em> 缺少结束标签 </em>",
+                "fixable": true
+              }
+            ],
+            "error": "第 2 行<em> 缺少结束标签 </em>"
+          },
+          {
+            "section_id": "s6",
+            "status": "error",
+            "error": "本节缺少必要资料，无法继续"
+          }
+        ],
+        "restored_files": [
+          "正文/s7.html"
+        ]
+      },
+      "prompts": {
+        "s4": "你负责编辑投标正文中的一个小节，执行提交问题修复。具体小节、文件和本次要求见末尾“本次任务”。\n本项目事实缺失处理要求（仅适用于本任务允许补充的内容，不扩大本次编辑范围）：缺失的事实按通用做法概括表达，不虚构具体参数。\n优先使用原生 edit 修改本次任务指定的小节文件，可按需使用 bash 处理工作区文件；不要改其他小节、输入资料或结果清单，程序会还原这些文件。已有图片块（含图注与提示词）、图片引用和顺序、图片表格布局不得删除、替换、复制、调序或修改；可以调整图文表格中的普通说明文字。编辑结束后程序检查本节结构、图片引用和图片块，问题交由主 Agent 统一处理。保留受限 HTML 结构并保持所有元素完整闭合，保留原有图片及引用、原表格、实质信息、事实参数和承诺。本次新增或改写的正文禁止使用 LaTeX 语法，包括 $...$、$$...$$、\\(...\\)、\\[...\\] 及 \\frac、\\text、\\circ 等命令。公式、参数和单位使用普通文字、Unicode 数学符号及受限 HTML 的 <sup>、<sub> 表达，例如 22 ℃ ± 2 ℃、40%～65%、≥30 m<sup>3</sup>/(h·人)。参考材料中的 LaTeX 在写入正文时也须转换为上述表达，保持数值、单位和含义不变。只修复本次列出的问题，不改写其他正文。除 img 等空元素外，每个元素都写出对应的结束标签；每个 figure 以 </figure> 结束并直接包含一个 img，figure 不放在段落、列表项或加粗、链接等行内元素中。 事实冲突以全局事实设定.md为准，按需读取。本次要求尚未完全达成时，保留真实正文并提交，由主 Agent 统一验收；只有无法继续执行的实际阻断才调用 report-failure。edit 返回文本未匹配等错误时，重新读取最新文件，依据实际原文修正编辑参数并重试。修改由当前子任务直接写入目标 HTML，不以返回补丁文本代替文件修改。完成本次编辑并核实真实结果后，在最后一次成功的 edit、bash 或 read 上标记 task_complete=true，不承担全文达标或修改其他小节的任务。\n\n受限 HTML 生成规范（完整内容）：\n# 受限 HTML 生成规范\n\n只用 p、h3、ul、table、figure。\n\n本次任务：\n你负责编辑小节 1.4 进度计划，文件为 正文/s4.html。优先使用已提供的正文和规范直接修改，通常无需重复读取。需要核对最新内容、定位编辑位置或补充上下文时，可使用 grep、read 或 bash；修改后以最新文件为准。再按以下要求提交问题修复：\n修复程序提交校验发现的以下问题，只改与问题相关的内容：\n1. 第 2 行<strong> 缺少结束标签 </strong>\n\n本小节启动时的完整 HTML（正文/s4.html）：\n<!-- app:block -->\n<p id=\"s_p001\">第四节正文<strong>加粗未闭合</p>",
+        "s5": "你负责编辑投标正文中的一个小节，执行提交问题修复。具体小节、文件和本次要求见末尾“本次任务”。\n本项目事实缺失处理要求（仅适用于本任务允许补充的内容，不扩大本次编辑范围）：缺失的事实按通用做法概括表达，不虚构具体参数。\n优先使用原生 edit 修改本次任务指定的小节文件，可按需使用 bash 处理工作区文件；不要改其他小节、输入资料或结果清单，程序会还原这些文件。已有图片块（含图注与提示词）、图片引用和顺序、图片表格布局不得删除、替换、复制、调序或修改；可以调整图文表格中的普通说明文字。编辑结束后程序检查本节结构、图片引用和图片块，问题交由主 Agent 统一处理。保留受限 HTML 结构并保持所有元素完整闭合，保留原有图片及引用、原表格、实质信息、事实参数和承诺。本次新增或改写的正文禁止使用 LaTeX 语法，包括 $...$、$$...$$、\\(...\\)、\\[...\\] 及 \\frac、\\text、\\circ 等命令。公式、参数和单位使用普通文字、Unicode 数学符号及受限 HTML 的 <sup>、<sub> 表达，例如 22 ℃ ± 2 ℃、40%～65%、≥30 m<sup>3</sup>/(h·人)。参考材料中的 LaTeX 在写入正文时也须转换为上述表达，保持数值、单位和含义不变。只修复本次列出的问题，不改写其他正文。除 img 等空元素外，每个元素都写出对应的结束标签；每个 figure 以 </figure> 结束并直接包含一个 img，figure 不放在段落、列表项或加粗、链接等行内元素中。 事实冲突以全局事实设定.md为准，按需读取。本次要求尚未完全达成时，保留真实正文并提交，由主 Agent 统一验收；只有无法继续执行的实际阻断才调用 report-failure。edit 返回文本未匹配等错误时，重新读取最新文件，依据实际原文修正编辑参数并重试。修改由当前子任务直接写入目标 HTML，不以返回补丁文本代替文件修改。完成本次编辑并核实真实结果后，在最后一次成功的 edit、bash 或 read 上标记 task_complete=true，不承担全文达标或修改其他小节的任务。\n\n受限 HTML 生成规范（完整内容）：\n# 受限 HTML 生成规范\n\n只用 p、h3、ul、table、figure。\n\n本次任务：\n你负责编辑小节 1.5 安全措施，文件为 正文/s5.html。优先使用已提供的正文和规范直接修改，通常无需重复读取。需要核对最新内容、定位编辑位置或补充上下文时，可使用 grep、read 或 bash；修改后以最新文件为准。再按以下要求提交问题修复：\n修复程序提交校验发现的以下问题，只改与问题相关的内容：\n1. 第 2 行<em> 缺少结束标签 </em>\n\n本小节启动时的完整 HTML（正文/s5.html）：\n<!-- app:block -->\n<p id=\"s_p001\">第五节正文<em>强调未闭合</p>",
+        "s6": "你负责编辑投标正文中的一个小节，执行提交问题修复。具体小节、文件和本次要求见末尾“本次任务”。\n本项目事实缺失处理要求（仅适用于本任务允许补充的内容，不扩大本次编辑范围）：缺失的事实按通用做法概括表达，不虚构具体参数。\n优先使用原生 edit 修改本次任务指定的小节文件，可按需使用 bash 处理工作区文件；不要改其他小节、输入资料或结果清单，程序会还原这些文件。已有图片块（含图注与提示词）、图片引用和顺序、图片表格布局不得删除、替换、复制、调序或修改；可以调整图文表格中的普通说明文字。编辑结束后程序检查本节结构、图片引用和图片块，问题交由主 Agent 统一处理。保留受限 HTML 结构并保持所有元素完整闭合，保留原有图片及引用、原表格、实质信息、事实参数和承诺。本次新增或改写的正文禁止使用 LaTeX 语法，包括 $...$、$$...$$、\\(...\\)、\\[...\\] 及 \\frac、\\text、\\circ 等命令。公式、参数和单位使用普通文字、Unicode 数学符号及受限 HTML 的 <sup>、<sub> 表达，例如 22 ℃ ± 2 ℃、40%～65%、≥30 m<sup>3</sup>/(h·人)。参考材料中的 LaTeX 在写入正文时也须转换为上述表达，保持数值、单位和含义不变。只修复本次列出的问题，不改写其他正文。除 img 等空元素外，每个元素都写出对应的结束标签；每个 figure 以 </figure> 结束并直接包含一个 img，figure 不放在段落、列表项或加粗、链接等行内元素中。 事实冲突以全局事实设定.md为准，按需读取。本次要求尚未完全达成时，保留真实正文并提交，由主 Agent 统一验收；只有无法继续执行的实际阻断才调用 report-failure。edit 返回文本未匹配等错误时，重新读取最新文件，依据实际原文修正编辑参数并重试。修改由当前子任务直接写入目标 HTML，不以返回补丁文本代替文件修改。完成本次编辑并核实真实结果后，在最后一次成功的 edit、bash 或 read 上标记 task_complete=true，不承担全文达标或修改其他小节的任务。\n\n受限 HTML 生成规范（完整内容）：\n# 受限 HTML 生成规范\n\n只用 p、h3、ul、table、figure。\n\n本次任务：\n你负责编辑小节 1.6 文明施工，文件为 正文/s6.html。优先使用已提供的正文和规范直接修改，通常无需重复读取。需要核对最新内容、定位编辑位置或补充上下文时，可使用 grep、read 或 bash；修改后以最新文件为准。再按以下要求提交问题修复：\n修复程序提交校验发现的以下问题，只改与问题相关的内容：\n1. 第 2 行<strong> 缺少结束标签 </strong>\n\n本小节启动时的完整 HTML（正文/s6.html）：\n<!-- app:block -->\n<p id=\"s_p001\">第六节正文<strong>未闭合</p>"
+      },
+      "files": {
+        "正文/s1.html": "<!-- app:block -->\n<p id=\"s_p001\">第一节正文。</p>",
+        "正文/s2.html": null,
+        "正文/s3.html": "<!-- app:block -->\n<p id=\"s_p001\">第三节正文</p>\n<!-- app:block -->\n<figure id=\"s_f001\" data-app-generation=\"aiImage\" data-app-size=\"wide\"><template data-app-role=\"prompt\">施工流程示意</template><img alt=\"示意图\" data-app-asset-ref=\"图片/不存在.png\"><figcaption>图 1</figcaption></figure>",
+        "正文/s4.html": "<!-- app:block -->\n<p id=\"s_p001\">第四节正文<strong>加粗已闭合</strong></p>",
+        "正文/s5.html": "<!-- app:block -->\n<p id=\"s_p001\">第五节正文<em>仍未闭合</p>",
+        "正文/s6.html": "<!-- app:block -->\n<p id=\"s_p001\">第六节正文<strong>未闭合</p>",
+        "正文/s7.html": "<!-- app:block -->\n<p id=\"s_p001\">第七节正文。</p>"
+      }
+    },
+    "全部已修好：跳过，不派发子任务": {
+      "result": {
+        "total": 2,
+        "success": 0,
+        "skipped": 2,
+        "unresolved": []
+      },
+      "prompts": {},
+      "files": {
+        "正文/s1.html": "<!-- app:block -->\n<p id=\"s_p001\">第1节正文。</p>",
+        "正文/s2.html": "<!-- app:block -->\n<p id=\"s_p001\">第2节正文。</p>",
+        "正文/s3.html": "<!-- app:block -->\n<p id=\"s_p001\">第3节正文。</p>"
+      }
+    },
+    "图片引用存在、只有结构问题：交给子任务；子任务新建本批以外原本不存在的小节被删除": {
+      "result": {
+        "total": 1,
+        "success": 1,
+        "skipped": 0,
+        "unresolved": [],
+        "restored_files": [
+          "正文/s3.html"
+        ]
+      },
+      "prompts": {
+        "s1": "你负责编辑投标正文中的一个小节，执行提交问题修复。具体小节、文件和本次要求见末尾“本次任务”。\n本项目事实缺失处理要求（仅适用于本任务允许补充的内容，不扩大本次编辑范围）：缺失的事实按通用做法概括表达，不虚构具体参数。\n优先使用原生 edit 修改本次任务指定的小节文件，可按需使用 bash 处理工作区文件；不要改其他小节、输入资料或结果清单，程序会还原这些文件。已有图片块（含图注与提示词）、图片引用和顺序、图片表格布局不得删除、替换、复制、调序或修改；可以调整图文表格中的普通说明文字。编辑结束后程序检查本节结构、图片引用和图片块，问题交由主 Agent 统一处理。保留受限 HTML 结构并保持所有元素完整闭合，保留原有图片及引用、原表格、实质信息、事实参数和承诺。本次新增或改写的正文禁止使用 LaTeX 语法，包括 $...$、$$...$$、\\(...\\)、\\[...\\] 及 \\frac、\\text、\\circ 等命令。公式、参数和单位使用普通文字、Unicode 数学符号及受限 HTML 的 <sup>、<sub> 表达，例如 22 ℃ ± 2 ℃、40%～65%、≥30 m<sup>3</sup>/(h·人)。参考材料中的 LaTeX 在写入正文时也须转换为上述表达，保持数值、单位和含义不变。只修复本次列出的问题，不改写其他正文。除 img 等空元素外，每个元素都写出对应的结束标签；每个 figure 以 </figure> 结束并直接包含一个 img，figure 不放在段落、列表项或加粗、链接等行内元素中。 事实冲突以全局事实设定.md为准，按需读取。本次要求尚未完全达成时，保留真实正文并提交，由主 Agent 统一验收；只有无法继续执行的实际阻断才调用 report-failure。edit 返回文本未匹配等错误时，重新读取最新文件，依据实际原文修正编辑参数并重试。修改由当前子任务直接写入目标 HTML，不以返回补丁文本代替文件修改。完成本次编辑并核实真实结果后，在最后一次成功的 edit、bash 或 read 上标记 task_complete=true，不承担全文达标或修改其他小节的任务。\n\n受限 HTML 生成规范（完整内容）：\n# 受限 HTML 生成规范\n\n只用 p、h3、ul、table、figure。\n\n本次任务：\n你负责编辑小节 1.1 项目概述，文件为 正文/s1.html。优先使用已提供的正文和规范直接修改，通常无需重复读取。需要核对最新内容、定位编辑位置或补充上下文时，可使用 grep、read 或 bash；修改后以最新文件为准。再按以下要求提交问题修复：\n修复程序提交校验发现的以下问题，只改与问题相关的内容：\n1. 第 4 行<span> 缺少结束标签 </span>\n\n本小节启动时的完整 HTML（正文/s1.html）：\n<!-- app:block -->\n<p id=\"s_p001\">第一节正文</p>\n<!-- app:block -->\n<figure id=\"s_f001\" data-app-generation=\"aiImage\" data-app-size=\"wide\"><template data-app-role=\"prompt\">施工流程示意</template><img alt=\"示意图\" data-app-asset-ref=\"图片/s1-1.png\"><figcaption>图 1<span>未闭合</figcaption></figure>"
+      },
+      "files": {
+        "正文/s1.html": "<!-- app:block -->\n<p id=\"s_p001\">第一节正文</p>\n<!-- app:block -->\n<figure id=\"s_f001\" data-app-generation=\"aiImage\" data-app-size=\"wide\"><template data-app-role=\"prompt\">施工流程示意</template><img alt=\"示意图\" data-app-asset-ref=\"图片/s1-1.png\"><figcaption>图 1</figcaption></figure>",
+        "正文/s2.html": "<!-- app:block -->\n<p id=\"s_p001\">第二节正文。</p>",
+        "正文/s3.html": null
+      }
+    },
+    "没有问题清单": {
+      "error": "当前没有待修复的提交校验问题",
+      "prompts": {},
+      "files": {
+        "正文/s1.html": "<!-- app:block -->\n<p id=\"s_p001\">第一节正文。</p>",
+        "正文/s2.html": null
+      }
+    }
+  },
+  "formatImageBlocks": {
+    "blocks": [
+      "<figure id=\"s_f001\"><img alt=\"a\" data-app-asset-ref=\"图片/a.png\"><figcaption>图 1</figcaption></figure>",
+      "<img alt=\"b\" data-app-asset-ref=\"图片/b.png\">"
+    ],
+    "expected": {
+      "blocks": "【原始图片块 1】\n<figure id=\"s_f001\"><img alt=\"a\" data-app-asset-ref=\"图片/a.png\"><figcaption>图 1</figcaption></figure>\n\n【原始图片块 2】\n<img alt=\"b\" data-app-asset-ref=\"图片/b.png\">",
+      "empty": "本节原本没有图片块，删除新增的图片块。"
+    }
+  }
+}

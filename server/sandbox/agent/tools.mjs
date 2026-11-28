@@ -11,7 +11,7 @@
 // - generate-sections（8.10c2b2，长时工具，src/agent/toolRequests.ts）收到 { completed: false, pending: true } 时同样等待后以完全相同的
 //   参数再次调用，不交给模型，每次等待经 onUpdate 给出进度提示；名称与说明沿用桌面版 contentGenerationAgent.cjs（说明中“知识库等”
 //   按工作区中是否有知识库索引给出，与桌面版按是否引用知识库相同；只影响说明文字）；check-word-count（8.10c3b1）相同，名称与说明沿用
-//   桌面版 contentGenerationWordTools.cjs；
+//   桌面版 contentGenerationWordTools.cjs；fix-submission-issues（8.10c3b3）相同，名称与说明沿用桌面版 contentGenerationEditTools.cjs；
 // - report-failure 报告成功、request-termination 收到 { terminated: true } 后立即结束 Pi 会话（不再调用任何工具），
 //   入口报告 REPORTED_FAILURE（8.4b 登记）；
 // - request-termination 收到 { terminated: false } 时把 instruction（放宽后的执行要求）作为工具结果交给模型；
@@ -310,6 +310,26 @@ function checkWordCountStub({ Type, call }) {
   };
 }
 
+/** 与 src/technicalPlan/contentSubmission.ts 的 CONTENT_SUBMISSION_ISSUES_FILE、contentWriting.ts 的 SUBMISSION_FIX_PARALLEL_THRESHOLD 相同。 */
+export const CONTENT_SUBMISSION_ISSUES_FILE = '程序清单/提交校验问题.json';
+const SUBMISSION_FIX_PARALLEL_THRESHOLD = 5;
+
+/** fix-submission-issues 的桩（桌面版 contentGenerationEditTools.cjs 的名称与说明）：worker 的执行者在同一沙箱中用并发子会话修复各节。 */
+function submissionFixStub({ Type, call }) {
+  return {
+    name: 'fix-submission-issues',
+    label: '并发修复提交问题',
+    description: `提交校验退回的问题涉及超过 ${SUBMISSION_FIX_PARALLEL_THRESHOLD} 个小节时使用：读取 ${CONTENT_SUBMISSION_ISSUES_FILE} 中按小节记录的问题（HTML 结构、图片块等），每个小节交给一个子任务并发修复。派发前按最新文件复查，已修好的小节跳过；子任务获得本节完整 HTML、本节问题及需要恢复的原始图片块，完成后程序校验本节。正文或图片文件缺失等子任务无法处理的问题列在 unresolved 中，由你直接处理。返回 total、success、skipped 和 unresolved。`,
+    executionMode: 'sequential',
+    parameters: Type.Object({}, { additionalProperties: false }),
+    execute: async (_toolCallId, params, signal, onUpdate) => {
+      const result = await callLongTool(call, 'fix-submission-issues', params, signal, onUpdate, '正在并发修复提交问题，完成后自动返回结果');
+      // 与桌面版相同：结果按紧凑的 JSON 交给模型。
+      return { content: [{ type: 'text', text: JSON.stringify(result) }], details: result };
+    },
+  };
+}
+
 /**
  * 子会话的 report-failure（8.10c3b2，桌面版 failure_handled_by_parent：失败交回父 Agent）：在沙箱内处理，不经 worker、不写失败报告；
  * 名称、说明与参数与主会话的 report-failure 相同。report(reason) 记下原因并结束子会话，入口把原因作为结果交给 worker。
@@ -332,6 +352,7 @@ const STUBS = Object.freeze({
   'request-termination': requestTerminationStub,
   'generate-sections': generateSectionsStub,
   'check-word-count': checkWordCountStub,
+  'fix-submission-issues': submissionFixStub,
 });
 
 /** 业务工具（worker 一侧的名字）面向模型的工具名。 */

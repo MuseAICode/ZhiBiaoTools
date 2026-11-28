@@ -50,7 +50,7 @@ export const NATIVE_TOOLS = Object.freeze(['read', 'write', 'edit', 'bash', 'gre
  * 业务工具（8.6c1）：名字是 worker 一侧登记的工具名（src/agent/toolRegistry.ts），入口登记同名的桩（tools.mjs）；
  * request-termination 面向模型的工具名是 report-failure（与桌面版相同），因此与 report-failure 只能二选一。
  */
-export const BUSINESS_TOOLS = Object.freeze(['ask-user', 'report-failure', 'request-termination', 'generate-sections', 'check-word-count']);
+export const BUSINESS_TOOLS = Object.freeze(['ask-user', 'report-failure', 'request-termination', 'generate-sections', 'check-word-count', 'fix-submission-issues']);
 /** 只能出现其中之一的业务工具。 */
 export const EXCLUSIVE_BUSINESS_TOOLS = Object.freeze([Object.freeze(['report-failure', 'request-termination'])]);
 /** 本地工具（8.6c2a）：在沙箱内由入口执行，不经 worker。 */
