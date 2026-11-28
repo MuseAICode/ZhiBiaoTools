@@ -5,6 +5,7 @@ import { reportFailureTool } from './reportFailureTool.ts';
 import { requestTerminationTool } from './requestTerminationTool.ts';
 import { createAgentToolRegistry, type AgentToolDefinition } from './tools.ts';
 import { generateSectionsTool } from '../technicalPlan/contentSectionGeneration.ts';
+import { submissionFixTool } from '../technicalPlan/contentSubmissionFix.ts';
 import { checkWordCountTool } from '../technicalPlan/contentWordCount.ts';
 
 export const AGENT_TOOLS: readonly AgentToolDefinition<any, any>[] = Object.freeze([
@@ -18,6 +19,8 @@ export const AGENT_TOOLS: readonly AgentToolDefinition<any, any>[] = Object.free
   generateSectionsTool,
   // 8.10c3b1：正文写作阶段的字数统计（长时工具，由执行者执行）；全部正文就绪后进入图片保护。
   checkWordCountTool,
+  // 8.10c3b3：提交校验退回的小节问题由沙箱内的并发子会话修复（长时工具，由执行者执行）。
+  submissionFixTool,
 ]);
 
 export const agentToolRegistry = createAgentToolRegistry(AGENT_TOOLS);

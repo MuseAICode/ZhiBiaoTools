@@ -47,3 +47,4 @@ export function createChildReportFailureTool(options: { Type: unknown; report: (
 
 export const CONTENT_SECTIONS_TASK_FILE: string;
 export const KNOWLEDGE_INDEX_FILE: string;
+export const CONTENT_SUBMISSION_ISSUES_FILE: string;

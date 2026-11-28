@@ -220,7 +220,8 @@ export function contentSubmissionReport(inspection: ContentSubmissionInspection)
   return { value: issues.length ? null : { sections: inspection.sections }, issues, minimumGoal: CONTENT_SUBMISSION_MINIMUM_GOAL };
 }
 
-const STRUCTURE_RULE = '除 img 等空元素外，每个元素都写出对应的结束标签；每个 figure 以 </figure> 结束并直接包含一个 img，figure 不放在段落、列表项或加粗、链接等行内元素中。';
+/** 与桌面版 STRUCTURE_RULE 相同（提交修复的说明与 fix-submission-issues 的子任务要求共用）。 */
+export const STRUCTURE_RULE = '除 img 等空元素外，每个元素都写出对应的结束标签；每个 figure 以 </figure> 结束并直接包含一个 img，figure 不放在段落、列表项或加粗、链接等行内元素中。';
 /** 图片保护开始后不能再重新生成正文，只按结构规则修正（与桌面版 structureFixRule 相同）。 */
 const structureFixRule = (protectionActive: boolean): string =>
   `${STRUCTURE_RULE}${protectionActive ? '' : '出现异常结束标记的小节多为写作输出中断，在生成任务文件中给该节加 "regenerate": true 重新生成。'}`;

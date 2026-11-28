@@ -6,7 +6,8 @@
 // - 桩的行为：pending 时以相同参数再次调用；报告失败 / 用户选择终止时结束会话；fatal 时结束会话；选择继续时把 instruction 交给模型；
 // - generate-sections（8.10c2b2）：名称、标签与说明和桌面版 contentGenerationAgent.cjs 相同（有无知识库两种说明），长时调用的 pending
 //   以相同参数再次调用并给出进度提示，结果按紧凑的 JSON 交给模型；
-// - check-word-count（8.10c3b1）：名称、标签与说明和桌面版 contentGenerationWordTools.cjs 相同，长时调用的处理与 generate-sections 相同。
+// - check-word-count（8.10c3b1）：名称、标签与说明和桌面版 contentGenerationWordTools.cjs 相同，长时调用的处理与 generate-sections 相同；
+// - fix-submission-issues（8.10c3b3）：名称、标签与说明和桌面版 contentGenerationEditTools.cjs 相同，长时调用的处理与 generate-sections 相同。
 // 真实的 Pi 经真实路由调用桩的流程见 tests/agent/piBusinessTools.test.ts。
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
@@ -22,12 +23,15 @@ import { generateAgentToken } from '../../src/agent/token.ts';
 import { agentToolRegistry } from '../../src/agent/toolRegistry.ts';
 import { generateSectionsTool } from '../../src/technicalPlan/contentSectionGeneration.ts';
 import { checkWordCountTool } from '../../src/technicalPlan/contentWordCount.ts';
+import { submissionFixTool } from '../../src/technicalPlan/contentSubmissionFix.ts';
+import { CONTENT_SUBMISSION_ISSUES_FILE as SERVER_ISSUES_FILE } from '../../src/technicalPlan/contentSubmission.ts';
 import { CONTENT_SECTIONS_TASK_FILE as SERVER_TASK_FILE } from '../../src/technicalPlan/contentSectionWriting.ts';
 import { CONTENT_WRITING_KNOWLEDGE_INDEX_FILE } from '../../src/technicalPlan/contentWriting.ts';
 import { BUSINESS_TOOLS } from '../../sandbox/agent/protocol.mjs';
 import {
   callBusinessTool,
   CONTENT_SECTIONS_TASK_FILE,
+  CONTENT_SUBMISSION_ISSUES_FILE as SANDBOX_ISSUES_FILE,
   createBusinessToolStubs,
   KNOWLEDGE_INDEX_FILE,
   MAX_TOOL_ERROR_CHARS,
@@ -95,14 +99,14 @@ function workspace(files: Record<string, string>): string {
 describe('桩的定义', () => {
   it('参数 schema 与 worker 登记的相同；面向模型的名字：request-termination 为 report-failure', () => {
     const stubs = createBusinessToolStubs({ Type, names: [...BUSINESS_TOOLS], call: noop, end: () => {} });
-    const server = { 'ask-user': askUserTool, 'report-failure': reportFailureTool, 'request-termination': requestTerminationTool, 'generate-sections': generateSectionsTool, 'check-word-count': checkWordCountTool } as const;
+    const server = { 'ask-user': askUserTool, 'report-failure': reportFailureTool, 'request-termination': requestTerminationTool, 'generate-sections': generateSectionsTool, 'check-word-count': checkWordCountTool, 'fix-submission-issues': submissionFixTool } as const;
     BUSINESS_TOOLS.forEach((name, index) => {
       expect(constraints(stubs[index]!.parameters)).toEqual(constraints(server[name].argumentsSchema));
       expect(stubs[index]!.name).toBe(modelToolName(name));
       // 生产登记中有同名的工具。
       expect(agentToolRegistry.get(name)).toBeDefined();
     });
-    expect(stubs.map((stub) => stub.name)).toEqual(['ask-user', 'report-failure', 'report-failure', 'generate-sections', 'check-word-count']);
+    expect(stubs.map((stub) => stub.name)).toEqual(['ask-user', 'report-failure', 'report-failure', 'generate-sections', 'check-word-count', 'fix-submission-issues']);
     expect(stubs[2]!.label).toBe('请求终止任务');
     // 问题按纯文本显示（#84）：提示中不要求 Markdown。
     expect(stubs[0]!.promptGuidelines!.join('\n')).toContain('不要使用 Markdown');
@@ -136,6 +140,19 @@ describe('桩的定义', () => {
       description: desktop.description,
       executionMode: desktop.executionMode,
     });
+  });
+
+  it('fix-submission-issues：名称、标签与说明与桌面版相同；问题清单路径与 worker 一侧相同', () => {
+    const dir = workspace({});
+    const [stub] = createBusinessToolStubs({ Type, names: ['fix-submission-issues'], call: noop, end: () => {}, workspaceDir: dir });
+    const desktop = desktopAgent.createContentGenerationTools({}, { Type: desktopStub, workspaceDir: dir, setActiveTools: () => {}, baseline: null }).find((tool) => tool.name === 'fix-submission-issues')!;
+    expect({ name: stub!.name, label: stub!.label, description: stub!.description, executionMode: stub!.executionMode }).toEqual({
+      name: desktop.name,
+      label: desktop.label,
+      description: desktop.description,
+      executionMode: desktop.executionMode,
+    });
+    expect(SANDBOX_ISSUES_FILE).toBe(SERVER_ISSUES_FILE);
   });
 });
 
@@ -331,6 +348,18 @@ describe('桩的行为', () => {
     const result = await run.list[0]!.execute('c', {}, undefined, (update) => updates.push(update));
     expect(run.calls).toEqual([0, 1].map(() => ({ name: 'check-word-count', args: {} })));
     expect(updates).toHaveLength(1);
+    expect(result).toEqual({ content: [{ type: 'text', text: JSON.stringify(done) }], details: done });
+    expect(run.ended).toEqual([]);
+  });
+
+  it('fix-submission-issues：pending 时以相同参数再次调用并给出进度提示；结果按紧凑的 JSON 交给模型', async () => {
+    const pending = { completed: false, pending: true, message: 'm' };
+    const done = { total: 6, success: 5, skipped: 0, unresolved: [{ section_id: 's6', status: 'error', error: 'e' }] };
+    const run = stubs([pending, pending, done], ['fix-submission-issues']);
+    const updates: unknown[] = [];
+    const result = await run.list[0]!.execute('c', {}, undefined, (update) => updates.push(update));
+    expect(run.calls).toEqual([0, 1, 2].map(() => ({ name: 'fix-submission-issues', args: {} })));
+    expect(updates).toHaveLength(2);
     expect(result).toEqual({ content: [{ type: 'text', text: JSON.stringify(done) }], details: done });
     expect(run.ended).toEqual([]);
   });
